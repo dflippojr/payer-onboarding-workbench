@@ -95,13 +95,10 @@
   opacity: 0;
   pointer-events: none;
 }
-.pw-choice-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; align-items: center; justify-content: space-between; }
 .pw-choice-title { font-weight: 600; }
 .pw-choice-payer { color: var(--pw-muted); font-size: 0.8rem; }
-.pw-choice-line { font-size: 0.9rem; overflow-wrap: anywhere; }
-.pw-choice-line .pw-icon { font-weight: 700; margin-right: 0.35rem; }
-.pw-choice-line.FAIL .pw-icon { color: var(--pw-fail); }
-.pw-choice-line.PASS .pw-icon { color: var(--pw-green); }
+.pw-choice-line { margin-top: auto; padding-top: 0.2rem; font-size: 0.9rem; overflow-wrap: anywhere; }
+.pw-choice-line .pw-badge { margin-right: 0.2rem; }
 
 .pw-status { color: var(--pw-muted); font-size: 0.85rem; margin: 0.75rem 0; min-height: 1.3em; }
 

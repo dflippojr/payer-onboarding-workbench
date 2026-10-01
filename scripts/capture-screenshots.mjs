@@ -8,6 +8,7 @@
 //   CAPTURE_SKIP_BUILD=1      reuse workbench-app/target/*.jar
 //   CAPTURE_REUSE_REPLAYS=1   reuse an existing site-dist/ instead of re-exporting it
 //   CAPTURE_BROWSER=<path>    browser executable (default: Edge, then Chrome or Chromium)
+//   CAPTURE_PLAYBACK_DIR=<dir> also save a mid-playback replay frame (replay-playing.png) there
 //
 // It fails if a run is missing the finding its screenshot is meant to show, and it
 // only stops the app and browser processes it started. Synthetic payers only.
@@ -15,7 +16,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -179,14 +180,14 @@ class Page {
     await this.eval('document.fonts.ready.then(() => true)');
   }
 
-  /** Captures the viewport at height px, scrolled so that document y scrollY is at the top. */
-  async shot(name, { height, scrollY = 0 }) {
+  /** Captures the viewport at height px, scrolled so that document y scrollY is at the top, into dir. */
+  async shot(name, { height, scrollY = 0, dir = outDir }) {
     await this.resize(height);
     await this.eval(`document.activeElement && document.activeElement.blur(), window.scrollTo(0, ${scrollY}),
       new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))`);
     const { data } = await this.send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(join(outDir, name), Buffer.from(data, 'base64'));
-    log(`    docs/screenshots/${name} (${this.width}x${height})`);
+    writeFileSync(join(dir, name), Buffer.from(data, 'base64'));
+    log(`    ${relative(root, join(dir, name))} (${this.width}x${height})`);
   }
 
   async fullPageShot(name) {
@@ -280,15 +281,23 @@ async function main() {
     if (findingsY < 0) throw new Error('No Findings heading in the HTML report');
     await report.shot('report-findings.png', { height: 908, scrollY: findingsY });
 
-    // The replay viewer from site-dist/, on the Fabrikam wrong-audience run.
-    const replay = await cdp.newPage({ width: 1000, height: 1750 });
+    // The replay viewer from site-dist/, on the Fabrikam wrong-audience run. index.html autoplays,
+    // so picking the scenario plays it; the screenshot is the final state with the result card.
+    const replay = await cdp.newPage({ width: 1000, height: 1300 });
     await replay.goto(`http://127.0.0.1:${site.address().port}/index.html`);
     const scenario = `document.querySelector('#replay input[type="radio"][value="fabrikam-wrong-audience-reject"]')`;
     await replay.waitFor(scenario, 'the replay scenario picker');
     await replay.eval(`${scenario}.click()`);
-    await replay.waitFor(`document.getElementById('replay').textContent.includes('auth.jwt-audience')`,
-      'the auth.jwt-audience finding in the replay');
-    await replay.shot('replay.png', { height: 1750, scrollY: await replay.top('#replay', 18) });
+    if (process.env.CAPTURE_PLAYBACK_DIR) {
+      await replay.waitFor(`document.querySelector('#replay .pw-step.active')?.textContent.includes('Send sample hook request')`,
+        'the replay playing the hook request');
+      await replay.shot('replay-playing.png', { height: 1100, scrollY: await replay.top('#replay', 18), dir: process.env.CAPTURE_PLAYBACK_DIR });
+    }
+    await replay.waitFor(`document.querySelector('#replay .pw-result')?.textContent.includes('auth.jwt-audience')`,
+      'the auth.jwt-audience result card in the replay');
+    await new Promise(r => setTimeout(r, 400));
+    const replayHeight = await replay.eval(`Math.ceil(document.getElementById('replay').getBoundingClientRect().height) + 36`);
+    await replay.shot('replay.png', { height: replayHeight, scrollY: await replay.top('#replay', 18) });
 
     await cdp.send('Browser.close').catch(() => {});
   } finally {

@@ -177,10 +177,10 @@ The export script builds the app, starts it on a free port, records six runs and
 | File | What it is |
 |---|---|
 | `runs/<id>.json` | One run's report, exactly as `GET /api/runs/{id}/report?format=json` returns it (already redacted). Runs: `northwind-healthy`, `fabrikam-healthy`, `fabrikam-wrong-audience-reject`, `northwind-expired-token-401`, `fabrikam-malformed-card`, `northwind-slow-response`. |
-| `manifest.json` | `workbenchVersion`, `gitCommit` (`-dirty` if tracked files had changes), `generatedAt`, and `runs`: `id`, `title`, `description`, `payerId`, `fault`, `verdict`, `file`. |
-| `replay.js` | ES module exporting `mountReplay(el, { baseUrl, run, headingLevel })`. The only network calls are fetches of `manifest.json` and `runs/*.json` under `baseUrl`. |
+| `manifest.json` | `workbenchVersion`, `gitCommit` (`-dirty` if tracked files had changes), `generatedAt`, and `runs`: `id`, `title`, `teaser` (the one line on the scenario card saying what breaks), `description`, `payerId`, `payerName`, `fault`, `verdict`, `file`. `teaser` and `payerName` are optional: without them the viewer uses the first FAIL finding's title and the report's payer name. |
+| `replay.js` | ES module exporting `mountReplay(el, { baseUrl, run, headingLevel, autoplay })`, which resolves to `{ select(id), play(), showResult() }`. The only network calls are fetches of `manifest.json` and `runs/*.json` under `baseUrl`. |
 | `replay.css` | Styles, all scoped under `.pw-replay`. |
-| `index.html` | A small test page that mounts the replay. |
+| `index.html` | A small test page that mounts the replay with `autoplay: true`. |
 
 To try it locally: `python -m http.server --directory site-dist`, then open <http://localhost:8000/>. (Opening the file straight from disk does not work, because browsers block `fetch` from `file://`.)
 
@@ -195,17 +195,21 @@ On the site:
     baseUrl: '/workbench/',          // where manifest.json lives; defaults to replay.js's folder
     run: 'fabrikam-wrong-audience-reject', // optional: the run shown first
     headingLevel: 2,                 // optional: level of the run title heading
+    autoplay: false,                 // optional: play each run as soon as it is picked
   });
 </script>
 ```
 
-- **Picking a scenario.** The scenarios are a radio group, so arrow keys move between them. The step timeline shows each step's status and latency. Each HTTP exchange, with its redacted headers and bodies, expands with the keyboard (`<details>`), and scrollable code blocks take focus. The findings show the explanation and the fix. Passing checks are collapsed.
+- **Picking a scenario.** The scenarios are cards in a radio group, so arrow keys move between them. Each card shows the title, the payer and a teaser of what breaks.
+- **Playback.** **Run ▶** plays the recorded steps back one at a time; **Show result** skips to the end. Each step lasts `clamp(recorded ms × 0.25, 350 ms, 1200 ms)`, and if the steps add up to more than 6 s they are all shortened in proportion (`TIMING` in `replay.js`). The recorded milliseconds are always shown as text. A failed run stops at the step where the flow broke (the report's `brokeAt`, else the first failed step), marks it with ✗ and "failed", and greys out the steps after it. On a slow-payer run (`perf.latency` WARN or FAIL), a bar on the slow step fills toward the budget (the 5 s warn and 10 s fail defaults, or the budget stated in the finding) and overshoots it, labelled with the real milliseconds. The run and its result are each announced once through an `aria-live` region. Under `prefers-reduced-motion: reduce`, Run shows the final state at once.
+- **Result first.** When playback ends, a result card above the timeline leads with the first FAIL finding: its title, explanation and fix, with the check id, and "+N more failing checks" when there are several. A run with no FAIL says "Onboarding would succeed" and names the steps it verified. WARN and INFO findings stay visible as one line each, with the explanation behind "Why it matters". Passing checks collapse to "N checks passed".
+- **Raw HTTP.** Each step shows its title, status, latency and one-line summary. The redacted request and response headers and bodies sit behind one "Show request/response" disclosure per step (`<details>`, keyboard operable), and scrollable code blocks take focus.
 - **Disclaimer.** Every view starts with "Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability." It is part of the mounted element and cannot be turned off.
 - **Theming.** The colours come from the host page's custom properties when it defines them: `--paper`, `--ink`, `--green`, `--muted`, `--line`, `--accent`, `--warn`, plus an optional `--fail` (the same names as the lab's `lab.css`). Otherwise neutral light and dark defaults follow `prefers-color-scheme`. To theme only the widget, set the `--pw-*` properties (`--pw-paper`, `--pw-ink`, `--pw-fail` and so on) on a selector more specific than `.pw-replay`. Text uses the page's font. The layout works at 375 px.
 - **Safety.** The runs are synthetic, and every string was redacted twice before export: once when it was recorded, and again when the report was built. `replay/test/bundle.test.mjs` scans every bundle file for the patterns `Redactor` masks: PEM blocks, Bearer and Basic credentials, signed JWTs, secret fields in JSON and form bodies, and sensitive headers. It fails on any hit, and also on any file that is not part of the bundle. Point `REPLAY_BUNDLE_DIR` at a vendored copy to check that instead.
 - **Vendoring.** `vendor-into-site.mjs` overwrites the bundle's files in the target and removes stale `runs/*.json`. It leaves everything else in the target alone. Re-export and re-vendor whenever the workbench changes.
 
-![Replay of the Fabrikam wrong-audience run: scenario picker, verdict, step timeline and the auth.jwt-audience FAIL with its fix](docs/screenshots/replay.png)
+![Replay of the Fabrikam wrong-audience run after playback: scenario cards, the result card with the auth.jwt-audience failure and its fix, and the step timeline stopped at the failed hook request](docs/screenshots/replay.png)
 
 
 ## Mock payers

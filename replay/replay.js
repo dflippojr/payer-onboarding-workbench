@@ -98,7 +98,6 @@ export async function mountReplay(el, options = {}) {
     const input = h('input', { type: 'radio', name: `${uid}-scenario`, id, value: run.id, class: 'pw-radio' });
     input.addEventListener('change', () => input.checked && select(run.id));
     inputs.set(run.id, input);
-    const tone = run.verdict === 'FAIL' ? 'FAIL' : 'PASS';
     const teaser = h('span', { class: 'pw-choice-teaser' }, teaserFor(run));
     const payer = h('span', { class: 'pw-choice-payer' }, run.payerName || run.payerId || '');
     // Without a recorded teaser or payer name, fill them in from the report once it loads.
@@ -110,11 +109,13 @@ export async function mountReplay(el, options = {}) {
     }
     return h('label', { class: 'pw-choice', for: id },
       input,
-      h('span', { class: 'pw-choice-head' },
-        h('span', { class: 'pw-choice-title' }, run.title),
-        run.verdict && h('span', { class: `pw-badge ${run.verdict}` }, VERDICT_LABELS[run.verdict] || run.verdict)),
+      h('span', { class: 'pw-choice-title' }, run.title),
       payer,
-      h('span', { class: `pw-choice-line ${tone}` }, h('span', { class: 'pw-icon', 'aria-hidden': 'true' }, ICONS[tone]), teaser));
+      h('span', { class: 'pw-choice-line' },
+        run.verdict && h('span', { class: `pw-badge ${run.verdict}` },
+          h('span', { 'aria-hidden': 'true' }, `${ICONS[run.verdict === 'FAIL' ? 'FAIL' : 'PASS']} `),
+          VERDICT_LABELS[run.verdict] || run.verdict),
+        ' ', teaser));
   });
   picker.replaceChildren(h('fieldset', {},
     h('legend', {}, 'Pick a scenario'),
@@ -190,7 +191,7 @@ function createPlayer(run, report, hx, status) {
   const runButton = h('button', { type: 'button', class: 'pw-btn pw-primary' });
   const skipButton = h('button', { type: 'button', class: 'pw-btn', hidden: true }, 'Show result');
   const hint = h('span', { class: 'pw-hint' },
-    `${steps.length} recorded step${steps.length === 1 ? '' : 's'}, replayed in about ${Math.max(1, Math.round(total / 1000))} s`);
+    `${steps.length} recorded step${steps.length === 1 ? '' : 's'}, replayed in about ${seconds(total)}`);
   const result = h('div', { class: 'pw-result-slot' });
   const findings = h('section', { class: 'pw-section', hidden: true });
   const list = h('ol', { class: 'pw-steps' }, items);
