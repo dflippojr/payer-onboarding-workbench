@@ -133,6 +133,7 @@ pre {
 
 .sev-group { margin-bottom: 14px; }
 .sev-group h3 { font-size: 15px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+.sev-group summary h3 { display: inline-flex; margin: 0; }
 .sev { font: 600 11px var(--mono); padding: 1px 8px; border-radius: 20px; }
 .sev.FAIL { color: var(--bad); background: var(--bad-bg); }
 .sev.WARN { color: var(--warn); background: var(--warn-bg); }

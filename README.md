@@ -4,7 +4,7 @@ Connect to a (synthetic) insurance payer's FHIR CRD / CDS Hooks endpoint, inspec
 
 Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which stays independently usable; this workbench is an optional consumer of it.
 
-**Status:** project skeleton. Modules and shared contracts exist; mock payers, checks, samples and the UI are tracked in GitHub issues.
+**Status:** early. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks and the sample library work end to end; later work is tracked in GitHub issues.
 
 All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
 
@@ -45,6 +45,71 @@ Modules:
 | `workbench-app` | Spring Boot app: REST API and static UI. |
 
 Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
+
+## Onboarding flow
+
+`workbench-app` walks you through connecting to a payer and shows exactly where it breaks. Start it and open http://localhost:8080:
+
+```sh
+./mvnw install -DskipTests                  # once, so the app's sibling modules are in your local repository
+./mvnw -pl workbench-app spring-boot:run
+```
+
+![A failing run: the hook request is rejected with 401 and the findings explain why](docs/screenshots/failing-run.png)
+
+On startup the app launches both mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's RSA signing key) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
+
+A run records these steps, each with its status, latency and redacted HTTP exchanges. The first failing step stops the run; the rest are marked skipped, and diagnostics run on whatever was observed.
+
+1. **Resolve connection**: look up the record for the payer and environment, then apply any edits.
+2. **Discovery**: `GET {baseUrl}/cds-services`, then find the service for the sample's hook.
+3. **Authenticate**: an OAuth2 client-credentials token (Northwind) or a signed CDS Hooks client JWT (Fabrikam).
+4. **Send the sample hook request**, with the prefetch keys the payer's discovery asks for.
+5. **Parse the response** with the fhir-crd-router client types (cards, system actions, coverage information).
+6. **Run diagnostics** (`DiagnosticEngine`, with the sample's hook as the required hook).
+
+The UI has a payer picker, a "Break it" panel of payer faults, connection settings you can edit for one run (base URL suffix, `igVersion`, JWT `aud` override, client id; never a secret), a step timeline with expandable request/response, and findings grouped by severity with explanation and fix. It follows `prefers-color-scheme`, works at 375 px and is keyboard navigable. It is plain HTML, CSS and JS under `workbench-app/src/main/resources/static`, with no build step.
+
+### API
+
+| Method and path | Does |
+|---|---|
+| `GET /api/payers` | The synthetic payers, their stored connections (redacted), editable settings and fault ids. |
+| `GET /api/samples` | Sample request metadata. |
+| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `audOverride`, `clientId`). |
+| `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
+
+```sh
+curl -s localhost:8080/api/runs -H 'Content-Type: application/json' \
+  -d '{"payerId":"northwind-synthetic","sampleId":"order-sign-hospital-bed","faults":["expired-token-401"]}'
+```
+
+Faults apply to one run only; runs against the same payer are serialized so faults never leak between them.
+
+### What each fault and misconfiguration fails
+
+The integration tests (`OnboardingFlowTest`) hold the app to this table on both payers.
+
+| Fault or edit | Breaks at | FAIL `checkId` |
+|---|---|---|
+| none (healthy run) | nothing | none |
+| `slow-response` | (steps pass) | `perf.latency` |
+| `expired-token-401` | hook request | `auth.clock-skew`, `response.schema` |
+| `wrong-audience-reject` | hook request | `response.schema` |
+| `malformed-card` | parse response | `response.schema` |
+| `discovery-500` | discovery | `discovery.reachable` |
+| `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
+| `tls-required` (simulated as HTTP 426) | discovery | `discovery.reachable` |
+| base URL suffix `/r4` | discovery | `discovery.reachable` |
+| `igVersion` `1.0.0` | (steps pass) | `ig.version` |
+| wrong client id, Northwind | authenticate | `auth.token` |
+| wrong client id, Fabrikam | hook request | `response.schema` |
+| `aud` override with a trailing slash, Fabrikam | hook request | `auth.jwt-audience` |
+| environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
+
+Two findings come from the app rather than the diagnostics engine, because the engine cannot see what they need. `connection.record` is reported when no connection record exists, since nothing is sent. For `auth.jwt-audience` on a bearer JWT, `Redactor` masks the JWT whole in the recorded exchange, so the app compares the `aud` it signed with the URL it sent the JWT to.
+
+Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 
 ## Mock payers
 
