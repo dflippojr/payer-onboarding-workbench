@@ -188,15 +188,21 @@ public abstract class MockPayer implements AutoCloseable {
                     .withHeader("Upgrade", "TLS/1.2, HTTP/1.1")
                     .withFault(Fault.TLS_REQUIRED);
         }
-        boolean slowed = false;
-        if (faults.isEnabled(Fault.SLOW_RESPONSE)) {
+        boolean slowed = faults.isEnabled(Fault.SLOW_RESPONSE) && isHookCall(request);
+        if (slowed) {
             pause(faults.slowResponseDelay());
-            slowed = true;
         }
         Response response = dispatch(request);
         return slowed && !response.headers().containsKey(FAULT_HEADER)
                 ? response.withFault(Fault.SLOW_RESPONSE)
                 : response;
+    }
+
+    /** {@code POST /cds-services/{id}}: the only requests {@link Fault#SLOW_RESPONSE} holds. */
+    private static boolean isHookCall(Request request) {
+        return request.method().equals("POST")
+                && request.path().startsWith("/cds-services/")
+                && request.path().length() > "/cds-services/".length();
     }
 
     private Response dispatch(Request request) {

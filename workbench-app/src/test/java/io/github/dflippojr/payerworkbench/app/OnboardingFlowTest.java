@@ -15,6 +15,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -96,6 +97,22 @@ class OnboardingFlowTest {
         assertEquals("diagnostics", diagnostics.stepId());
         assertFalse(diagnostics.ok());
         assertTrue(payers.payer(payerId).orElseThrow().faults().enabled().isEmpty(), "faults are cleared after a run");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    void slowResponseHoldsOnlyTheHookCall(String payerId) {
+        OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of(Fault.SLOW_RESPONSE.id())));
+
+        Duration delay = Duration.ofMillis(900);
+        for (StepResult step : run.steps()) {
+            if (step.stepId().equals("discovery") || step.stepId().equals("authenticate")) {
+                assertTrue(step.elapsed().compareTo(delay) < 0, step.stepId() + " took " + step.elapsed());
+            }
+        }
+        StepResult hook = run.steps().stream().filter(s -> s.stepId().equals("hook-request")).findFirst().orElseThrow();
+        assertTrue(hook.elapsed().compareTo(delay) >= 0, "hook-request took " + hook.elapsed());
+        assertEquals(List.of("perf.latency"), failIds(run));
     }
 
     @Test

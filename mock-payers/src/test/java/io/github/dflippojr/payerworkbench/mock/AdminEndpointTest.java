@@ -57,8 +57,14 @@ class AdminEndpointTest {
             assertTrue(slow.path("enabled").asBoolean());
             assertEquals(50, slow.path("delayMs").asLong());
             assertEquals(Duration.ofMillis(50), fixture.payer.faults().slowResponseDelay());
-            assertEquals("slow-response", fixture.raw("GET", "/cds-services", null)
-                    .headers().firstValue(MockPayer.FAULT_HEADER).orElse(null));
+            long start = System.nanoTime();
+            fixture.raw("POST", "/cds-services/" + fixture.orderSignId, "{}");
+            assertTrue(Duration.ofNanos(System.nanoTime() - start).toMillis() >= 50, "the hook call was not held");
+            assertTrue(fixture.raw("GET", "/cds-services", null).headers().firstValue(MockPayer.FAULT_HEADER).isEmpty(),
+                    "discovery is not slowed");
+            assertTrue(fixture.raw("POST", NorthwindPayer.TOKEN_PATH, "grant_type=client_credentials",
+                            "Content-Type", "application/x-www-form-urlencoded")
+                    .headers().firstValue(MockPayer.FAULT_HEADER).isEmpty(), "the token endpoint is not slowed");
 
             assertEquals(400, fixture.raw("POST", "/admin/faults/slow-response?delayMs=-5", null).statusCode());
         }
