@@ -1,0 +1,19 @@
+{
+  "resourceType": "Coverage",
+  "id": "cov-synthetic-001",
+  "status": "active",
+  "subscriberId": "SYN-SUB-0001",
+  "beneficiary": { "reference": "Patient/pat-synthetic-001" },
+  "relationship": {
+    "coding": [ { "system": "http://terminology.hl7.org/CodeSystem/subscriber-relationship", "code": "self" } ]
+  },
+  "period": { "start": "2026-01-01", "end": "2026-12-31" },
+  "payor": [ { "display": "Synthetic Payer (placeholder)" } ],
+  "class": [
+    {
+      "type": { "coding": [ { "system": "http://terminology.hl7.org/CodeSystem/coverage-class", "code": "plan" } ] },
+      "value": "SYN-PLAN-01",
+      "name": "Synthetic Gold Plan"
+    }
+  ]
+}

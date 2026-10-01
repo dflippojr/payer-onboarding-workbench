@@ -1,0 +1,11 @@
+{
+  "resourceType": "Patient",
+  "id": "pat-synthetic-001",
+  "identifier": [
+    { "system": "urn:example:synthetic-mrn", "value": "SYN-MRN-0001" }
+  ],
+  "name": [ { "family": "Synthetic", "given": [ "Pat" ], "text": "Synthetic, Pat" } ],
+  "gender": "female",
+  "birthDate": "1950-01-01",
+  "address": [ { "line": [ "1 Example Street" ], "city": "Exampleville", "state": "ZZ", "postalCode": "00000" } ]
+}

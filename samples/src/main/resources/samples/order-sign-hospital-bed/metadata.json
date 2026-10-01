@@ -1,0 +1,13 @@
+{
+  "id": "order-sign-hospital-bed",
+  "title": "Hospital bed at order-sign",
+  "hook": "order-sign",
+  "demonstrates": "A complete CRD order-sign request: a DeviceRequest for a hospital bed with patient, encounter and coverage prefetch. The payer-B variant shows the same request with coverageBundle and deviceRequestBundle keys.",
+  "codes": [
+    "HCPCS E0250"
+  ],
+  "expected": {
+    "payerA": "Coverage information in systemActions: covered, prior authorization required.",
+    "payerB": "Coverage information for E0250 inside a card suggestion rather than systemActions; send the payer-B variant so its prefetch keys are satisfied."
+  }
+}
