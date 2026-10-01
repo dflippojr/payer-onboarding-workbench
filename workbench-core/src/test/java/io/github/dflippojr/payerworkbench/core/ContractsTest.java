@@ -81,6 +81,21 @@ class ContractsTest {
     }
 
     @Test
+    void hookResponseCarriesOptionalJwtClaims() {
+        HttpExchange call = new HttpExchange("POST", "http://localhost:0/cds-services/s", 401,
+                Duration.ofMillis(3), null, null, null, null, null);
+        List<String> aud = new ArrayList<>(List.of("http://localhost:0/cds-services/s/"));
+        JwtClaims claims = new JwtClaims("synthetic-client", aud, Instant.EPOCH.plusSeconds(300), Instant.EPOCH,
+                "jti-1", "kid-1");
+        aud.clear();
+
+        assertEquals(List.of("http://localhost:0/cds-services/s/"), claims.aud());
+        assertEquals(List.of(), new JwtClaims(null, null, null, null, null, null).aud());
+        assertEquals(null, new HookResponse("s", "order-sign", null, call).clientJwt());
+        assertEquals(claims, new HookResponse("s", "order-sign", null, call, claims).clientJwt());
+    }
+
+    @Test
     void onboardingRunAndStepResultAreImmutable() {
         List<StepResult> steps = new ArrayList<>();
         steps.add(new StepResult("discovery", Instant.EPOCH, Duration.ZERO, true, "ok", Map.of("services", 2)));
