@@ -1,0 +1,36 @@
+{
+  "cards": [
+    {
+      "uuid": "6f1c2a1e-0000-4000-8000-000000000001",
+      "summary": "No prior authorization needed for this order",
+      "indicator": "info",
+      "source": {
+        "label": "Synthetic Health Plan",
+        "topic": {
+          "system": "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp",
+          "code": "coverage-info"
+        }
+      }
+    }
+  ],
+  "systemActions": [
+    {
+      "type": "update",
+      "description": "Record coverage information on the order",
+      "resource": {
+        "resourceType": "ServiceRequest",
+        "id": "sr-synthetic-1",
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+            "extension": [
+              { "url": "coverage", "valueReference": { "reference": "Coverage/cov-synthetic-1" } },
+              { "url": "covered", "valueCode": "covered" },
+              { "url": "pa-needed", "valueCode": "no-auth" }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

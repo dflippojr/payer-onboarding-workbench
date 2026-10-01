@@ -1,0 +1,33 @@
+{
+  "cards": [
+    {
+      "summary": "Coverage information for this order",
+      "indicator": "info",
+      "source": { "label": "Synthetic Health Plan" },
+      "suggestions": [
+        {
+          "label": "Record coverage information",
+          "actions": [
+            {
+              "type": "update",
+              "description": "Annotate the order",
+              "resource": {
+                "resourceType": "ServiceRequest",
+                "id": "sr-synthetic-1",
+                "extension": [
+                  {
+                    "url": "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+                    "extension": [
+                      { "url": "covered", "valueCode": "covered" },
+                      { "url": "pa-needed", "valueCode": "auth-needed" }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

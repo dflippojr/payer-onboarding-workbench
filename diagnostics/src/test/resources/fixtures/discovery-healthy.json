@@ -1,0 +1,27 @@
+{
+  "extension": {
+    "davinci-crd.igVersion": "2.0.1"
+  },
+  "services": [
+    {
+      "hook": "order-sign",
+      "id": "crd-order-sign",
+      "title": "Synthetic CRD order-sign",
+      "description": "Coverage requirements for signed orders (synthetic payer)",
+      "prefetch": {
+        "patient": "Patient/{{context.patientId}}",
+        "coverage": "Coverage?patient={{context.patientId}}&status=active"
+      }
+    },
+    {
+      "hook": "appointment-book",
+      "id": "crd-appointment-book",
+      "title": "Synthetic CRD appointment-book",
+      "description": "Coverage requirements for booked appointments (synthetic payer)",
+      "prefetch": {
+        "patient": "Patient/{{context.patientId}}",
+        "encounter": "Encounter/{{context.encounterId}}"
+      }
+    }
+  ]
+}
