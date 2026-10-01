@@ -1,0 +1,210 @@
+/* Replay widget for recorded workbench runs. Everything is scoped under .pw-replay.
+ *
+ * Colours come from the host page's tokens when it defines them (--paper --ink --green
+ * --muted --line --accent --warn, plus optional --fail) and fall back to neutral
+ * defaults that follow prefers-color-scheme. To theme only the widget, set the
+ * --pw-* properties on a more specific selector, e.g. `#replay.pw-replay { --pw-accent: … }`.
+ */
+.pw-replay {
+  --pw-paper: var(--paper, #ffffff);
+  --pw-ink: var(--ink, #1d2125);
+  --pw-muted: var(--muted, #5c6570);
+  --pw-line: var(--line, #d5dae0);
+  --pw-accent: var(--accent, #2b5d8c);
+  --pw-green: var(--green, #1d7348);
+  --pw-warn: var(--warn, #8f5b00);
+  --pw-fail: var(--fail, #b3261e);
+  --pw-radius: 6px;
+  --pw-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  color: var(--pw-ink);
+  background: var(--pw-paper);
+  font: inherit;
+  line-height: 1.5;
+  max-width: 100%;
+  min-width: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .pw-replay {
+    --pw-paper: var(--paper, #16191d);
+    --pw-ink: var(--ink, #e6e9ed);
+    --pw-muted: var(--muted, #a1a9b3);
+    --pw-line: var(--line, #343a42);
+    --pw-accent: var(--accent, #7fb0e0);
+    --pw-green: var(--green, #5cc28d);
+    --pw-warn: var(--warn, #e0a84a);
+    --pw-fail: var(--fail, #f0857d);
+  }
+}
+
+.pw-replay *,
+.pw-replay *::before,
+.pw-replay *::after { box-sizing: border-box; }
+
+.pw-replay :focus-visible {
+  outline: 2px solid var(--pw-accent);
+  outline-offset: 2px;
+}
+
+.pw-disclaimer {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--pw-line);
+  border-left: 4px solid var(--pw-warn);
+  border-radius: var(--pw-radius);
+  font-size: 0.9rem;
+}
+
+/* ---- scenario picker ---- */
+
+.pw-picker fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.pw-picker legend { font-weight: 600; margin-bottom: 0.5rem; padding: 0; }
+.pw-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.5rem;
+}
+.pw-choice {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--pw-line);
+  border-radius: var(--pw-radius);
+  cursor: pointer;
+}
+.pw-choice:hover { border-color: var(--pw-accent); }
+.pw-choice:has(input:checked) {
+  border-color: var(--pw-accent);
+  box-shadow: inset 0 0 0 1px var(--pw-accent);
+}
+.pw-choice input { margin: 0.3rem 0 0; accent-color: var(--pw-accent); flex: none; }
+.pw-choice-text { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; align-items: center; min-width: 0; }
+.pw-choice-title { font-weight: 600; }
+.pw-choice-desc { flex-basis: 100%; color: var(--pw-muted); font-size: 0.85rem; }
+
+.pw-status { color: var(--pw-muted); font-size: 0.85rem; margin: 0.75rem 0; min-height: 1.3em; }
+
+/* ---- run view ---- */
+
+.pw-title { margin: 0.5rem 0 0.25rem; font-size: 1.25rem; }
+.pw-meta { margin: 0 0 0.75rem; color: var(--pw-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+
+.pw-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  align-items: center;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--pw-line);
+  border-left-width: 4px;
+  border-radius: var(--pw-radius);
+}
+.pw-verdict.PASS { border-left-color: var(--pw-green); }
+.pw-verdict.PASS_WITH_WARNINGS { border-left-color: var(--pw-warn); }
+.pw-verdict.FAIL { border-left-color: var(--pw-fail); }
+.pw-counts { display: flex; flex-wrap: wrap; gap: 0.5rem; font-size: 0.8rem; color: var(--pw-muted); }
+
+.pw-section { margin-top: 1.25rem; }
+.pw-section > :is(h2, h3, h4, h5) { font-size: 1.05rem; margin: 0 0 0.5rem; }
+
+.pw-badge,
+.pw-status-tag {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.pw-badge.PASS, .pw-status-tag.passed { color: var(--pw-green); }
+.pw-badge.PASS_WITH_WARNINGS, .pw-badge.WARN { color: var(--pw-warn); }
+.pw-badge.FAIL, .pw-status-tag.failed { color: var(--pw-fail); }
+.pw-badge.INFO, .pw-status-tag.skipped { color: var(--pw-muted); }
+
+.pw-steps { list-style: none; margin: 0; padding: 0; }
+.pw-step {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0.9rem 1.1rem;
+  border-left: 2px solid var(--pw-line);
+  min-width: 0;
+}
+.pw-step::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 0.45rem;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--pw-paper);
+  border: 2px solid var(--pw-muted);
+}
+.pw-step.passed::before { border-color: var(--pw-green); background: var(--pw-green); }
+.pw-step.failed::before { border-color: var(--pw-fail); background: var(--pw-fail); }
+.pw-step:last-child { border-left-color: transparent; }
+.pw-step-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; align-items: center; }
+.pw-step-head > :is(h3, h4, h5, h6) { margin: 0; font-size: 1rem; }
+.pw-step > p { margin: 0.25rem 0; overflow-wrap: anywhere; }
+.pw-step.skipped { color: var(--pw-muted); }
+.pw-latency { color: var(--pw-muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+
+.pw-replay details { margin: 0.35rem 0; min-width: 0; }
+.pw-replay summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+}
+.pw-exchange > summary { font-family: var(--pw-mono); font-size: 0.8rem; }
+.pw-replay details > div {
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--pw-line);
+  border-radius: var(--pw-radius);
+}
+.pw-replay pre {
+  margin: 0.2rem 0 0.5rem;
+  padding: 0.5rem;
+  max-height: 22rem;
+  overflow: auto;
+  border-radius: 4px;
+  border: 1px solid var(--pw-line);
+  font: 0.78rem/1.45 var(--pw-mono);
+  white-space: pre;
+  tab-size: 2;
+}
+.pw-replay code { font-family: var(--pw-mono); font-size: 0.8rem; color: var(--pw-muted); overflow-wrap: anywhere; }
+.pw-mono { font-family: var(--pw-mono); font-size: 0.8rem; }
+.pw-label { margin: 0.4rem 0 0; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--pw-muted); }
+.pw-muted { color: var(--pw-muted); font-size: 0.8rem; }
+
+.pw-sev-group { margin-bottom: 0.75rem; }
+.pw-sev-head { margin: 0 0 0.4rem; font-weight: 600; }
+.pw-finding {
+  margin: 0 0 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--pw-line);
+  border-left-width: 4px;
+  border-radius: var(--pw-radius);
+  min-width: 0;
+}
+.pw-finding.FAIL { border-left-color: var(--pw-fail); }
+.pw-finding.WARN { border-left-color: var(--pw-warn); }
+.pw-finding.PASS { border-left-color: var(--pw-green); }
+.pw-finding > :is(h3, h4, h5, h6) { margin: 0 0 0.15rem; font-size: 0.95rem; overflow-wrap: anywhere; }
+.pw-finding > p { margin: 0.4rem 0 0; overflow-wrap: anywhere; }
+.pw-fix strong { color: var(--pw-accent); }
+
+@media (max-width: 480px) {
+  .pw-choices { grid-template-columns: 1fr; }
+  .pw-step { padding-left: 0.8rem; }
+  .pw-replay pre { font-size: 0.72rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pw-replay * { transition: none !important; }
+}

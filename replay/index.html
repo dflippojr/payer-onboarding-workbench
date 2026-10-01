@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Payer onboarding workbench: recorded runs</title>
+  <link rel="stylesheet" href="replay.css">
+  <style>
+    body { margin: 0; padding: 1rem; font-family: system-ui, sans-serif; }
+    main { max-width: 60rem; margin: 0 auto; }
+    @media (prefers-color-scheme: dark) { body { background: #16191d; color: #e6e9ed; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Payer onboarding workbench: recorded runs</h1>
+    <div id="replay">
+      <p>Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability.</p>
+      <noscript><p>This page needs JavaScript to show the recorded runs.</p></noscript>
+    </div>
+  </main>
+  <script type="module">
+    import { mountReplay } from './replay.js';
+    mountReplay(document.getElementById('replay'), { baseUrl: './' });
+  </script>
+</body>
+</html>
