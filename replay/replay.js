@@ -59,10 +59,12 @@ export async function mountReplay(el, options = {}) {
     return { select: async () => {} };
   }
 
-  const radios = runs.map(run => {
-    const id = `${uid}-${run.id}`;
+  const inputs = new Map();
+  const radios = runs.map((run, i) => {
+    const id = `${uid}-${i}`;
     const input = h('input', { type: 'radio', name: `${uid}-scenario`, id, value: run.id });
     input.addEventListener('change', () => input.checked && select(run.id));
+    inputs.set(run.id, input);
     return h('label', { class: 'pw-choice', for: id },
       input,
       h('span', { class: 'pw-choice-text' },
@@ -77,8 +79,7 @@ export async function mountReplay(el, options = {}) {
   async function select(id) {
     const run = runs.find(r => r.id === id);
     if (!run) return;
-    const input = el.querySelector(`#${CSS.escape(`${uid}-${run.id}`)}`);
-    if (input && !input.checked) input.checked = true;
+    inputs.get(run.id).checked = true;
     const token = ++current;
     status.textContent = `Loading ${run.title}…`;
     try {

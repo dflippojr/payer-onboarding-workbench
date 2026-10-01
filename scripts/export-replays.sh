@@ -170,4 +170,4 @@ if [ "$failures" -gt 0 ]; then
   echo "Export FAILED: $failures expectation(s) not met. The partial bundle is in site-dist/." >&2
   exit 1
 fi
-echo "Export done: ${#entries[@]} runs in site-dist/. Check it with: node --test replay/test/"
+echo "Export done: ${#entries[@]} runs in site-dist/. Check it with: node --test replay/test/bundle.test.mjs"
