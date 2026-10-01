@@ -14,10 +14,29 @@
   <name>mock-payers</name>
   <description>Two embedded synthetic CDS Hooks payers for demos and tests.</description>
 
+  <properties>
+    <!-- Same version fhir-crd-router uses; not managed by the Spring Boot parent. -->
+    <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>
       <artifactId>workbench-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.nimbusds</groupId>
+      <artifactId>nimbus-jose-jwt</artifactId>
+      <version>${nimbus-jose-jwt.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.github.dflippojr</groupId>
+      <artifactId>client-sdk</artifactId>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
