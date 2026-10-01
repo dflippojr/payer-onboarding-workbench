@@ -1,6 +1,7 @@
 # Exports a static replay bundle for embedding on a website: builds the workbench,
 # starts it on a free port, records a fixed set of runs through the REST API and
-# writes site-dist\ (gitignored). See scripts/export-replays.sh for the layout.
+# writes site-dist\ (gitignored), with local addresses rewritten to example hosts.
+# See scripts/export-replays.sh for the layout.
 #
 #   scripts\export-replays.ps1                                build, then record
 #   $env:EXPORT_SKIP_BUILD = '1'; scripts\export-replays.ps1   reuse workbench-app\target\*.jar
@@ -50,7 +51,13 @@ function Invoke-Record {
     $run = Invoke-RestMethod -Method Post -Uri "$base/api/runs" -ContentType 'application/json' -Body $request
     $file = Join-Path $out "runs\$Id.json"
     Invoke-WebRequest -UseBasicParsing -Uri "$base/api/runs/$($run.runId)/report?format=json" -OutFile $file
-    $report = [System.IO.File]::ReadAllText($file, $utf8) | ConvertFrom-Json
+    $text = [System.IO.File]::ReadAllText($file, $utf8)
+    foreach ($origin in $script:rewrites.Keys) {
+        # (?!\d) keeps http://localhost:8181 from matching inside http://localhost:81810.
+        $text = $text -replace "$([regex]::Escape($origin))(?!\d)", $script:rewrites[$origin]
+    }
+    [System.IO.File]::WriteAllText($file, $text, $utf8)
+    $report = $text | ConvertFrom-Json
     if (-not $script:version) { $script:version = $report.workbenchVersion }
     $found = @($report.findings | ForEach-Object { "$($_.severity) $($_.checkId)" })
     Write-Host "    Verdict: $($report.verdict.status)"
@@ -97,6 +104,23 @@ try {
     $base = "http://127.0.0.1:$port"
     Write-Host "    $base"
 
+    # The mock payers and the JWKS server listen on ephemeral localhost ports. The exported
+    # runs show each payer at a stable example host instead, and the workbench's JWKS at
+    # https://workbench.example. Only the exported JSON is rewritten; the app records the real addresses.
+    $payerHosts = @{
+        'northwind-synthetic' = 'https://crd.northwind-health.example'
+        'fabrikam-synthetic' = 'https://crd.fabrikam-benefits.example'
+    }
+    $script:rewrites = @{}
+    foreach ($payer in (Invoke-RestMethod -Uri "$base/api/payers")) {
+        $payerHost = if ($payerHosts[$payer.payerId]) { $payerHosts[$payer.payerId] } else { "https://crd.$($payer.payerId).example" }
+        foreach ($connection in $payer.connections) {
+            if ($connection.baseUrl) { $script:rewrites[([uri]$connection.baseUrl).GetLeftPart('Authority')] = $payerHost }
+            if ($connection.jwksUrl) { $script:rewrites[([uri]$connection.jwksUrl).GetLeftPart('Authority')] = 'https://workbench.example' }
+        }
+    }
+    if ($script:rewrites.Count -eq 0) { throw 'GET /api/payers listed no payer addresses to rewrite' }
+
     Invoke-Record 'northwind-healthy' 'Northwind, healthy' 'Healthy connection' `
         'OAuth2 client credentials payer; every step passes.' `
         'northwind-synthetic' $null @('no FAIL', 'PASS auth.token')
@@ -118,9 +142,9 @@ try {
         'fabrikam-synthetic' 'malformed-card' @('FAIL response.schema')
 
     Write-Host ''
-    Write-Host '    (the next run holds every payer response for about 11 s)'
+    Write-Host '    (the next run holds the hook call for about 11 s)'
     Invoke-Record 'northwind-slow-response' 'Northwind is slow' 'Payer is slow' `
-        'Every payer response is held past the latency budget.' `
+        'Discovery and auth answer quickly, but the hook call is held past the latency budget.' `
         'northwind-synthetic' 'slow-response' @('FAIL perf.latency')
 } finally {
     if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
@@ -152,6 +176,11 @@ $manifest = [ordered]@{
 $leaks = Get-ChildItem $out -Recurse -File | Select-String -Pattern 'PRIVATE KEY|client_secret=[^\[]' -List
 if ($leaks) {
     Write-Host 'The bundle contains unredacted key or secret material' -ForegroundColor Red
+    $script:failures++
+}
+$local = Get-ChildItem $out -Recurse -File | Select-String -Pattern 'localhost|127\.0\.0\.1' -List
+if ($local) {
+    Write-Host "The bundle still contains local addresses: $(($local | ForEach-Object { $_.Path }) -join ', ')" -ForegroundColor Red
     $script:failures++
 }
 
