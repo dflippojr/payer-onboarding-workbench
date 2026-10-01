@@ -151,7 +151,15 @@ The reports for run 3, as HTML:
 
 ![Report header: disclaimer, FAIL verdict, payer, environment, IG versions and the step timeline](docs/screenshots/report-html.png)
 
-![Report findings: the FAIL with the payer's 401 as evidence and a fix, then the INFO about prefetch keys](docs/screenshots/report-findings.png)
+![Report findings: the auth.jwt-audience FAIL with the payer's 401 and the JWT's aud as evidence and a fix, then the INFO about prefetch keys](docs/screenshots/report-findings.png)
+
+The screenshots in this README come from `scripts/capture-screenshots.mjs`. It builds the app, runs the replay export below, starts the workbench on a free port, drives headless Edge or Chrome through the same runs, and overwrites `docs/screenshots/`. It fails if a run is missing the finding its screenshot shows, and it stops only the app and browser it started. Rerun it whenever the UI or the findings change.
+
+```sh
+node scripts/capture-screenshots.mjs   # about two minutes; CAPTURE_SKIP_BUILD=1 reuses the jar, CAPTURE_REUSE_REPLAYS=1 reuses site-dist/
+```
+
+It needs Node 22 or later, JDK 21 and Edge, Chrome or Chromium (`CAPTURE_BROWSER` to pick one). It has no npm dependencies.
 
 ## Embed on a website
 
@@ -197,7 +205,7 @@ On the site:
 - **Safety.** The runs are synthetic, and every string was redacted twice before export: once when it was recorded, and again when the report was built. `replay/test/bundle.test.mjs` scans every bundle file for the patterns `Redactor` masks: PEM blocks, Bearer and Basic credentials, signed JWTs, secret fields in JSON and form bodies, and sensitive headers. It fails on any hit, and also on any file that is not part of the bundle. Point `REPLAY_BUNDLE_DIR` at a vendored copy to check that instead.
 - **Vendoring.** `vendor-into-site.mjs` overwrites the bundle's files in the target and removes stale `runs/*.json`. It leaves everything else in the target alone. Re-export and re-vendor whenever the workbench changes.
 
-![Replay of the Fabrikam wrong-audience run: scenario picker, verdict, step timeline and the FAIL finding with its fix](docs/screenshots/replay.png)
+![Replay of the Fabrikam wrong-audience run: scenario picker, verdict, step timeline and the auth.jwt-audience FAIL with its fix](docs/screenshots/replay.png)
 
 
 ## Mock payers
