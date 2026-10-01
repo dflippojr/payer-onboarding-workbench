@@ -291,6 +291,7 @@ async function main() {
     if (process.env.CAPTURE_PLAYBACK_DIR) {
       await replay.waitFor(`document.querySelector('#replay .pw-step.active')?.textContent.includes('Send sample hook request')`,
         'the replay playing the hook request');
+      await new Promise(r => setTimeout(r, 150)); // past most of the step's fade-in
       await replay.shot('replay-playing.png', { height: 1100, scrollY: await replay.top('#replay', 18), dir: process.env.CAPTURE_PLAYBACK_DIR });
     }
     await replay.waitFor(`document.querySelector('#replay .pw-result')?.textContent.includes('auth.jwt-audience')`,

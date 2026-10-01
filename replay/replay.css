@@ -120,7 +120,6 @@
   cursor: pointer;
 }
 .pw-btn.pw-primary { background: var(--pw-accent); color: var(--pw-paper); }
-.pw-btn[disabled] { opacity: 0.6; cursor: default; }
 .pw-hint { color: var(--pw-muted); font-size: 0.85rem; }
 
 .pw-result {

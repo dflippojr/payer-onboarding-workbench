@@ -224,8 +224,7 @@ function createPlayer(run, report, hx, status) {
   }
 
   function reset() {
-    clearTimeout(timer);
-    timer = null;
+    stop();
     index = -1;
     items.forEach(item => show(item, false));
     result.replaceChildren();
@@ -253,7 +252,6 @@ function createPlayer(run, report, hx, status) {
       return finished;
     }
     setButton('Run', '▶');
-    runButton.setAttribute('disabled', '');
     show(skipButton, true);
     status.textContent = `Replaying ${run.title}…`;
     advance();
@@ -268,7 +266,6 @@ function createPlayer(run, report, hx, status) {
     result.replaceChildren(renderResult(report, hx));
     findings.replaceChildren(h(hx(1), {}, 'Other findings'), ...renderFindings(report.findings || [], hx));
     show(findings, true);
-    runButton.removeAttribute('disabled');
     setButton('Replay', '↻');
     show(skipButton, false);
     status.textContent = `${run.title}: ${resultLine(report)}`;

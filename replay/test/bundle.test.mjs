@@ -246,6 +246,7 @@ test('Run plays the steps in order, then stops at the failing step', async () =>
       for (let j = 0; j < i; j++) assert.equal(shown[j].className, `pw-step ${report.steps[j].status}`);
       assert.equal(byClass(el, 'pw-result').length, 0, 'result shown before the run ended');
       assert.equal(statusText(el), `Replaying ${run.title}…`, 'announced once, not per step');
+      assert.equal(runButton(el).getAttribute('disabled'), null, 'Run must keep keyboard focus while playing');
       mock.timers.tick(durations[i]);
     }
     const steps = visibleSteps(el);
