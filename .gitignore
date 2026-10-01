@@ -6,3 +6,5 @@ target/
 *.pem
 *.p12
 *.jks
+
+.deps/
