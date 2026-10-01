@@ -1,0 +1,42 @@
+{
+  "hook" : "order-sign",
+  "hookInstance" : "5a0c1f6e-4b1d-4e0a-9c11-000000000004",
+  "context" : {
+    "userId" : "Practitioner/pract-synthetic-001",
+    "patientId" : "pat-synthetic-001",
+    "encounterId" : "enc-synthetic-001",
+    "draftOrders" : {
+      "resourceType" : "Bundle",
+      "type" : "collection",
+      "entry" : [ {
+        "resource" : {
+          "resourceType" : "DeviceRequest",
+          "id" : "devreq-hospital-bed",
+          "status" : "draft",
+          "intent" : "original-order",
+          "codeCodeableConcept" : {
+            "coding" : [ {
+              "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+              "code" : "E0250",
+              "display" : "Hospital bed, fixed height, with any type side rails, with mattress"
+            } ],
+            "text" : "Hospital bed, fixed height, with any type side rails, with mattress"
+          },
+          "subject" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "encounter" : {
+            "reference" : "Encounter/enc-synthetic-001"
+          },
+          "authoredOn" : "2026-03-02",
+          "requester" : {
+            "reference" : "Practitioner/pract-synthetic-001"
+          },
+          "insurance" : [ {
+            "reference" : "Coverage/cov-synthetic-001"
+          } ]
+        }
+      } ]
+    }
+  }
+}

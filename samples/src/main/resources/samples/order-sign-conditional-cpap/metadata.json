@@ -1,0 +1,13 @@
+{
+  "id": "order-sign-conditional-cpap",
+  "title": "CPAP device, conditional coverage",
+  "hook": "order-sign",
+  "demonstrates": "A code the mock payers have no specific rule for, so coverage is conditional and documentation is requested.",
+  "codes": [
+    "HCPCS E0601"
+  ],
+  "expected": {
+    "payerA": "Coverage information in systemActions: conditional, additional documentation needed.",
+    "payerB": "Coverage information for E0601 inside a card suggestion; send the payer-B variant."
+  }
+}

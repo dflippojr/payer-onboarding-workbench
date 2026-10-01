@@ -1,0 +1,158 @@
+{
+  "hook" : "order-select",
+  "hookInstance" : "5a0c1f6e-4b1d-4e0a-9c11-000000000005",
+  "context" : {
+    "userId" : "Practitioner/pract-synthetic-001",
+    "patientId" : "pat-synthetic-001",
+    "encounterId" : "enc-synthetic-001",
+    "selections" : [ "DeviceRequest/devreq-walker" ],
+    "draftOrders" : {
+      "resourceType" : "Bundle",
+      "type" : "collection",
+      "entry" : [ {
+        "resource" : {
+          "resourceType" : "DeviceRequest",
+          "id" : "devreq-walker",
+          "status" : "draft",
+          "intent" : "original-order",
+          "codeCodeableConcept" : {
+            "coding" : [ {
+              "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+              "code" : "E0143",
+              "display" : "Walker, folding, wheeled, adjustable or fixed height"
+            } ],
+            "text" : "Walker, folding, wheeled, adjustable or fixed height"
+          },
+          "subject" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "encounter" : {
+            "reference" : "Encounter/enc-synthetic-001"
+          },
+          "authoredOn" : "2026-03-02",
+          "requester" : {
+            "reference" : "Practitioner/pract-synthetic-001"
+          },
+          "insurance" : [ {
+            "reference" : "Coverage/cov-synthetic-001"
+          } ]
+        }
+      }, {
+        "resource" : {
+          "resourceType" : "ServiceRequest",
+          "id" : "svcreq-home-health-pt",
+          "status" : "draft",
+          "intent" : "original-order",
+          "code" : {
+            "coding" : [ {
+              "system" : "http://www.ama-assn.org/go/cpt",
+              "code" : "97161",
+              "display" : "Physical therapy evaluation, low complexity"
+            } ],
+            "text" : "Physical therapy evaluation, low complexity"
+          },
+          "subject" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "encounter" : {
+            "reference" : "Encounter/enc-synthetic-001"
+          },
+          "authoredOn" : "2026-03-02",
+          "requester" : {
+            "reference" : "Practitioner/pract-synthetic-001"
+          },
+          "insurance" : [ {
+            "reference" : "Coverage/cov-synthetic-001"
+          } ]
+        }
+      } ]
+    }
+  },
+  "prefetch" : {
+    "coverage" : {
+      "resourceType" : "Bundle",
+      "type" : "searchset",
+      "total" : 1,
+      "entry" : [ {
+        "fullUrl" : "https://ehr.example.org/fhir/Coverage/cov-synthetic-001",
+        "resource" : {
+          "resourceType" : "Coverage",
+          "id" : "cov-synthetic-001",
+          "status" : "active",
+          "subscriberId" : "SYN-SUB-0001",
+          "beneficiary" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "relationship" : {
+            "coding" : [ {
+              "system" : "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+              "code" : "self"
+            } ]
+          },
+          "period" : {
+            "start" : "2026-01-01",
+            "end" : "2026-12-31"
+          },
+          "payor" : [ {
+            "display" : "Synthetic Payer (placeholder)"
+          } ],
+          "class" : [ {
+            "type" : {
+              "coding" : [ {
+                "system" : "http://terminology.hl7.org/CodeSystem/coverage-class",
+                "code" : "plan"
+              } ]
+            },
+            "value" : "SYN-PLAN-01",
+            "name" : "Synthetic Gold Plan"
+          } ]
+        },
+        "search" : {
+          "mode" : "match"
+        }
+      } ]
+    },
+    "encounter" : {
+      "resourceType" : "Encounter",
+      "id" : "enc-synthetic-001",
+      "status" : "in-progress",
+      "class" : {
+        "system" : "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+        "code" : "AMB",
+        "display" : "ambulatory"
+      },
+      "subject" : {
+        "reference" : "Patient/pat-synthetic-001"
+      },
+      "participant" : [ {
+        "individual" : {
+          "reference" : "Practitioner/pract-synthetic-001"
+        }
+      } ],
+      "period" : {
+        "start" : "2026-03-02T09:00:00Z"
+      }
+    },
+    "patient" : {
+      "resourceType" : "Patient",
+      "id" : "pat-synthetic-001",
+      "identifier" : [ {
+        "system" : "urn:example:synthetic-mrn",
+        "value" : "SYN-MRN-0001"
+      } ],
+      "name" : [ {
+        "family" : "Synthetic",
+        "given" : [ "Pat" ],
+        "text" : "Synthetic, Pat"
+      } ],
+      "gender" : "female",
+      "birthDate" : "1950-01-01",
+      "address" : [ {
+        "line" : [ "1 Example Street" ],
+        "city" : "Exampleville",
+        "state" : "ZZ",
+        "postalCode" : "00000"
+      } ]
+    }
+  }
+}

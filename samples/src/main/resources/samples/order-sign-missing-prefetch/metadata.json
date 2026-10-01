@@ -1,0 +1,13 @@
+{
+  "id": "order-sign-missing-prefetch",
+  "title": "Order-sign with no prefetch",
+  "hook": "order-sign",
+  "demonstrates": "The hospital bed order sent with no prefetch and no fhirServer, so the payer cannot see the patient or coverage. Use it to provoke and diagnose prefetch-missing.",
+  "codes": [
+    "HCPCS E0250"
+  ],
+  "expected": {
+    "payerA": "An error response for the missing prefetch (CDS Hooks says 412; the mock payers' prefetch-missing fault uses 400), reported by the diagnostics as prefetch-missing.",
+    "payerB": "The same: an error response for the missing prefetch, reported as prefetch-missing. Both variants send no prefetch."
+  }
+}

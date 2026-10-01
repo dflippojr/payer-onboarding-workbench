@@ -1,0 +1,15 @@
+{
+  "resourceType": "ServiceRequest",
+  "id": "svcreq-home-health-pt",
+  "status": "draft",
+  "intent": "original-order",
+  "code": {
+    "coding": [ { "system": "http://www.ama-assn.org/go/cpt", "code": "97161", "display": "Physical therapy evaluation, low complexity" } ],
+    "text": "Physical therapy evaluation, low complexity"
+  },
+  "subject": { "reference": "Patient/pat-synthetic-001" },
+  "encounter": { "reference": "Encounter/enc-synthetic-001" },
+  "authoredOn": "2026-03-02",
+  "requester": { "reference": "Practitioner/pract-synthetic-001" },
+  "insurance": [ { "reference": "Coverage/cov-synthetic-001" } ]
+}

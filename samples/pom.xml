@@ -20,6 +20,14 @@
       <artifactId>workbench-core</artifactId>
     </dependency>
     <dependency>
+      <groupId>io.github.dflippojr</groupId>
+      <artifactId>client-sdk</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>

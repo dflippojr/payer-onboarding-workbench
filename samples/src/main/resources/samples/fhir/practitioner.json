@@ -1,0 +1,8 @@
+{
+  "resourceType": "Practitioner",
+  "id": "pract-synthetic-001",
+  "identifier": [
+    { "system": "http://hl7.org/fhir/sid/us-npi", "value": "9999999999" }
+  ],
+  "name": [ { "family": "Synthetic", "given": [ "Doc" ], "prefix": [ "Dr." ], "text": "Dr. Doc Synthetic" } ]
+}
