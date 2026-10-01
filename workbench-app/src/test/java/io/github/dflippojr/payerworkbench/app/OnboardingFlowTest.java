@@ -5,6 +5,7 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -70,7 +71,9 @@ class OnboardingFlowTest {
         for (String payerId : List.of(NORTHWIND_ID, FABRIKAM_ID)) {
             cases.add(Arguments.of(payerId, Fault.SLOW_RESPONSE, HEALTHY_SAMPLE, "perf.latency", null));
             cases.add(Arguments.of(payerId, Fault.EXPIRED_TOKEN_401, HEALTHY_SAMPLE, "auth.clock-skew", "hook-request"));
-            cases.add(Arguments.of(payerId, Fault.WRONG_AUDIENCE_REJECT, HEALTHY_SAMPLE, "response.schema", "hook-request"));
+            // Northwind's audience is on its own access token, which the workbench cannot inspect.
+            cases.add(Arguments.of(payerId, Fault.WRONG_AUDIENCE_REJECT, HEALTHY_SAMPLE,
+                    payerId.equals(FABRIKAM_ID) ? "auth.jwt-audience" : "response.schema", "hook-request"));
             cases.add(Arguments.of(payerId, Fault.MALFORMED_CARD, HEALTHY_SAMPLE, "response.schema", "parse-response"));
             cases.add(Arguments.of(payerId, Fault.DISCOVERY_500, HEALTHY_SAMPLE, "discovery.reachable", "discovery"));
             cases.add(Arguments.of(payerId, Fault.PREFETCH_MISSING_400, NO_PREFETCH_SAMPLE, "response.schema", "hook-request"));
@@ -93,6 +96,17 @@ class OnboardingFlowTest {
         assertEquals("diagnostics", diagnostics.stepId());
         assertFalse(diagnostics.ok());
         assertTrue(payers.payer(payerId).orElseThrow().faults().enabled().isEmpty(), "faults are cleared after a run");
+    }
+
+    @Test
+    void wrongAudienceOnTheJwtPayerIsDiagnosedAsTheAudience() {
+        OnboardingRun run = runner.run(request(FABRIKAM_ID, HEALTHY_SAMPLE, List.of(Fault.WRONG_AUDIENCE_REJECT.id())));
+
+        assertEquals(List.of("auth.jwt-audience"), failIds(run));
+        Finding audience = run.findings().stream()
+                .filter(f -> f.checkId().equals("auth.jwt-audience")).findFirst().orElseThrow();
+        assertEquals("Payer expects a different JWT audience", audience.title());
+        assertTrue(audience.evidence().contains(FabrikamPayer.WRONG_AUDIENCE_BASE), audience::evidence);
     }
 
     @Test
@@ -155,6 +169,7 @@ class OnboardingFlowTest {
 
         assertEquals("hook-request", firstFailedStep(run));
         assertTrue(failIds(run).contains("auth.jwt-audience"), "FAIL ids: " + failIds(run));
+        assertFalse(failIds(run).contains("response.schema"), "the 401 is explained once: " + failIds(run));
         StepResult auth = run.steps().get(2);
         assertEquals(false, auth.details().get("audMatchesRequestUrl"));
         assertEquals(serviceUrl + "/", ((Map<?, ?>) auth.details().get("jwtClaims")).get("aud"));
