@@ -8,6 +8,7 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
+import io.github.dflippojr.payerworkbench.core.JwtClaims;
 import io.github.dflippojr.payerworkbench.core.RedactedConnection;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
@@ -138,6 +139,13 @@ final class Fixtures {
 
     static HookResponse orderSign(HttpExchange exchange) {
         return new HookResponse("crd-order-sign", "order-sign", "sample-order-sign-1", exchange);
+    }
+
+    /** A hook call that carried a CDS Hooks client JWT with this {@code aud}. */
+    static HookResponse orderSign(HttpExchange exchange, String aud) {
+        return new HookResponse("crd-order-sign", "order-sign", "sample-order-sign-1", exchange,
+                new JwtClaims(CLIENT_ID, List.of(aud), NOW.plusSeconds(300), NOW, UUID.randomUUID().toString(),
+                        "synthetic-kid"));
     }
 
     static Run healthy() {
