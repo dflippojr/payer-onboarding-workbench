@@ -99,6 +99,45 @@ class WorkbenchApiTest {
     }
 
     @Test
+    void reportsAreServedInEveryFormat() throws Exception {
+        HttpResponse<String> posted = post("/api/runs", """
+                {"payerId":"fabrikam-synthetic","sampleId":"order-sign-hospital-bed","faults":["wrong-audience-reject"]}""");
+        String runId = mapper.readTree(posted.body()).path("runId").asText();
+        String secret = payers.credentials().resolve("northwind-client-secret").orElseThrow();
+        String keyChunk = payers.credentials().resolve("fabrikam-signing-key").orElseThrow()
+                .lines().skip(5).findFirst().orElseThrow();
+        for (String format : List.of("md", "html", "json")) {
+            HttpResponse<String> report = get("/api/runs/" + runId + "/report?format=" + format);
+            assertEquals(200, report.statusCode(), format);
+            String type = report.headers().firstValue("Content-Type").orElse("");
+            assertTrue(type.startsWith(switch (format) {
+                case "md" -> "text/markdown";
+                case "html" -> "text/html";
+                default -> "application/json";
+            }), type);
+            assertTrue(report.headers().firstValue("Content-Disposition").orElse("")
+                    .contains("onboarding-report-fabrikam-synthetic-" + runId + "." + format));
+            String body = report.body();
+            assertTrue(body.contains(RunReport.DISCLAIMER), format);
+            assertTrue(body.contains("Fabrikam"), format);
+            assertTrue(body.contains("response.schema"), format);
+            assertTrue(body.contains("FAIL"), format);
+            assertFalse(body.contains(secret), format);
+            assertFalse(body.contains(keyChunk), format);
+            assertFalse(body.contains("PRIVATE KEY"), format);
+        }
+        JsonNode json = mapper.readTree(get("/api/runs/" + runId + "/report?format=json").body());
+        assertEquals(runId, json.path("runId").asText());
+        assertEquals("SANDBOX", json.path("environment").asText());
+        assertFalse(json.path("igVersion").asText().isBlank());
+        assertFalse(json.path("workbenchVersion").asText().isBlank());
+        assertFalse(json.path("generatedAt").asText().isBlank());
+
+        assertEquals(400, get("/api/runs/" + runId + "/report?format=pdf").statusCode());
+        assertEquals(404, get("/api/runs/no-such-run/report?format=md").statusCode());
+    }
+
+    @Test
     void badRequestsAreRejected() throws Exception {
         assertEquals(400, post("/api/runs", "{\"payerId\":\"nobody\",\"sampleId\":\"order-sign-hospital-bed\"}").statusCode());
         assertEquals(400, post("/api/runs", "{\"payerId\":\"northwind-synthetic\"}").statusCode());

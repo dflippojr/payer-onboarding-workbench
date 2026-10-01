@@ -25,6 +25,7 @@
   const form = $('run-form');
   let payers = [];
   let samples = [];
+  let lastRunId = null;
 
   /** Builds an element; children may be strings, nodes, arrays or null. */
   function h(tag, attrs, ...children) {
@@ -67,6 +68,7 @@
     form.addEventListener('submit', run);
     $('reset-button').addEventListener('click', reset);
     $('sample').addEventListener('change', updateSampleNote);
+    $('report-format').addEventListener('change', updateReportLink);
   }
 
   function renderPayers() {
@@ -179,6 +181,17 @@
       (failed ? ` · broke at: ${STEP_TITLES[failed.stepId] || failed.stepId}` : ' · every step passed');
     $('steps').replaceChildren(...result.steps.map(renderStep));
     renderFindings(result.findings);
+    lastRunId = result.runId;
+    updateReportLink();
+    $('report-actions').hidden = false;
+  }
+
+  function updateReportLink() {
+    if (!lastRunId) return;
+    const format = $('report-format').value;
+    const link = $('report-link');
+    link.href = `api/runs/${encodeURIComponent(lastRunId)}/report?format=${format}`;
+    link.setAttribute('download', `onboarding-report-${lastRunId}.${format}`);
   }
 
   function renderStep(step) {
