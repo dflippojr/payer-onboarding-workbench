@@ -8,3 +8,5 @@ target/
 *.jks
 
 .deps/
+
+demo-output/
