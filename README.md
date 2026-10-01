@@ -4,7 +4,7 @@ Connect to a (synthetic) insurance payer's FHIR CRD / CDS Hooks endpoint, inspec
 
 Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which stays independently usable; this workbench is an optional consumer of it.
 
-**Status:** early. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks and the sample library work end to end; later work is tracked in GitHub issues.
+**Status:** early. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks, the sample library, report export and a scripted demo work end to end; later work is tracked in GitHub issues.
 
 All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
 
@@ -68,7 +68,7 @@ A run records these steps, each with its status, latency and redacted HTTP excha
 5. **Parse the response** with the fhir-crd-router client types (cards, system actions, coverage information).
 6. **Run diagnostics** (`DiagnosticEngine`, with the sample's hook as the required hook).
 
-The UI has a payer picker, a "Break it" panel of payer faults, connection settings you can edit for one run (base URL suffix, `igVersion`, JWT `aud` override, client id; never a secret), a step timeline with expandable request/response, and findings grouped by severity with explanation and fix. It follows `prefers-color-scheme`, works at 375 px and is keyboard navigable. It is plain HTML, CSS and JS under `workbench-app/src/main/resources/static`, with no build step.
+The UI has a payer picker, a "Break it" panel of payer faults, connection settings you can edit for one run (base URL suffix, `igVersion`, JWT `aud` override, client id; never a secret), a step timeline with expandable request/response, and findings grouped by severity with explanation and fix, plus a **Download report** button (HTML, Markdown or JSON) once a run finishes. It follows `prefers-color-scheme`, works at 375 px and is keyboard navigable. It is plain HTML, CSS and JS under `workbench-app/src/main/resources/static`, with no build step.
 
 ### API
 
@@ -78,6 +78,7 @@ The UI has a payer picker, a "Break it" panel of payer faults, connection settin
 | `GET /api/samples` | Sample request metadata. |
 | `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `audOverride`, `clientId`). |
 | `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
+| `GET /api/runs/{id}/report?format=md\|html\|json` | A shareable diagnostic report of a recent run (default `html`). `400` for another format, `404` for an unknown run. |
 
 ```sh
 curl -s localhost:8080/api/runs -H 'Content-Type: application/json' \
@@ -85,6 +86,22 @@ curl -s localhost:8080/api/runs -H 'Content-Type: application/json' \
 ```
 
 Faults apply to one run only; runs against the same payer are serialized so faults never leak between them.
+
+### Diagnostic reports
+
+`GET /api/runs/{id}/report` turns a run into a report you can attach to a ticket or send to a payer. Every format covers the same ground: the verdict (`PASS`, `PASS_WITH_WARNINGS` or `FAIL`, and the step where the flow broke), the payer, environment and CRD IG version (expected by the connection and advertised by the payer), the step timeline with each HTTP exchange, findings by severity (most severe first) with explanation, redacted evidence and fix, when it was generated and by which workbench version, and the synthetic-data / no-interoperability disclaimer.
+
+- `html` is one self-contained file (inline CSS, no scripts or external assets) that prints cleanly: findings are not split across pages and severity colours are kept.
+- `md` is for pasting into an issue or a wiki.
+- `json` is the same report as data, including each step's full (redacted) details.
+
+Redaction is applied again when the report is built, on top of the redaction already done when exchanges and findings are recorded: every string goes through `Redactor`, and any field named like a secret (`client_secret`, `access_token`, `Authorization`, `privateKey` and similar) is masked. `RunReportTest` plants a bearer token, a client secret, a JWT signature and a PEM private key in a run's step details and findings and checks that none of them reach any format.
+
+```sh
+curl -s "localhost:8080/api/runs/$RUN_ID/report?format=md" -o report.md
+```
+
+![The Download report control under a failing run](docs/screenshots/report-download.png)
 
 ### What each fault and misconfiguration fails
 
@@ -110,6 +127,30 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 Two findings come from the app rather than the diagnostics engine, because the engine cannot see what they need. `connection.record` is reported when no connection record exists, since nothing is sent. For `auth.jwt-audience` on a bearer JWT, `Redactor` masks the JWT whole in the recorded exchange, so the app compares the `aud` it signed with the URL it sent the JWT to.
 
 Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
+
+## Demo
+
+`scripts/demo.sh` (or `scripts\demo.ps1` on Windows) is a repeatable tour of the workbench through its REST API. It builds the app, starts it on a free port, makes four runs, writes each run's report to `demo-output/` (gitignored) as `.md`, `.html` and `.json`, and stops the app. It exits non-zero if any expected finding is missing, so CI runs it after `./mvnw verify`, and keeps `demo-output/` as a build artifact.
+
+```sh
+bash scripts/install-crd-router.sh   # once
+scripts/demo.sh                      # about a minute; DEMO_SKIP_BUILD=1 reuses an existing jar
+```
+
+It needs JDK 21 (`JAVA_HOME` or `java` on the `PATH`); the bash version also needs `curl` and `awk`.
+
+| # | Run | What it shows | Expected findings |
+|---|---|---|---|
+| 1 | Northwind (OAuth2 client credentials), healthy | The whole flow passing: discovery, a client-credentials token, a hook call and parsed cards. | no `FAIL`; `PASS` `discovery.reachable`, `auth.token`, `response.schema` |
+| 2 | Fabrikam (CDS Hooks client JWT), healthy | The same flow with a signed JWT instead of a token, and two `INFO` findings about Fabrikam's quirks: non-standard prefetch keys (mapped to the standard ones) and coverage information delivered in card suggestions. | no `FAIL`; `PASS` `discovery.reachable`, `ig.version`, `response.schema` |
+| 3 | Fabrikam with `wrong-audience-reject` | The payer checks the JWT `aud` against a different URL and rejects the hook call with 401. The flow breaks at the hook request, and the evidence quotes the payer's error. | `FAIL` `response.schema` |
+| 4 | Northwind with `slow-response` | Every step passes, but each response is held about 11 s, past the 10 s budget CDS Hooks clients tend to give up at. | `FAIL` `perf.latency` |
+
+The reports for run 3, as HTML:
+
+![Report header: disclaimer, FAIL verdict, payer, environment, IG versions and the step timeline](docs/screenshots/report-html.png)
+
+![Report findings: the FAIL with the payer's 401 as evidence and a fix, then the INFO about prefetch keys](docs/screenshots/report-findings.png)
 
 ## Mock payers
 
