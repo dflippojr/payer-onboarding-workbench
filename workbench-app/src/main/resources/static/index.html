@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Payer Onboarding Workbench</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#steps-heading">Skip to results</a>
+  <header class="top">
+    <p class="kicker">Payer onboarding workbench</p>
+    <h1>Connect to a payer and see exactly where it breaks</h1>
+    <p class="banner" role="note"><strong>Synthetic payers only; passing here does not prove real-payer interoperability.</strong>
+      Both payers run inside this app with generated credentials; no real payer, patient or PHI is involved.</p>
+  </header>
+
+  <main>
+    <form id="run-form" class="panel" novalidate>
+      <fieldset>
+        <legend>1. Pick a payer</legend>
+        <div id="payers" class="picker" role="radiogroup" aria-label="Payer"><p class="muted">Loading payers…</p></div>
+        <div class="row">
+          <label class="field">Environment
+            <select name="environment" id="environment">
+              <option value="SANDBOX" selected>SANDBOX</option>
+              <option value="STAGING">STAGING</option>
+              <option value="PRODUCTION">PRODUCTION</option>
+            </select>
+          </label>
+          <label class="field grow">Sample request
+            <select name="sampleId" id="sample"></select>
+          </label>
+        </div>
+        <p id="sample-note" class="muted small"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>2. Break it</legend>
+        <p class="muted small">Switch on payer-side faults for this run only. They are cleared when the run ends.</p>
+        <div id="faults" class="checks"></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>3. Misconfigure the connection</legend>
+        <p class="muted small">Edit the stored connection for this run only, to reproduce common setup mistakes. Secrets can't be edited here.</p>
+        <div class="grid">
+          <label class="field">Base URL suffix
+            <input name="baseUrlSuffix" id="baseUrlSuffix" placeholder="e.g. /r4 or /" autocomplete="off" spellcheck="false">
+            <span class="hint" id="baseUrl-hint"></span>
+          </label>
+          <label class="field">igVersion
+            <input name="igVersion" id="igVersion" autocomplete="off" spellcheck="false">
+            <span class="hint" id="igVersion-hint"></span>
+          </label>
+          <label class="field">JWT aud override
+            <input name="audOverride" id="audOverride" autocomplete="off" spellcheck="false">
+            <span class="hint" id="aud-hint"></span>
+          </label>
+          <label class="field">Client id
+            <input name="clientId" id="clientId" autocomplete="off" spellcheck="false">
+            <span class="hint" id="clientId-hint"></span>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" class="button" id="run-button">Run onboarding <span aria-hidden="true">→</span></button>
+        <button type="button" class="link" id="reset-button">Reset faults and settings</button>
+        <span id="run-status" class="muted" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+
+    <section class="panel" aria-labelledby="steps-heading">
+      <h2 id="steps-heading" tabindex="-1">Steps</h2>
+      <p id="run-meta" class="muted small">Run the flow to see each step.</p>
+      <ol id="steps" class="timeline"></ol>
+    </section>
+
+    <section class="panel" aria-labelledby="findings-heading">
+      <h2 id="findings-heading">Findings</h2>
+      <div id="findings"><p class="muted small">Findings appear after a run.</p></div>
+    </section>
+  </main>
+
+  <footer class="muted small">
+    Synthetic payers only; passing here does not prove real-payer interoperability.
+    Request and response bodies are shown after redaction.
+  </footer>
+</body>
+</html>
