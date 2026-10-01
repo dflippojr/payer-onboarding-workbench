@@ -15,10 +15,24 @@ jobs:
       - run: ./mvnw -B verify
       - name: Demo tour (reuses the jar built by verify)
         run: DEMO_SKIP_BUILD=1 bash scripts/demo.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Export the website replay bundle (reuses the jar)
+        run: EXPORT_SKIP_BUILD=1 bash scripts/export-replays.sh
+      - name: Check the replay bundle
+        run: node --test replay/test/bundle.test.mjs
       - name: Upload demo reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: demo-output
           path: demo-output/
+          if-no-files-found: ignore
+      - name: Upload replay bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-dist
+          path: site-dist/
           if-no-files-found: ignore

@@ -152,6 +152,52 @@ The reports for run 3, as HTML:
 
 ![Report findings: the FAIL with the payer's 401 as evidence and a fix, then the INFO about prefetch keys](docs/screenshots/report-findings.png)
 
+## Embed on a website
+
+A static site cannot host the Java app, so the workbench can export a replay bundle instead: real runs recorded against the synthetic payers, plus a small viewer with no framework and no dependencies. It works like `integration-failure-lab`'s `dist/`.
+
+```sh
+bash scripts/install-crd-router.sh                   # once
+scripts/export-replays.sh                            # or scripts\export-replays.ps1; EXPORT_SKIP_BUILD=1 reuses the jar
+node --test replay/test/bundle.test.mjs              # leak scan, manifest and rendering checks
+node scripts/vendor-into-site.mjs ../personal-website/public/workbench
+```
+
+The export script builds the app, starts it on a free port, records six runs and writes `site-dist/` (gitignored). The slow-response run takes about 35 s. It exits non-zero if a run is missing an expected finding.
+
+| File | What it is |
+|---|---|
+| `runs/<id>.json` | One run's report, exactly as `GET /api/runs/{id}/report?format=json` returns it (already redacted). Runs: `northwind-healthy`, `fabrikam-healthy`, `fabrikam-wrong-audience-reject`, `northwind-expired-token-401`, `fabrikam-malformed-card`, `northwind-slow-response`. |
+| `manifest.json` | `workbenchVersion`, `gitCommit` (`-dirty` if tracked files had changes), `generatedAt`, and `runs`: `id`, `title`, `description`, `payerId`, `fault`, `verdict`, `file`. |
+| `replay.js` | ES module exporting `mountReplay(el, { baseUrl, run, headingLevel })`. The only network calls are fetches of `manifest.json` and `runs/*.json` under `baseUrl`. |
+| `replay.css` | Styles, all scoped under `.pw-replay`. |
+| `index.html` | A small test page that mounts the replay. |
+
+To try it locally: `python -m http.server --directory site-dist`, then open <http://localhost:8000/>. (Opening the file straight from disk does not work, because browsers block `fetch` from `file://`.)
+
+On the site:
+
+```html
+<link rel="stylesheet" href="/workbench/replay.css">
+<div id="workbench-replay"></div>
+<script type="module">
+  import { mountReplay } from '/workbench/replay.js';
+  mountReplay(document.getElementById('workbench-replay'), {
+    baseUrl: '/workbench/',          // where manifest.json lives; defaults to replay.js's folder
+    run: 'fabrikam-wrong-audience-reject', // optional: the run shown first
+    headingLevel: 2,                 // optional: level of the run title heading
+  });
+</script>
+```
+
+- **Picking a scenario.** The scenarios are a radio group, so arrow keys move between them. The step timeline shows each step's status and latency. Each HTTP exchange, with its redacted headers and bodies, expands with the keyboard (`<details>`), and scrollable code blocks take focus. The findings show the explanation and the fix. Passing checks are collapsed.
+- **Disclaimer.** Every view starts with "Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability." It is part of the mounted element and cannot be turned off.
+- **Theming.** The colours come from the host page's custom properties when it defines them: `--paper`, `--ink`, `--green`, `--muted`, `--line`, `--accent`, `--warn`, plus an optional `--fail` (the same names as the lab's `lab.css`). Otherwise neutral light and dark defaults follow `prefers-color-scheme`. To theme only the widget, set the `--pw-*` properties (`--pw-paper`, `--pw-ink`, `--pw-fail` and so on) on a selector more specific than `.pw-replay`. Text uses the page's font. The layout works at 375 px.
+- **Safety.** The runs are synthetic, and every string was redacted twice before export: once when it was recorded, and again when the report was built. `replay/test/bundle.test.mjs` scans every bundle file for the patterns `Redactor` masks: PEM blocks, Bearer and Basic credentials, signed JWTs, secret fields in JSON and form bodies, and sensitive headers. It fails on any hit, and also on any file that is not part of the bundle. Point `REPLAY_BUNDLE_DIR` at a vendored copy to check that instead.
+- **Vendoring.** `vendor-into-site.mjs` overwrites the bundle's files in the target and removes stale `runs/*.json`. It leaves everything else in the target alone. Re-export and re-vendor whenever the workbench changes.
+
+![Replay of the Fabrikam wrong-audience run: scenario picker, verdict, step timeline and the FAIL finding with its fix](docs/screenshots/replay.png)
+
 
 ## Mock payers
 
