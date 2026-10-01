@@ -152,6 +152,7 @@ The reports for run 3, as HTML:
 
 ![Report findings: the FAIL with the payer's 401 as evidence and a fix, then the INFO about prefetch keys](docs/screenshots/report-findings.png)
 
+
 ## Mock payers
 
 `mock-payers` contains two synthetic CDS Hooks payers built on the JDK's `com.sun.net.httpserver`. They behave differently on purpose, so the workbench has something realistic to onboard against. Tests start them in-process on an ephemeral port (`start(0)`). You can also run either one standalone. Every name, identifier and decision they return is made up.
