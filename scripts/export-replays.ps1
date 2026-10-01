@@ -42,7 +42,7 @@ $script:runs = @()
 $script:version = $null
 
 function Invoke-Record {
-    param([string]$Id, [string]$Title, [string]$Description, [string]$Payer, [string]$Fault, [string[]]$Expect)
+    param([string]$Id, [string]$Title, [string]$Teaser, [string]$Description, [string]$Payer, [string]$Fault, [string[]]$Expect)
     Write-Host ''
     Write-Host "==> $Title"
     $faults = if ($Fault) { "[`"$Fault`"]" } else { '[]' }
@@ -73,7 +73,8 @@ function Invoke-Record {
         }
     }
     $script:runs += [ordered]@{
-        id = $Id; title = $Title; description = $Description; payerId = $Payer
+        id = $Id; title = $Title; teaser = $Teaser; description = $Description
+        payerId = $Payer; payerName = $report.payer.displayName
         fault = if ($Fault) { $Fault } else { $null }
         verdict = $report.verdict.status; file = "runs/$Id.json"
     }
@@ -96,29 +97,29 @@ try {
     $base = "http://127.0.0.1:$port"
     Write-Host "    $base"
 
-    Invoke-Record 'northwind-healthy' 'Northwind, healthy' `
+    Invoke-Record 'northwind-healthy' 'Northwind, healthy' 'Healthy connection' `
         'OAuth2 client credentials payer; every step passes.' `
         'northwind-synthetic' $null @('no FAIL', 'PASS auth.token')
 
-    Invoke-Record 'fabrikam-healthy' 'Fabrikam, healthy' `
+    Invoke-Record 'fabrikam-healthy' 'Fabrikam, healthy' 'Healthy connection' `
         'CDS Hooks JWT payer; every step passes.' `
         'fabrikam-synthetic' $null @('no FAIL', 'PASS response.schema')
 
-    Invoke-Record 'fabrikam-wrong-audience-reject' 'Fabrikam rejects the token audience' `
+    Invoke-Record 'fabrikam-wrong-audience-reject' 'Fabrikam rejects the token audience' 'Payer expects a different JWT audience' `
         'The payer checks the JWT aud against a different URL and rejects the hook call.' `
         'fabrikam-synthetic' 'wrong-audience-reject' @('a FAIL')
 
-    Invoke-Record 'northwind-expired-token-401' 'Northwind says the token expired' `
+    Invoke-Record 'northwind-expired-token-401' 'Northwind says the token expired' 'Token rejected as expired' `
         'Hook calls get 401 invalid_token with an expired-token message.' `
         'northwind-synthetic' 'expired-token-401' @('a FAIL')
 
-    Invoke-Record 'fabrikam-malformed-card' 'Fabrikam returns malformed cards' `
+    Invoke-Record 'fabrikam-malformed-card' 'Fabrikam returns malformed cards' 'Cards come back malformed' `
         'Cards come back without summary and indicator.' `
         'fabrikam-synthetic' 'malformed-card' @('FAIL response.schema')
 
     Write-Host ''
     Write-Host '    (the next run holds every payer response for about 11 s)'
-    Invoke-Record 'northwind-slow-response' 'Northwind is slow' `
+    Invoke-Record 'northwind-slow-response' 'Northwind is slow' 'Payer is slow' `
         'Every payer response is held past the latency budget.' `
         'northwind-synthetic' 'slow-response' @('FAIL perf.latency')
 } finally {
