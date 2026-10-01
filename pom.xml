@@ -37,6 +37,10 @@
     <java.version>21</java.version>
     <!-- Installed locally by scripts/install-crd-router.sh from the pinned commit; not on Maven Central yet. -->
     <fhir-crd-router.version>0.1.0-SNAPSHOT</fhir-crd-router.version>
+    <!-- SonarCloud (see .github/workflows/sonar.yml). Each module's JaCoCo XML report is picked up from its default path. -->
+    <sonar.organization>dflippojr</sonar.organization>
+    <sonar.projectKey>dflippojr_payer-onboarding-workbench</sonar.projectKey>
+    <sonar.host.url>https://sonarcloud.io</sonar.host.url>
   </properties>
 
   <dependencyManagement>
@@ -73,4 +77,25 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
+
+  <build>
+    <plugins>
+      <!-- Coverage for SonarCloud; version managed by spring-boot-starter-parent. -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>
