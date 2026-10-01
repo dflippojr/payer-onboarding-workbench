@@ -13,6 +13,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -295,6 +296,12 @@ public final class FabrikamPayer extends MockPayer {
      * {@code --client ISS=JWKS_URL} (repeatable), {@code --public-base-url URL}.
      */
     public static void main(String[] args) throws IOException {
+        MockPayer payer = launch(args, System.out);
+        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
+    }
+
+    /** Starts a payer as {@link #main} would and prints how to reach it; the caller stops it. */
+    static FabrikamPayer launch(String[] args, PrintStream out) throws IOException {
         StandaloneArgs options = StandaloneArgs.parse(args);
         Builder builder = builder().publicBaseUrl(options.single("public-base-url", null));
         for (String client : options.all("client")) {
@@ -305,12 +312,12 @@ public final class FabrikamPayer extends MockPayer {
             builder.client(client.substring(0, eq), URI.create(client.substring(eq + 1)));
         }
         FabrikamPayer payer = builder.build().start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
-        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
-        System.out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
+        out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
         if (payer.jwksUrls.isEmpty()) {
-            System.out.println("  no clients registered: every hook call will get 401 (add --client ISS=JWKS_URL)");
+            out.println("  no clients registered: every hook call will get 401 (add --client ISS=JWKS_URL)");
         }
-        payer.jwksUrls.forEach((iss, url) -> System.out.println("  client iss=" + iss + "  jwks=" + url));
-        System.out.println("  faults: " + payer.baseUrl() + "/admin/faults");
+        payer.jwksUrls.forEach((iss, url) -> out.println("  client iss=" + iss + "  jwks=" + url));
+        out.println("  faults: " + payer.baseUrl() + "/admin/faults");
+        return payer;
     }
 }

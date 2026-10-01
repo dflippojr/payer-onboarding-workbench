@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -293,6 +294,12 @@ public final class NorthwindPayer extends MockPayer {
      * {@code --token-lifetime-seconds N}, {@code --public-base-url URL}.
      */
     public static void main(String[] args) throws IOException {
+        MockPayer payer = launch(args, System.out);
+        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
+    }
+
+    /** Starts a payer as {@link #main} would and prints how to reach it; the caller stops it. */
+    static NorthwindPayer launch(String[] args, PrintStream out) throws IOException {
         StandaloneArgs options = StandaloneArgs.parse(args);
         String clientId = options.single("client-id", "workbench-demo");
         String secret = options.single("client-secret", null);
@@ -307,13 +314,13 @@ public final class NorthwindPayer extends MockPayer {
                 .publicBaseUrl(options.single("public-base-url", null))
                 .build()
                 .start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
-        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
-        System.out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
-        System.out.println("  token endpoint: " + payer.tokenEndpoint() + "  (client_secret_basic)");
-        System.out.println("  client id:      " + clientId);
+        out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
+        out.println("  token endpoint: " + payer.tokenEndpoint() + "  (client_secret_basic)");
+        out.println("  client id:      " + clientId);
         if (generated) {
-            System.out.println("  client secret:  " + secret + "  (generated for this run; pass --client-secret to fix it)");
+            out.println("  client secret:  " + secret + "  (generated for this run; pass --client-secret to fix it)");
         }
-        System.out.println("  faults:         " + payer.baseUrl() + "/admin/faults");
+        out.println("  faults:         " + payer.baseUrl() + "/admin/faults");
+        return payer;
     }
 }
