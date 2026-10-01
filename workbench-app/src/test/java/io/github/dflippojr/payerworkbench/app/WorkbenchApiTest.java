@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class WorkbenchApiTest {
 
+    /** A compact JWT with its signature: header, payload and a signature-length third part. */
+    private static final Pattern SIGNED_JWT = Pattern.compile("eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{20,}");
     private static final Pattern ACCESS_TOKEN_VALUE = Pattern.compile("\"access_token\"\\s*:\\s*\"[A-Za-z0-9_-]{20,}\"");
 
     @Value("${local.server.port}")
@@ -120,11 +122,13 @@ class WorkbenchApiTest {
             String body = report.body();
             assertTrue(body.contains(RunReport.DISCLAIMER), format);
             assertTrue(body.contains("Fabrikam"), format);
-            assertTrue(body.contains("response.schema"), format);
+            assertTrue(body.contains("auth.jwt-audience"), format);
             assertTrue(body.contains("FAIL"), format);
             assertFalse(body.contains(secret), format);
             assertFalse(body.contains(keyChunk), format);
             assertFalse(body.contains("PRIVATE KEY"), format);
+            // The client JWT's claims are reported, but never the token or its signature.
+            assertFalse(SIGNED_JWT.matcher(body).find(), format);
         }
         JsonNode json = mapper.readTree(get("/api/runs/" + runId + "/report?format=json").body());
         assertEquals(runId, json.path("runId").asText());

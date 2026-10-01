@@ -1,20 +1,26 @@
 package io.github.dflippojr.payerworkbench.diagnostics;
 
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.NOW;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.ORDER_SIGN_URL;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.TOKEN_URL;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertionBody;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.hook;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.jwt;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.only;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.orderSign;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.token;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.tokenError;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.dflippojr.payerworkbench.core.Finding;
+import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -111,6 +117,64 @@ class AuthChecksTest {
             run.token = token(200, assertionBody(jwt(TOKEN_URL + "/", NOW, NOW.plusSeconds(300))),
                     Fixtures.TOKEN_OK_BODY, NOW);
             only(check.evaluate(run.build()), Severity.INFO);
+        }
+
+        @Test
+        void hookJwtWithTrailingSlashFailsOn401() {
+            var run = healthy();
+            HookResponse call = orderSign(hook(401, "{\"error\":\"unauthorized\"}", 300), ORDER_SIGN_URL + "/");
+            run.hooks = new ArrayList<>(List.of(call));
+            Finding f = only(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("CDS Hooks client JWT"), f::explanation);
+            assertTrue(f.explanation().contains("aud has a trailing slash"), f::explanation);
+            assertTrue(f.evidence().contains("JWT aud: " + ORDER_SIGN_URL + "/"), f::evidence);
+            assertTrue(f.suggestedFix().contains("exactly " + ORDER_SIGN_URL));
+            assertTrue(JwtAudienceCheck.explains(call));
+        }
+
+        @Test
+        void hookJwtWithR4PrefixAcceptedIsInfo() {
+            var run = healthy();
+            String aud = Fixtures.BASE_URL + "/r4/cds-services/crd-order-sign";
+            run.hooks = new ArrayList<>(List.of(orderSign(hook(200, Fixtures.resource("order-sign-healthy.json"), 300),
+                    aud)));
+            Finding f = only(check.evaluate(run.build()), Severity.INFO);
+            assertTrue(f.explanation().contains("aud has the extra path segment /r4"), f::explanation);
+        }
+
+        @Test
+        void exactHookJwtRejectedForAudienceFails() {
+            var run = healthy();
+            String expected = "https://crd.elsewhere.test/cds-services/crd-order-sign";
+            HookResponse call = orderSign(hook(401, "{\"error\":\"unauthorized\",\"error_description\":"
+                    + "\"aud must be exactly '" + expected + "', got [" + ORDER_SIGN_URL + "]\"}", 300), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            Finding f = only(check.evaluate(run.build()), Severity.FAIL);
+            assertEquals("Payer expects a different JWT audience", f.title());
+            assertTrue(f.explanation().contains("apparently " + expected), f::explanation);
+            assertTrue(f.evidence().contains("URL named in the payer's error: " + expected), f::evidence);
+            assertTrue(JwtAudienceCheck.explains(call));
+        }
+
+        @Test
+        void exactHookJwtRejectedForAnotherReasonIsNotThisCheck() {
+            var run = healthy();
+            HookResponse call = orderSign(hook(401, "{\"error\":\"unauthorized\",\"error_description\":"
+                    + "\"JWT expired\"}", 300), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            // Only the token request's client assertion is verified; the hook call is someone else's finding.
+            Finding f = only(check.evaluate(run.build()), Severity.PASS);
+            assertFalse(f.evidence().contains(ORDER_SIGN_URL), f::evidence);
+            assertFalse(JwtAudienceCheck.explains(call));
+        }
+
+        @Test
+        void exactHookJwtAcceptedPasses() {
+            var run = healthy();
+            run.hooks = new ArrayList<>(List.of(orderSign(hook(200, Fixtures.resource("order-sign-healthy.json"), 300),
+                    ORDER_SIGN_URL)));
+            Finding f = only(check.evaluate(run.build()), Severity.PASS);
+            assertTrue(f.evidence().contains(ORDER_SIGN_URL), f::evidence);
         }
 
         @Test

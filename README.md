@@ -112,7 +112,8 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | none (healthy run) | nothing | none |
 | `slow-response` | (steps pass) | `perf.latency` |
 | `expired-token-401` | hook request | `auth.clock-skew`, `response.schema` |
-| `wrong-audience-reject` | hook request | `response.schema` |
+| `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
+| `wrong-audience-reject`, Northwind | hook request | `response.schema` |
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
 | `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
@@ -124,7 +125,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | `aud` override with a trailing slash, Fabrikam | hook request | `auth.jwt-audience` |
 | environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
 
-Two findings come from the app rather than the diagnostics engine, because the engine cannot see what they need. `connection.record` is reported when no connection record exists, since nothing is sent. For `auth.jwt-audience` on a bearer JWT, `Redactor` masks the JWT whole in the recorded exchange, so the app compares the `aud` it signed with the URL it sent the JWT to.
+One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT it signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
 
 Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 
@@ -143,7 +144,7 @@ It needs JDK 21 (`JAVA_HOME` or `java` on the `PATH`); the bash version also nee
 |---|---|---|---|
 | 1 | Northwind (OAuth2 client credentials), healthy | The whole flow passing: discovery, a client-credentials token, a hook call and parsed cards. | no `FAIL`; `PASS` `discovery.reachable`, `auth.token`, `response.schema` |
 | 2 | Fabrikam (CDS Hooks client JWT), healthy | The same flow with a signed JWT instead of a token, and two `INFO` findings about Fabrikam's quirks: non-standard prefetch keys (mapped to the standard ones) and coverage information delivered in card suggestions. | no `FAIL`; `PASS` `discovery.reachable`, `ig.version`, `response.schema` |
-| 3 | Fabrikam with `wrong-audience-reject` | The payer checks the JWT `aud` against a different URL and rejects the hook call with 401. The flow breaks at the hook request, and the evidence quotes the payer's error. | `FAIL` `response.schema` |
+| 3 | Fabrikam with `wrong-audience-reject` | The payer checks the JWT `aud` against a different URL and rejects the hook call with 401. The flow breaks at the hook request. The finding says the JWT already names the service URL, so the payer expects another one, and the evidence quotes the payer's error. | `FAIL` `auth.jwt-audience` |
 | 4 | Northwind with `slow-response` | Every step passes, but each response is held about 11 s, past the 10 s budget CDS Hooks clients tend to give up at. | `FAIL` `perf.latency` |
 
 The reports for run 3, as HTML:

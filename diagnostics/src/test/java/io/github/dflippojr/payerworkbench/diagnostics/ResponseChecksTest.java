@@ -1,5 +1,6 @@
 package io.github.dflippojr.payerworkbench.diagnostics;
 
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.ORDER_SIGN_URL;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.discovery;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.hook;
@@ -108,6 +109,23 @@ class ResponseChecksTest {
             var run = healthy();
             run.hooks = new ArrayList<>(List.of(orderSign(hook(500, "{\"error\":\"internal\"}", 300))));
             assertTrue(only(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 500"));
+        }
+
+        @Test
+        void audienceRejectionIsLeftToJwtAudience() {
+            var run = healthy();
+            run.hooks = new ArrayList<>(List.of(orderSign(hook(401,
+                    "{\"error\":\"unauthorized\",\"error_description\":\"aud must be exactly "
+                            + "'https://crd.elsewhere.test/cds-services/crd-order-sign'\"}", 300), ORDER_SIGN_URL)));
+            assertEquals(List.of(), check.evaluate(run.build()));
+        }
+
+        @Test
+        void otherJwtRejectionStillFails() {
+            var run = healthy();
+            run.hooks = new ArrayList<>(List.of(orderSign(hook(401,
+                    "{\"error\":\"unauthorized\",\"error_description\":\"JWT expired\"}", 300), ORDER_SIGN_URL)));
+            assertTrue(only(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 401"));
         }
     }
 
