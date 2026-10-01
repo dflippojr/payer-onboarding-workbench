@@ -87,11 +87,15 @@ final class PayerFixture implements AutoCloseable {
                 .igVersion(NorthwindPayer.IG_VERSION)
                 .build();
         return new PayerFixture("northwind", payer, record, credentials, "order-sign", "order-select", "coverage",
-                orders -> CrdPrefetch.builder()
-                        .patient(SyntheticData.patient())
-                        .coverage(SyntheticData.coverageBundle())
-                        .build(),
-                null);
+                orders -> northwindPrefetch(), null);
+    }
+
+    /** What Northwind's discovery asks for (no encounter: the synthetic orders have none). */
+    static Map<String, Object> northwindPrefetch() {
+        return CrdPrefetch.builder()
+                .patient(SyntheticData.patient())
+                .coverage(SyntheticData.coverageBundle())
+                .build();
     }
 
     static PayerFixture fabrikam() throws IOException {
