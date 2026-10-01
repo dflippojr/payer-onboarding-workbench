@@ -221,7 +221,7 @@ async function main() {
   const java = javaBin();
   if (process.env.CAPTURE_SKIP_BUILD !== '1') {
     log('==> Building (tests skipped; run ./mvnw verify for those)');
-    const mvnw = windows ? ['cmd.exe', ['/d', '/c', 'mvnw.cmd']] : ['./mvnw', []];
+    const mvnw = windows ? ['cmd.exe', ['/d', '/c', '.\\mvnw.cmd']] : ['./mvnw', []];
     run(mvnw[0], [...mvnw[1], '-B', '-q', '-pl', 'workbench-app', '-am', 'package', '-DskipTests']);
   }
   const jarDir = join(root, 'workbench-app', 'target');
