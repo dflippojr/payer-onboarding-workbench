@@ -1,0 +1,13 @@
+{
+  "id": "order-sign-home-oxygen",
+  "title": "Home oxygen at order-sign",
+  "hook": "order-sign",
+  "demonstrates": "The happy path: a DeviceRequest for stationary oxygen that needs no prior authorization.",
+  "codes": [
+    "HCPCS E0424"
+  ],
+  "expected": {
+    "payerA": "Coverage information in systemActions: covered, no prior authorization needed.",
+    "payerB": "Coverage information for E0424 inside a card suggestion; send the payer-B variant."
+  }
+}

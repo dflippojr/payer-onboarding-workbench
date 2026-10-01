@@ -1,0 +1,15 @@
+{
+  "resourceType": "DeviceRequest",
+  "id": "devreq-home-oxygen",
+  "status": "draft",
+  "intent": "original-order",
+  "codeCodeableConcept": {
+    "coding": [ { "system": "https://bluebutton.cms.gov/resources/codesystem/hcpcs", "code": "E0424", "display": "Stationary compressed gaseous oxygen system, rental" } ],
+    "text": "Stationary compressed gaseous oxygen system, rental"
+  },
+  "subject": { "reference": "Patient/pat-synthetic-001" },
+  "encounter": { "reference": "Encounter/enc-synthetic-001" },
+  "authoredOn": "2026-03-02",
+  "requester": { "reference": "Practitioner/pract-synthetic-001" },
+  "insurance": [ { "reference": "Coverage/cov-synthetic-001" } ]
+}

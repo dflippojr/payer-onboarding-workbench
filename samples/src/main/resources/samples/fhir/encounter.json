@@ -1,0 +1,9 @@
+{
+  "resourceType": "Encounter",
+  "id": "enc-synthetic-001",
+  "status": "in-progress",
+  "class": { "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "ambulatory" },
+  "subject": { "reference": "Patient/pat-synthetic-001" },
+  "participant": [ { "individual": { "reference": "Practitioner/pract-synthetic-001" } } ],
+  "period": { "start": "2026-03-02T09:00:00Z" }
+}
