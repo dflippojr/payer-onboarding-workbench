@@ -56,8 +56,12 @@ public final class FabrikamPayer extends MockPayer {
     public static final String IG_VERSION = "2.0.1";
     public static final int DEFAULT_PORT = 8182;
 
-    /** The audience base the payer expects while {@link Fault#WRONG_AUDIENCE_REJECT} is on. */
-    public static final String WRONG_AUDIENCE_BASE = "https://crd.fabrikam-benefits.example";
+    /**
+     * The audience base the payer expects while {@link Fault#WRONG_AUDIENCE_REJECT} is on: a public
+     * gateway URL. Exported replays show the payer at {@code https://crd.fabrikam-benefits.example},
+     * so this must stay a different host for the replayed {@code aud} to still mismatch.
+     */
+    public static final String WRONG_AUDIENCE_BASE = "https://api.fabrikam-benefits.example";
 
     /** The pre-2.1 CRD card type code system the reference implementation used. */
     static final String CARD_TYPE_SYSTEM = "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp";

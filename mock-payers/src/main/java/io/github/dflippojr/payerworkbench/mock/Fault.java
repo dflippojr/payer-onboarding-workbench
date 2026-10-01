@@ -9,7 +9,10 @@ import java.util.Optional;
  */
 public enum Fault {
 
-    /** Every non-admin request waits {@link FaultSettings#slowResponseDelay()} before it is handled. */
+    /**
+     * Hook calls ({@code POST /cds-services/{id}}) wait {@link FaultSettings#slowResponseDelay()}
+     * before they are handled. Discovery, the token endpoint and admin stay fast.
+     */
     SLOW_RESPONSE("slow-response"),
 
     /** Hook calls are rejected with 401 because the credential is treated as expired. */

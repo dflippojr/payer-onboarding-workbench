@@ -92,8 +92,8 @@ try {
         @('FAIL auth.jwt-audience')
 
     Write-Host ''
-    Write-Host '    (the next run holds every payer response for about 11 s)'
-    Invoke-Tour 'northwind-slow-response' 'Northwind with slow-response: every response is past the latency budget' `
+    Write-Host '    (the next run holds the hook call for about 11 s)'
+    Invoke-Tour 'northwind-slow-response' 'Northwind with slow-response: the hook call is past the latency budget' `
         '{"payerId":"northwind-synthetic","sampleId":"order-sign-hospital-bed","faults":["slow-response"]}' `
         @('FAIL perf.latency')
 

@@ -24,14 +24,15 @@ class FaultInjectionTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"northwind", "fabrikam"})
-    void slowResponseDelaysEveryCallBeyondAClientDeadline(String payerName) throws Exception {
+    void slowResponseDelaysHookCallsBeyondAClientDeadline(String payerName) throws Exception {
         try (PayerFixture fixture = PayerFixture.create(payerName)) {
-            Duration delay = Duration.ofMillis(600);
+            Duration delay = Duration.ofMillis(2_000);
             fixture.payer.faults().slowResponse(delay);
 
+            // Discovery (and, for Northwind, the token request inside the hook call) stays fast.
             long start = System.nanoTime();
             assertFalse(fixture.client.discoverServices(fixture.record).isEmpty());
-            assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(delay) >= 0, "call returned before the delay");
+            assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(delay) < 0, "discovery was delayed");
 
             CompletableFuture<CdsHookResponse> call =
                     CompletableFuture.supplyAsync(() -> fixture.orderSign(SyntheticData.standardOrders()));
