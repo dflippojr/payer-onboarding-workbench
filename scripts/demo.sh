@@ -104,7 +104,7 @@ tour fabrikam-wrong-audience "Fabrikam with wrong-audience-reject: the payer rej
   "FAIL auth.jwt-audience"
 
 echo
-echo "    (the next run holds every payer response for about 11 s)"
+echo "    (the next run holds the hook call for about 11 s)"
 tour northwind-slow-response "Northwind with slow-response: the hook call is past the latency budget" \
   '{"payerId":"northwind-synthetic","sampleId":"order-sign-hospital-bed","faults":["slow-response"]}' \
   "FAIL perf.latency"
