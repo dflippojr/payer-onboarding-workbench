@@ -15,7 +15,7 @@
 //   mountReplay(document.getElementById('replay'), { baseUrl: '/workbench/' });
 
 export const DISCLAIMER =
-  'Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability.';
+  'Recorded run against a synthetic mock payer; addresses rewritten to example hosts. Passing here does not prove real-payer interoperability.';
 
 /**
  * Playback timing. Each step lasts clamp(recorded ms × scale, minMs, maxMs); if the

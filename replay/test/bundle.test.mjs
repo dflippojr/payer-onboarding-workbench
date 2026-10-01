@@ -13,7 +13,7 @@ import { installFakeDom } from './fake-dom.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const dist = resolve(process.env.REPLAY_BUNDLE_DIR || join(root, 'site-dist'));
-const DISCLAIMER = 'Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability.';
+const DISCLAIMER = 'Recorded run against a synthetic mock payer; addresses rewritten to example hosts. Passing here does not prove real-payer interoperability.';
 
 /** The scenarios the bundle must contain, as payerId/fault (null = healthy). */
 const REQUIRED = [
@@ -161,6 +161,57 @@ const byClass = (el, cls) => el.findAll(n => n.className.split(' ').includes(cls
 const visibleSteps = el => byClass(el, 'pw-step').filter(n => n.getAttribute('hidden') === null);
 const statusText = el => byClass(el, 'pw-status')[0].textContent;
 const runButton = el => el.findAll(n => n.tagName === 'BUTTON')[0];
+
+/** The example host each payer's local address is rewritten to by the export scripts. */
+const PAYER_HOSTS = {
+  'northwind-synthetic': 'https://crd.northwind-health.example',
+  'fabrikam-synthetic': 'https://crd.fabrikam-benefits.example',
+};
+
+test('no localhost or 127.0.0.1 address appears anywhere in the bundle', () => {
+  requireBundle();
+  const hits = bundleFiles()
+    .filter(file => /localhost|127\.0\.0\.1/i.test(readFileSync(file, 'utf8')))
+    .map(file => relative(dist, file));
+  assert.deepEqual(hits, []);
+});
+
+test('each run shows its payer at the payer\'s example host', () => {
+  const manifest = requireBundle();
+  for (const run of manifest.runs) {
+    const report = JSON.parse(readFileSync(join(dist, ...run.file.split('/')), 'utf8'));
+    const host = PAYER_HOSTS[run.payerId];
+    assert.ok(host, `${run.id}: no example host for ${run.payerId}`);
+    const connection = report.steps.find(s => s.stepId === 'resolve-connection').details.connection;
+    assert.equal(connection.baseUrl, host, `${run.id}: baseUrl`);
+    for (const x of report.steps.flatMap(s => s.details.exchanges || [])) {
+      assert.ok(x.url.startsWith(`${host}/`), `${run.id}: ${x.method} ${x.url}`);
+    }
+  }
+});
+
+test('the rewritten JWT aud still differs from the audience Fabrikam expects, by host only', () => {
+  const report = readRun(findRun('fabrikam-wrong-audience-reject'));
+  const auth = report.steps.find(s => s.stepId === 'authenticate').details;
+  const aud = new URL(auth.jwtClaims.aud);
+  assert.equal(aud.origin, PAYER_HOSTS['fabrikam-synthetic']);
+  const finding = report.findings.find(f => f.checkId === 'auth.jwt-audience');
+  const expected = new URL(finding.evidence.match(/URL named in the payer's error: (\S+)/)[1]);
+  assert.notEqual(expected.host, aud.host, 'the expected audience should be a different host');
+  assert.equal(expected.pathname, aud.pathname);
+  assert.ok(finding.explanation.includes(expected.href) || finding.explanation.includes(expected.origin),
+    'the explanation should name the URL the payer expects');
+});
+
+test('in the slow run only the hook call is slow', () => {
+  const report = readRun(findRun('northwind-slow-response'));
+  const elapsed = Object.fromEntries(report.steps.map(s => [s.stepId, s.elapsedMs]));
+  for (const id of ['discovery', 'authenticate']) {
+    assert.ok(elapsed[id] < 5_000, `${id} took ${elapsed[id]} ms`);
+  }
+  assert.ok(elapsed['hook-request'] > 10_000, `hook-request took ${elapsed['hook-request']} ms`);
+  assert.deepEqual(report.findings.filter(f => f.severity === 'FAIL').map(f => f.checkId), ['perf.latency']);
+});
 
 test('replay.js renders the picker, the disclaimer, the timeline and the findings', async () => {
   const manifest = requireBundle();

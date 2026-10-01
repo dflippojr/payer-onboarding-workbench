@@ -3,7 +3,8 @@
 # starts it on a free port, records a fixed set of runs through the REST API and
 # writes site-dist/ (gitignored):
 #
-#   site-dist/runs/<id>.json   each run's redacted report (GET /api/runs/{id}/report?format=json)
+#   site-dist/runs/<id>.json   each run's redacted report (GET /api/runs/{id}/report?format=json),
+#                              with local addresses rewritten to example hosts (see rewrite_hosts)
 #   site-dist/manifest.json    workbench version, git commit, generation time, run list
 #   site-dist/replay.js        ES module exporting mountReplay(el, { baseUrl })
 #   site-dist/replay.css       styles, themeable through CSS custom properties
@@ -13,7 +14,7 @@
 #   EXPORT_SKIP_BUILD=1 scripts/export-replays.sh reuse workbench-app/target/*.jar
 #
 # Copy the bundle into a site with: node scripts/vendor-into-site.mjs <site>/public/workbench
-# Needs JDK 21 (JAVA_HOME or java on PATH), curl, awk and git. Synthetic payers only.
+# Needs JDK 21 (JAVA_HOME or java on PATH), curl, awk, sed and git. Synthetic payers only.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,6 +61,45 @@ fi
 base="http://127.0.0.1:$port"
 echo "    $base"
 
+# The mock payers and the JWKS server listen on ephemeral localhost ports. The exported
+# runs show each payer at a stable example host instead, and the workbench's JWKS at
+# $workbench_host. Only the exported JSON is rewritten; the app records the real addresses.
+workbench_host="https://workbench.example"
+payer_host() {
+  case "$1" in
+    northwind-synthetic) echo "https://crd.northwind-health.example" ;;
+    fabrikam-synthetic) echo "https://crd.fabrikam-benefits.example" ;;
+    *) echo "https://crd.$1.example" ;;
+  esac
+}
+# "origin host" pairs from GET /api/payers (compact JSON, fields in record order).
+rewrites=()
+current_payer=""
+while read -r key value; do
+  case "$key" in
+    payerId) current_payer="$value" ;;
+    baseUrl) rewrites+=("$(printf '%s' "$value" | grep -oE '^https?://[^/]+') $(payer_host "$current_payer")") ;;
+    jwksUrl) rewrites+=("$(printf '%s' "$value" | grep -oE '^https?://[^/]+') $workbench_host") ;;
+  esac
+done < <(curl -sS --fail-with-body "$base/api/payers" | grep -oE '"(payerId|baseUrl|jwksUrl)" *: *"[^"]*"' \
+  | sed -E 's/^"([^"]+)" *: *"([^"]*)"$/\1 \2/')
+if [ "${#rewrites[@]}" -eq 0 ]; then
+  echo "GET /api/payers listed no payer addresses to rewrite" >&2
+  exit 1
+fi
+
+# rewrite_hosts FILE: replaces every recorded origin in FILE with its example host. The
+# non-digit guard keeps http://localhost:8181 from matching inside http://localhost:81810.
+rewrite_hosts() {
+  local pair origin host
+  for pair in "${rewrites[@]}"; do
+    origin="$(printf '%s' "${pair%% *}" | sed 's/[.]/[.]/g')"
+    host="${pair#* }"
+    sed -E "s#${origin}([^0-9]|\$)#${host}\1#g" "$1" >"$1.tmp"
+    mv "$1.tmp" "$1"
+  done
+}
+
 failures=0
 entries=()
 version=""
@@ -83,6 +123,7 @@ record() {
     -d "{\"payerId\":\"$payer\",\"sampleId\":\"order-sign-hospital-bed\",\"faults\":$faults}" "$base/api/runs")"
   run_id="$(printf '%s' "$response" | grep -oE '"runId" *: *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
   curl -sS --fail-with-body -o "$file" "$base/api/runs/$run_id/report?format=json"
+  rewrite_hosts "$file"
 
   # Findings list checkId before severity; steps have no checkId.
   local found verdict payer_name
@@ -136,9 +177,9 @@ record fabrikam-malformed-card "Fabrikam returns malformed cards" "Cards come ba
   fabrikam-synthetic malformed-card "FAIL response.schema"
 
 echo
-echo "    (the next run holds every payer response for about 11 s)"
+echo "    (the next run holds the hook call for about 11 s)"
 record northwind-slow-response "Northwind is slow" "Payer is slow" \
-  "Every payer response is held past the latency budget." \
+  "Discovery and auth answer quickly, but the hook call is held past the latency budget." \
   northwind-synthetic slow-response "FAIL perf.latency"
 
 cp replay/replay.js replay/replay.css replay/index.html "$out/"
@@ -153,7 +194,7 @@ fi
   printf '  "workbenchVersion": "%s",\n' "$version"
   printf '  "gitCommit": "%s",\n' "$commit"
   printf '  "generatedAt": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '  "disclaimer": "Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability.",\n'
+  printf '  "disclaimer": "Recorded run against a synthetic mock payer; addresses rewritten to example hosts. Passing here does not prove real-payer interoperability.",\n'
   printf '  "runs": [\n'
   for i in "${!entries[@]}"; do
     if [ "$i" -gt 0 ]; then printf ',\n'; fi
@@ -164,6 +205,11 @@ fi
 
 if grep -rlE 'PRIVATE KEY|client_secret=[^[]' "$out" >/dev/null 2>&1; then
   echo "The bundle contains unredacted key or secret material" >&2
+  failures=$((failures + 1))
+fi
+if grep -rlE 'localhost|127\.0\.0\.1' "$out" >/dev/null 2>&1; then
+  echo "The bundle still contains local addresses:" >&2
+  grep -rlE 'localhost|127\.0\.0\.1' "$out" >&2
   failures=$((failures + 1))
 fi
 

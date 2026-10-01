@@ -144,7 +144,7 @@ $manifest = [ordered]@{
     workbenchVersion = $script:version
     gitCommit = "$commit"
     generatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    disclaimer = 'Recorded run against a synthetic mock payer. Passing here does not prove real-payer interoperability.'
+    disclaimer = 'Recorded run against a synthetic mock payer; addresses rewritten to example hosts. Passing here does not prove real-payer interoperability.'
     runs = $script:runs
 }
 [System.IO.File]::WriteAllText((Join-Path $out 'manifest.json'), (ConvertTo-Json -Depth 5 $manifest), $utf8)
