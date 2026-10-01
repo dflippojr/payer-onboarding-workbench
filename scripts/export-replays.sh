@@ -64,12 +64,13 @@ failures=0
 entries=()
 version=""
 
-# record ID TITLE DESCRIPTION PAYER FAULT EXPECTATIONS...
+# record ID TITLE TEASER DESCRIPTION PAYER FAULT EXPECTATIONS...
+# TEASER is the one line on the replay's scenario card saying what breaks.
 # FAULT is "-" for a healthy run. Each expectation is "SEVERITY checkId", "no FAIL" or "a FAIL".
-# TITLE and DESCRIPTION go into manifest.json as-is, so keep them free of quotes and backslashes.
+# TITLE, TEASER and DESCRIPTION go into manifest.json as-is, so keep them free of quotes and backslashes.
 record() {
-  local id="$1" title="$2" description="$3" payer="$4" fault="$5"
-  shift 5
+  local id="$1" title="$2" teaser="$3" description="$4" payer="$5" fault="$6"
+  shift 6
   local faults="[]" fault_json="null"
   if [ "$fault" != "-" ]; then
     faults="[\"$fault\"]"
@@ -84,9 +85,10 @@ record() {
   curl -sS --fail-with-body -o "$file" "$base/api/runs/$run_id/report?format=json"
 
   # Findings list checkId before severity; steps have no checkId.
-  local found verdict
+  local found verdict payer_name
   found="$(awk -F'"' '/"checkId" *:/ { id = $4 } /"severity" *:/ && id { print $4 " " id; id = "" }' "$file")"
   verdict="$(awk -F'"' '/"verdict" *:/ { v = 1 } v && /"status" *:/ { print $4; exit }' "$file")"
+  payer_name="$(awk -F'"' '/"displayName" *:/ { print $4; exit }' "$file")"
   if [ -z "$version" ]; then
     version="$(awk -F'"' '/"workbenchVersion" *:/ { print $4; exit }' "$file")"
   fi
@@ -108,34 +110,34 @@ record() {
       failures=$((failures + 1))
     fi
   done
-  entries+=("$(printf '    {\n      "id": "%s",\n      "title": "%s",\n      "description": "%s",\n      "payerId": "%s",\n      "fault": %s,\n      "verdict": "%s",\n      "file": "runs/%s.json"\n    }' \
-    "$id" "$title" "$description" "$payer" "$fault_json" "$verdict" "$id")")
+  entries+=("$(printf '    {\n      "id": "%s",\n      "title": "%s",\n      "teaser": "%s",\n      "description": "%s",\n      "payerId": "%s",\n      "payerName": "%s",\n      "fault": %s,\n      "verdict": "%s",\n      "file": "runs/%s.json"\n    }' \
+    "$id" "$title" "$teaser" "$description" "$payer" "$payer_name" "$fault_json" "$verdict" "$id")")
   echo "    site-dist/runs/$id.json"
 }
 
-record northwind-healthy "Northwind, healthy" \
+record northwind-healthy "Northwind, healthy" "Healthy connection" \
   "OAuth2 client credentials payer; every step passes." \
   northwind-synthetic - "no FAIL" "PASS auth.token"
 
-record fabrikam-healthy "Fabrikam, healthy" \
+record fabrikam-healthy "Fabrikam, healthy" "Healthy connection" \
   "CDS Hooks JWT payer; every step passes." \
   fabrikam-synthetic - "no FAIL" "PASS response.schema"
 
-record fabrikam-wrong-audience-reject "Fabrikam rejects the token audience" \
+record fabrikam-wrong-audience-reject "Fabrikam rejects the token audience" "Payer expects a different JWT audience" \
   "The payer checks the JWT aud against a different URL and rejects the hook call." \
   fabrikam-synthetic wrong-audience-reject "a FAIL"
 
-record northwind-expired-token-401 "Northwind says the token expired" \
+record northwind-expired-token-401 "Northwind says the token expired" "Token rejected as expired" \
   "Hook calls get 401 invalid_token with an expired-token message." \
   northwind-synthetic expired-token-401 "a FAIL"
 
-record fabrikam-malformed-card "Fabrikam returns malformed cards" \
+record fabrikam-malformed-card "Fabrikam returns malformed cards" "Cards come back malformed" \
   "Cards come back without summary and indicator." \
   fabrikam-synthetic malformed-card "FAIL response.schema"
 
 echo
 echo "    (the next run holds every payer response for about 11 s)"
-record northwind-slow-response "Northwind is slow" \
+record northwind-slow-response "Northwind is slow" "Payer is slow" \
   "Every payer response is held past the latency budget." \
   northwind-synthetic slow-response "FAIL perf.latency"
 

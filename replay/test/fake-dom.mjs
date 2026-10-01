@@ -28,8 +28,12 @@ class FakeElement extends FakeNode {
     this.className = '';
     this.checked = false;
     this.classList = { add: c => { this.className = `${this.className} ${c}`.trim(); } };
+    this.style = { setProperty: (k, v) => { this.style[k] = String(v); } };
   }
   setAttribute(k, v) { this.attributes[k] = String(v); }
+  removeAttribute(k) { delete this.attributes[k]; }
+  hasAttribute(k) { return k in this.attributes; }
+  focus() { globalThis.document.activeElement = this; }
   getAttribute(k) { return this.attributes[k] ?? null; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   dispatch(type) { (this.listeners[type] || []).forEach(fn => fn({ target: this })); }
@@ -42,9 +46,13 @@ class FakeElement extends FakeNode {
   }
 }
 
-/** Installs document/Node/fetch globals; `files` maps URL pathnames to response bodies. */
-export function installFakeDom(files) {
+/**
+ * Installs document/Node/fetch/matchMedia globals; `files` maps URL pathnames to response
+ * bodies. `reducedMotion` is what prefers-reduced-motion: reduce reports.
+ */
+export function installFakeDom(files, { reducedMotion = false } = {}) {
   globalThis.Node = FakeNode;
+  globalThis.matchMedia = query => ({ matches: query.includes('reduced-motion') && reducedMotion });
   globalThis.document = {
     baseURI: 'https://site.example/page/',
     createElement: tag => new FakeElement(tag),

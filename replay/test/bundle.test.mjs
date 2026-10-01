@@ -1,6 +1,6 @@
 // Checks the exported replay bundle (site-dist/ by default, or $REPLAY_BUNDLE_DIR).
 // Run scripts/export-replays.sh first, then: node --test replay/test/
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -98,6 +98,8 @@ test('every run in the manifest loads as a report', () => {
     const report = JSON.parse(readFileSync(join(dist, ...run.file.split('/')), 'utf8'));
     assert.match(report.runId, /\S/, `${run.id} has no runId`);
     assert.equal(report.payer.payerId, run.payerId, `${run.id} payer`);
+    assert.equal(run.payerName, report.payer.displayName, `${run.id} payerName`);
+    assert.match(run.teaser, /\S/, `${run.id} has no teaser`);
     assert.equal(report.verdict.status, run.verdict, `${run.id} verdict`);
     assert.ok(report.steps.length > 0, `${run.id} has no steps`);
     for (const step of report.steps) {
@@ -136,39 +138,72 @@ test('no token, secret or PEM pattern appears anywhere in the bundle', () => {
   assert.deepEqual(leaks, []);
 });
 
-test('replay.js renders the picker, the disclaimer, the timeline and the findings', async () => {
-  const manifest = requireBundle();
+/** Mounts the bundle's replay.js on a fake DOM; `editManifest` rewrites manifest.json on the way in. */
+async function mountBundle(options = {}, { reducedMotion = false, editManifest } = {}) {
   const { createRoot } = installFakeDom(pathname => {
     const prefix = '/workbench/';
     if (!pathname.startsWith(prefix)) return undefined;
-    const p = join(dist, ...pathname.slice(prefix.length).split('/'));
-    return existsSync(p) ? readFileSync(p, 'utf8') : undefined;
-  });
-  const { mountReplay } = await import(pathToFileURL(join(dist, 'replay.js')).href);
+    const rel = pathname.slice(prefix.length);
+    const p = join(dist, ...rel.split('/'));
+    if (!existsSync(p)) return undefined;
+    const body = readFileSync(p, 'utf8');
+    return rel === 'manifest.json' && editManifest ? JSON.stringify(editManifest(JSON.parse(body))) : body;
+  }, { reducedMotion });
+  const mod = await import(pathToFileURL(join(dist, 'replay.js')).href);
   const el = createRoot();
-  const replay = await mountReplay(el, { baseUrl: '/workbench' });
+  const replay = await mod.mountReplay(el, { baseUrl: '/workbench', ...options });
+  return { el, replay, mod };
+}
+
+const readRun = run => JSON.parse(readFileSync(join(dist, ...run.file.split('/')), 'utf8'));
+const findRun = id => requireBundle().runs.find(r => r.id === id);
+const byClass = (el, cls) => el.findAll(n => n.className.split(' ').includes(cls));
+const visibleSteps = el => byClass(el, 'pw-step').filter(n => n.getAttribute('hidden') === null);
+const statusText = el => byClass(el, 'pw-status')[0].textContent;
+const runButton = el => el.findAll(n => n.tagName === 'BUTTON')[0];
+
+test('replay.js renders the picker, the disclaimer, the timeline and the findings', async () => {
+  const manifest = requireBundle();
+  const { el, replay } = await mountBundle();
 
   assert.ok(el.textContent.includes(DISCLAIMER), 'disclaimer missing');
   assert.ok(el.textContent.includes('Pick a scenario'));
   const radios = el.findAll(n => n.tagName === 'INPUT' && n.getAttribute('type') === 'radio');
   assert.equal(radios.length, manifest.runs.length);
   assert.equal(radios[0].checked, true);
+  const cards = byClass(el, 'pw-choice');
+  for (const [i, run] of manifest.runs.entries()) {
+    assert.ok(cards[i].textContent.includes(run.title), `${run.id}: card title`);
+    assert.ok(cards[i].textContent.includes(run.teaser), `${run.id}: card teaser`);
+    assert.ok(cards[i].textContent.includes(run.payerName), `${run.id}: card payer`);
+  }
 
   for (const run of manifest.runs) {
     await replay.select(run.id);
-    const report = JSON.parse(readFileSync(join(dist, ...run.file.split('/')), 'utf8'));
+    const report = readRun(run);
+    assert.ok(statusText(el).includes(`Showing ${run.title}.`), `${run.id}: not shown`);
+    assert.equal(visibleSteps(el).length, 0, `${run.id}: steps shown before Run`);
+    replay.showResult();
     const text = el.textContent;
     assert.ok(text.includes(DISCLAIMER), `${run.id}: disclaimer missing`);
-    assert.ok(text.includes(`Showing ${run.title}.`), `${run.id}: not shown`);
     for (const step of report.steps) assert.ok(text.includes(step.title), `${run.id}: step ${step.stepId} missing`);
     for (const f of report.findings) {
       assert.ok(text.includes(f.title), `${run.id}: finding ${f.checkId} missing`);
       if (f.explanation) assert.ok(text.includes(f.explanation), `${run.id}: ${f.checkId} explanation missing`);
       if (f.suggestedFix) assert.ok(text.includes(f.suggestedFix), `${run.id}: ${f.checkId} fix missing`);
     }
+    // Raw HTTP sits behind one "Show request/response" disclosure per step.
     const exchanges = report.steps.flatMap(s => s.details.exchanges || []);
-    const rendered = el.findAll(n => n.tagName === 'DETAILS' && n.className === 'pw-exchange');
+    const rendered = byClass(el, 'pw-exchange');
     assert.equal(rendered.length, exchanges.length, `${run.id}: exchanges`);
+    for (const x of rendered) {
+      const box = x.parentNode.parentNode;
+      assert.equal(box.tagName, 'DETAILS', `${run.id}: exchange not in a disclosure`);
+      assert.equal(box.childNodes[0].textContent, 'Show request/response');
+    }
+    const withExchanges = report.steps.filter(s => (s.details.exchanges || []).length).length;
+    assert.equal(byClass(el, 'pw-step-details').filter(d => d.childNodes[0].textContent === 'Show request/response').length,
+      withExchanges, `${run.id}: one disclosure per step`);
     assert.equal(radios[manifest.runs.indexOf(run)].checked, true);
   }
 
@@ -178,7 +213,151 @@ test('replay.js renders the picker, the disclaimer, the timeline and the finding
   radios.at(-1).checked = true;
   radios.at(-1).dispatch('change');
   await new Promise(r => setTimeout(r, 10));
-  assert.ok(el.textContent.includes(`Showing ${last.title}.`));
+  assert.ok(statusText(el).includes(`Showing ${last.title}.`));
+});
+
+test('step durations follow the documented clamp and total cap', async () => {
+  requireBundle();
+  const { mod } = await mountBundle();
+  const { TIMING, stepDurations } = mod;
+  assert.deepEqual(TIMING, { scale: 0.25, minMs: 350, maxMs: 1200, totalMs: 6000 });
+  assert.deepEqual(stepDurations([{ elapsedMs: 2 }, { elapsedMs: 2000 }, { elapsedMs: 11005 }]), [350, 500, 1200]);
+  const long = stepDurations(Array.from({ length: 10 }, () => ({ elapsedMs: 9000 })));
+  assert.ok(long.reduce((a, b) => a + b, 0) <= 6000, 'whole run must fit in about 6 s');
+});
+
+test('Run plays the steps in order, then stops at the failing step', async () => {
+  const run = findRun('fabrikam-wrong-audience-reject');
+  const report = readRun(run);
+  const { el, mod } = await mountBundle({ run: run.id });
+  const stop = report.steps.findIndex(s => s.title === report.verdict.brokeAt);
+  assert.ok(stop > 0 && stop < report.steps.length - 1, 'the run should break mid-flow');
+  const durations = mod.stepDurations(report.steps.slice(0, stop + 1));
+
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    assert.ok(runButton(el).textContent.startsWith('Run'));
+    runButton(el).dispatch('click');
+    for (let i = 0; i <= stop; i++) {
+      const shown = visibleSteps(el);
+      assert.equal(shown.length, i + 1, `step ${i} revealed alone`);
+      assert.equal(shown[i].className, 'pw-step active');
+      assert.ok(shown[i].textContent.includes(report.steps[i].title));
+      for (let j = 0; j < i; j++) assert.equal(shown[j].className, `pw-step ${report.steps[j].status}`);
+      assert.equal(byClass(el, 'pw-result').length, 0, 'result shown before the run ended');
+      assert.equal(statusText(el), `Replaying ${run.title}…`, 'announced once, not per step');
+      mock.timers.tick(durations[i]);
+    }
+    const steps = visibleSteps(el);
+    assert.equal(steps.length, report.steps.length);
+    assert.equal(steps[stop].className, 'pw-step failed');
+    assert.ok(steps[stop].textContent.includes('✗ failed'), 'failure needs an icon and text');
+    for (const later of steps.slice(stop + 1)) assert.match(later.className, /\bpw-after\b/);
+    assert.ok(report.steps.slice(stop + 1).some(s => s.status === 'skipped'));
+    assert.equal(byClass(el, 'pw-result').length, 1);
+    assert.ok(runButton(el).textContent.startsWith('Replay'));
+    assert.equal(statusText(el), `${run.title}: onboarding would fail. ${report.findings.find(f => f.severity === 'FAIL').title}.`);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('the result card leads with the first failure, or says a healthy run would succeed', async () => {
+  const manifest = requireBundle();
+  const { el, replay } = await mountBundle();
+  for (const run of manifest.runs) {
+    await replay.select(run.id);
+    replay.showResult();
+    const report = readRun(run);
+    const [card] = byClass(el, 'pw-result');
+    assert.ok(card, `${run.id}: no result card`);
+    const view = byClass(el, 'pw-run')[0];
+    assert.equal(view.childNodes.indexOf(card.parentNode), 3, `${run.id}: card is not above the timeline`);
+    const fails = report.findings.filter(f => f.severity === 'FAIL');
+    if (fails.length) {
+      assert.match(card.className, /\bFAIL\b/);
+      const [first] = fails;
+      assert.equal(byClass(card, 'pw-result-title')[0].textContent, first.title);
+      for (const part of [first.explanation, first.suggestedFix, first.checkId]) {
+        assert.ok(card.textContent.includes(part), `${run.id}: card lacks ${part}`);
+      }
+      const more = fails.length - 1;
+      assert.equal(card.textContent.includes(`+${more} more failing check`), more > 0, `${run.id}: +N more`);
+    } else {
+      assert.equal(byClass(card, 'pw-result-title')[0].textContent, 'Onboarding would succeed');
+      for (const s of report.steps) assert.ok(card.textContent.includes(s.title), `${run.id}: ${s.title} not named`);
+    }
+    const passed = report.findings.filter(f => f.severity === 'PASS').length;
+    const [collapse] = byClass(el, 'pw-passed');
+    assert.equal(collapse.tagName, 'DETAILS');
+    assert.equal(collapse.childNodes[0].textContent, `✓ ${passed} check${passed === 1 ? '' : 's'} passed`);
+    assert.equal(collapse.findAll(n => n.tagName === 'LI').length, passed);
+  }
+});
+
+test('a slow payer fills a latency bar past the recorded budget, labelled with the real ms', async () => {
+  const run = findRun('northwind-slow-response');
+  const report = readRun(run);
+  const { el, replay, mod } = await mountBundle({ run: run.id });
+  const info = mod.latencyInfo(report);
+  assert.equal(report.steps[info.step].stepId, 'hook-request');
+  assert.ok(info.ms > info.failMs, 'the slow run should be over the fail budget');
+  replay.showResult();
+  const [bar] = byClass(el, 'pw-bar');
+  assert.ok(visibleSteps(el)[info.step].findAll(n => n === bar).length, 'bar is not on the slow step');
+  assert.ok(bar.textContent.includes(`${info.ms.toLocaleString('en-US')} ms recorded, over the 10 s fail budget`), bar.textContent);
+  const pct = v => parseFloat(v);
+  const fill = byClass(bar, 'pw-bar-fill')[0].style['--pw-fill'];
+  const failMark = byClass(bar, 'fail')[0].style.left;
+  assert.ok(pct(fill) > pct(failMark) && pct(fill) <= 100, `fill ${fill} should overshoot the fail mark at ${failMark}`);
+});
+
+test('under reduced motion, Run shows the final state at once', async () => {
+  const run = findRun('fabrikam-wrong-audience-reject');
+  const report = readRun(run);
+  const { el } = await mountBundle({ run: run.id }, { reducedMotion: true });
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    runButton(el).dispatch('click');
+    assert.equal(visibleSteps(el).length, report.steps.length);
+    assert.equal(byClass(el, 'active').length, 0, 'no step should be pulsing');
+    assert.equal(byClass(el, 'pw-result').length, 1);
+    assert.ok(statusText(el).startsWith(`${run.title}: onboarding would fail.`));
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('options.autoplay plays a run as soon as it is picked', async () => {
+  const run = findRun('northwind-healthy');
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { el, replay } = await mountBundle({ run: run.id, autoplay: true });
+    assert.equal(statusText(el), `Replaying ${run.title}…`);
+    assert.equal(visibleSteps(el).length, 1);
+    replay.showResult();
+    assert.equal(statusText(el), `${run.title}: onboarding would succeed.`);
+    assert.equal(byClass(el, 'pw-result-title')[0].textContent, 'Onboarding would succeed');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('without a manifest teaser, the card falls back to the first FAIL finding', async () => {
+  const manifest = requireBundle();
+  const strip = m => ({ ...m, runs: m.runs.map(({ teaser, payerName, ...run }) => run) });
+  const { el, mod } = await mountBundle({}, { editManifest: strip });
+  await new Promise(r => setTimeout(r, 20));
+  const cards = byClass(el, 'pw-choice');
+  for (const [i, run] of manifest.runs.entries()) {
+    const report = readRun(run);
+    const fail = report.findings.find(f => f.severity === 'FAIL');
+    const expected = fail ? fail.title : 'Healthy connection';
+    assert.equal(mod.teaserFor({ ...run, teaser: undefined }, report), expected);
+    assert.equal(byClass(cards[i], 'pw-choice-teaser')[0].textContent, expected, `${run.id}: teaser`);
+    assert.equal(byClass(cards[i], 'pw-choice-payer')[0].textContent, report.payer.displayName, `${run.id}: payer`);
+  }
+  assert.equal(mod.teaserFor({ teaser: 'Payer is slow' }, null), 'Payer is slow');
 });
 
 test('replay.js reports a missing bundle without throwing', async () => {
