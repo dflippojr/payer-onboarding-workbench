@@ -89,7 +89,7 @@ try {
 
     Invoke-Tour 'fabrikam-wrong-audience' 'Fabrikam with wrong-audience-reject: the payer rejects the JWT audience' `
         '{"payerId":"fabrikam-synthetic","sampleId":"order-sign-hospital-bed","faults":["wrong-audience-reject"]}' `
-        @('FAIL response.schema')
+        @('FAIL auth.jwt-audience')
 
     Write-Host ''
     Write-Host '    (the next run holds every payer response for about 11 s)'
