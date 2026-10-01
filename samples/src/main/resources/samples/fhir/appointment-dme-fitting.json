@@ -1,0 +1,12 @@
+{
+  "resourceType": "Appointment",
+  "id": "appt-dme-fitting",
+  "status": "proposed",
+  "serviceType": [ { "text": "Durable medical equipment fitting" } ],
+  "start": "2026-03-16T14:00:00Z",
+  "end": "2026-03-16T14:30:00Z",
+  "participant": [
+    { "actor": { "reference": "Patient/pat-synthetic-001" }, "status": "accepted" },
+    { "actor": { "reference": "Practitioner/pract-synthetic-001" }, "status": "needs-action" }
+  ]
+}

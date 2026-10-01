@@ -1,0 +1,11 @@
+{
+  "id": "appointment-book-dme-fitting",
+  "title": "DME fitting at appointment-book",
+  "hook": "appointment-book",
+  "demonstrates": "An appointment-book request, booked outside an encounter. Neither mock payer advertises appointment-book, so it shows how the workbench reports an unsupported hook.",
+  "codes": [],
+  "expected": {
+    "payerA": "Not supported: Northwind does not advertise an appointment-book service.",
+    "payerB": "Not supported: Fabrikam does not advertise an appointment-book service."
+  }
+}

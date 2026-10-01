@@ -1,0 +1,14 @@
+{
+  "id": "order-select-walker",
+  "title": "Walker at order-select",
+  "hook": "order-select",
+  "demonstrates": "order-select with a selected DeviceRequest (walker) next to an unselected ServiceRequest (physical therapy evaluation) in the draft order set.",
+  "codes": [
+    "HCPCS E0143",
+    "CPT 97161"
+  ],
+  "expected": {
+    "payerA": "A response for the selected walker: conditional coverage, documentation needed (E0143 has no specific rule).",
+    "payerB": "Depends on Fabrikam's discovery response: if it does not list an order-select service, expect 'not supported'."
+  }
+}
