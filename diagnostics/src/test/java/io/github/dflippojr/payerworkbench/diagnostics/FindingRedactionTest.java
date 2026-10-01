@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.diagnostics;
 
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.ACCESS_TOKEN;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.NOW;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.ORDER_SIGN_URL;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.TOKEN_URL;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.discovery;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
@@ -42,6 +43,8 @@ class FindingRedactionTest {
                 .encodeToString(generator.generateKeyPair().getPrivate().getEncoded());
         String pem = "-----BEGIN PRIVATE KEY-----\n" + keyBase64 + "\n-----END PRIVATE KEY-----";
         String assertion = jwt(TOKEN_URL + "/", NOW.plusSeconds(400), NOW.plusSeconds(700));
+        // The CDS Hooks client JWT for the hook call, whose claims the run records apart from the token.
+        String hookJwt = jwt(ORDER_SIGN_URL + "/", NOW, NOW.plusSeconds(300));
 
         var run = healthy();
         // Discovery fails and the payer's error page dumps a key.
@@ -59,6 +62,9 @@ class FindingRedactionTest {
         run.hooks = new ArrayList<>(List.of(
                 orderSign(hook(401, "{\"error\":\"invalid_token\",\"access_token\":\"" + ACCESS_TOKEN
                         + "\",\"detail\":\"Bearer " + ACCESS_TOKEN + " expired\"}", 12_000)),
+                // A hook call whose client JWT audience is rejected; the payer echoes the whole JWT.
+                orderSign(hook(401, "{\"error\":\"unauthorized\",\"error_description\":\"bad aud in "
+                        + hookJwt + "\"}", 300), ORDER_SIGN_URL + "/"),
                 new HookResponse("crd-appointment-book", "appointment-book", null,
                         Fixtures.unreachable("POST", Fixtures.DISCOVERY_URL + "/crd-appointment-book",
                                 "javax.net.ssl.SSLHandshakeException: bad_certificate; client key "
@@ -67,9 +73,13 @@ class FindingRedactionTest {
         List<Finding> findings = new DiagnosticEngine().run(run.build());
 
         assertTrue(findings.stream().filter(f -> f.severity() == Severity.FAIL).count() >= 4, findings::toString);
+        assertTrue(findings.stream().anyMatch(f -> f.checkId().equals(JwtAudienceCheck.ID)
+                && f.severity() == Severity.FAIL && f.evidence().contains("JWT aud: " + ORDER_SIGN_URL + "/")),
+                findings::toString);
         assertTrue(findings.stream().anyMatch(f -> f.evidence() != null && f.evidence().contains(Redactor.MASK)),
                 "expected some evidence to show masked material");
-        List<String> forbidden = new ArrayList<>(List.of(clientSecret, ACCESS_TOKEN, signatureOf(assertion)));
+        List<String> forbidden = new ArrayList<>(List.of(clientSecret, ACCESS_TOKEN, signatureOf(assertion),
+                hookJwt, signatureOf(hookJwt)));
         // Every full line of the key body; the last line may be short, so require 16+ characters.
         for (String line : keyBase64.split("\n")) {
             if (line.length() >= 16) {

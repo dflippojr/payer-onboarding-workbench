@@ -16,7 +16,8 @@ import java.util.Set;
  * {@code response.schema}: each hook call returned HTTP 2xx with a CDS Hooks
  * response whose cards have the required fields ({@code summary},
  * {@code indicator}, {@code source.label}) and a valid {@code indicator}
- * ({@code info}, {@code warning} or {@code critical}).
+ * ({@code info}, {@code warning} or {@code critical}). A 401 that
+ * {@link JwtAudienceCheck} explains is left to that check.
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
 
@@ -40,6 +41,10 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             String label = hook.serviceId() + (hook.sampleId() == null ? "" : " (sample " + hook.sampleId() + ")");
             if (!exchange.responded()) {
                 // Transport failures are reported by tls.handshake and perf.latency.
+                continue;
+            }
+            if (JwtAudienceCheck.explains(hook)) {
+                // A 401 for the client JWT's audience is reported by auth.jwt-audience.
                 continue;
             }
             if (!Support.isSuccess(exchange.status())) {

@@ -24,6 +24,12 @@ These are smaller calls made while building the skeleton, recorded for the same 
 - **The demo starts the app on port 0** and reads the port from the startup log, so it never collides with anything already listening. The bash script checks findings from the Markdown report with `awk` so it needs no `jq`; the PowerShell script reads the JSON report.
 - **The demo keeps the default latency budgets**, so the `slow-response` run takes about 35 s but shows what a real slow payer looks like.
 
+## Implementation choices made in #14
+
+- **Hook-call JWT claims ride on `HookResponse`.** The additive `workbench-core` change is a `JwtClaims` record (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`) on an optional `HookResponse.clientJwt`, so each claim set stays tied to the call that carried it. The four-argument constructor is kept. The token, its encoded parts and its signature are never stored.
+- **An exact `aud` can still be an audience failure.** With `wrong-audience-reject` the workbench's `aud` already is the service URL, and the payer validates against another one. Comparing `aud` with the URL alone would miss that, so `auth.jwt-audience` also FAILs a hook-call 401 whose error (body or `WWW-Authenticate`) mentions `aud` or the audience, and quotes the first other URL the payer names.
+- **One 401, one finding.** `response.schema` skips a hook-call 401 that `auth.jwt-audience` FAILs, so the report points at the audience and nowhere else.
+
 ## Implementation choices made in #15
 
 - **The replay bundle lives in `replay/` and is assembled into `site-dist/` by the export scripts.** `site-dist/` is gitignored and rebuilt from scratch on every export, so recorded runs (with their run ids, ephemeral ports and timestamps) never land in git.

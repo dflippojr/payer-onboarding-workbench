@@ -14,6 +14,7 @@ import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
+import io.github.dflippojr.payerworkbench.core.JwtClaims;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.RedactedConnection;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
@@ -22,7 +23,6 @@ import io.github.dflippojr.payerworkbench.core.StepResult;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticEngine;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticsConfig;
-import io.github.dflippojr.payerworkbench.diagnostics.JwtAudienceCheck;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import io.github.dflippojr.payerworkbench.samples.PrefetchVariant;
@@ -141,7 +141,7 @@ public class OnboardingRunner {
         private TokenResponseMetadata tokenResponse;
         private String authorization;
         private String hookBody;
-        private String jwtAud;
+        private JwtClaims clientJwt;
 
         Attempt(RunRequest request, SampleMetadata sample) {
             this.request = request;
@@ -322,7 +322,7 @@ public class OnboardingRunner {
             details.put("jwtClaims", decode(parts[1]));
             details.put("requestUrl", target);
             authorization = "Bearer " + jwt;
-            jwtAud = aud;
+            clientJwt = claimsOf(parts[0], parts[1]);
             boolean exact = aud.equals(target);
             details.put("audMatchesRequestUrl", exact);
             return Outcome.pass("Signed a CDS Hooks client JWT as " + record.clientId() + " (kid " + record.keyId()
@@ -342,7 +342,7 @@ public class OnboardingRunner {
                 headers.put("Authorization", authorization);
             }
             ExchangeRecorder.Sent sent = recorder.post(URI.create(serviceUrl()), headers, hookBody);
-            hookResponses.add(new HookResponse(serviceId, sample.hook(), sample.id(), sent.exchange()));
+            hookResponses.add(new HookResponse(serviceId, sample.hook(), sample.id(), sent.exchange(), clientJwt));
             details.put("exchanges", List.of(ExchangeView.of(sent.exchange())));
             if (!sent.ok()) {
                 return Outcome.fail(describeFailure("Hook call to " + serviceId, sent.exchange()));
@@ -424,10 +424,8 @@ public class OnboardingRunner {
         }
 
         /**
-         * What the engine can't see: a run that never found a connection record, and the
-         * {@code aud} of a CDS Hooks client JWT, which travels as a bearer token and so is
-         * masked whole in the recorded exchange. The workbench signed that JWT itself, so
-         * it compares the claim it chose with the URL it sent the JWT to.
+         * What the engine can't see: a run that never found a connection record, so
+         * nothing was sent.
          */
         private List<Finding> workbenchFindings() {
             List<Finding> findings = new ArrayList<>();
@@ -439,28 +437,6 @@ public class OnboardingRunner {
                         "payerId: " + request.payerId() + "\nenvironment: " + request.environment(),
                         "Add a ConnectionRecord for this payer and environment (base URL, auth type, client id "
                                 + "and a credential reference), or pick an environment that has one."));
-            }
-            if (jwtAud != null && !hookResponses.isEmpty()) {
-                HttpExchange hook = hookResponses.getLast().exchange();
-                String target = hook.url();
-                if (!jwtAud.equals(target) && hook.status() == 401) {
-                    findings.add(new Finding(JwtAudienceCheck.ID, Severity.FAIL,
-                            "JWT audience does not match the URL it was sent to",
-                            "The hook call was rejected, and the client JWT the workbench signed for it names a "
-                                    + "different audience (the aud claim, which says which server the token is "
-                                    + "meant for) than the URL it was sent to. Payers compare aud character for "
-                                    + "character, so even a trailing slash makes it invalid.",
-                            "JWT aud: " + jwtAud + "\nrequest URL: " + target + "\nHTTP " + hook.status() + ": "
-                                    + excerpt(hook.responseBody()),
-                            "Set the JWT aud to exactly " + target + " (the service URL, not the base URL), then retry."));
-                } else if (!jwtAud.equals(target) && hook.status() / 100 == 2) {
-                    findings.add(new Finding(JwtAudienceCheck.ID, Severity.INFO,
-                            "Payer accepted a JWT whose audience differs from the URL",
-                            "This payer accepted the client JWT even though its aud claim is not exactly the URL "
-                                    + "it was sent to. A stricter environment of the same payer may reject it.",
-                            "JWT aud: " + jwtAud + "\nrequest URL: " + target,
-                            "Set the JWT aud to exactly " + target + "."));
-                }
             }
             return findings;
         }
@@ -511,13 +487,6 @@ public class OnboardingRunner {
         return counts;
     }
 
-    private static String excerpt(String text) {
-        if (text == null) {
-            return "(no body)";
-        }
-        return text.length() > 300 ? text.substring(0, 300) + "..." : text;
-    }
-
     private static String describeFailure(String what, HttpExchange exchange) {
         if (!exchange.responded()) {
             return what + " got no response: " + exchange.transportError();
@@ -548,6 +517,31 @@ public class OnboardingRunner {
         } catch (JsonProcessingException e) {
             return null;
         }
+    }
+
+    /**
+     * The non-secret claims of a compact JWT, from its encoded header and payload.
+     * The token and its signature are never kept.
+     */
+    private JwtClaims claimsOf(String header, String payload) {
+        try {
+            JsonNode h = mapper.readTree(Base64.getUrlDecoder().decode(header));
+            JsonNode p = mapper.readTree(Base64.getUrlDecoder().decode(payload));
+            List<String> aud = new ArrayList<>();
+            if (p.path("aud").isArray()) {
+                p.get("aud").forEach(a -> aud.add(a.asText()));
+            } else if (p.hasNonNull("aud")) {
+                aud.add(p.get("aud").asText());
+            }
+            return new JwtClaims(text(p, "iss"), aud, epochSeconds(p, "exp"), epochSeconds(p, "iat"), text(p, "jti"),
+                    text(h, "kid"));
+        } catch (java.io.IOException | IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static Instant epochSeconds(JsonNode json, String field) {
+        return json.path(field).isNumber() ? Instant.ofEpochSecond(json.get(field).asLong()) : null;
     }
 
     private Object decode(String base64url) {
