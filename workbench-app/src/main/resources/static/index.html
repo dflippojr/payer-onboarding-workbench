@@ -77,6 +77,17 @@
     <section class="panel" aria-labelledby="steps-heading">
       <h2 id="steps-heading" tabindex="-1">Steps</h2>
       <p id="run-meta" class="muted small">Run the flow to see each step.</p>
+      <div class="actions report-actions" id="report-actions" hidden>
+        <label class="field">Report format
+          <select id="report-format">
+            <option value="html">HTML (prints cleanly)</option>
+            <option value="md">Markdown</option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+        <a class="button" id="report-link" href="#" download>Download report <span aria-hidden="true">↓</span></a>
+        <span class="muted small">Redacted, with the synthetic-data disclaimer.</span>
+      </div>
       <ol id="steps" class="timeline"></ol>
     </section>
 

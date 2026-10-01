@@ -16,3 +16,10 @@ These are smaller calls made while building the skeleton, recorded for the same 
 - **Parent POM inherits `spring-boot-starter-parent`.** That gives one dependency-management source for every module. Only `workbench-app` depends on Spring; the other modules stay plain Java.
 - **Redaction at construction time.** `HttpExchange` redacts headers and bodies, and `Finding` redacts `evidence`, in their constructors. That way secret material cannot reach a report even if a caller forgets to redact. `RunObservations` holds a `RedactedConnection` (credential references reduced to "configured: yes/no") and `TokenResponseMetadata` (never the token value).
 - **JWTs keep header and payload; only the signature is masked.** Claims such as `iss`, `aud` and `exp` are the usual cause of token failures, so diagnostics need to see them. A JWT that is the value of a secret field such as `access_token`, or a bearer credential, is masked entirely.
+
+## Implementation choices made in #6
+
+- **Reports redact again, field by field.** `StepResult.details` is only documented as secret-free, so `RunReport` passes every string through `Redactor` and masks any field named like a secret before any format renders. All three formats render from that one sanitized model.
+- **Workbench version from `build-info`.** The Spring Boot plugin's `build-info` goal writes `META-INF/build-info.properties`; reports read `build.version` from it (falling back to the jar manifest, then `unknown`).
+- **The demo starts the app on port 0** and reads the port from the startup log, so it never collides with anything already listening. The bash script checks findings from the Markdown report with `awk` so it needs no `jq`; the PowerShell script reads the JSON report.
+- **The demo keeps the default latency budgets**, so the `slow-response` run takes about 35 s but shows what a real slow payer looks like.

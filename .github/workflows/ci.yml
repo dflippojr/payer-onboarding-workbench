@@ -13,3 +13,12 @@ jobs:
       - name: Install fhir-crd-router at the pinned commit
         run: bash scripts/install-crd-router.sh
       - run: ./mvnw -B verify
+      - name: Demo tour (reuses the jar built by verify)
+        run: DEMO_SKIP_BUILD=1 bash scripts/demo.sh
+      - name: Upload demo reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-output
+          path: demo-output/
+          if-no-files-found: ignore

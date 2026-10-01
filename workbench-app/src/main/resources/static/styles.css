@@ -99,6 +99,9 @@ input:disabled { opacity: .55; }
   background: var(--green); color: var(--on-green); cursor: pointer; min-height: 44px;
 }
 .button[disabled] { opacity: .6; cursor: progress; }
+a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.report-actions { align-items: flex-end; margin: 0 0 16px; }
+.report-actions[hidden] { display: none; }
 .link { background: none; border: 0; padding: 0; color: var(--green); font-family: inherit; font-size: 14px; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; min-height: 44px; }
 
 .timeline { list-style: none; margin: 0; padding: 0; counter-reset: step; }
