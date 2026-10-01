@@ -2,7 +2,9 @@
 // Run scripts/export-replays.sh first, then: node --test replay/test/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -187,4 +189,23 @@ test('replay.js reports a missing bundle without throwing', async () => {
   await mountReplay(el, { baseUrl: '/nowhere/' });
   assert.ok(el.textContent.includes(DISCLAIMER));
   assert.ok(el.textContent.includes('Could not load the recorded runs (HTTP 404).'));
+});
+
+test('vendor-into-site.mjs copies the bundle and drops stale runs', () => {
+  requireBundle();
+  const target = mkdtempSync(join(tmpdir(), 'pw-vendor-'));
+  try {
+    mkdirSync(join(target, 'runs'));
+    writeFileSync(join(target, 'runs', 'stale-run.json'), '{}');
+    writeFileSync(join(target, 'keep.txt'), 'site file');
+    execFileSync(process.execPath, [join(root, 'scripts', 'vendor-into-site.mjs'), target], { stdio: 'pipe' });
+    const rel = dir => bundleFiles(dir).map(f => relative(dir, f)).sort();
+    assert.deepEqual(rel(target), [...rel(dist), 'keep.txt'].sort());
+    for (const file of bundleFiles()) {
+      assert.equal(readFileSync(join(target, relative(dist, file)), 'utf8'), readFileSync(file, 'utf8'));
+    }
+    assert.throws(() => execFileSync(process.execPath, [join(root, 'scripts', 'vendor-into-site.mjs'), root], { stdio: 'pipe' }));
+  } finally {
+    rmSync(target, { recursive: true, force: true });
+  }
 });
