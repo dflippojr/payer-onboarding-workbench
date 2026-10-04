@@ -4,7 +4,7 @@ Connect to a (synthetic) insurance payer's FHIR CRD / CDS Hooks endpoint, inspec
 
 Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which stays independently usable; this workbench is an optional consumer of it.
 
-**Status:** early. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks, the sample library, report export and a scripted demo work end to end; later work is tracked in GitHub issues.
+**Status:** v1 is done. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks, the sample library, report export, the scripted demo and the website replay bundle are merged, and the replay is embedded on [dflippojr.dev](https://dflippojr.dev). Later work is tracked in [GitHub issues](https://github.com/dflippojr/payer-onboarding-workbench/issues).
 
 All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
 
@@ -28,10 +28,12 @@ Build and run the tests:
 ./mvnw verify
 ```
 
-Run the app (serves on http://localhost:8080 by default; pass `--server.port=<port>` to change it):
+Run the app (serves on http://localhost:8080 by default). Install the sibling modules once, then run `workbench-app` on its own; `-am` with `spring-boot:run` would try to run the parent pom too and fail:
 
 ```sh
-./mvnw -pl workbench-app -am spring-boot:run
+./mvnw install -DskipTests
+./mvnw -pl workbench-app spring-boot:run
+./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--server.port=9090   # another port
 ```
 
 Modules:
@@ -46,6 +48,13 @@ Modules:
 
 Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
 
+### CI
+
+Two GitHub Actions workflows run on pull requests and on pushes:
+
+- `.github/workflows/ci.yml` (every push and pull request): installs fhir-crd-router, runs `./mvnw -B verify`, then the demo tour (`scripts/demo.sh`), the replay export (`scripts/export-replays.sh`) and the bundle check (`node --test replay/test/bundle.test.mjs`). It uploads `demo-output/` and `site-dist/` as build artifacts.
+- `.github/workflows/sonar.yml` (pull requests and pushes to `main`): runs `./mvnw -B verify` with the SonarCloud Maven scanner and JaCoCo coverage, one XML report per module, and fails the check when the SonarCloud quality gate fails (`-Dsonar.qualitygate.wait=true`). The organization and project keys are in the parent `pom.xml`; the token comes from the `SONAR_TOKEN` repository secret. It is skipped for pull requests from forks, which do not get secrets.
+
 ## Onboarding flow
 
 `workbench-app` walks you through connecting to a payer and shows exactly where it breaks. Start it and open http://localhost:8080:
@@ -57,7 +66,7 @@ Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
 
 ![A failing run: the hook request is rejected with 401 and the findings explain why](docs/screenshots/failing-run.png)
 
-On startup the app launches both mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's RSA signing key) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
+On startup the app launches both mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (owner-only where the file system supports POSIX permissions, and deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's RSA signing key) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
 
 A run records these steps, each with its status, latency and redacted HTTP exchanges. The first failing step stops the run; the rest are marked skipped, and diagnostics run on whatever was observed.
 
@@ -127,7 +136,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 
 One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT it signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
 
-Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
+Settings (`workbench.*`, as Spring Boot properties, for example `--workbench.max-runs=50` on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 
 ## Demo
 
