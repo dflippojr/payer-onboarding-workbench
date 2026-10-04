@@ -16,11 +16,11 @@ import java.util.Optional;
  */
 public final class AuthTokenCheck implements DiagnosticCheck {
 
-    public static final String ID = "auth.token";
+    public static final String CHECK_ID = "auth.token";
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -40,7 +40,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                     + ", scope=" + String.join(" ", token.scopes());
         }
         if (exchange.isPresent() && !exchange.get().responded()) {
-            return List.of(new Finding(ID, Severity.FAIL, "Token endpoint unreachable",
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "Token endpoint unreachable",
                     "The workbench could not get any HTTP response from the token endpoint (the OAuth2 URL "
                             + "that exchanges client credentials for an access token), so no hook call can be "
                             + "authorized.",
@@ -51,7 +51,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
         int status = exchange.map(HttpExchange::status).orElse(200);
         String error = token == null ? null : token.error();
         if (status == 401 || "invalid_client".equals(error)) {
-            return List.of(new Finding(ID, Severity.FAIL, "Token request rejected: client not authenticated",
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "Token request rejected: client not authenticated",
                     "The token endpoint did not accept this client's credentials (HTTP " + status
                             + (error == null ? "" : ", " + error) + "). The payer either does not know this "
                             + "client_id in this environment or could not verify its secret or signed JWT.",
@@ -62,7 +62,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                             + "auth.jwt-audience or auth.clock-skew finding for the signed-JWT case."));
         }
         if ("invalid_scope".equals(error)) {
-            return List.of(new Finding(ID, Severity.FAIL, "Token request rejected: invalid_scope",
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "Token request rejected: invalid_scope",
                     "The payer refused one or more requested scopes (the permissions an access token is "
                             + "asked to carry). Payers often name scopes differently or only grant some per client.",
                     evidence + "\nrequested scopes: " + String.join(" ", obs.connection().scopes()),
@@ -70,7 +70,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                             + "a payer-specific CRD scope) and update the connection record's scopes to match."));
         }
         if (error != null || !Support.isSuccess(status)) {
-            return List.of(new Finding(ID, Severity.FAIL,
+            return List.of(new Finding(CHECK_ID, Severity.FAIL,
                     "Token request failed" + (error == null ? ": HTTP " + status : ": " + error),
                     "The token endpoint did not issue an access token, so hook calls cannot be authorized.",
                     evidence,
@@ -81,7 +81,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
             return List.of();
         }
         if (!token.accessTokenPresent()) {
-            return List.of(new Finding(ID, Severity.FAIL, "Token response has no access_token",
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "Token response has no access_token",
                     "The token endpoint answered successfully but returned no access_token, so there is "
                             + "nothing to send on hook calls.",
                     evidence,
@@ -89,7 +89,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                             + "was issued."));
         }
         if (token.expiresInSeconds() == null) {
-            return List.of(new Finding(ID, Severity.WARN, "Token response lacks expires_in",
+            return List.of(new Finding(CHECK_ID, Severity.WARN, "Token response lacks expires_in",
                     "An access token was issued, but the response does not say how long it lasts "
                             + "(expires_in, in seconds). Without it a client cannot tell when to fetch a new "
                             + "token, and may keep using an expired one and get 401s mid-session.",
@@ -97,7 +97,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                     "Ask the payer to return expires_in, as SMART Backend Services requires; meanwhile "
                             + "configure a conservative token lifetime (for example 5 minutes) in the client."));
         }
-        return List.of(new Finding(ID, Severity.PASS, "Access token obtained",
+        return List.of(new Finding(CHECK_ID, Severity.PASS, "Access token obtained",
                 "The token endpoint issued an access token with an expiry of " + token.expiresInSeconds()
                         + " seconds.",
                 evidence, null));

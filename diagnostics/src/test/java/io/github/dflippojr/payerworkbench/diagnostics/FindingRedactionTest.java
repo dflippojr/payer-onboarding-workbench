@@ -73,7 +73,7 @@ class FindingRedactionTest {
         List<Finding> findings = new DiagnosticEngine().run(run.build());
 
         assertTrue(findings.stream().filter(f -> f.severity() == Severity.FAIL).count() >= 4, findings::toString);
-        assertTrue(findings.stream().anyMatch(f -> f.checkId().equals(JwtAudienceCheck.ID)
+        assertTrue(findings.stream().anyMatch(f -> f.checkId().equals(JwtAudienceCheck.CHECK_ID)
                 && f.severity() == Severity.FAIL && f.evidence().contains("JWT aud: " + ORDER_SIGN_URL + "/")),
                 findings::toString);
         assertTrue(findings.stream().anyMatch(f -> f.evidence() != null && f.evidence().contains(Redactor.MASK)),

@@ -43,8 +43,9 @@ public final class Redactor {
     private static final String SECRET_KEYS =
             "client_secret|access_token|refresh_token|id_token|password|api_key|apikey";
 
+    /** Possessive quantifiers: a plain alternation recurses per character and overflows on long values. */
     private static final Pattern JSON_SECRET = Pattern.compile(
-            "(?i)\"(" + SECRET_KEYS + ")\"(\\s*:\\s*)\"(?:[^\"\\\\]|\\\\.)*\"");
+            "(?i)\"(" + SECRET_KEYS + ")\"(\\s*:\\s*)\"(?:[^\"\\\\]++|\\\\.)*+\"");
 
     private static final Pattern FORM_SECRET = Pattern.compile(
             "(?i)\\b(" + SECRET_KEYS + ")=[^&\\s\"]*");

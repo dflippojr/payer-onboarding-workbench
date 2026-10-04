@@ -16,8 +16,11 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -48,6 +51,7 @@ public class SyntheticPayers implements DisposableBean {
     static final String KEY_ID = "payer-workbench-key-1";
 
     private static final Logger log = LoggerFactory.getLogger(SyntheticPayers.class);
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Path workDir;
     private final FileBasedConnectionStore store;
@@ -56,7 +60,7 @@ public class SyntheticPayers implements DisposableBean {
     private final Map<String, MockPayer> payers = new LinkedHashMap<>();
 
     public SyntheticPayers() throws IOException {
-        workDir = Files.createTempDirectory("payer-workbench-");
+        workDir = createPrivateTempDir();
         store = new FileBasedConnectionStore(workDir.resolve("connections.yaml"));
         try {
             String secret = randomSecret();
@@ -117,9 +121,21 @@ public class SyntheticPayers implements DisposableBean {
         return Optional.ofNullable(payers.get(payerId));
     }
 
+    /**
+     * connections.yaml lives here, so the directory is owner-only ({@code rwx------}) where the file
+     * system supports POSIX permissions. Elsewhere (Windows) the default temp directory is already
+     * per-user, so no attribute is passed.
+     */
+    private static Path createPrivateTempDir() throws IOException {
+        FileAttribute<?>[] ownerOnly = FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
+                ? new FileAttribute<?>[] {PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))}
+                : new FileAttribute<?>[0];
+        return Files.createTempDirectory("payer-workbench-", ownerOnly);
+    }
+
     private static String randomSecret() {
         byte[] bytes = new byte[32];
-        new SecureRandom().nextBytes(bytes);
+        RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 

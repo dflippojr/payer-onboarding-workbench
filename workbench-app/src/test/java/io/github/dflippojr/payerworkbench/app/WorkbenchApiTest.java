@@ -120,7 +120,7 @@ class WorkbenchApiTest {
             assertTrue(report.headers().firstValue("Content-Disposition").orElse("")
                     .contains("onboarding-report-fabrikam-synthetic-" + runId + "." + format));
             String body = report.body();
-            assertTrue(body.contains(RunReport.DISCLAIMER), format);
+            assertTrue(body.contains(RunReport.DISCLAIMER_TEXT), format);
             assertTrue(body.contains("Fabrikam"), format);
             assertTrue(body.contains("auth.jwt-audience"), format);
             assertTrue(body.contains("FAIL"), format);

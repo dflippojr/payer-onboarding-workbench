@@ -2,7 +2,7 @@ package io.github.dflippojr.payerworkbench.diagnostics;
 
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.discovery;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
-import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.only;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertOnly;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -20,7 +20,7 @@ class DiscoveryChecksTest {
 
         @Test
         void healthyDiscoveryPasses() {
-            only(check.evaluate(healthy().build()), Severity.PASS);
+            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
         }
 
         @Test
@@ -28,7 +28,7 @@ class DiscoveryChecksTest {
             var run = healthy();
             run.discovery = Fixtures.unreachable("GET", Fixtures.DISCOVERY_URL,
                     "java.net.ConnectException: Connection refused");
-            Finding f = only(check.evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
             assertEquals("Discovery endpoint unreachable", f.title());
             assertTrue(f.evidence().contains("Connection refused"));
         }
@@ -37,7 +37,7 @@ class DiscoveryChecksTest {
         void non200FailsWithStatusSpecificFix() {
             var run = healthy();
             run.discovery = discovery(404, "{\"error\":\"not found\"}");
-            Finding f = only(check.evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
             assertTrue(f.title().contains("404"));
             assertTrue(f.suggestedFix().contains("/cds-services"));
         }
@@ -46,14 +46,14 @@ class DiscoveryChecksTest {
         void htmlBodyFailsAsNotJson() {
             var run = healthy();
             run.discovery = discovery(200, "<html><body>Sign in</body></html>");
-            assertEquals("Discovery response is not JSON", only(check.evaluate(run.build()), Severity.FAIL).title());
+            assertEquals("Discovery response is not JSON", assertOnly(check.evaluate(run.build()), Severity.FAIL).title());
         }
 
         @Test
         void jsonWithoutServicesFails() {
             var run = healthy();
             run.discovery = discovery(200, "{\"resourceType\":\"CapabilityStatement\"}");
-            only(check.evaluate(run.build()), Severity.FAIL);
+            assertOnly(check.evaluate(run.build()), Severity.FAIL);
         }
 
         @Test
@@ -68,7 +68,7 @@ class DiscoveryChecksTest {
     class Services {
         @Test
         void advertisedRequiredHookPasses() {
-            Finding f = only(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(healthy().build()), Severity.PASS);
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(healthy().build()), Severity.PASS);
             assertTrue(f.title().contains("order-sign"));
         }
 
@@ -76,7 +76,7 @@ class DiscoveryChecksTest {
         void noCrdHooksFails() {
             var run = healthy();
             run.discovery = discovery(200, "{\"services\":[{\"hook\":\"patient-view\",\"id\":\"pv\"}]}");
-            Finding f = only(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
             assertEquals("No CRD hooks advertised", f.title());
         }
 
@@ -84,12 +84,12 @@ class DiscoveryChecksTest {
         void emptyServicesFails() {
             var run = healthy();
             run.discovery = discovery(200, "{\"services\":[]}");
-            only(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
         }
 
         @Test
         void missingRequiredHookFails() {
-            Finding f = only(new DiscoveryServicesCheck(Set.of("order-sign", "order-dispatch"))
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign", "order-dispatch"))
                     .evaluate(healthy().build()), Severity.FAIL);
             assertTrue(f.title().contains("order-dispatch"));
             assertTrue(f.suggestedFix().contains("order-dispatch"));
@@ -102,7 +102,7 @@ class DiscoveryChecksTest {
 
         @Test
         void standardKeysPass() {
-            only(check.evaluate(healthy().build()), Severity.PASS);
+            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
         }
 
         @Test
@@ -113,7 +113,7 @@ class DiscoveryChecksTest {
                       "patientToGet":"Patient/{{context.patientId}}",
                       "insurance":"Coverage?patient={{context.patientId}}",
                       "practitioner":"PractitionerRole/{{context.userId}}"}}]}""");
-            Finding f = only(check.evaluate(run.build()), Severity.INFO);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.INFO);
             assertTrue(f.evidence().contains("\"patientToGet\" = Patient/{{context.patientId}}  =>  patient"));
             assertTrue(f.evidence().contains("\"insurance\" = Coverage?patient={{context.patientId}}  =>  coverage"));
             assertTrue(f.evidence().contains("no standard equivalent"));

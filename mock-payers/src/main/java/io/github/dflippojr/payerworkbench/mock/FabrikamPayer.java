@@ -97,7 +97,7 @@ public final class FabrikamPayer extends MockPayer {
     }
 
     @Override
-    public FabrikamPayer start(int port) throws IOException {
+    public synchronized FabrikamPayer start(int port) throws IOException {
         super.start(port);
         return this;
     }

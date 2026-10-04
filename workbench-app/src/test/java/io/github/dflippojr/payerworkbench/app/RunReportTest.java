@@ -46,7 +46,7 @@ class RunReportTest {
         assertFalse(out.contains(keyChunk), format + ": private key leaked");
         assertFalse(out.contains(jwtSignature), format + ": JWT signature leaked");
         assertTrue(out.contains("[REDACTED]"), format + ": nothing was marked as redacted");
-        assertTrue(out.contains(RunReport.DISCLAIMER), format + ": disclaimer missing");
+        assertTrue(out.contains(RunReport.DISCLAIMER_TEXT), format + ": disclaimer missing");
     }
 
     @ParameterizedTest

@@ -153,13 +153,13 @@ final class Fixtures {
     }
 
     /** Asserts exactly one finding and returns it. */
-    static Finding only(List<Finding> findings) {
+    static Finding assertOnly(List<Finding> findings) {
         assertEquals(1, findings.size(), () -> "expected one finding but got " + findings);
         return findings.get(0);
     }
 
-    static Finding only(List<Finding> findings, Severity severity) {
-        Finding f = only(findings);
+    static Finding assertOnly(List<Finding> findings, Severity severity) {
+        Finding f = assertOnly(findings);
         assertEquals(severity, f.severity(), () -> "unexpected severity: " + f);
         return f;
     }

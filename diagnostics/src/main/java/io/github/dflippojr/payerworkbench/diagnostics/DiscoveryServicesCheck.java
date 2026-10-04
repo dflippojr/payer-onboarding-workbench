@@ -17,7 +17,7 @@ import java.util.TreeSet;
  */
 public final class DiscoveryServicesCheck implements DiagnosticCheck {
 
-    public static final String ID = "discovery.services";
+    public static final String CHECK_ID = "discovery.services";
 
     /** The hooks CRD defines services for. */
     public static final Set<String> CRD_HOOKS = Set.of(
@@ -32,7 +32,7 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -60,7 +60,7 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
         Set<String> crd = new TreeSet<>(advertised);
         crd.retainAll(CRD_HOOKS);
         if (crd.isEmpty()) {
-            return List.of(new Finding(ID, Severity.FAIL, "No CRD hooks advertised",
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "No CRD hooks advertised",
                     "The payer's discovery document lists no services for the hooks Coverage Requirements "
                             + "Discovery (CRD) uses, such as order-sign. CRD is the Da Vinci standard for asking "
                             + "a payer whether an order needs prior authorization or documentation, so there is "
@@ -72,14 +72,14 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
         Set<String> missing = new TreeSet<>(requiredHooks);
         missing.removeAll(advertised);
         if (!missing.isEmpty()) {
-            return List.of(new Finding(ID, Severity.FAIL, "Required hooks not advertised: " + String.join(", ", missing),
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "Required hooks not advertised: " + String.join(", ", missing),
                     "The payer offers CRD services, but not for every hook this integration needs. Calls for "
                             + "the missing hooks will have no service to go to.",
                     evidence + "; required: " + String.join(", ", new TreeSet<>(requiredHooks)),
                     "Ask the payer whether they support " + String.join(", ", missing)
                             + " in this environment, or drop it from the hooks this integration calls."));
         }
-        return List.of(new Finding(ID, Severity.PASS, "CRD hooks advertised: " + String.join(", ", crd),
+        return List.of(new Finding(CHECK_ID, Severity.PASS, "CRD hooks advertised: " + String.join(", ", crd),
                 "Discovery lists CRD services" + (requiredHooks.isEmpty() ? "." : ", including every required hook."),
                 evidence, null));
     }

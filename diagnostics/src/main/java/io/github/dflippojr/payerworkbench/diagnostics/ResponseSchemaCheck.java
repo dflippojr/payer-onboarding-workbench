@@ -21,14 +21,14 @@ import java.util.Set;
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
 
-    public static final String ID = "response.schema";
+    public static final String CHECK_ID = "response.schema";
 
     static final Set<String> INDICATORS = Set.of("info", "warning", "critical");
     static final int MAX_SUMMARY = 140;
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -48,7 +48,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 continue;
             }
             if (!Support.isSuccess(exchange.status())) {
-                findings.add(new Finding(ID, Severity.FAIL, "Hook call to " + label + " returned HTTP " + exchange.status(),
+                findings.add(new Finding(CHECK_ID, Severity.FAIL, "Hook call to " + label + " returned HTTP " + exchange.status(),
                         "The payer answered the hook call with an error status instead of a CDS Hooks response, "
                                 + "so there are no cards (the messages a payer shows the clinician) to check.",
                         Support.describe(exchange),
@@ -77,7 +77,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             if (!problems.isEmpty()) {
                 findings.add(fail(label, problems, exchange));
             } else if (!warnings.isEmpty()) {
-                findings.add(new Finding(ID, Severity.WARN, "Cards from " + label + " bend the CDS Hooks rules",
+                findings.add(new Finding(CHECK_ID, Severity.WARN, "Cards from " + label + " bend the CDS Hooks rules",
                         "The response is usable, but some cards break CDS Hooks recommendations that EHRs rely on "
                                 + "when displaying them, so they may be truncated or shown oddly.",
                         String.join("\n", warnings) + "\n" + Support.describe(exchange),
@@ -87,7 +87,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             }
         }
         if (findings.isEmpty() && okCalls > 0) {
-            findings.add(new Finding(ID, Severity.PASS, "Hook responses are well-formed",
+            findings.add(new Finding(CHECK_ID, Severity.PASS, "Hook responses are well-formed",
                     "Every hook response was valid CDS Hooks JSON, and every card had a summary, a valid "
                             + "indicator and a source label.",
                     okCalls + " response(s), " + cardCount + " card(s) checked", null));
@@ -121,7 +121,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
     }
 
     private static Finding fail(String label, List<String> problems, HttpExchange exchange) {
-        return new Finding(ID, Severity.FAIL, "Invalid CDS Hooks response from " + label,
+        return new Finding(CHECK_ID, Severity.FAIL, "Invalid CDS Hooks response from " + label,
                 "The response does not follow the CDS Hooks card format. Each card (a message the payer wants "
                         + "shown to the clinician) needs a summary, an indicator of info, warning or critical, "
                         + "and a source label naming the payer; EHRs may drop or refuse cards that lack them.",

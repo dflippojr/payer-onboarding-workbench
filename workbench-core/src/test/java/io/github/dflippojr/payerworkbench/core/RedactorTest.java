@@ -109,6 +109,15 @@ class RedactorTest {
     }
 
     @Test
+    void masksVeryLongJsonSecretWithoutOverflowing() {
+        // 120 KB including escaped quotes, which used to overflow the regex engine's stack.
+        String secret = "s3cr3t\\\"".repeat(15_000);
+        String out = Redactor.redact("{\"client_secret\": \"" + secret + "\", \"client_id\": \"synthetic-client\"}");
+
+        assertEquals("{\"client_secret\": \"" + Redactor.MASK + "\", \"client_id\": \"synthetic-client\"}", out);
+    }
+
+    @Test
     void leavesOrdinaryTextAlone() {
         String text = "{\"error\":\"invalid_client\",\"error_description\":\"Missing bearer token\"}";
         assertEquals(text, Redactor.redact(text));
