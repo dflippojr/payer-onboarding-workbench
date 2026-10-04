@@ -4,7 +4,7 @@ Connect to a (synthetic) insurance payer's FHIR CRD / CDS Hooks endpoint, inspec
 
 Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which stays independently usable; this workbench is an optional consumer of it.
 
-**Status:** early. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks, the sample library, report export and a scripted demo work end to end; later work is tracked in GitHub issues.
+**Status:** v1 is done. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks, the sample library, report export, the scripted demo and the replay bundle are merged, and the replay is live on [dflippojr.dev](https://dflippojr.dev/). Later work is tracked in [GitHub issues](https://github.com/dflippojr/payer-onboarding-workbench/issues).
 
 All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
 
@@ -28,11 +28,18 @@ Build and run the tests:
 ./mvnw verify
 ```
 
-Run the app (serves on http://localhost:8080 by default; pass `--server.port=<port>` to change it):
+Run the app (serves on http://localhost:8080 by default). Install the sibling modules once, then run `workbench-app` on its own; adding `-am` to `spring-boot:run` fails on the parent pom, which has no main class:
 
 ```sh
-./mvnw -pl workbench-app -am spring-boot:run
+./mvnw install -DskipTests
+./mvnw -pl workbench-app spring-boot:run
+./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--server.port=9090   # another port
 ```
+
+CI runs two GitHub Actions workflows on pushes and pull requests:
+
+- `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [replay export](#embed-on-a-website) and its bundle check, and uploads `demo-output/` and `site-dist/` as build artifacts.
+- `.github/workflows/sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). The organization and project keys are in the parent `pom.xml`.
 
 Modules:
 
@@ -57,7 +64,7 @@ Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
 
 ![A failing run: the hook request is rejected with 401 and the findings explain why](docs/screenshots/failing-run.png)
 
-On startup the app launches both mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's RSA signing key) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
+On startup the app launches both mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (owner-only where the file system supports POSIX permissions, and deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's RSA signing key) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
 
 A run records these steps, each with its status, latency and redacted HTTP exchanges. The first failing step stops the run; the rest are marked skipped, and diagnostics run on whatever was observed.
 
@@ -163,7 +170,7 @@ It needs Node 22 or later, JDK 21 and Edge, Chrome or Chromium (`CAPTURE_BROWSER
 
 ## Embed on a website
 
-A static site cannot host the Java app, so the workbench can export a replay bundle instead: real runs recorded against the synthetic payers, plus a small viewer with no framework and no dependencies. It works like `integration-failure-lab`'s `dist/`.
+The replay is embedded on the [dflippojr.dev](https://dflippojr.dev/) home page, served from `/workbench/`. A static site cannot host the Java app, so the workbench exports a replay bundle instead: real runs recorded against the synthetic payers, plus a small viewer with no framework and no dependencies. It works like `integration-failure-lab`'s `dist/`.
 
 ```sh
 bash scripts/install-crd-router.sh                   # once
@@ -265,7 +272,7 @@ curl -X DELETE http://localhost:8181/admin/faults                           # tu
 |-------|----------------------|
 | `slow-response` | Hook calls (`POST /cds-services/{id}`) wait `delayMs` (default 2000) before they are handled. Discovery, the token endpoint and admin stay fast. |
 | `expired-token-401` | Hook calls get 401 as if the credential had expired. |
-| `wrong-audience-reject` | Hook calls get 401 because the payer expects a different audience. |
+| `wrong-audience-reject` | Hook calls get 401 because the payer expects a different audience: Fabrikam wants the JWT `aud` under `https://api.fabrikam-benefits.example`, Northwind wants access tokens issued for `https://crd.northwind-health.example`. |
 | `malformed-card` | Cards come back without the required `summary` and `indicator`. |
 | `discovery-500` | `GET /cds-services` returns 500. |
 | `prefetch-missing-400` | Hook calls missing a declared prefetch key get 400. With the fault off, missing prefetch is tolerated. |
