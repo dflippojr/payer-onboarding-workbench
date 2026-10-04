@@ -4,7 +4,7 @@ import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.ORDER_SIGN
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.discovery;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.hook;
-import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.only;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertOnly;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.orderSign;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.resource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -25,14 +25,14 @@ class ResponseChecksTest {
 
         @Test
         void matchingVersionPasses() {
-            only(check.evaluate(healthy().build()), Severity.PASS);
+            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
         }
 
         @Test
         void minorDifferenceWarns() {
             var run = healthy();
             run.connection = Fixtures.connection("2.1.0", false);
-            Finding f = only(check.evaluate(run.build()), Severity.WARN);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
             assertTrue(f.title().contains("payer 2.0.1, record 2.1.0"));
         }
 
@@ -40,7 +40,7 @@ class ResponseChecksTest {
         void majorDifferenceFails() {
             var run = healthy();
             run.connection = Fixtures.connection("1.0.0", false);
-            only(check.evaluate(run.build()), Severity.FAIL);
+            assertOnly(check.evaluate(run.build()), Severity.FAIL);
         }
 
         @Test
@@ -50,7 +50,7 @@ class ResponseChecksTest {
             run.hookBody("""
                     {"cards":[],"systemActions":[{"type":"update","resource":{"resourceType":"ServiceRequest",
                     "meta":{"profile":["http://hl7.org/fhir/us/davinci-crd/StructureDefinition/profile-servicerequest|2.2.0"]}}}]}""");
-            Finding f = only(check.evaluate(run.build()), Severity.WARN);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
             assertTrue(f.evidence().contains("payer: 2.2.0 (from versioned profile"), f::evidence);
         }
 
@@ -58,14 +58,14 @@ class ResponseChecksTest {
         void unreportedVersionIsInfo() {
             var run = healthy();
             run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\"}]}");
-            only(check.evaluate(run.build()), Severity.INFO);
+            assertOnly(check.evaluate(run.build()), Severity.INFO);
         }
 
         @Test
         void recordWithoutVersionIsInfo() {
             var run = healthy();
             run.connection = Fixtures.connection(null, false);
-            assertEquals("Connection record has no igVersion", only(check.evaluate(run.build()), Severity.INFO).title());
+            assertEquals("Connection record has no igVersion", assertOnly(check.evaluate(run.build()), Severity.INFO).title());
         }
     }
 
@@ -75,7 +75,7 @@ class ResponseChecksTest {
 
         @Test
         void wellFormedCardsPass() {
-            only(check.evaluate(healthy().build()), Severity.PASS);
+            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
         }
 
         @Test
@@ -85,7 +85,7 @@ class ResponseChecksTest {
                       {"summary":"PA required","indicator":"hard-stop","source":{"label":"Synthetic Health Plan"}},
                       {"indicator":"info","source":{}}
                     ]}""");
-            Finding f = only(check.evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
             assertTrue(f.evidence().contains("cards[0].indicator is \"hard-stop\""), f::evidence);
             assertTrue(f.evidence().contains("cards[1].summary is missing"));
             assertTrue(f.evidence().contains("cards[1].source.label is missing"));
@@ -94,21 +94,21 @@ class ResponseChecksTest {
         @Test
         void missingCardsArrayFails() {
             var run = healthy().hookBody("{\"systemActions\":[]}");
-            assertTrue(only(check.evaluate(run.build()), Severity.FAIL).evidence().contains("\"cards\" array"));
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().contains("\"cards\" array"));
         }
 
         @Test
         void longSummaryWarns() {
             var run = healthy().hookBody("{\"cards\":[{\"summary\":\"" + "x".repeat(141)
                     + "\",\"indicator\":\"info\",\"source\":{\"label\":\"Synthetic Health Plan\"}}]}");
-            only(check.evaluate(run.build()), Severity.WARN);
+            assertOnly(check.evaluate(run.build()), Severity.WARN);
         }
 
         @Test
         void errorStatusFails() {
             var run = healthy();
             run.hooks = new ArrayList<>(List.of(orderSign(hook(500, "{\"error\":\"internal\"}", 300))));
-            assertTrue(only(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 500"));
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 500"));
         }
 
         @Test
@@ -125,7 +125,7 @@ class ResponseChecksTest {
             var run = healthy();
             run.hooks = new ArrayList<>(List.of(orderSign(hook(401,
                     "{\"error\":\"unauthorized\",\"error_description\":\"JWT expired\"}", 300), ORDER_SIGN_URL)));
-            assertTrue(only(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 401"));
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 401"));
         }
     }
 
@@ -135,13 +135,13 @@ class ResponseChecksTest {
 
         @Test
         void coverageInSystemActionsPasses() {
-            only(check.evaluate(healthy().build()), Severity.PASS);
+            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
         }
 
         @Test
         void coverageInSuggestionsIsInfo() {
             var run = healthy().hookBody(resource("order-sign-coverage-in-suggestions.json"));
-            Finding f = only(check.evaluate(run.build()), Severity.INFO);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.INFO);
             assertTrue(f.evidence().contains("cards[0].suggestions[0].actions[0]"), f::evidence);
             assertTrue(f.explanation().contains("systemActions"));
         }

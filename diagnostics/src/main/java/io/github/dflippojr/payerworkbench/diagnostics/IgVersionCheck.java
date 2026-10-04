@@ -26,7 +26,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
 
     public static final String ID = "ig.version";
 
-    private static final Pattern VERSION_KEY = Pattern.compile("(?i).*ig[-_.]?version.*");
+    private static final Pattern VERSION_KEY = Pattern.compile("(?i)ig[-_.]?version");
     private static final Pattern VERSIONED_CANONICAL = Pattern.compile(
             "hl7\\.org/fhir/us/davinci-crd/[^\"|\\s]*\\|([0-9][0-9A-Za-z.\\-]*)");
 
@@ -107,7 +107,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
 
     private static Optional<Observed> versionIn(JsonNode extension, String source) {
         for (Map.Entry<String, JsonNode> e : extension.properties()) {
-            if (VERSION_KEY.matcher(e.getKey()).matches() && e.getValue().isTextual()
+            if (VERSION_KEY.matcher(e.getKey()).find() && e.getValue().isTextual()
                     && !e.getValue().asText().isBlank()) {
                 return Optional.of(new Observed(e.getValue().asText().strip(), source + " \"" + e.getKey() + "\""));
             }

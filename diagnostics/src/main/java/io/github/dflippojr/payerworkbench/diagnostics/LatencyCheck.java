@@ -22,7 +22,7 @@ public final class LatencyCheck implements DiagnosticCheck {
 
     public static final String ID = "perf.latency";
 
-    private static final Pattern TIMEOUT = Pattern.compile("(?i)timed? ?out|timeout");
+    private static final Pattern TIMEOUT = Pattern.compile("(?i)timed? ?out");
 
     private final Duration warn;
     private final Duration fail;

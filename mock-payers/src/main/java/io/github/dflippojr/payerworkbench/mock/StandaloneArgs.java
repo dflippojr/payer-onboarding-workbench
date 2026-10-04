@@ -10,6 +10,8 @@ import java.util.Map;
 /** Minimal {@code --name value} parsing for the payers' {@code main} methods. */
 final class StandaloneArgs {
 
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private final Map<String, List<String>> values;
 
     private StandaloneArgs(Map<String, List<String>> values) {
@@ -51,7 +53,7 @@ final class StandaloneArgs {
     /** A random URL-safe secret for a standalone run, so no secret is ever committed. */
     static String randomSecret() {
         byte[] bytes = new byte[24];
-        new SecureRandom().nextBytes(bytes);
+        RANDOM.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 }

@@ -80,7 +80,7 @@ public final class NorthwindPayer extends MockPayer {
     }
 
     @Override
-    public NorthwindPayer start(int port) throws IOException {
+    public synchronized NorthwindPayer start(int port) throws IOException {
         super.start(port);
         return this;
     }
