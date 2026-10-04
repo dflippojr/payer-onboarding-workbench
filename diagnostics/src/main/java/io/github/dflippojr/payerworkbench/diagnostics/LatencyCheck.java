@@ -20,7 +20,7 @@ import java.util.regex.Pattern;
  */
 public final class LatencyCheck implements DiagnosticCheck {
 
-    public static final String ID = "perf.latency";
+    public static final String CHECK_ID = "perf.latency";
 
     private static final Pattern TIMEOUT = Pattern.compile("(?i)timed? ?out");
 
@@ -34,7 +34,7 @@ public final class LatencyCheck implements DiagnosticCheck {
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -56,7 +56,7 @@ public final class LatencyCheck implements DiagnosticCheck {
             }
             String label = hook.serviceId() + " (" + (hook.hook() == null ? "hook" : hook.hook()) + ")";
             if (timedOut) {
-                findings.add(new Finding(ID, Severity.FAIL, "Hook call to " + label + " timed out",
+                findings.add(new Finding(CHECK_ID, Severity.FAIL, "Hook call to " + label + " timed out",
                         "The payer did not answer the hook call before the client gave up after "
                                 + latency.toMillis() + " ms. A CDS Hooks call runs while the clinician waits, so a "
                                 + "timeout means no coverage guidance is shown at all.",
@@ -64,7 +64,7 @@ public final class LatencyCheck implements DiagnosticCheck {
                         "Re-run to see if it is intermittent, and send the payer the request time; if their "
                                 + "service is slow for this request type, ask what latency they commit to."));
             } else if (latency.compareTo(fail) > 0) {
-                findings.add(new Finding(ID, Severity.FAIL, "Hook call to " + label + " took " + seconds(latency),
+                findings.add(new Finding(CHECK_ID, Severity.FAIL, "Hook call to " + label + " took " + seconds(latency),
                         "The call took longer than " + seconds(fail) + ". CDS Hooks calls run while the clinician "
                                 + "waits, and many EHRs abandon them around 10 seconds, so in production this "
                                 + "response would usually be thrown away.",
@@ -72,7 +72,7 @@ public final class LatencyCheck implements DiagnosticCheck {
                         "Send the payer the timing and the request; ask whether prefetch data was missing (which "
                                 + "makes them query back) and what latency they commit to."));
             } else if (latency.compareTo(warn) > 0) {
-                findings.add(new Finding(ID, Severity.WARN, "Hook call to " + label + " took " + seconds(latency),
+                findings.add(new Finding(CHECK_ID, Severity.WARN, "Hook call to " + label + " took " + seconds(latency),
                         "The call took longer than the " + seconds(warn) + " budget. It completed, but slow hook "
                                 + "calls delay the clinician's workflow and get close to the point where EHRs "
                                 + "give up (often about 10 seconds).",
@@ -82,7 +82,7 @@ public final class LatencyCheck implements DiagnosticCheck {
             }
         }
         if (findings.isEmpty() && measured > 0) {
-            findings.add(new Finding(ID, Severity.PASS, "Hook latency within budget",
+            findings.add(new Finding(CHECK_ID, Severity.PASS, "Hook latency within budget",
                     "Every hook call completed within " + seconds(warn) + ".",
                     measured + " call(s); slowest " + slowest.toMillis() + " ms", null));
         }

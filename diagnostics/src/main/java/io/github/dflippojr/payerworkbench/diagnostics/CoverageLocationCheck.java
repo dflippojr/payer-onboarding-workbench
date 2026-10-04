@@ -17,7 +17,7 @@ import java.util.List;
  */
 public final class CoverageLocationCheck implements DiagnosticCheck {
 
-    public static final String ID = "response.coverage-location";
+    public static final String CHECK_ID = "response.coverage-location";
 
     /** The CRD coverage-information extension URL. */
     public static final String COVERAGE_INFORMATION_URL =
@@ -25,7 +25,7 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -61,7 +61,7 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
             }
         }
         if (!inSuggestions.isEmpty()) {
-            return List.of(new Finding(ID, Severity.INFO, "Coverage information delivered in card suggestions",
+            return List.of(new Finding(CHECK_ID, Severity.INFO, "Coverage information delivered in card suggestions",
                     "The payer returns its coverage determination (the CRD coverage-information extension saying "
                             + "whether prior authorization or documentation is needed) inside a card suggestion "
                             + "the clinician must accept, rather than as a systemAction the EHR applies "
@@ -73,7 +73,7 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
                             + "to also send coverage information as an update systemAction on the order."));
         }
         if (!inSystemActions.isEmpty()) {
-            return List.of(new Finding(ID, Severity.PASS, "Coverage information delivered in systemActions",
+            return List.of(new Finding(CHECK_ID, Severity.PASS, "Coverage information delivered in systemActions",
                     "The payer returns coverage information as systemActions, the location CRD 2.x specifies.",
                     "found in systemActions: " + String.join(", ", inSystemActions), null));
         }

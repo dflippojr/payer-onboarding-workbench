@@ -22,7 +22,7 @@ import java.util.regex.Pattern;
  */
 public final class ClockSkewCheck implements DiagnosticCheck {
 
-    public static final String ID = "auth.clock-skew";
+    public static final String CHECK_ID = "auth.clock-skew";
 
     private static final Pattern TIME_ERROR = Pattern.compile(
             "(?i)\\b(exp|iat|nbf|expired|not yet valid|issued in the future|in the future|clock|skew|used before)\\b");
@@ -35,7 +35,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -52,7 +52,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
             boolean skewed = m != null && (m.skewOverTolerance(tolerance) || m.expired());
 
             if (rejected && (timeError || skewed)) {
-                findings.add(new Finding(ID, Severity.FAIL, "Rejection consistent with clock skew",
+                findings.add(new Finding(CHECK_ID, Severity.FAIL, "Rejection consistent with clock skew",
                         "The payer rejected the request" + (timeError ? " with an error about token timing" : "")
                                 + (m == null ? "" : ", and " + m.describe(tolerance))
                                 + ". Signed JWTs carry iat (issued-at) and exp (expiry) times, and the payer "
@@ -62,7 +62,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
                         "Sync the client host's clock with NTP and re-run; set iat to the current time and exp "
                                 + "no more than 5 minutes later, as SMART Backend Services requires."));
             } else if (Support.isSuccess(exchange.status()) && skewed) {
-                findings.add(new Finding(ID, Severity.WARN, "Client clock differs from the payer's",
+                findings.add(new Finding(CHECK_ID, Severity.WARN, "Client clock differs from the payer's",
                         "The request succeeded, but " + m.describe(tolerance) + ". A payer with a stricter tolerance "
                                 + "for JWT iat (issued-at) and exp (expiry) times would reject it.",
                         Support.describe(exchange) + "\n" + m.evidence(),
@@ -72,7 +72,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
             }
         }
         if (findings.isEmpty() && !verified.isEmpty()) {
-            findings.add(new Finding(ID, Severity.PASS, "Client and payer clocks agree",
+            findings.add(new Finding(CHECK_ID, Severity.PASS, "Client and payer clocks agree",
                     "JWT issue times were within " + tolerance.toSeconds() + " seconds of the payer's clock "
                             + "(its Date response header).",
                     String.join("\n", verified), null));

@@ -19,14 +19,14 @@ import java.util.Set;
  */
 public final class DiscoveryPrefetchKeysCheck implements DiagnosticCheck {
 
-    public static final String ID = "discovery.prefetch-keys";
+    public static final String CHECK_ID = "discovery.prefetch-keys";
 
     /** The keys {@code CrdPrefetch} in the router's client SDK provides. */
     public static final Set<String> STANDARD_KEYS = Set.of("patient", "encounter", "coverage");
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -63,7 +63,7 @@ public final class DiscoveryPrefetchKeysCheck implements DiagnosticCheck {
             }
         }
         if (mapped.isEmpty() && unmapped.isEmpty()) {
-            return List.of(new Finding(ID, Severity.PASS,
+            return List.of(new Finding(CHECK_ID, Severity.PASS,
                     keyCount == 0 ? "No prefetch templates requested" : "Prefetch keys are standard",
                     keyCount == 0
                             ? "The payer asks for no prefetch data (FHIR resources the client sends along with "
@@ -86,7 +86,7 @@ public final class DiscoveryPrefetchKeysCheck implements DiagnosticCheck {
                 + ".put(\"<payer key>\", resource)) instead of, or as well as, the standard key"
                 + (unmapped.isEmpty() ? "." : "; for keys with no standard equivalent, run the payer's FHIR query "
                         + "yourself and add the result under that key.");
-        return List.of(new Finding(ID, Severity.INFO, "Payer uses non-standard prefetch keys",
+        return List.of(new Finding(CHECK_ID, Severity.INFO, "Payer uses non-standard prefetch keys",
                 "Prefetch is data the client sends with a hook call so the payer need not query it back. "
                         + "This payer names some prefetch entries differently from the standard CRD keys "
                         + "(patient, encounter, coverage), so the standard keys alone will not satisfy it; the "

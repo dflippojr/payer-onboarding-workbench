@@ -15,11 +15,11 @@ import java.util.Optional;
  */
 public final class DiscoveryReachableCheck implements DiagnosticCheck {
 
-    public static final String ID = "discovery.reachable";
+    public static final String CHECK_ID = "discovery.reachable";
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -64,7 +64,7 @@ public final class DiscoveryReachableCheck implements DiagnosticCheck {
                     "Ask the payer to return {\"services\": [...]} from GET {baseUrl}/cds-services, or check "
                             + "that the base URL is the CDS Hooks root and not another API."));
         }
-        return List.of(new Finding(ID, Severity.PASS, "Discovery endpoint reachable",
+        return List.of(new Finding(CHECK_ID, Severity.PASS, "Discovery endpoint reachable",
                 "The discovery endpoint returned HTTP 200 with a JSON list of services.",
                 discovery.method() + " " + discovery.url() + " -> HTTP 200 in "
                         + discovery.latency().toMillis() + " ms",
@@ -72,7 +72,7 @@ public final class DiscoveryReachableCheck implements DiagnosticCheck {
     }
 
     private static Finding fail(String title, String explanation, String evidence, String fix) {
-        return new Finding(ID, Severity.FAIL, title, explanation, evidence, fix);
+        return new Finding(CHECK_ID, Severity.FAIL, title, explanation, evidence, fix);
     }
 
     private static String fixForStatus(int status) {

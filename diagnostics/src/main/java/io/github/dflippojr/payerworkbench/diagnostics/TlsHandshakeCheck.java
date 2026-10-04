@@ -22,11 +22,11 @@ import java.util.Set;
  */
 public final class TlsHandshakeCheck implements DiagnosticCheck {
 
-    public static final String ID = "tls.handshake";
+    public static final String CHECK_ID = "tls.handshake";
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -53,7 +53,7 @@ public final class TlsHandshakeCheck implements DiagnosticCheck {
         if (okHosts.isEmpty()) {
             return List.of();
         }
-        return List.of(new Finding(ID, Severity.PASS,
+        return List.of(new Finding(CHECK_ID, Severity.PASS,
                 mtls ? "TLS and client certificate accepted" : "TLS handshake succeeded",
                 "Encrypted (HTTPS) connections to the payer were established and its certificate was trusted"
                         + (mtls ? ", and the payer accepted the workbench's client certificate (mutual TLS)." : "."),
@@ -126,43 +126,43 @@ public final class TlsHandshakeCheck implements DiagnosticCheck {
         String tls = "The TLS handshake (the step where client and server agree on encryption and check each "
                 + "other's certificates before any HTTP is sent) with " + host + " failed";
         return switch (cause) {
-            case UNTRUSTED_SERVER_CA -> new Finding(ID, Severity.FAIL, "Payer's TLS certificate is not trusted",
+            case UNTRUSTED_SERVER_CA -> new Finding(CHECK_ID, Severity.FAIL, "Payer's TLS certificate is not trusted",
                     tls + " because the payer's certificate was issued by a certificate authority the workbench's "
                             + "trust store does not include, which is common in payer sandboxes with private CAs.",
                     evidence,
                     "Get the payer's CA (or intermediate) certificate from their onboarding team and add it to the "
                             + "trust store the workbench uses; do not disable certificate validation.");
-            case SERVER_CERT_EXPIRED -> new Finding(ID, Severity.FAIL, "Payer's TLS certificate has expired",
+            case SERVER_CERT_EXPIRED -> new Finding(CHECK_ID, Severity.FAIL, "Payer's TLS certificate has expired",
                     tls + " because the payer's certificate is past its expiry date, so it can no longer prove the "
                             + "server's identity.",
                     evidence,
                     "Tell the payer their certificate for " + host + " has expired; also confirm this machine's "
                             + "clock is correct.");
-            case HOSTNAME_MISMATCH -> new Finding(ID, Severity.FAIL, "Payer's TLS certificate names a different host",
+            case HOSTNAME_MISMATCH -> new Finding(CHECK_ID, Severity.FAIL, "Payer's TLS certificate names a different host",
                     tls + " because the certificate does not list " + host + " among the names it is valid for.",
                     evidence,
                     "Use the exact hostname the payer published (it must appear in the certificate), not an IP "
                             + "address or internal alias, in the connection record's URLs.");
-            case CLIENT_CERT_MISSING -> new Finding(ID, Severity.FAIL, "Payer requires a client certificate (mutual TLS)",
+            case CLIENT_CERT_MISSING -> new Finding(CHECK_ID, Severity.FAIL, "Payer requires a client certificate (mutual TLS)",
                     tls + ". The payer appears to require mutual TLS, where the client must also present a "
                             + "certificate, and the connection record has no client certificate configured.",
                     evidence,
                     "Obtain a client certificate the payer trusts (usually by sending them a CSR or your CA "
                             + "chain), store it, and set mtlsCredentialRef on the connection record.");
-            case CLIENT_CERT_REJECTED -> new Finding(ID, Severity.FAIL, "Payer rejected the client certificate",
+            case CLIENT_CERT_REJECTED -> new Finding(CHECK_ID, Severity.FAIL, "Payer rejected the client certificate",
                     tls + ". A client certificate was sent for mutual TLS, but the payer did not accept it, usually "
                             + "because it was issued by a CA the payer has not been told to trust, has expired, or "
                             + "is not the certificate registered for this environment.",
                     evidence,
                     "Confirm with the payer which CA and certificate they have registered for this client and "
                             + "environment, and check that mtlsCredentialRef points at that certificate and its key.");
-            case PROTOCOL_MISMATCH -> new Finding(ID, Severity.FAIL, "No common TLS version or cipher",
+            case PROTOCOL_MISMATCH -> new Finding(CHECK_ID, Severity.FAIL, "No common TLS version or cipher",
                     tls + " because the two sides share no TLS version or cipher suite; most payers require "
                             + "TLS 1.2 or later.",
                     evidence,
                     "Make sure the workbench's JVM allows TLS 1.2 and 1.3 and has not disabled the payer's cipher "
                             + "suites, and ask the payer which versions their endpoint accepts.");
-            case OTHER -> new Finding(ID, Severity.FAIL, "TLS handshake failed",
+            case OTHER -> new Finding(CHECK_ID, Severity.FAIL, "TLS handshake failed",
                     tls + ". The error does not match a known cause.",
                     evidence,
                     "Re-run with -Djavax.net.debug=ssl:handshake to see which side ended the handshake, and share "

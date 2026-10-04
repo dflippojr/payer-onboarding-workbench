@@ -54,7 +54,7 @@ public record RunReport(
         List<Finding> findings
 ) {
 
-    public static final String DISCLAIMER = "Synthetic data only. This run was made against a synthetic mock payer "
+    public static final String DISCLAIMER_TEXT = "Synthetic data only. This run was made against a synthetic mock payer "
             + "with synthetic requests; passing it does not demonstrate interoperability with any real payer, and the "
             + "report contains no real patient, provider or payer data. Tokens, secrets, keys and signatures are "
             + "redacted.";
@@ -130,7 +130,7 @@ public record RunReport(
 
         return new RunReport(
                 "Payer onboarding report: " + (displayName == null ? run.payerId() : displayName),
-                DISCLAIMER,
+                DISCLAIMER_TEXT,
                 generatedAt.toString(),
                 workbenchVersion,
                 run.runId(),

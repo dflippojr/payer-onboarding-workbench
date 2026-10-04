@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
  */
 public final class IgVersionCheck implements DiagnosticCheck {
 
-    public static final String ID = "ig.version";
+    public static final String CHECK_ID = "ig.version";
 
     private static final Pattern VERSION_KEY = Pattern.compile("(?i)ig[-_.]?version");
     private static final Pattern VERSIONED_CANONICAL = Pattern.compile(
@@ -32,7 +32,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -43,7 +43,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
             if (obs.discovery() == null || !Support.isSuccess(obs.discovery().status())) {
                 return List.of();
             }
-            return List.of(new Finding(ID, Severity.INFO, "Payer does not report its CRD IG version",
+            return List.of(new Finding(CHECK_ID, Severity.INFO, "Payer does not report its CRD IG version",
                     "Neither discovery nor the hook responses say which version of the CRD implementation guide "
                             + "(the Da Vinci spec that defines request and response shapes) the payer follows, so "
                             + "the workbench cannot confirm it matches " + (expected == null ? "the connection record"
@@ -56,7 +56,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
         String evidence = "payer: " + o.version() + " (from " + o.source() + "); connection record igVersion: "
                 + (expected == null ? "(not set)" : expected);
         if (expected == null || expected.isBlank()) {
-            return List.of(new Finding(ID, Severity.INFO, "Connection record has no igVersion",
+            return List.of(new Finding(CHECK_ID, Severity.INFO, "Connection record has no igVersion",
                     "The payer reports CRD implementation guide version " + o.version() + ", but the connection "
                             + "record does not say which version this integration targets, so a later change on "
                             + "either side would go unnoticed.",
@@ -65,12 +65,12 @@ public final class IgVersionCheck implements DiagnosticCheck {
         String want = normalize(expected);
         String got = normalize(o.version());
         if (want.equals(got)) {
-            return List.of(new Finding(ID, Severity.PASS, "CRD IG version matches (" + o.version() + ")",
+            return List.of(new Finding(CHECK_ID, Severity.PASS, "CRD IG version matches (" + o.version() + ")",
                     "The payer follows the CRD implementation guide version the connection record expects.",
                     evidence, null));
         }
         boolean majorDiffers = !major(want).equals(major(got));
-        return List.of(new Finding(ID, majorDiffers ? Severity.FAIL : Severity.WARN,
+        return List.of(new Finding(CHECK_ID, majorDiffers ? Severity.FAIL : Severity.WARN,
                 "CRD IG version mismatch: payer " + o.version() + ", record " + expected,
                 "The payer follows a different version of the CRD implementation guide (the Da Vinci spec that "
                         + "defines request and response shapes) than the connection record expects. "

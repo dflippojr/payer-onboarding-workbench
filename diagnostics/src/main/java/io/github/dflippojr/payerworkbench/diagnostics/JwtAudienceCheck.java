@@ -31,14 +31,14 @@ import java.util.regex.Pattern;
  */
 public final class JwtAudienceCheck implements DiagnosticCheck {
 
-    public static final String ID = "auth.jwt-audience";
+    public static final String CHECK_ID = "auth.jwt-audience";
 
     private static final Pattern CITES_AUDIENCE = Pattern.compile("\\baud\\b|audience");
     private static final Pattern URL = Pattern.compile("https?://[^\\s'\"<>,\\[\\]]+");
 
     @Override
     public String id() {
-        return ID;
+        return CHECK_ID;
     }
 
     @Override
@@ -78,7 +78,7 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
             }
         }
         if (findings.isEmpty() && !verified.isEmpty()) {
-            findings.add(new Finding(ID, Severity.PASS, "JWT audience matches the target URL",
+            findings.add(new Finding(CHECK_ID, Severity.PASS, "JWT audience matches the target URL",
                     "Every JWT the workbench could inspect named exactly the URL it was sent to as its audience.",
                     "verified: " + String.join(", ", verified.stream().distinct().toList()), null));
         }
@@ -104,7 +104,7 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
         String evidence = Support.describe(exchange) + "\nJWT aud: " + String.join(", ", auds)
                 + "\nrequest URL: " + target;
         if (rejected) {
-            return Optional.of(new Finding(ID, Severity.FAIL, "JWT audience does not match the URL it was sent to",
+            return Optional.of(new Finding(CHECK_ID, Severity.FAIL, "JWT audience does not match the URL it was sent to",
                     "The request was rejected, and " + carrier + " names a different audience (the aud claim, "
                             + "which says which server the token is meant for) than the URL it was sent to: "
                             + difference(aud, target) + ". Servers compare aud character for character, so even "
@@ -114,7 +114,7 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
                             + "from the base URL in the connection record), then retry."));
         }
         if (Support.isSuccess(exchange.status())) {
-            return Optional.of(new Finding(ID, Severity.INFO, "Payer accepted a JWT whose audience differs from the URL",
+            return Optional.of(new Finding(CHECK_ID, Severity.INFO, "Payer accepted a JWT whose audience differs from the URL",
                     "This payer accepted the JWT even though its aud claim (the server the token is meant for) "
                             + "is not exactly the URL it was sent to: " + difference(aud, target) + ". A stricter "
                             + "environment of the same payer may reject it.",
@@ -129,7 +129,7 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
         Optional<String> named = urlNamedByPayer(exchange, target);
         String evidence = Support.describe(exchange) + "\nJWT aud: " + String.join(", ", jwt.aud())
                 + "\nrequest URL: " + target + named.map(url -> "\nURL named in the payer's error: " + url).orElse("");
-        return new Finding(ID, Severity.FAIL, "Payer expects a different JWT audience",
+        return new Finding(CHECK_ID, Severity.FAIL, "Payer expects a different JWT audience",
                 "The hook call was rejected with 401 and the payer's error is about the audience (the aud claim, "
                         + "which says which server the token is meant for). The CDS Hooks client JWT already names "
                         + "exactly the URL it was sent to, so the payer checks aud against some other URL"
