@@ -14,12 +14,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
@@ -121,24 +121,16 @@ public class SyntheticPayers implements DisposableBean {
         return Optional.ofNullable(payers.get(payerId));
     }
 
-    /** connections.yaml lives here, so keep it owner-only where the file system supports POSIX permissions. */
+    /**
+     * connections.yaml lives here, so the directory is owner-only ({@code rwx------}) where the file
+     * system supports POSIX permissions. Elsewhere (Windows) the default temp directory is already
+     * per-user, so no attribute is passed.
+     */
     private static Path createPrivateTempDir() throws IOException {
-        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-            return Files.createTempDirectory("payer-workbench-",
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-        }
-        Path dir = Files.createTempDirectory("payer-workbench-");
-        File file = dir.toFile();
-        boolean restricted = file.setReadable(false, false);
-        restricted &= file.setReadable(true, true);
-        restricted &= file.setWritable(false, false);
-        restricted &= file.setWritable(true, true);
-        restricted &= file.setExecutable(false, false);
-        restricted &= file.setExecutable(true, true);
-        if (!restricted) {
-            log.debug("Could not restrict permissions on {}", dir);
-        }
-        return dir;
+        FileAttribute<?>[] ownerOnly = FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
+                ? new FileAttribute<?>[] {PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))}
+                : new FileAttribute<?>[0];
+        return Files.createTempDirectory("payer-workbench-", ownerOnly);
     }
 
     private static String randomSecret() {
