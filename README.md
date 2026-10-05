@@ -75,7 +75,9 @@ A run records these steps, each with its status, latency and redacted HTTP excha
 5. **Parse the response** with the fhir-crd-router client types (cards, system actions, coverage information).
 6. **Run diagnostics** (`DiagnosticEngine`, with the sample's hook as the required hook).
 
-The UI has a payer picker, a "Break it" panel of payer faults, connection settings you can edit for one run (base URL suffix, `igVersion`, JWT `aud` override, client id; never a secret), a step timeline with expandable request/response, and findings grouped by severity with explanation and fix, plus a **Download report** button (HTML, Markdown or JSON) once a run finishes. It follows `prefers-color-scheme`, works at 375 px and is keyboard navigable. It is plain HTML, CSS and JS under `workbench-app/src/main/resources/static`, with no build step.
+Discovery and hook calls go through the router's `CdsHooksClient`, which owns authentication, token caching, retries, timeouts and response parsing. Discovery uses an unauthenticated copy of the connection because both synthetic payers advertise public discovery. The SDK's TOKEN and HOOK exchange events populate the separate Authenticate and Hook request steps; an OAuth2 401 shows both hook attempts and the token refresh. Diagnostics evaluate the final hook outcome once. For the JWT payer, a transport observer retains only the claims of the JWT the SDK actually sends. Token event bodies contain only `token_type`, `expires_in` and `scope`; token failures use the SDK's sanitized typed error metadata.
+
+The UI has a payer picker, a "Break it" panel of payer faults, connection settings you can edit for one run (base URL suffix, `igVersion`, client id; never a secret), a step timeline with expandable request/response, and findings grouped by severity with explanation and fix, plus a **Download report** button (HTML, Markdown or JSON) once a run finishes. It follows `prefers-color-scheme`, works at 375 px and is keyboard navigable. It is plain HTML, CSS and JS under `workbench-app/src/main/resources/static`, with no build step.
 
 ### API
 
@@ -83,7 +85,7 @@ The UI has a payer picker, a "Break it" panel of payer faults, connection settin
 |---|---|
 | `GET /api/payers` | The synthetic payers, their stored connections (redacted), editable settings and fault ids. |
 | `GET /api/samples` | Sample request metadata. |
-| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `audOverride`, `clientId`). |
+| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). |
 | `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
 | `GET /api/runs/{id}/report?format=md\|html\|json` | A shareable diagnostic report of a recent run (default `html`). `400` for another format, `404` for an unknown run. |
 
@@ -131,10 +133,9 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | `igVersion` `1.0.0` | (steps pass) | `ig.version` |
 | wrong client id, Northwind | authenticate | `auth.token` |
 | wrong client id, Fabrikam | hook request | `response.schema` |
-| `aud` override with a trailing slash, Fabrikam | hook request | `auth.jwt-audience` |
 | environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
 
-One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT it signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
+One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
 
 Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 

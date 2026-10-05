@@ -121,18 +121,12 @@
     $('igVersion-hint').textContent = `stored: ${conn.igVersion || '—'} (payer advertises ${p.advertisedIgVersion})`;
     $('clientId').placeholder = conn.clientId || '';
     $('clientId-hint').textContent = `stored: ${conn.clientId || '—'}`;
-    const jwt = p.editableSettings.includes('audOverride');
-    $('audOverride').disabled = !jwt;
-    if (!jwt) $('audOverride').value = '';
-    $('audOverride').placeholder = jwt ? `${conn.baseUrl}/cds-services/{service}` : 'n/a';
-    $('aud-hint').textContent = jwt
-      ? 'default: the exact service URL'
-      : 'Only for payers that take a client JWT; this one uses OAuth2 tokens.';
+
   }
 
   function reset() {
     form.querySelectorAll('input[name="fault"]').forEach(c => { c.checked = false; });
-    ['baseUrlSuffix', 'igVersion', 'audOverride', 'clientId'].forEach(id => { $(id).value = ''; });
+    ['baseUrlSuffix', 'igVersion', 'clientId'].forEach(id => { $(id).value = ''; });
     $('run-status').textContent = 'Faults and settings reset.';
   }
 
@@ -151,7 +145,6 @@
       connection: {
         baseUrlSuffix: value('baseUrlSuffix'),
         igVersion: value('igVersion'),
-        audOverride: $('audOverride').disabled ? null : value('audOverride'),
         clientId: value('clientId'),
       },
     };

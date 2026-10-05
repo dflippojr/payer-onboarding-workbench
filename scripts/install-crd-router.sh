@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_URL="${CRD_ROUTER_REPO_URL:-https://github.com/dflippojr/fhir-crd-router.git}"
-COMMIT="7f5fd56"
+COMMIT="e5381237a3a5f30d635e06b6853f44e1106e88c4"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="$root/.deps/fhir-crd-router"

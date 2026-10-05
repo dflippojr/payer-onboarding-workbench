@@ -6,8 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.fhircrdrouter.client.Card;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookResponse;
 import io.github.dflippojr.fhircrdrouter.client.SystemAction;
-import io.github.dflippojr.fhircrdrouter.client.auth.JwtSigner;
-import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
+import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
+import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
+import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
+import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformation;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -31,10 +35,7 @@ import io.github.dflippojr.payerworkbench.samples.SampleCatalog;
 import io.github.dflippojr.payerworkbench.samples.SampleMetadata;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
-import java.net.URLEncoder;
 import java.net.http.HttpClient;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -141,12 +142,17 @@ public class OnboardingRunner {
         private String serviceId;
         private Set<String> prefetchKeys = Set.of();
         private TokenResponseMetadata tokenResponse;
-        private String authorization;
-        private String hookBody;
+        private CdsHookResponse response;
+        private RuntimeException callFailure;
+        private final CdsHooksClient client;
+        private Object jwtHeader;
+        private Object jwtPayload;
         private JwtClaims clientJwt;
 
         Attempt(RunRequest request, SampleMetadata sample, HttpClient http) {
-            this.recorder = new ExchangeRecorder(http, properties.requestTimeout());
+            this.recorder = new ExchangeRecorder();
+            this.client = new CdsHooksClient(new JwtObservingClient(http, this::observeJwt),
+                    payers.credentials(), null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
             this.request = request;
             this.sample = sample;
         }
@@ -157,7 +163,7 @@ public class OnboardingRunner {
                     && step(AUTHENTICATE, this::authenticate)
                     && step(HOOK_REQUEST, this::sendHook)
                     && step(PARSE_RESPONSE, this::parse);
-            for (String id : STEP_ORDER.subList(steps.size(), STEP_ORDER.size())) {
+            for (String id : ok ? List.<String>of() : STEP_ORDER.subList(steps.size(), STEP_ORDER.size())) {
                 steps.add(new StepResult(id, Instant.now(), Duration.ZERO, false,
                         "Skipped: an earlier step failed",
                         Map.of("status", "skipped")));
@@ -200,9 +206,6 @@ public class OnboardingRunner {
                 builder.clientId(edits.clientId().trim());
                 applied.put("clientId", edits.clientId().trim());
             }
-            if (isSet(edits.audOverride())) {
-                applied.put("aud", edits.audOverride().trim());
-            }
             record = builder.build();
             details.put("connection", RedactedConnection.of(record));
             details.put("edited", applied);
@@ -213,34 +216,30 @@ public class OnboardingRunner {
         }
 
         private Outcome discover(Map<String, Object> details) {
-            URI url = URI.create(record.baseUrl() + "/cds-services");
-            ExchangeRecorder.Sent sent = recorder.get(url, Map.of("Accept", "application/json"));
-            discovery = sent.exchange();
-            details.put("exchanges", List.of(ExchangeView.of(sent.exchange())));
-            if (!sent.ok()) {
-                return Outcome.fail(describeFailure("Discovery", sent.exchange()));
-            }
-            JsonNode services;
+            List<CdsServiceDescriptor> services;
             try {
-                services = mapper.readTree(sent.response().body()).path("services");
-            } catch (JsonProcessingException e) {
-                return Outcome.fail("Discovery response is not JSON");
-            }
-            if (!services.isArray()) {
-                return Outcome.fail("Discovery response has no services array");
+                // Both synthetic payers advertise public discovery. Preserve that
+                // contract while sending the request through the same SDK client.
+                services = client.discoverServices(copy(record).authType(AuthType.NONE).build());
+            } catch (PayerCallException e) {
+                return callFailed("Discovery", e);
+            } finally {
+                List<PayerExchange> events = recorder.events(PayerCallPhase.DISCOVERY);
+                if (!events.isEmpty()) {
+                    discovery = ExchangeRecorder.adapt(events.getLast());
+                }
+                details.put("exchanges", exchangeViews(PayerCallPhase.DISCOVERY));
             }
             List<Map<String, Object>> listed = new ArrayList<>();
-            for (JsonNode service : services) {
+            for (CdsServiceDescriptor service : services) {
                 Map<String, Object> view = new LinkedHashMap<>();
-                view.put("id", service.path("id").asText());
-                view.put("hook", service.path("hook").asText());
-                List<String> keys = new ArrayList<>();
-                service.path("prefetch").fieldNames().forEachRemaining(keys::add);
-                view.put("prefetchKeys", keys);
+                view.put("id", service.id());
+                view.put("hook", service.hook());
+                view.put("prefetchKeys", service.prefetch().keySet().stream().sorted().toList());
                 listed.add(view);
-                if (serviceId == null && sample.hook().equals(service.path("hook").asText())) {
-                    serviceId = service.path("id").asText();
-                    prefetchKeys = Set.copyOf(keys);
+                if (serviceId == null && sample.hook().equals(service.hook())) {
+                    serviceId = service.id();
+                    prefetchKeys = service.prefetch().keySet();
                 }
             }
             details.put("services", listed);
@@ -253,105 +252,108 @@ public class OnboardingRunner {
         }
 
         private Outcome authenticate(Map<String, Object> details) {
-            AuthType authType = record.authType() == null ? AuthType.NONE : record.authType();
-            details.put("authType", authType.name());
-            switch (authType) {
-                case NONE -> {
-                    return Outcome.pass("The connection uses no authentication");
-                }
-                case OAUTH2_CLIENT_CREDENTIALS -> {
-                    return clientCredentials(details);
-                }
-                case CDS_HOOKS_JWT -> {
-                    return cdsHooksJwt(details);
-                }
-                default -> {
-                    return Outcome.fail("The workbench does not exercise " + authType + " connections yet");
-                }
+            details.put("authType", record.authType().name());
+            invokeHook();
+            if (record.authType() == AuthType.CDS_HOOKS_JWT) {
+                details.put("jwtHeader", jwtHeader);
+                details.put("jwtClaims", jwtPayload);
+                details.put("requestUrl", serviceUrl());
+                details.put("audMatchesRequestUrl", clientJwt != null && clientJwt.aud().contains(serviceUrl()));
+                return clientJwt == null ? Outcome.fail("The SDK could not sign the client JWT")
+                        : Outcome.pass("Signed a CDS Hooks client JWT as " + record.clientId() + " (kid " + record.keyId()
+                                + ") for aud " + serviceUrl());
+            }
+            return clientCredentials(details);
+        }
+
+        private void invokeHook() {
+            PrefetchVariant variant = prefetchKeys.contains("coverageBundle") ? PrefetchVariant.PAYER_B : PrefetchVariant.STANDARD;
+            Sample loaded = samples.load(sample.id(), variant).withNewHookInstance();
+            // Authentication is lazy in the SDK. Invoke once and project its
+            // TOKEN and HOOK events into their separate timeline steps below.
+            try {
+                response = client.callHook(record, serviceId, loaded.request());
+            } catch (RouterException e) {
+                callFailure = e;
+            }
+            List<PayerExchange> hooks = recorder.events(PayerCallPhase.HOOK);
+            if (!hooks.isEmpty()) {
+                hookResponses.add(new HookResponse(serviceId, sample.hook(), sample.id(),
+                        ExchangeRecorder.adapt(hooks.getLast()), clientJwt));
             }
         }
 
         private Outcome clientCredentials(Map<String, Object> details) {
-            Optional<String> secret = payers.credentials().resolve(record.credentialRef());
-            if (secret.isEmpty()) {
-                return Outcome.fail("No client secret in the credential store for " + record.credentialRef());
+            List<PayerExchange> tokens = recorder.events(PayerCallPhase.TOKEN);
+            details.put("exchanges", exchangeViews(PayerCallPhase.TOKEN));
+            if (tokens.isEmpty()) {
+                return Outcome.fail("The SDK could not authenticate: " + failureMessage());
             }
-            String basic = Base64.getEncoder().encodeToString(
-                    (form(record.clientId()) + ":" + form(secret.get())).getBytes(StandardCharsets.UTF_8));
-            String body = "grant_type=client_credentials"
-                    + (record.scopes().isEmpty() ? "" : "&scope=" + form(String.join(" ", record.scopes())));
-            ExchangeRecorder.Sent sent = recorder.post(URI.create(record.tokenEndpoint()), Map.of(
-                    "Authorization", "Basic " + basic,
-                    "Content-Type", "application/x-www-form-urlencoded",
-                    "Accept", "application/json"), body);
-            details.put("exchanges", List.of(ExchangeView.of(sent.exchange())));
-            JsonNode json = sent.response() == null ? null : readJson(sent.response().body());
-            if (json != null) {
-                List<String> scopes = json.hasNonNull("scope") ? List.of(json.get("scope").asText().split(" ")) : List.of();
-                tokenResponse = new TokenResponseMetadata(json.hasNonNull("access_token"),
-                        text(json, "token_type"), json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
-                        scopes, text(json, "error"), text(json, "error_description"));
-                details.put("token", Map.of(
-                        "accessTokenPresent", tokenResponse.accessTokenPresent(),
-                        "tokenType", String.valueOf(tokenResponse.tokenType()),
-                        "expiresInSeconds", String.valueOf(tokenResponse.expiresInSeconds())));
+            PayerExchange last = tokens.getLast();
+            // The listener intentionally omits access_token. A HOOK event proves
+            // the SDK accepted the token, without exposing its value here.
+            boolean accepted = !hookResponses.isEmpty();
+            tokenResponse = tokenMetadata(last, accepted);
+            details.put("token", Map.of("accessTokenPresent", accepted,
+                    "tokenType", String.valueOf(tokenResponse.tokenType()),
+                    "expiresInSeconds", String.valueOf(tokenResponse.expiresInSeconds())));
+            if (callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN) {
+                return callFailed("Token request", e);
             }
-            if (!sent.ok()) {
-                return Outcome.fail(describeFailure("Token request", sent.exchange()));
-            }
-            if (json == null || !json.hasNonNull("access_token")) {
-                return Outcome.fail("Token response has no access_token");
-            }
-            authorization = "Bearer " + json.get("access_token").asText();
-            return Outcome.pass("Got a " + text(json, "token_type") + " access token for client " + record.clientId()
-                    + " (expires in " + text(json, "expires_in") + " s; value hidden)");
+            return accepted ? Outcome.pass("Got a " + tokenResponse.tokenType() + " access token for client "
+                    + record.clientId() + " (expires in " + tokenResponse.expiresInSeconds() + " s; value hidden)")
+                    : Outcome.fail("The SDK could not authenticate: " + failureMessage());
         }
 
-        private Outcome cdsHooksJwt(Map<String, Object> details) {
-            Optional<String> pem = payers.credentials().resolve(record.credentialRef());
-            if (pem.isEmpty()) {
-                return Outcome.fail("No signing key in the credential store for " + record.credentialRef());
-            }
-            String target = serviceUrl();
-            String aud = isSet(request.connection().audOverride()) ? request.connection().audOverride().trim() : target;
-            String jwt;
-            try {
-                jwt = new JwtSigner().cdsHooksJwt(record, PemKeys.readPrivateKey(pem.get()), URI.create(aud));
-            } catch (RuntimeException e) {
-                return Outcome.fail("Could not sign the client JWT: " + e.getMessage());
+        private TokenResponseMetadata tokenMetadata(PayerExchange event, boolean accepted) {
+            JsonNode json = Optional.ofNullable(readJson(event.responseBody())).orElseGet(mapper::createObjectNode);
+            JsonNode error = callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN
+                    ? readJson(e.responseBody()) : null;
+            return new TokenResponseMetadata(accepted, text(json, "token_type"),
+                    json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
+                    json.hasNonNull("scope") ? List.of(json.get("scope").asText().split(" ")) : List.of(),
+                    text(error, "error"), text(error, "error_description"));
+        }
+
+        private void observeJwt(String jwt) {
+            if (record == null || record.authType() != AuthType.CDS_HOOKS_JWT) {
+                return;
             }
             String[] parts = jwt.split("\\.");
-            details.put("jwtHeader", decode(parts[0]));
-            details.put("jwtClaims", decode(parts[1]));
-            details.put("requestUrl", target);
-            authorization = "Bearer " + jwt;
-            clientJwt = claimsOf(parts[0], parts[1]);
-            boolean exact = aud.equals(target);
-            details.put("audMatchesRequestUrl", exact);
-            return Outcome.pass("Signed a CDS Hooks client JWT as " + record.clientId() + " (kid " + record.keyId()
-                    + ") for aud " + aud + (exact ? "" : ", which is not the URL it will be sent to (" + target + ")"));
+            if (parts.length == 3) {
+                jwtHeader = decode(parts[0]);
+                jwtPayload = decode(parts[1]);
+                clientJwt = claimsOf(parts[0], parts[1]);
+            }
         }
 
         private Outcome sendHook(Map<String, Object> details) {
-            PrefetchVariant variant = prefetchKeys.contains("coverageBundle") ? PrefetchVariant.PAYER_B : PrefetchVariant.STANDARD;
-            Sample loaded = samples.load(sample.id(), variant).withNewHookInstance();
-            hookBody = loaded.toJsonString();
             details.put("sample", sample.id());
-            details.put("prefetchVariant", variant.name());
-            Map<String, String> headers = new LinkedHashMap<>();
-            headers.put("Content-Type", "application/json");
-            headers.put("Accept", "application/json");
-            if (authorization != null) {
-                headers.put("Authorization", authorization);
+            details.put("prefetchVariant", prefetchKeys.contains("coverageBundle") ? "PAYER_B" : "STANDARD");
+            details.put("exchanges", exchangeViews(PayerCallPhase.HOOK));
+            if (callFailure instanceof PayerCallException e) {
+                return callFailed("Hook call to " + serviceId, e);
             }
-            ExchangeRecorder.Sent sent = recorder.post(URI.create(serviceUrl()), headers, hookBody);
-            hookResponses.add(new HookResponse(serviceId, sample.hook(), sample.id(), sent.exchange(), clientJwt));
-            details.put("exchanges", List.of(ExchangeView.of(sent.exchange())));
-            if (!sent.ok()) {
-                return Outcome.fail(describeFailure("Hook call to " + serviceId, sent.exchange()));
+            if (hookResponses.isEmpty()) {
+                return Outcome.fail(failureMessage());
             }
-            return Outcome.pass("HTTP " + sent.exchange().status() + " from " + serviceId + " in "
-                    + sent.exchange().latency().toMillis() + " ms");
+            HttpExchange exchange = hookResponses.getLast().exchange();
+            return Outcome.pass("HTTP " + exchange.status() + " from " + serviceId + " in "
+                    + exchange.latency().toMillis() + " ms");
+        }
+
+        private String failureMessage() {
+            return callFailure == null ? "No HTTP exchange observed" : callFailure.getMessage();
+        }
+
+        private List<ExchangeView> exchangeViews(PayerCallPhase phase) {
+            return recorder.events(phase).stream().map(ExchangeRecorder::adapt).map(ExchangeView::of).toList();
+        }
+
+        private Outcome callFailed(String what, PayerCallException failure) {
+            return Outcome.fail(failure.statusCode().isPresent()
+                    ? what + " returned HTTP " + failure.statusCode().getAsInt()
+                    : what + " got no response: " + failure.getMessage());
         }
 
         private Outcome parse(Map<String, Object> details) {
@@ -363,19 +365,11 @@ public class OnboardingRunner {
             if (!json.path("cards").isArray()) {
                 return Outcome.fail("The hook response has no cards array");
             }
-            List<Card> cards = new ArrayList<>();
-            List<SystemAction> actions = new ArrayList<>();
-            try {
-                for (JsonNode card : json.path("cards")) {
-                    cards.add(mapper.treeToValue(card, Card.class));
-                }
-                for (JsonNode action : json.path("systemActions")) {
-                    actions.add(mapper.treeToValue(action, SystemAction.class));
-                }
-            } catch (JsonProcessingException | IllegalArgumentException e) {
-                return Outcome.fail("The client library could not read the response: " + e.getMessage());
+            if (response == null) {
+                return Outcome.fail("The client library could not read the response: " + failureMessage());
             }
-            CdsHookResponse response = new CdsHookResponse(cards, actions, json);
+            List<Card> cards = response.cards();
+            List<SystemAction> actions = response.systemActions();
             List<Map<String, Object>> cardViews = new ArrayList<>();
             List<String> problems = new ArrayList<>();
             for (int i = 0; i < cards.size(); i++) {
@@ -414,7 +408,11 @@ public class OnboardingRunner {
                     ? RedactedConnection.of(record)
                     : new RedactedConnection(request.payerId(), null, request.environment(), null, null, null, null,
                             null, null, null, List.of(), false, false, null, null));
-            recorder.exchanges().forEach(obs::exchange);
+            // Retry attempts remain visible in the timeline. Diagnose the final
+            // hook outcome once so a recovered 401 cannot produce a false FAIL.
+            recorder.events(PayerCallPhase.DISCOVERY).stream().map(ExchangeRecorder::adapt).forEach(obs::exchange);
+            recorder.events(PayerCallPhase.TOKEN).stream().map(ExchangeRecorder::adapt).forEach(obs::exchange);
+            hookResponses.forEach(h -> obs.exchange(h.exchange()));
             obs.discovery(discovery).tokenResponse(tokenResponse);
             hookResponses.forEach(obs::hookResponse);
             DiagnosticsConfig defaults = DiagnosticsConfig.defaults();
@@ -456,14 +454,28 @@ public class OnboardingRunner {
             } catch (RuntimeException e) {
                 outcome = Outcome.fail("Unexpected error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
+            Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+            PayerCallPhase phase = switch (id) {
+                case AUTHENTICATE -> PayerCallPhase.TOKEN;
+                case HOOK_REQUEST -> PayerCallPhase.HOOK;
+                default -> null;
+            };
+            if (phase != null) {
+                List<PayerExchange> events = recorder.events(phase);
+                elapsed = events.stream().map(PayerExchange::elapsed).reduce(Duration.ZERO, Duration::plus);
+                if (!events.isEmpty()) {
+                    startedAt = events.getFirst().startedAt();
+                }
+            }
             details.put("status", outcome.ok() ? "passed" : "failed");
-            steps.add(new StepResult(id, startedAt, Duration.ofNanos(System.nanoTime() - start), outcome.ok(),
+            steps.add(new StepResult(id, startedAt, elapsed, outcome.ok(),
                     outcome.summary(), details));
             return outcome.ok();
         }
 
         private String serviceUrl() {
-            return record.baseUrl() + "/cds-services/" + serviceId;
+            String base = record.baseUrl();
+            return (base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + "/cds-services/" + serviceId;
         }
     }
 
@@ -488,13 +500,6 @@ public class OnboardingRunner {
             counts.put(severity, findings.stream().filter(f -> f.severity() == severity).count());
         }
         return counts;
-    }
-
-    private static String describeFailure(String what, HttpExchange exchange) {
-        if (!exchange.responded()) {
-            return what + " got no response: " + exchange.transportError();
-        }
-        return what + " returned HTTP " + exchange.status();
     }
 
     private static String missingCardFields(Card card) {
@@ -556,11 +561,7 @@ public class OnboardingRunner {
     }
 
     private static String text(JsonNode json, String field) {
-        return json.hasNonNull(field) ? json.get(field).asText() : null;
-    }
-
-    private static String form(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+        return json != null && json.hasNonNull(field) ? json.get(field).asText() : null;
     }
 
     private static boolean isSet(String value) {

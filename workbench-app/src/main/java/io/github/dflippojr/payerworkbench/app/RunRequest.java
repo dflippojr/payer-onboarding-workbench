@@ -34,10 +34,9 @@ public record RunRequest(
      *
      * @param baseUrlSuffix appended to the stored base URL, e.g. {@code /r4} or {@code /}
      * @param igVersion     replaces the CRD IG version the connection expects
-     * @param audOverride   the {@code aud} to put in a CDS Hooks client JWT instead of the service URL
      * @param clientId      replaces the client id (the JWT {@code iss}, or the OAuth2 client)
      */
-    public record ConnectionOverrides(String baseUrlSuffix, String igVersion, String audOverride, String clientId) {
-        static final ConnectionOverrides NONE = new ConnectionOverrides(null, null, null, null);
+    public record ConnectionOverrides(String baseUrlSuffix, String igVersion, String clientId) {
+        static final ConnectionOverrides NONE = new ConnectionOverrides(null, null, null);
     }
 }
