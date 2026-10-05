@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 
 $repoUrl = if ($env:CRD_ROUTER_REPO_URL) { $env:CRD_ROUTER_REPO_URL } else { 'https://github.com/dflippojr/fhir-crd-router.git' }
-$commit = 'e5381237a3a5f30d635e06b6853f44e1106e88c4'
+$commit = 'a5f013eed94024b72ccc2bf4fd89c73b5460da12'
 
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root '.deps\fhir-crd-router'

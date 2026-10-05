@@ -24,6 +24,34 @@ class FaultInjectionTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"northwind", "fabrikam"})
+    void coverageInformationFaultInvalidatesEveryOrderAndRecovers(String payerName) throws Exception {
+        try (PayerFixture fixture = PayerFixture.create(payerName)) {
+            assertConformant(fixture.orderSign(SyntheticData.standardOrders()));
+            fixture.payer.faults().enable(Fault.COVERAGE_INFO_INCOMPLETE);
+            CdsHookResponse response = fixture.orderSign(SyntheticData.standardOrders());
+            assertEquals(3, response.coverageInformation().size());
+            for (var info : response.coverageInformation()) {
+                var violations = io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationValidator.validate(info);
+                assertTrue(violations.stream().anyMatch(v -> v.message().equals("coverage-assertion-id is required")));
+                assertTrue(violations.stream().anyMatch(v -> v.message().contains("covered code 'invalid-covered'")));
+                assertNull(info.coverageAssertionId());
+            }
+            fixture.payer.faults().disable(Fault.COVERAGE_INFO_INCOMPLETE);
+            assertConformant(fixture.orderSign(SyntheticData.standardOrders()));
+        }
+    }
+
+    private static void assertConformant(CdsHookResponse response) {
+        for (var info : response.coverageInformation()) {
+            var violations = io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationValidator.validate(info);
+            assertTrue(violations.stream().noneMatch(v -> v.severity()
+                    == io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformationValidator.Severity.ERROR),
+                    violations.toString());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"northwind", "fabrikam"})
     void slowResponseDelaysHookCallsBeyondAClientDeadline(String payerName) throws Exception {
         try (PayerFixture fixture = PayerFixture.create(payerName)) {
             Duration delay = Duration.ofMillis(2_000);

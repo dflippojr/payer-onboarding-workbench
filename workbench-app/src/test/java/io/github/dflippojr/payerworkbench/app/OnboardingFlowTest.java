@@ -59,6 +59,12 @@ class OnboardingFlowTest {
                 "diagnostics"), run.steps().stream().map(StepResult::stepId).toList());
         run.steps().forEach(step -> assertTrue(step.ok(), step.stepId() + ": " + step.summary()));
         assertEquals(List.of(), failIds(run));
+        Finding coverage = run.findings().stream()
+                .filter(f -> f.checkId().equals("response.coverage-information")).findFirst().orElseThrow();
+        assertEquals(payerId.equals(FABRIKAM_ID) ? Severity.WARN : Severity.PASS, coverage.severity());
+        if (payerId.equals(FABRIKAM_ID)) {
+            assertTrue(coverage.evidence().contains("identifier is the pre-2.x name"));
+        }
         assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals("tls.handshake") && f.severity() == Severity.PASS));
         assertTrue(payers.payer(payerId).orElseThrow().baseUrl().startsWith("https://127.0.0.1:"));
     }
@@ -77,6 +83,8 @@ class OnboardingFlowTest {
             // Northwind's audience is on its own access token, which the workbench cannot inspect.
             cases.add(Arguments.of(payerId, Fault.WRONG_AUDIENCE_REJECT, HEALTHY_SAMPLE,
                     payerId.equals(FABRIKAM_ID) ? "auth.jwt-audience" : "response.schema", "hook-request"));
+            cases.add(Arguments.of(payerId, Fault.COVERAGE_INFO_INCOMPLETE, HEALTHY_SAMPLE,
+                    "response.coverage-information", null));
             cases.add(Arguments.of(payerId, Fault.MALFORMED_CARD, HEALTHY_SAMPLE, "response.schema", "parse-response"));
             cases.add(Arguments.of(payerId, Fault.DISCOVERY_500, HEALTHY_SAMPLE, "discovery.reachable", "discovery"));
             cases.add(Arguments.of(payerId, Fault.PREFETCH_MISSING_400, NO_PREFETCH_SAMPLE, "response.schema", "hook-request"));
@@ -92,6 +100,13 @@ class OnboardingFlowTest {
         OnboardingRun run = runner.run(request(payerId, sampleId, List.of(fault.id())));
 
         assertTrue(failIds(run).contains(expectedCheckId), "FAIL ids: " + failIds(run));
+        if (fault == Fault.COVERAGE_INFO_INCOMPLETE) {
+            Finding coverage = run.findings().stream()
+                    .filter(f -> f.checkId().equals(expectedCheckId)).findFirst().orElseThrow();
+            assertTrue(coverage.evidence().contains("coverage-assertion-id is required"));
+            assertTrue(coverage.evidence().contains("covered code 'invalid-covered'"));
+            assertTrue(coverage.evidence().contains("DeviceRequest/"));
+        }
         if (failedStep != null) {
             assertEquals(failedStep, firstFailedStep(run));
         }

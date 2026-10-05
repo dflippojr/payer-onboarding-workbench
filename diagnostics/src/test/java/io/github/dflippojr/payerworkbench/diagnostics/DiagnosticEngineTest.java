@@ -33,7 +33,7 @@ class DiagnosticEngineTest {
     private static final Set<String> CATALOG = Set.of(
             "discovery.reachable", "discovery.services", "discovery.prefetch-keys",
             "auth.token", "auth.jwt-audience", "auth.clock-skew",
-            "ig.version", "response.schema", "response.coverage-location",
+            "ig.version", "response.schema", "response.coverage-location", "response.coverage-information",
             "perf.latency", "tls.handshake");
 
     private final DiagnosticEngine engine = new DiagnosticEngine();

@@ -68,7 +68,7 @@ class FabrikamPayerTest {
             List<CoverageInformation> coverage = response.coverageInformation();
             assertEquals(List.of("conditional", "covered", "not-covered"),
                     coverage.stream().map(CoverageInformation::covered).toList());
-            assertEquals(List.of("auth-needed", "no-auth", "no-auth"),
+            assertEquals(java.util.Arrays.asList("auth-needed", "no-auth", null),
                     coverage.stream().map(CoverageInformation::paNeeded).toList());
             assertEquals(List.of("clinical"), coverage.get(0).docNeeded());
             // The reference implementation's "identifier" instead of "coverage-assertion-id".

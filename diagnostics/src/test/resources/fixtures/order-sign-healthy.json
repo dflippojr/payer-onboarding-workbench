@@ -26,7 +26,9 @@
             "extension": [
               { "url": "coverage", "valueReference": { "reference": "Coverage/cov-synthetic-1" } },
               { "url": "covered", "valueCode": "covered" },
-              { "url": "pa-needed", "valueCode": "no-auth" }
+              { "url": "pa-needed", "valueCode": "no-auth" },
+              { "url": "date", "valueDate": "2026-01-01" },
+              { "url": "coverage-assertion-id", "valueString": "synthetic-1" }
             ]
           }
         ]

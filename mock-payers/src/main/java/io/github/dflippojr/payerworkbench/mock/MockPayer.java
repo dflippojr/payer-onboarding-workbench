@@ -294,6 +294,9 @@ public abstract class MockPayer implements AutoCloseable {
             }
             return Response.json(mapper, 200, response).withFault(Fault.MALFORMED_CARD);
         }
+        if (faults.isEnabled(Fault.COVERAGE_INFO_INCOMPLETE) && "order-sign".equals(service.hook())) {
+            return Response.json(mapper, 200, response).withFault(Fault.COVERAGE_INFO_INCOMPLETE);
+        }
         return Response.json(mapper, 200, response);
     }
 
@@ -429,13 +432,21 @@ public abstract class MockPayer implements AutoCloseable {
         if (coverage != null) {
             parts.addObject().put("url", "coverage").putObject("valueReference").put("reference", coverage);
         }
-        parts.addObject().put("url", "covered").put("valueCode", determination.covered());
-        parts.addObject().put("url", "pa-needed").put("valueCode", determination.paNeeded());
+        boolean incomplete = faults.isEnabled(Fault.COVERAGE_INFO_INCOMPLETE);
+        parts.addObject().put("url", "covered").put("valueCode", incomplete ? "invalid-covered" : determination.covered());
+        if (!"not-covered".equals(determination.covered())) {
+            parts.addObject().put("url", "pa-needed").put("valueCode", determination.paNeeded());
+        }
+        if ("conditional".equals(determination.covered())) {
+            parts.addObject().put("url", "info-needed").put("valueCode", "detail-code");
+        }
         for (String doc : determination.docNeeded()) {
             parts.addObject().put("url", "doc-needed").put("valueCode", doc);
         }
         parts.addObject().put("url", "date").put("valueDate", LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC).toString());
-        parts.addObject().put("url", assertionIdUrl).put("valueString", assertionId);
+        if (!incomplete) {
+            parts.addObject().put("url", assertionIdUrl).put("valueString", assertionId);
+        }
 
         ObjectNode copy = order.deepCopy();
         JsonNode existing = copy.path("extension");

@@ -24,6 +24,9 @@ public enum Fault {
     /** Hook responses contain cards with no {@code summary} and no {@code indicator}. */
     MALFORMED_CARD("malformed-card"),
 
+    /** order-sign determinations omit the assertion id and use an invalid covered code. */
+    COVERAGE_INFO_INCOMPLETE("coverage-info-incomplete"),
+
     /** {@code GET /cds-services} returns 500. */
     DISCOVERY_500("discovery-500"),
 

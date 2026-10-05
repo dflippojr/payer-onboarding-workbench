@@ -123,6 +123,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | `expired-token-401` | hook request | `auth.clock-skew`, `response.schema` |
 | `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
 | `wrong-audience-reject`, Northwind | hook request | `response.schema` |
+| `coverage-info-incomplete` (both payers, `order-sign`) | diagnostics | `response.coverage-information` |
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
 | `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
@@ -134,6 +135,8 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | wrong client id, Northwind | authenticate | `auth.token` |
 | wrong client id, Fabrikam | hook request | `response.schema` |
 | environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
+
+`response.coverage-information` validates every coverage-information extension in system actions and card suggestions using the router's Da Vinci CRD 2.2.1 validator. Evidence identifies the resource, extension location, and each violation's path and message. ERROR violations produce FAIL, WARNING violations produce WARN, and conformant content produces PASS. Healthy Northwind passes; healthy Fabrikam warns about its legacy `identifier` name without failing. With no coverage information, the check adds no finding.
 
 One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
 
@@ -278,6 +281,7 @@ curl -X DELETE http://localhost:8181/admin/faults                           # tu
 | `wrong-audience-reject` | Hook calls get 401 because the payer expects a different audience: Fabrikam wants the JWT `aud` under `https://api.fabrikam-benefits.example`, Northwind wants access tokens issued for `https://crd.northwind-health.example`. |
 | `malformed-card` | Cards come back without the required `summary` and `indicator`. |
 | `discovery-500` | `GET /cds-services` returns 500. |
+| `coverage-info-incomplete` | `order-sign` coverage information omits both assertion-id names and sets `covered` to `invalid-covered`; the content check lists both errors. |
 | `prefetch-missing-400` | Hook calls missing a declared prefetch key get 400. With the fault off, missing prefetch is tolerated. |
 | `untrusted-certificate` | TLS presents a certificate signed by a second CA the workbench does not trust. |
 | `expired-certificate` | TLS presents a certificate from the trusted CA whose validity ended yesterday. |
