@@ -120,9 +120,10 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 |---|---|---|
 | none (healthy run) | nothing | none |
 | `slow-response` | (steps pass; only the hook call is slow) | `perf.latency` |
-| `expired-token-401` | hook request | `auth.clock-skew`, `response.schema` |
+| `expired-token-401` | hook request | `auth.hook-rejected` (payer expiry reason) |
+| `rate-limited-429` | hook request | `perf.rate-limit` (`Retry-After: 30`, backoff advice) |
 | `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
-| `wrong-audience-reject`, Northwind | hook request | `response.schema` |
+| `wrong-audience-reject`, Northwind | hook request | `auth.hook-rejected` |
 | `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`) |
 | `coverage-info-incomplete` (both payers, `order-sign`) | diagnostics | `response.coverage-information` |
 | `malformed-card` | parse response | `response.schema` |
@@ -140,7 +141,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 
 `response.coverage-information` validates every coverage-information extension in system actions and card suggestions using the router's Da Vinci CRD 2.2.1 validator. Evidence identifies the resource, extension location, and each violation's path and message. ERROR violations produce FAIL, WARNING violations produce WARN, and conformant content produces PASS. Healthy Northwind and Tailspin pass; healthy Fabrikam warns about its legacy `identifier` name without failing. With no coverage information, the check adds no finding.
 
-One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Tailspin records only `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, and `kid` from the actual assertion signed by `JwtSigner.clientAssertion`; it never stores the assertion, encoded parts, signature or private key. `auth.client-assertion` passes when the token endpoint accepts it, and explains identity, audience, lifetime and replay rejections using the recorded claims and payer error description. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
+One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Tailspin records only `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, and `kid` from the actual assertion signed by `JwtSigner.clientAssertion`; it never stores the assertion, encoded parts, signature or private key. `auth.client-assertion` passes when the token endpoint accepts it, and explains identity, audience, lifetime and replay rejections using the recorded claims and payer error description. Northwind checks the audience of its own access token, which the workbench cannot inspect, so `auth.hook-rejected` explains that 401 from the payer's `WWW-Authenticate` header and JSON error body. Fabrikam client-id rejections use the same check. It names the rejected credential, quotes the payer's reason, and recommends a fix for RFC 6750 `invalid_token`, `insufficient_scope` or `invalid_request`. Generic response-schema failures are suppressed for explained authentication and throttling errors. An expired credential alone is not clock skew; `auth.clock-skew` requires a measured difference or an explicit clock error.
 
 Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 
@@ -321,6 +322,7 @@ curl -X DELETE http://localhost:8181/admin/faults                           # tu
 |-------|----------------------|
 | `slow-response` | Hook calls (`POST /cds-services/{id}`) wait `delayMs` (default 2000) before they are handled. Discovery, the token endpoint and admin stay fast. |
 | `expired-token-401` | Hook calls get 401 as if the credential had expired. |
+| `rate-limited-429` | Hook calls get 429 with `Retry-After: 30` and a JSON error body on all payers. `perf.rate-limit` parses seconds and HTTP-date delays and advises backoff; the workbench does not retry. |
 | `wrong-audience-reject` | Hook calls get 401 because the payer expects a different audience: Fabrikam wants the JWT `aud` under `https://api.fabrikam-benefits.example`, Northwind wants access tokens issued for `https://crd.northwind-health.example`. Tailspin rejects the token request with `401 invalid_client`, expecting assertion `aud` = `https://auth.tailspin-health.example/token`. |
 | `malformed-card` | Cards come back without the required `summary` and `indicator`. |
 | `discovery-500` | `GET /cds-services` returns 500. |

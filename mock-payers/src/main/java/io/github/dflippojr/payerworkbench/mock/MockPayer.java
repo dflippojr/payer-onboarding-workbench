@@ -286,6 +286,10 @@ public abstract class MockPayer implements AutoCloseable {
 
     private Response hook(ServiceDefinition service, Request request) {
         authenticate(request);
+        if (faults.isEnabled(Fault.RATE_LIMITED_429)) {
+            return Response.json(mapper, 429, error("rate_limited", "Too many hook calls; retry after 30 seconds"))
+                    .withHeader("Retry-After", "30").withFault(Fault.RATE_LIMITED_429);
+        }
         ObjectNode hookRequest = parseObject(request.body());
         if (!service.hook().equals(hookRequest.path("hook").asText())) {
             throw new HttpError(400, "invalid_request", "Service '" + service.id() + "' handles hook '"

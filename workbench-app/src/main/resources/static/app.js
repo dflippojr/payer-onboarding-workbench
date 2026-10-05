@@ -12,6 +12,7 @@
   };
   const FAULTS = {
     'slow-response': ['Payer is slow', 'Every response is held past the latency budget (about 11 s by default).'],
+    'rate-limited-429': ['Payer rate limit', 'Hook calls get 429 with Retry-After: 30; back off before retrying.'],
     'expired-token-401': ['Token rejected as expired', 'Hook calls get 401 invalid_token, "expired".'],
     'wrong-audience-reject': ['Payer expects another audience', 'The payer checks tokens against a different aud.'],
     'malformed-card': ['Malformed cards', 'Cards come back without summary and indicator.'],

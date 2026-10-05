@@ -137,14 +137,15 @@ class OnboardingFlowTest {
         List<Arguments> cases = new ArrayList<>();
         for (String payerId : List.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID)) {
             cases.add(Arguments.of(payerId, Fault.SLOW_RESPONSE, HEALTHY_SAMPLE, "perf.latency", null));
-            cases.add(Arguments.of(payerId, Fault.EXPIRED_TOKEN_401, HEALTHY_SAMPLE, "auth.clock-skew", "hook-request"));
+            cases.add(Arguments.of(payerId, Fault.EXPIRED_TOKEN_401, HEALTHY_SAMPLE, "auth.hook-rejected", "hook-request"));
             // Northwind's audience is on its own access token, which the workbench cannot inspect.
             cases.add(Arguments.of(payerId, Fault.WRONG_AUDIENCE_REJECT, HEALTHY_SAMPLE,
                     payerId.equals(TAILSPIN_ID) ? "auth.client-assertion"
-                            : payerId.equals(FABRIKAM_ID) ? "auth.jwt-audience" : "response.schema",
+                            : payerId.equals(FABRIKAM_ID) ? "auth.jwt-audience" : "auth.hook-rejected",
                     payerId.equals(TAILSPIN_ID) ? "authenticate" : "hook-request"));
             cases.add(Arguments.of(payerId, Fault.COVERAGE_INFO_INCOMPLETE, HEALTHY_SAMPLE,
                     "response.coverage-information", null));
+            cases.add(Arguments.of(payerId, Fault.RATE_LIMITED_429, HEALTHY_SAMPLE, "perf.rate-limit", "hook-request"));
             cases.add(Arguments.of(payerId, Fault.MALFORMED_CARD, HEALTHY_SAMPLE, "response.schema", "parse-response"));
             cases.add(Arguments.of(payerId, Fault.DISCOVERY_500, HEALTHY_SAMPLE, "discovery.reachable", "discovery"));
             cases.add(Arguments.of(payerId, Fault.PREFETCH_MISSING_400, NO_PREFETCH_SAMPLE, "response.schema", "hook-request"));
@@ -160,6 +161,12 @@ class OnboardingFlowTest {
         OnboardingRun run = runner.run(request(payerId, sampleId, List.of(fault.id())));
 
         assertTrue(failIds(run).contains(expectedCheckId), "FAIL ids: " + failIds(run));
+        if (fault == Fault.EXPIRED_TOKEN_401 || fault == Fault.RATE_LIMITED_429) {
+            assertEquals(List.of(expectedCheckId), failIds(run));
+            Finding rejection = run.findings().stream().filter(f -> f.checkId().equals(expectedCheckId))
+                    .findFirst().orElseThrow();
+            assertTrue(rejection.evidence().contains(fault == Fault.RATE_LIMITED_429 ? "Retry-After: 30" : "expired"));
+        }
         if (fault == Fault.COVERAGE_INFO_INCOMPLETE) {
             Finding coverage = run.findings().stream()
                     .filter(f -> f.checkId().equals(expectedCheckId)).findFirst().orElseThrow();
@@ -230,10 +237,9 @@ class OnboardingFlowTest {
                 run.steps().get(2).elapsed().toMillis(), 1);
         assertTrue(tokens.stream().allMatch(e -> e.requestBody() == null));
         assertTrue(tokens.stream().noneMatch(e -> e.responseBody().contains("access_token")));
-        assertEquals(1, run.findings().stream().filter(f -> f.checkId().equals("response.schema")
+        assertEquals(1, run.findings().stream().filter(f -> f.checkId().equals("auth.hook-rejected")
                 && f.severity() == Severity.FAIL).count());
-        assertEquals(fault.equals("expired-token-401") ? List.of("auth.clock-skew", "response.schema")
-                : List.of("response.schema"), failIds(run));
+        assertEquals(List.of("auth.hook-rejected"), failIds(run));
     }
 
     @ParameterizedTest
@@ -371,7 +377,9 @@ class OnboardingFlowTest {
                 new RunRequest.ConnectionOverrides(null, null, "someone-else")));
 
         assertEquals("hook-request", firstFailedStep(run));
-        assertTrue(failIds(run).contains("response.schema"), "FAIL ids: " + failIds(run));
+        assertEquals(List.of("auth.hook-rejected"), failIds(run));
+        assertTrue(run.findings().stream().filter(f -> f.checkId().equals("auth.hook-rejected"))
+                .anyMatch(f -> f.evidence().contains("someone-else")));
     }
 
     @Test

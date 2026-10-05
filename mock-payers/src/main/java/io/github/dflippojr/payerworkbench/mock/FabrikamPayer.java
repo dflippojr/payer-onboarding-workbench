@@ -177,7 +177,9 @@ public final class FabrikamPayer extends MockPayer {
     }
 
     private static HttpError unauthorized(String description) {
-        return new HttpError(401, "unauthorized", description);
+        return new HttpError(401, "unauthorized", description)
+                .header("WWW-Authenticate", "Bearer error=\"invalid_token\", error_description=\""
+                        + description.replace("\\", "\\\\").replace("\"", "\\\"") + "\"");
     }
 
     // ---- hooks ----

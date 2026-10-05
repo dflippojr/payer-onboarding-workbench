@@ -21,6 +21,9 @@ public enum Fault {
     /** Hook calls are rejected with 401 because the payer expects a different audience. */
     WRONG_AUDIENCE_REJECT("wrong-audience-reject"),
 
+    /** Hook calls are throttled with Retry-After: 30. */
+    RATE_LIMITED_429("rate-limited-429"),
+
     /** Hook responses contain cards with no {@code summary} and no {@code indicator}. */
     MALFORMED_CARD("malformed-card"),
 
