@@ -89,13 +89,13 @@ public final class TlsHandshakeCheck implements DiagnosticCheck {
         if (e.isEmpty()) {
             return null;
         }
-        if (e.contains("pkix") || e.contains("unable to find valid certification path")
-                || e.contains("self-signed") || e.contains("self signed") || e.contains("unable to get local issuer")) {
-            return Cause.UNTRUSTED_SERVER_CA;
-        }
         if (e.contains("certificateexpired") || e.contains("certificate expired") || e.contains("notafter")
                 || e.contains("certificate has expired")) {
             return Cause.SERVER_CERT_EXPIRED;
+        }
+        if (e.contains("pkix") || e.contains("unable to find valid certification path")
+                || e.contains("self-signed") || e.contains("self signed") || e.contains("unable to get local issuer")) {
+            return Cause.UNTRUSTED_SERVER_CA;
         }
         if (e.contains("no subject alternative") || e.contains("no name matching")
                 || e.contains("doesn't match any of the subject alternative names") || e.contains("hostname mismatch") || e.contains("hostname verification")) {

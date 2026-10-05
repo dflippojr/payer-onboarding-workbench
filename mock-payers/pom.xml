@@ -21,6 +21,11 @@
 
   <dependencies>
     <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <version>1.86</version>
+    </dependency>
+    <dependency>
       <groupId>io.github.dflippojr</groupId>
       <artifactId>workbench-core</artifactId>
     </dependency>

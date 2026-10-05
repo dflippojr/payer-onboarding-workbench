@@ -312,8 +312,9 @@ public final class NorthwindPayer extends MockPayer {
                 .tokenLifetime(Duration.ofSeconds(Long.parseLong(
                         options.single("token-lifetime-seconds", String.valueOf(DEFAULT_TOKEN_LIFETIME.toSeconds())))))
                 .publicBaseUrl(options.single("public-base-url", null))
-                .build()
-                .start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
+                .build();
+        options.configureTls(payer);
+        payer.start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
         out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
         out.println("  token endpoint: " + payer.tokenEndpoint() + "  (client_secret_basic)");
         out.println("  client id:      " + clientId);

@@ -8,6 +8,7 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.FileBasedConnectionStore;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
+import io.github.dflippojr.payerworkbench.mock.TestTls;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +54,12 @@ public class SyntheticPayers implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(SyntheticPayers.class);
     private static final SecureRandom RANDOM = new SecureRandom();
 
+    private final TestTls tls = new TestTls();
+
+    TestTls tls() {
+        return tls;
+    }
+
     private final Path workDir;
     private final FileBasedConnectionStore store;
     private final InMemoryCredentials credentials = new InMemoryCredentials();
@@ -65,7 +72,8 @@ public class SyntheticPayers implements DisposableBean {
         try {
             String secret = randomSecret();
             credentials.put("northwind-client-secret", secret);
-            NorthwindPayer northwind = NorthwindPayer.builder().client(CLIENT_ID, secret).build().start(0);
+            NorthwindPayer northwind = NorthwindPayer.builder().client(CLIENT_ID, secret).build();
+            northwind.tls(tls).start(0);
             payers.put(NORTHWIND_ID, northwind);
             store.save(ConnectionRecord.builder()
                     .payerId(NORTHWIND_ID)
@@ -83,7 +91,8 @@ public class SyntheticPayers implements DisposableBean {
             KeyPair key = rsaKey();
             credentials.put("fabrikam-signing-key", PemKeys.toPem("PRIVATE KEY", key.getPrivate().getEncoded()));
             jwks = new JwksServer(KEY_ID, key.getPublic());
-            FabrikamPayer fabrikam = FabrikamPayer.builder().client(CLIENT_ID, jwks.url()).build().start(0);
+            FabrikamPayer fabrikam = FabrikamPayer.builder().client(CLIENT_ID, jwks.url()).build();
+            fabrikam.tls(tls).start(0);
             payers.put(FABRIKAM_ID, fabrikam);
             store.save(ConnectionRecord.builder()
                     .payerId(FABRIKAM_ID)

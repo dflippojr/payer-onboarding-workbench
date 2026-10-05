@@ -66,6 +66,16 @@ class StandaloneLaunchTest {
     }
 
     @Test
+    void bothLaunchersAcceptTlsFlagBeforeOtherOptions() throws Exception {
+        PrintStream sink = new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8);
+        try (NorthwindPayer northwind = NorthwindPayer.launch(new String[]{"--tls", "--port", "0"}, sink);
+             FabrikamPayer fabrikam = FabrikamPayer.launch(new String[]{"--tls", "--port", "0"}, sink)) {
+            assertTrue(northwind.baseUrl().startsWith("https://127.0.0.1:"));
+            assertTrue(fabrikam.baseUrl().startsWith("https://127.0.0.1:"));
+        }
+    }
+
+    @Test
     void rejectsMalformedArguments() {
         PrintStream sink = new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8);
         assertThrows(IllegalArgumentException.class, () -> NorthwindPayer.launch(new String[] {"port", "0"}, sink));

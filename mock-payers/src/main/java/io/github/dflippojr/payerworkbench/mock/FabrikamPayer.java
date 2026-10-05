@@ -315,7 +315,9 @@ public final class FabrikamPayer extends MockPayer {
             }
             builder.client(client.substring(0, eq), URI.create(client.substring(eq + 1)));
         }
-        FabrikamPayer payer = builder.build().start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
+        FabrikamPayer payer = builder.build();
+        options.configureTls(payer);
+        payer.start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
         out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
         if (payer.jwksUrls.isEmpty()) {
             out.println("  no clients registered: every hook call will get 401 (add --client ISS=JWKS_URL)");

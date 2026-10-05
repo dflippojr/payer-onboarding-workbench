@@ -17,7 +17,9 @@
     'malformed-card': ['Malformed cards', 'Cards come back without summary and indicator.'],
     'discovery-500': ['Discovery is down', 'GET /cds-services returns 500.'],
     'prefetch-missing-400': ['Strict about prefetch', 'Rejects requests that leave out prefetch. Pick the "missing prefetch" sample to see it.'],
-    'tls-required': ['HTTPS required', 'Refuses plain HTTP (simulated as 426 Upgrade Required).'],
+    'untrusted-certificate': ['Untrusted certificate', 'Presents a certificate issued by an untrusted test CA.'],
+    'expired-certificate': ['Expired certificate', 'Presents a trusted certificate that expired yesterday.'],
+    'hostname-mismatch': ['Certificate hostname mismatch', 'Presents a trusted certificate for a different payer host.'],
   };
   const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
 

@@ -34,11 +34,14 @@ public enum Fault {
      */
     PREFETCH_MISSING_400("prefetch-missing-400"),
 
-    /**
-     * Every non-admin request returns 426 Upgrade Required, as a plain-HTTP
-     * endpoint does when it only accepts TLS. Simulated: the mock never serves TLS.
-     */
-    TLS_REQUIRED("tls-required");
+    /** The TLS server presents a certificate from a second, untrusted test CA. */
+    UNTRUSTED_CERTIFICATE("untrusted-certificate"),
+
+    /** The TLS server presents a trusted certificate that expired yesterday. */
+    EXPIRED_CERTIFICATE("expired-certificate"),
+
+    /** The TLS server presents a trusted certificate for another hostname only. */
+    HOSTNAME_MISMATCH("hostname-mismatch");
 
     private final String id;
 

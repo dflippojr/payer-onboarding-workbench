@@ -121,19 +121,4 @@ class FaultInjectionTest {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"northwind", "fabrikam"})
-    void tlsRequiredRejectsPlainHttp(String payerName) throws Exception {
-        try (PayerFixture fixture = PayerFixture.create(payerName)) {
-            fixture.payer.faults().enable(Fault.TLS_REQUIRED);
-
-            // For OAuth2 the SDK fetches a token even before discovery, so that request hits the 426 first.
-            RouterException discovery = assertThrows(RouterException.class,
-                    () -> fixture.client.discoverServices(fixture.record));
-            assertTrue(discovery.getMessage().contains("426"), discovery.getMessage());
-            RouterException hook = assertThrows(RouterException.class,
-                    () -> fixture.orderSign(SyntheticData.standardOrders()));
-            assertTrue(hook.getMessage().contains("426"), hook.getMessage());
-        }
-    }
 }
