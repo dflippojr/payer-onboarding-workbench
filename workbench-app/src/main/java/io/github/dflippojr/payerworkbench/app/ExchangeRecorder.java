@@ -50,6 +50,14 @@ final class ExchangeRecorder {
         return send("POST", url, headers, body);
     }
 
+    private static String transportFailure(IOException error) {
+        List<String> causes = new ArrayList<>();
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            causes.add(cause.getClass().getSimpleName() + ": " + cause.getMessage());
+        }
+        return String.join("; caused by: ", causes);
+    }
+
     private Sent send(String method, URI url, Map<String, String> headers, String body) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(url)
                 .timeout(timeout)
@@ -69,7 +77,7 @@ final class ExchangeRecorder {
         } catch (ConnectException e) {
             transportError = "Connection refused: " + url.getHost() + ":" + url.getPort();
         } catch (IOException e) {
-            transportError = e.getClass().getSimpleName() + ": " + e.getMessage();
+            transportError = transportFailure(e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             transportError = "Interrupted";

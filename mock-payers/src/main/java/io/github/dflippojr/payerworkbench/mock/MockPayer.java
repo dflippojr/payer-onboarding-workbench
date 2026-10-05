@@ -6,10 +6,11 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsServer;
+import com.sun.net.httpserver.HttpsConfigurator;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -41,8 +42,8 @@ import java.util.regex.Pattern;
  *       in each service's {@code extension} under {@value #IG_VERSION_EXTENSION};</li>
  *   <li>{@code POST /cds-services/{id}}: authenticate, validate the request
  *       shape, then hand off to {@link #handleHook};</li>
- *   <li>the fault admin endpoint, {@code /admin/faults}, which is never itself
- *       subject to faults;</li>
+ *   <li>the fault admin endpoint, {@code /admin/faults}, which bypasses HTTP response faults
+ *       (certificate faults still affect its TLS handshake);</li>
  *   <li>the request-level {@link Fault faults}. Response bodies stay realistic;
  *       a faulted response carries an {@value #FAULT_HEADER} header naming the fault.</li>
  * </ul>
@@ -72,6 +73,16 @@ public abstract class MockPayer implements AutoCloseable {
     private final FaultSettings faults = new FaultSettings();
     private final String configuredPublicBaseUrl;
     private HttpServer server;
+    private TestTls tls;
+
+    /** Enables in-memory test TLS before starting the payer. */
+    public MockPayer tls(TestTls tls) {
+        if (server != null) {
+            throw new IllegalStateException("Configure TLS before starting");
+        }
+        this.tls = Objects.requireNonNull(tls);
+        return this;
+    }
     private ExecutorService executor;
 
     /**
@@ -114,7 +125,15 @@ public abstract class MockPayer implements AutoCloseable {
         if (server != null) {
             throw new IllegalStateException(displayName() + " is already running on port " + port());
         }
-        HttpServer created = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
+        InetSocketAddress address = new InetSocketAddress("127.0.0.1", port);
+        HttpServer created;
+        if (tls == null) {
+            created = HttpServer.create(address, 0);
+        } else {
+            HttpsServer https = HttpsServer.create(address, 0);
+            https.setHttpsConfigurator(new HttpsConfigurator(tls.serverContext(faults)));
+            created = https;
+        }
         executor = Executors.newVirtualThreadPerTaskExecutor();
         created.setExecutor(executor);
         created.createContext("/", this::handle);
@@ -145,9 +164,9 @@ public abstract class MockPayer implements AutoCloseable {
         return server.getAddress().getPort();
     }
 
-    /** Where clients reach this payer: {@code http://localhost:<port>}. Use as a {@code ConnectionRecord} base URL. */
+    /** Where clients reach this payer, using HTTP or HTTPS as configured. Use as a {@code ConnectionRecord} base URL. */
     public String baseUrl() {
-        return "http://localhost:" + port();
+        return tls == null ? "http://localhost:" + port() : "https://127.0.0.1:" + port();
     }
 
     /** The base URL the payer believes it is published at; audience checks are made against this. */
@@ -182,11 +201,6 @@ public abstract class MockPayer implements AutoCloseable {
         String path = request.path();
         if (path.equals("/admin/faults") || path.startsWith("/admin/faults/")) {
             return admin(request);
-        }
-        if (faults.isEnabled(Fault.TLS_REQUIRED)) {
-            return Response.json(mapper, 426, error("tls_required", "This endpoint only accepts HTTPS (TLS 1.2 or later)"))
-                    .withHeader("Upgrade", "TLS/1.2, HTTP/1.1")
-                    .withFault(Fault.TLS_REQUIRED);
         }
         boolean slowed = faults.isEnabled(Fault.SLOW_RESPONSE) && isHookCall(request);
         if (slowed) {

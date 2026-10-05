@@ -78,10 +78,6 @@ public class OnboardingRunner {
     private final SyntheticPayers payers;
     private final SampleCatalog samples;
     private final WorkbenchProperties properties;
-    private final HttpClient http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
@@ -120,7 +116,13 @@ public class OnboardingRunner {
                     payer.faults().enable(fault);
                 }
             }
-            return new Attempt(request, sample).run();
+            try (HttpClient http = HttpClient.newBuilder()
+                    .sslContext(payers.tls().clientContext())
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .followRedirects(HttpClient.Redirect.NEVER)
+                    .build()) {
+                return new Attempt(request, sample, http).run();
+            }
         } finally {
             payer.faults().clear();
             lock.unlock();
@@ -131,7 +133,7 @@ public class OnboardingRunner {
     private final class Attempt {
         private final RunRequest request;
         private final SampleMetadata sample;
-        private final ExchangeRecorder recorder = new ExchangeRecorder(http, properties.requestTimeout());
+        private final ExchangeRecorder recorder;
         private final List<StepResult> steps = new ArrayList<>();
         private final List<HookResponse> hookResponses = new ArrayList<>();
         private ConnectionRecord record;
@@ -143,7 +145,8 @@ public class OnboardingRunner {
         private String hookBody;
         private JwtClaims clientJwt;
 
-        Attempt(RunRequest request, SampleMetadata sample) {
+        Attempt(RunRequest request, SampleMetadata sample, HttpClient http) {
+            this.recorder = new ExchangeRecorder(http, properties.requestTimeout());
             this.request = request;
             this.sample = sample;
         }

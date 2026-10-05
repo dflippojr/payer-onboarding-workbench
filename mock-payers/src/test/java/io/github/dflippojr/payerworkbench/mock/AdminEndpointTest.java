@@ -72,10 +72,10 @@ class AdminEndpointTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"northwind", "fabrikam"})
-    void clearsAllFaultsAndStaysReachableUnderTlsRequired(String payerName) throws Exception {
+    void clearsAllFaultsAndStaysReachableUnderDiscoveryFailure(String payerName) throws Exception {
         try (PayerFixture fixture = PayerFixture.create(payerName)) {
-            fixture.payer.faults().enable(Fault.TLS_REQUIRED).enable(Fault.MALFORMED_CARD);
-            assertEquals(426, fixture.raw("GET", "/cds-services", null).statusCode());
+            fixture.payer.faults().enable(Fault.DISCOVERY_500).enable(Fault.MALFORMED_CARD);
+            assertEquals(500, fixture.raw("GET", "/cds-services", null).statusCode());
 
             assertEquals(200, fixture.raw("DELETE", "/admin/faults", null).statusCode());
 

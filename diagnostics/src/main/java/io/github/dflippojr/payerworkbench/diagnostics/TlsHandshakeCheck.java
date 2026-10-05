@@ -38,7 +38,7 @@ public final class TlsHandshakeCheck implements DiagnosticCheck {
             String host = host(exchange.url());
             if (exchange.responded()) {
                 if (exchange.url().regionMatches(true, 0, "https:", 0, 6)) {
-                    okHosts.add(host);
+                    okHosts.add("https://" + host);
                 }
                 continue;
             }
@@ -57,7 +57,7 @@ public final class TlsHandshakeCheck implements DiagnosticCheck {
                 mtls ? "TLS and client certificate accepted" : "TLS handshake succeeded",
                 "Encrypted (HTTPS) connections to the payer were established and its certificate was trusted"
                         + (mtls ? ", and the payer accepted the workbench's client certificate (mutual TLS)." : "."),
-                "hosts: " + String.join(", ", okHosts), null));
+                "origins: " + String.join(", ", okHosts), null));
     }
 
     private static List<HttpExchange> allExchanges(RunObservations obs) {
@@ -89,13 +89,13 @@ public final class TlsHandshakeCheck implements DiagnosticCheck {
         if (e.isEmpty()) {
             return null;
         }
-        if (e.contains("pkix") || e.contains("unable to find valid certification path")
-                || e.contains("self-signed") || e.contains("self signed") || e.contains("unable to get local issuer")) {
-            return Cause.UNTRUSTED_SERVER_CA;
-        }
         if (e.contains("certificateexpired") || e.contains("certificate expired") || e.contains("notafter")
                 || e.contains("certificate has expired")) {
             return Cause.SERVER_CERT_EXPIRED;
+        }
+        if (e.contains("pkix") || e.contains("unable to find valid certification path")
+                || e.contains("self-signed") || e.contains("self signed") || e.contains("unable to get local issuer")) {
+            return Cause.UNTRUSTED_SERVER_CA;
         }
         if (e.contains("no subject alternative") || e.contains("no name matching")
                 || e.contains("doesn't match any of the subject alternative names") || e.contains("hostname mismatch") || e.contains("hostname verification")) {

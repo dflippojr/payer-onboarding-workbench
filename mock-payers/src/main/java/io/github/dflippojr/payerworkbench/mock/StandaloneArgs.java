@@ -31,6 +31,8 @@ final class StandaloneArgs {
             if (eq >= 0) {
                 value = name.substring(eq + 1);
                 name = name.substring(0, eq);
+            } else if (name.equals("tls")) {
+                value = "true";
             } else if (i + 1 < args.length) {
                 value = args[++i];
             } else {
@@ -44,6 +46,12 @@ final class StandaloneArgs {
     String single(String name, String defaultValue) {
         List<String> list = values.get(name);
         return list == null ? defaultValue : list.get(list.size() - 1);
+    }
+
+    void configureTls(MockPayer payer) {
+        if (Boolean.parseBoolean(single("tls", "false"))) {
+            payer.tls(new TestTls());
+        }
     }
 
     List<String> all(String name) {

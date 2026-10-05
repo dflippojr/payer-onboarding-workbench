@@ -124,7 +124,9 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
 | `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
-| `tls-required` (simulated as HTTP 426) | discovery | `discovery.reachable` |
+| `untrusted-certificate` | discovery | `tls.handshake` (untrusted CA) |
+| `expired-certificate` | discovery | `tls.handshake` (expired certificate) |
+| `hostname-mismatch` | discovery | `tls.handshake` (different host) |
 | base URL suffix `/r4` | discovery | `discovery.reachable` |
 | `igVersion` `1.0.0` | (steps pass) | `ig.version` |
 | wrong client id, Northwind | authenticate | `auth.token` |
@@ -276,9 +278,11 @@ curl -X DELETE http://localhost:8181/admin/faults                           # tu
 | `malformed-card` | Cards come back without the required `summary` and `indicator`. |
 | `discovery-500` | `GET /cds-services` returns 500. |
 | `prefetch-missing-400` | Hook calls missing a declared prefetch key get 400. With the fault off, missing prefetch is tolerated. |
-| `tls-required` | Every non-admin request gets 426 Upgrade Required. This is simulated: the mocks never serve TLS. |
+| `untrusted-certificate` | TLS presents a certificate signed by a second CA the workbench does not trust. |
+| `expired-certificate` | TLS presents a certificate from the trusted CA whose validity ended yesterday. |
+| `hostname-mismatch` | TLS presents a trusted certificate for `crd.other-payer.example` only. |
 
-Faulted responses carry an `X-Mock-Fault` header naming the fault. The admin endpoint has no authentication and is never affected by faults, so the mocks listen on loopback only.
+Faulted HTTP responses carry an `X-Mock-Fault` header naming the fault. Certificate faults terminate the TLS handshake before HTTP can be sent and affect admin connections too. The admin endpoint has no authentication; the mocks listen on loopback only.
 
 ## Sample requests
 
@@ -320,3 +324,7 @@ On Windows, use `;` instead of `:` as the classpath separator.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The app starts both mock payers over real HTTPS at `https://127.0.0.1:<port>`. A synthetic test CA and server certificates for `localhost` and `127.0.0.1` are generated in memory at startup; no certificate or private-key files are written. Payer calls trust only that test CA, and healthy runs show a `tls.handshake` PASS. Certificate faults fail before HTTP discovery receives a response.
+
+Standalone payers use plain HTTP by default. Add `--tls` to either standalone launcher for HTTPS with an ephemeral test CA. This CA is not installed in the JVM or operating-system trust store. Fabrikam fetches the app's public JWKS over loopback HTTP. TLS faults affect the handshake for every endpoint, including admin endpoints; clear them programmatically or restart a standalone payer to recover.

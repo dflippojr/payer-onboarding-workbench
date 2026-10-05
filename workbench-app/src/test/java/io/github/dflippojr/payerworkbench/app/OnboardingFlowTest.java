@@ -58,7 +58,8 @@ class OnboardingFlowTest {
                 "diagnostics"), run.steps().stream().map(StepResult::stepId).toList());
         run.steps().forEach(step -> assertTrue(step.ok(), step.stepId() + ": " + step.summary()));
         assertEquals(List.of(), failIds(run));
-        assertTrue(run.findings().stream().anyMatch(f -> f.severity() == Severity.PASS));
+        assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals("tls.handshake") && f.severity() == Severity.PASS));
+        assertTrue(payers.payer(payerId).orElseThrow().baseUrl().startsWith("https://127.0.0.1:"));
     }
 
     @ParameterizedTest
@@ -78,7 +79,7 @@ class OnboardingFlowTest {
             cases.add(Arguments.of(payerId, Fault.MALFORMED_CARD, HEALTHY_SAMPLE, "response.schema", "parse-response"));
             cases.add(Arguments.of(payerId, Fault.DISCOVERY_500, HEALTHY_SAMPLE, "discovery.reachable", "discovery"));
             cases.add(Arguments.of(payerId, Fault.PREFETCH_MISSING_400, NO_PREFETCH_SAMPLE, "response.schema", "hook-request"));
-            cases.add(Arguments.of(payerId, Fault.TLS_REQUIRED, HEALTHY_SAMPLE, "discovery.reachable", "discovery"));
+
         }
         return cases.stream();
     }
@@ -97,6 +98,31 @@ class OnboardingFlowTest {
         assertEquals("diagnostics", diagnostics.stepId());
         assertFalse(diagnostics.ok());
         assertTrue(payers.payer(payerId).orElseThrow().faults().enabled().isEmpty(), "faults are cleared after a run");
+    }
+
+    static Stream<Arguments> certificateFaults() {
+        return Stream.of(NORTHWIND_ID, FABRIKAM_ID).flatMap(payer -> Stream.of(
+                Arguments.of(payer, Fault.UNTRUSTED_CERTIFICATE, "not trusted"),
+                Arguments.of(payer, Fault.EXPIRED_CERTIFICATE, "has expired"),
+                Arguments.of(payer, Fault.HOSTNAME_MISMATCH, "different host")));
+    }
+
+    @ParameterizedTest
+    @MethodSource("certificateFaults")
+    void certificateFaultFailsRealHandshakeAndRecovers(String payerId, Fault fault, String cause) {
+        runner.run(request(payerId, HEALTHY_SAMPLE, List.of()));
+        OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of(fault.id())));
+        assertEquals("discovery", firstFailedStep(run));
+        Finding finding = run.findings().stream().filter(f -> f.checkId().equals("tls.handshake")).findFirst().orElseThrow();
+        assertEquals(Severity.FAIL, finding.severity());
+        assertTrue(finding.title().contains(cause), finding::toString);
+        assertTrue(finding.evidence().contains("SSLHandshakeException"), finding::evidence);
+        for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
+            String report = ReportRenderer.render(RunReport.of(run, payerId, "2.1.0", java.time.Instant.now(), "test"), format);
+            assertFalse(report.contains("-----BEGIN"), "TLS material leaked into " + format);
+            assertFalse(report.contains("privateKey"), "TLS private key leaked into " + format);
+        }
+        assertEquals(List.of(), failIds(runner.run(request(payerId, HEALTHY_SAMPLE, List.of()))));
     }
 
     @ParameterizedTest
