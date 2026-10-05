@@ -56,6 +56,8 @@ public final class DiagnosticEngine {
                 new AuthTokenCheck(),
                 new ClientAssertionCheck(),
                 new JwtAudienceCheck(),
+                new HookRejectedCheck(),
+                new RateLimitCheck(),
                 new ClockSkewCheck(config.clockSkewTolerance()),
                 new IgVersionCheck(),
                 new ResponseSchemaCheck(),

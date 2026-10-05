@@ -16,8 +16,8 @@ import java.util.Set;
  * {@code response.schema}: each hook call returned HTTP 2xx with a CDS Hooks
  * response whose cards have the required fields ({@code summary},
  * {@code indicator}, {@code source.label}) and a valid {@code indicator}
- * ({@code info}, {@code warning} or {@code critical}). A 401 that
- * {@link JwtAudienceCheck} explains is left to that check.
+ * ({@code info}, {@code warning} or {@code critical}). Authentication and throttling errors that dedicated checks
+ * explain are left to those checks.
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
 
@@ -43,8 +43,8 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 // Transport failures are reported by tls.handshake and perf.latency.
                 continue;
             }
-            if (JwtAudienceCheck.explains(hook)) {
-                // A 401 for the client JWT's audience is reported by auth.jwt-audience.
+            if (JwtAudienceCheck.explains(hook) || HookRejectedCheck.explains(hook) || RateLimitCheck.explains(hook)) {
+                // Authentication and throttling have dedicated findings.
                 continue;
             }
             if (!Support.isSuccess(exchange.status())) {

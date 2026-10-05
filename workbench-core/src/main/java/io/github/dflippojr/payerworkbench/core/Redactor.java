@@ -32,7 +32,7 @@ public final class Redactor {
             "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----(?!\\s*" + Pattern.quote(MASK) + ").*", Pattern.DOTALL);
 
     private static final Pattern AUTH_SCHEME = Pattern.compile(
-            "(?i)\\b(Bearer|Basic)\\s+([A-Za-z0-9\\-._~+/]+=*)");
+            "(?i)\\b(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=)([A-Za-z0-9\\-._~+/]+=*)");
 
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token"), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}");
