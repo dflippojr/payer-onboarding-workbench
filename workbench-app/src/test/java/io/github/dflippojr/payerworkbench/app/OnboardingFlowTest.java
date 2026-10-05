@@ -315,7 +315,8 @@ class OnboardingFlowTest {
                 String pem = payers.credentials().resolve("tailspin-signing-key").orElseThrow();
                 assertFalse(report.contains(pem));
                 assertFalse(report.contains(pem.split("\\R")[1]));
-                assertFalse(report.matches("(?s).*eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{20,}.*"));
+                assertFalse(java.util.regex.Pattern.compile("eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{20,}")
+                        .matcher(report).find());
                 assertFalse(report.contains("client_assertion="));
             }
         }

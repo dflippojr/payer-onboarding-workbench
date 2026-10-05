@@ -58,6 +58,11 @@ public final class ClientAssertionCheck implements DiagnosticCheck {
                 || Duration.between(claims.iat(), claims.exp()).compareTo(Duration.ofMinutes(5)) > 0) {
             return "exp/iat lifetime must be positive and at most 5 minutes";
         }
+        var payerTime = Support.tokenExchange(obs).flatMap(Support::serverDate);
+        if (payerTime.isPresent() && (!claims.exp().isAfter(payerTime.get())
+                || claims.exp().isAfter(payerTime.get().plus(Duration.ofMinutes(5))))) {
+            return "exp must be in the future and at most 5 minutes ahead of the payer clock";
+        }
         if (claims.jti() == null || claims.jti().isBlank()) { return "jti is required for replay protection"; }
         return null;
     }

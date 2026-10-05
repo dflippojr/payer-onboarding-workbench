@@ -51,6 +51,12 @@ class ClientAssertionCheckTest {
     @Test void missingExpiryFails() {
         assertOnly(check.evaluate(run(new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), null, NOW, "jti", "kid", CLIENT_ID), null)), Severity.FAIL);
     }
+    @Test void recordedExpiryComparedWithPayerClockFails() {
+        JwtClaims expired = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.minusSeconds(1), NOW.minusSeconds(301), "jti", "kid", CLIENT_ID);
+        assertTrue(assertOnly(check.evaluate(run(expired, null)), Severity.FAIL).title().contains("payer clock"));
+        JwtClaims future = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(301), NOW.plusSeconds(1), "jti", "kid", CLIENT_ID);
+        assertOnly(check.evaluate(run(future, null)), Severity.FAIL);
+    }
     @Test void payerExpiredAssertionFails() {
         assertTrue(assertOnly(check.evaluate(run(healthyClaims(), "exp expired")), Severity.FAIL).title().contains("exp expired"));
     }
