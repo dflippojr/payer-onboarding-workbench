@@ -33,6 +33,9 @@ import io.github.dflippojr.payerworkbench.samples.PrefetchVariant;
 import io.github.dflippojr.payerworkbench.samples.Sample;
 import io.github.dflippojr.payerworkbench.samples.SampleCatalog;
 import io.github.dflippojr.payerworkbench.samples.SampleMetadata;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import java.net.http.HttpClient;
@@ -62,6 +65,11 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <p>Faults are switched on at the mock payer for the length of one run. Runs against
  * the same payer are serialized so one run's faults never leak into another's.
+ *
+ * <p>The run id is also the run's correlation id: it is sent to the payer as
+ * {@value RequestIdClient#HEADER} on every call, held in the logging MDC as
+ * {@value #MDC_RUN_ID} while the run executes, and each step is logged at INFO as one
+ * line (run id, payer, step, status, milliseconds; never a request or response body).
  */
 @Service
 public class OnboardingRunner {
@@ -75,17 +83,25 @@ public class OnboardingRunner {
     /** Workbench-level finding for a run that found no connection record (not in the diagnostics catalog). */
     public static final String CONNECTION_RECORD_CHECK = "connection.record";
     static final List<String> STEP_ORDER = List.of(RESOLVE, DISCOVERY, AUTHENTICATE, HOOK_REQUEST, PARSE_RESPONSE);
+    /** MDC keys set for the length of a run. */
+    static final String MDC_RUN_ID = "runId";
+    static final String MDC_PAYER = "payer";
+
+    private static final Logger LOG = LoggerFactory.getLogger(OnboardingRunner.class);
 
     private final SyntheticPayers payers;
     private final SampleCatalog samples;
     private final WorkbenchProperties properties;
+    private final RunMetrics metrics;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
-    public OnboardingRunner(SyntheticPayers payers, SampleCatalog samples, WorkbenchProperties properties) {
+    public OnboardingRunner(SyntheticPayers payers, SampleCatalog samples, WorkbenchProperties properties,
+                            RunMetrics metrics) {
         this.payers = payers;
         this.samples = samples;
         this.properties = properties;
+        this.metrics = metrics;
     }
 
     /**
@@ -104,9 +120,11 @@ public class OnboardingRunner {
                 .map(id -> Fault.fromId(id).orElseThrow(() -> new IllegalArgumentException("Unknown fault: " + id)))
                 .toList();
 
+        String runId = UUID.randomUUID().toString();
         ReentrantLock lock = locks.computeIfAbsent(request.payerId(), id -> new ReentrantLock());
         lock.lock();
-        try {
+        try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
+             MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId())) {
             payer.faults().clear();
             for (Fault fault : faults) {
                 if (fault == Fault.SLOW_RESPONSE) {
@@ -122,7 +140,7 @@ public class OnboardingRunner {
                     .connectTimeout(Duration.ofSeconds(5))
                     .followRedirects(HttpClient.Redirect.NEVER)
                     .build()) {
-                return new Attempt(request, sample, http).run();
+                return new Attempt(runId, request, sample, http).run();
             }
         } finally {
             payer.faults().clear();
@@ -132,6 +150,7 @@ public class OnboardingRunner {
 
     /** One run's state, passed from step to step. */
     private final class Attempt {
+        private final String runId;
         private final RunRequest request;
         private final SampleMetadata sample;
         private final ExchangeRecorder recorder;
@@ -149,10 +168,11 @@ public class OnboardingRunner {
         private Object jwtPayload;
         private JwtClaims clientJwt;
 
-        Attempt(RunRequest request, SampleMetadata sample, HttpClient http) {
-            this.recorder = new ExchangeRecorder();
-            this.client = new CdsHooksClient(new JwtObservingClient(http, this::observeJwt),
+        Attempt(String runId, RunRequest request, SampleMetadata sample, HttpClient http) {
+            this.recorder = new ExchangeRecorder(runId);
+            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(http, runId), this::observeJwt),
                     payers.credentials(), null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
+            this.runId = runId;
             this.request = request;
             this.sample = sample;
         }
@@ -164,7 +184,7 @@ public class OnboardingRunner {
                     && step(HOOK_REQUEST, this::sendHook)
                     && step(PARSE_RESPONSE, this::parse);
             for (String id : ok ? List.<String>of() : STEP_ORDER.subList(steps.size(), STEP_ORDER.size())) {
-                steps.add(new StepResult(id, Instant.now(), Duration.ZERO, false,
+                add(new StepResult(id, Instant.now(), Duration.ZERO, false,
                         "Skipped: an earlier step failed",
                         Map.of("status", "skipped")));
             }
@@ -177,8 +197,9 @@ public class OnboardingRunner {
                         ? "No failures across " + findings.size() + " findings"
                         : fails + " failing check" + (fails == 1 ? "" : "s") + " out of " + findings.size() + " findings");
             });
-            return new OnboardingRun(UUID.randomUUID().toString(), request.payerId(), request.environment(),
-                    steps, findings);
+            OnboardingRun run = new OnboardingRun(runId, request.payerId(), request.environment(), steps, findings);
+            metrics.record(run, recorder.events());
+            return run;
         }
 
         // ---- steps ----
@@ -468,9 +489,15 @@ public class OnboardingRunner {
                 }
             }
             details.put("status", outcome.ok() ? "passed" : "failed");
-            steps.add(new StepResult(id, startedAt, elapsed, outcome.ok(),
-                    outcome.summary(), details));
+            add(new StepResult(id, startedAt, elapsed, outcome.ok(), outcome.summary(), details));
             return outcome.ok();
+        }
+
+        /** Keeps a step and logs its one structured line; the summary and details stay out of the log. */
+        private void add(StepResult step) {
+            steps.add(step);
+            LOG.info("step runId={} payer={} step={} status={} ms={}", runId, request.payerId(), step.stepId(),
+                    step.details().get("status"), step.elapsed().toMillis());
         }
 
         private String serviceUrl() {

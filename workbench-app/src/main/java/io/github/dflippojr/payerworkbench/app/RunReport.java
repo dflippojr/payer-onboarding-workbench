@@ -27,6 +27,8 @@ import java.util.Set;
  * @param generatedAt         when the report was produced (ISO-8601)
  * @param workbenchVersion    the workbench build that produced it
  * @param runId               the run reported on
+ * @param correlationId       the {@code X-Request-Id} the run sent on every payer call, for finding it in
+ *                            the payer's logs (the run id)
  * @param verdict             the one-line outcome
  * @param payer               which synthetic payer
  * @param environment         which of its environments
@@ -43,6 +45,7 @@ public record RunReport(
         String generatedAt,
         String workbenchVersion,
         String runId,
+        String correlationId,
         Verdict verdict,
         Payer payer,
         String environment,
@@ -133,6 +136,7 @@ public record RunReport(
                 DISCLAIMER_TEXT,
                 generatedAt.toString(),
                 workbenchVersion,
+                run.runId(),
                 run.runId(),
                 verdict(counts, steps),
                 new Payer(run.payerId(), displayName),
