@@ -110,6 +110,7 @@ try {
     $payerHosts = @{
         'northwind-synthetic' = 'https://crd.northwind-health.example'
         'fabrikam-synthetic' = 'https://crd.fabrikam-benefits.example'
+        'tailspin-synthetic' = 'https://crd.tailspin-health.example'
     }
     $script:rewrites = @{}
     foreach ($payer in (Invoke-RestMethod -Uri "$base/api/payers")) {
