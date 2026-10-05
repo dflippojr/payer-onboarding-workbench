@@ -11,7 +11,6 @@ import com.sun.net.httpserver.HttpsConfigurator;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -43,8 +42,8 @@ import java.util.regex.Pattern;
  *       in each service's {@code extension} under {@value #IG_VERSION_EXTENSION};</li>
  *   <li>{@code POST /cds-services/{id}}: authenticate, validate the request
  *       shape, then hand off to {@link #handleHook};</li>
- *   <li>the fault admin endpoint, {@code /admin/faults}, which is never itself
- *       subject to faults;</li>
+ *   <li>the fault admin endpoint, {@code /admin/faults}, which bypasses HTTP response faults
+ *       (certificate faults still affect its TLS handshake);</li>
  *   <li>the request-level {@link Fault faults}. Response bodies stay realistic;
  *       a faulted response carries an {@value #FAULT_HEADER} header naming the fault.</li>
  * </ul>
@@ -165,7 +164,7 @@ public abstract class MockPayer implements AutoCloseable {
         return server.getAddress().getPort();
     }
 
-    /** Where clients reach this payer: {@code http://localhost:<port>}. Use as a {@code ConnectionRecord} base URL. */
+    /** Where clients reach this payer, using HTTP or HTTPS as configured. Use as a {@code ConnectionRecord} base URL. */
     public String baseUrl() {
         return tls == null ? "http://localhost:" + port() : "https://127.0.0.1:" + port();
     }
