@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 
 import static io.github.dflippojr.payerworkbench.app.SyntheticPayers.FABRIKAM_ID;
 import static io.github.dflippojr.payerworkbench.app.SyntheticPayers.NORTHWIND_ID;
+import static io.github.dflippojr.payerworkbench.app.SyntheticPayers.TAILSPIN_ID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -64,7 +65,7 @@ class OnboardingFlowTest {
     SyntheticPayers payers;
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void healthyRunPassesEveryStepWithNoFail(String payerId) {
         OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of()));
 
@@ -83,7 +84,7 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void everyPayerCallCarriesTheRunsCorrelationId(String payerId) {
         OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of()));
 
@@ -93,8 +94,8 @@ class OnboardingFlowTest {
             calls.addAll(tokens);
         }
         calls.addAll(exchanges(run, "hook-request"));
-        // Northwind fetches a token; Fabrikam signs its own JWT, so it has no token call.
-        assertEquals(payerId.equals(NORTHWIND_ID) ? 3 : 2, calls.size());
+        // Northwind and Tailspin fetch a token; Fabrikam signs its own JWT, so it has no token call.
+        assertEquals(payerId.equals(FABRIKAM_ID) ? 2 : 3, calls.size());
         for (ExchangeView call : calls) {
             assertEquals(List.of(run.runId()), header(call.requestHeaders(), "X-Request-Id"), call.url());
             // The payer echoes what it received, so this proves the header reached it.
@@ -127,19 +128,21 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void healthyRunWithoutPrefetchStillPasses(String payerId) {
         assertEquals(List.of(), failIds(runner.run(request(payerId, NO_PREFETCH_SAMPLE, List.of()))));
     }
 
     static Stream<Arguments> faults() {
         List<Arguments> cases = new ArrayList<>();
-        for (String payerId : List.of(NORTHWIND_ID, FABRIKAM_ID)) {
+        for (String payerId : List.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID)) {
             cases.add(Arguments.of(payerId, Fault.SLOW_RESPONSE, HEALTHY_SAMPLE, "perf.latency", null));
             cases.add(Arguments.of(payerId, Fault.EXPIRED_TOKEN_401, HEALTHY_SAMPLE, "auth.clock-skew", "hook-request"));
             // Northwind's audience is on its own access token, which the workbench cannot inspect.
             cases.add(Arguments.of(payerId, Fault.WRONG_AUDIENCE_REJECT, HEALTHY_SAMPLE,
-                    payerId.equals(FABRIKAM_ID) ? "auth.jwt-audience" : "response.schema", "hook-request"));
+                    payerId.equals(TAILSPIN_ID) ? "auth.client-assertion"
+                            : payerId.equals(FABRIKAM_ID) ? "auth.jwt-audience" : "response.schema",
+                    payerId.equals(TAILSPIN_ID) ? "authenticate" : "hook-request"));
             cases.add(Arguments.of(payerId, Fault.COVERAGE_INFO_INCOMPLETE, HEALTHY_SAMPLE,
                     "response.coverage-information", null));
             cases.add(Arguments.of(payerId, Fault.MALFORMED_CARD, HEALTHY_SAMPLE, "response.schema", "parse-response"));
@@ -174,7 +177,7 @@ class OnboardingFlowTest {
     }
 
     static Stream<Arguments> certificateFaults() {
-        return Stream.of(NORTHWIND_ID, FABRIKAM_ID).flatMap(payer -> Stream.of(
+        return Stream.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID).flatMap(payer -> Stream.of(
                 Arguments.of(payer, Fault.UNTRUSTED_CERTIFICATE, "not trusted"),
                 Arguments.of(payer, Fault.EXPIRED_CERTIFICATE, "has expired"),
                 Arguments.of(payer, Fault.HOSTNAME_MISMATCH, "different host")));
@@ -199,7 +202,7 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void slowResponseHoldsOnlyTheHookCall(String payerId) {
         OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of(Fault.SLOW_RESPONSE.id())));
 
@@ -234,7 +237,7 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void sdkRequestTimeoutIsReportedAtTheHook(String payerId) {
         OnboardingRunner timed = new OnboardingRunner(payers, new SampleCatalog(),
                 new WorkbenchProperties(Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(10),
@@ -248,7 +251,7 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void sdkNormalizesOneTrailingSlashInBaseUrl(String payerId) {
         OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides("/", null, null)));
         assertEquals(List.of(), failIds(run));
@@ -290,6 +293,35 @@ class OnboardingFlowTest {
     }
 
     @Test
+    void tailspinRecordsClaimsAndDiagnosesExpectedAndSentAudience() {
+        OnboardingRun healthy = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of()));
+        var claims = (io.github.dflippojr.payerworkbench.core.JwtClaims) healthy.steps().get(2).details().get("clientAssertionClaims");
+        assertEquals(SyntheticPayers.CLIENT_ID, claims.iss());
+        assertEquals(claims.iss(), claims.sub());
+        assertEquals(List.of(payers.store().findByPayerIdAndEnvironment(TAILSPIN_ID, Environment.SANDBOX)
+                .orElseThrow().tokenEndpoint()), claims.aud());
+        assertEquals(Severity.PASS, healthy.findings().stream().filter(f -> f.checkId().equals("auth.client-assertion"))
+                .findFirst().orElseThrow().severity());
+        OnboardingRun rejected = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of("wrong-audience-reject")));
+        assertEquals("authenticate", firstFailedStep(rejected));
+        Finding finding = rejected.findings().stream().filter(f -> f.checkId().equals("auth.client-assertion"))
+                .findFirst().orElseThrow();
+        assertEquals(Severity.FAIL, finding.severity());
+        assertTrue(finding.evidence().contains(io.github.dflippojr.payerworkbench.mock.TailspinPayer.WRONG_AUDIENCE));
+        assertTrue(finding.evidence().contains(claims.aud().getFirst()));
+        for (OnboardingRun run : List.of(healthy, rejected)) {
+            for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
+                String report = ReportRenderer.render(RunReport.of(run, TAILSPIN_ID, "2.2.1", java.time.Instant.now(), "test"), format);
+                String pem = payers.credentials().resolve("tailspin-signing-key").orElseThrow();
+                assertFalse(report.contains(pem));
+                assertFalse(report.contains(pem.split("\\R")[1]));
+                assertFalse(report.matches("(?s).*eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{20,}.*"));
+                assertFalse(report.contains("client_assertion="));
+            }
+        }
+    }
+
+    @Test
     void faultsDoNotLeakIntoTheNextRun() {
         runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of(Fault.DISCOVERY_500.id())));
         assertEquals(List.of(), failIds(runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of()))));
@@ -306,7 +338,7 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void baseUrlSuffixBreaksDiscovery(String payerId) {
         OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides("/r4", null, null)));
 
@@ -315,7 +347,7 @@ class OnboardingFlowTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void igVersionMismatchFailsIgVersionCheck(String payerId) {
         OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides(null, "1.0.0", null)));
 

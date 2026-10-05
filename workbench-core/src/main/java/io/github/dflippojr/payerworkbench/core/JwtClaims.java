@@ -14,6 +14,7 @@ import java.util.List;
  * @param exp the {@code exp} claim; may be {@code null}
  * @param iat the {@code iat} claim; may be {@code null}
  * @param jti the {@code jti} claim; may be {@code null}
+ * @param sub the client assertion subject; null for CDS Hooks JWTs
  * @param kid the {@code kid} header parameter; may be {@code null}
  */
 public record JwtClaims(
@@ -22,8 +23,13 @@ public record JwtClaims(
         Instant exp,
         Instant iat,
         String jti,
-        String kid
+        String kid,
+        String sub
 ) {
+    public JwtClaims(String iss, List<String> aud, Instant exp, Instant iat, String jti, String kid) {
+        this(iss, aud, exp, iat, jti, kid, null);
+    }
+
     public JwtClaims {
         aud = aud == null ? List.of() : List.copyOf(aud);
     }

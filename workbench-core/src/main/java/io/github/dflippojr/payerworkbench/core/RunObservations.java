@@ -19,6 +19,7 @@ import java.util.Objects;
  * @param discovery the discovery ({@code GET {baseUrl}/cds-services}) exchange;
  *     {@code null} if discovery was not attempted
  * @param tokenResponse token endpoint result; {@code null} if no token was requested
+ * @param clientAssertion non-secret claims from the token request assertion, if used
  * @param hookResponses hook calls, in the order they happened
  */
 public record RunObservations(
@@ -26,8 +27,14 @@ public record RunObservations(
         List<HttpExchange> exchanges,
         HttpExchange discovery,
         TokenResponseMetadata tokenResponse,
-        List<HookResponse> hookResponses
+        List<HookResponse> hookResponses,
+        JwtClaims clientAssertion
 ) {
+    public RunObservations(RedactedConnection connection, List<HttpExchange> exchanges, HttpExchange discovery,
+                           TokenResponseMetadata tokenResponse, List<HookResponse> hookResponses) {
+        this(connection, exchanges, discovery, tokenResponse, hookResponses, null);
+    }
+
     public RunObservations {
         Objects.requireNonNull(connection, "connection");
         exchanges = exchanges == null ? List.of() : List.copyOf(exchanges);
@@ -44,6 +51,7 @@ public record RunObservations(
         private final List<HttpExchange> exchanges = new ArrayList<>();
         private HttpExchange discovery;
         private TokenResponseMetadata tokenResponse;
+        private JwtClaims clientAssertion;
         private final List<HookResponse> hookResponses = new ArrayList<>();
 
         private Builder(RedactedConnection connection) {
@@ -70,8 +78,13 @@ public record RunObservations(
             return this;
         }
 
+        public Builder clientAssertion(JwtClaims claims) {
+            this.clientAssertion = claims;
+            return this;
+        }
+
         public RunObservations build() {
-            return new RunObservations(connection, exchanges, discovery, tokenResponse, hookResponses);
+            return new RunObservations(connection, exchanges, discovery, tokenResponse, hookResponses, clientAssertion);
         }
     }
 }

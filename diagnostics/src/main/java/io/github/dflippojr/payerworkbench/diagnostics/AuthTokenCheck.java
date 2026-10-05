@@ -59,7 +59,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                     "Confirm the client_id '" + obs.connection().clientId() + "' is registered for the "
                             + obs.connection().environment() + " environment, that the secret or signing key "
                             + "is the current one (and its key id matches the payer's JWKS), and check any "
-                            + "auth.jwt-audience or auth.clock-skew finding for the signed-JWT case."));
+                            + "auth.client-assertion, auth.jwt-audience or auth.clock-skew finding for the signed-JWT case."));
         }
         if ("invalid_scope".equals(error)) {
             return List.of(new Finding(CHECK_ID, Severity.FAIL, "Token request rejected: invalid_scope",
