@@ -17,7 +17,7 @@ public final class HookRejectedCheck implements DiagnosticCheck {
     public static final String CHECK_ID = "auth.hook-rejected";
     // Quoted strings may contain commas and escaped quotes; do not split the header on commas.
     private static final Pattern PARAMETER = Pattern.compile(
-            "(?i)(error_description|error|scope)\\s*=\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|([^,\\s]+))");
+            "(?i)(error_description|error|scope)\\s*=\\s*(?:\"((?:[^\"\\\\]++|\\\\.)*+)\"|([^,\\s]+))");
 
     @Override
     public String id() {

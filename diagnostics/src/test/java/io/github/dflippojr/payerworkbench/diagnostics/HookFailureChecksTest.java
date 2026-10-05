@@ -1,6 +1,7 @@
 package io.github.dflippojr.payerworkbench.diagnostics;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.time.Duration;
@@ -33,6 +34,23 @@ class HookFailureChecksTest {
         assertTrue(finding.evidence().contains("WWW-Authenticate: Bearer"));
         assertTrue(new ResponseSchemaCheck().evaluate(obs).isEmpty());
         assertFalse(finding.toString().contains("secret-value"));
+    }
+
+    @Test
+    void unquotedHeaderErrorOverridesBody() {
+        var finding = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run(401,
+                Map.of("WWW-Authenticate", List.of("Bearer error=invalid_request")),
+                "{\"error\":\"invalid_token\",\"error_description\":\"Duplicate credentials\"}").build()), Severity.FAIL);
+        assertTrue(finding.suggestedFix().contains("duplicate token parameters"));
+        assertTrue(finding.explanation().contains("Duplicate credentials"));
+    }
+
+    @Test
+    void escapedQuotesInChallengeAreParsed() {
+        var finding = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run(401,
+                Map.of("WWW-Authenticate", List.of("Bearer error=\"invalid_token\", error_description=\"Rejected \\\"credential\\\"\"")),
+                "{}").build()), Severity.FAIL);
+        assertTrue(finding.explanation().contains("Rejected \"credential\""));
     }
 
     @Test
@@ -70,12 +88,9 @@ class HookFailureChecksTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"30", "Sun, 1 Jun 2025 12:00:30 GMT"})
-    void retryAfterSecondsAndDate(String retry) {
-        // Use the fixture date dynamically so the HTTP-date case has the same deterministic delay.
-        if (!retry.equals("30")) {
-            retry = Fixtures.httpDate(Fixtures.NOW.plusSeconds(30));
-        }
+    @ValueSource(booleans = {false, true})
+    void retryAfterSecondsAndDate(boolean httpDate) {
+        String retry = httpDate ? Fixtures.httpDate(Fixtures.NOW.plusSeconds(30)) : "30";
         var obs = run(429, Map.of("Retry-After", List.of(retry), "Date", List.of(Fixtures.httpDate(Fixtures.NOW))),
                 "{\"error\":\"rate_limited\"}").build();
         var finding = Fixtures.assertOnly(new RateLimitCheck().evaluate(obs), Severity.FAIL);

@@ -41,7 +41,7 @@ public final class RateLimitCheck implements DiagnosticCheck {
                             + (retry.isBlank() ? "(missing)" : retry) + ". " + delay,
                     Support.describe(exchange) + "\nRetry-After: " + (retry.isBlank() ? "(missing)" : retry),
                     "Back off before sending another hook call. " + delay
-                            + " Reduce request concurrency and use exponential backoff with jitter; the workbench does not retry.") );
+                            + " Reduce request concurrency and use exponential backoff with jitter; the workbench does not retry."));
         }
         return findings;
     }
