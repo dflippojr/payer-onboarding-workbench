@@ -49,7 +49,7 @@ class WorkbenchApiTest {
         assertFalse(response.body().contains("credentialRef"));
         assertFalse(payerList.get(1).path("editableSettings").toString().contains("audOverride"));
         assertFalse(payerList.get(0).path("editableSettings").toString().contains("audOverride"));
-        assertEquals(9, payerList.get(0).path("faults").size());
+        assertEquals(10, payerList.get(0).path("faults").size());
     }
 
     @Test

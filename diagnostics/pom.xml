@@ -17,6 +17,10 @@
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>
+      <artifactId>client-sdk</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.github.dflippojr</groupId>
       <artifactId>workbench-core</artifactId>
     </dependency>
     <dependency>

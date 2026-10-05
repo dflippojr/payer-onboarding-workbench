@@ -59,6 +59,7 @@ public final class DiagnosticEngine {
                 new IgVersionCheck(),
                 new ResponseSchemaCheck(),
                 new CoverageLocationCheck(),
+                new CoverageInformationCheck(),
                 new LatencyCheck(config.latencyWarn(), config.latencyFail()),
                 new TlsHandshakeCheck());
     }
