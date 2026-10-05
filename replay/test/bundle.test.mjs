@@ -73,6 +73,20 @@ test('leak scanner accepts redacted values and prose', () => {
   }), []);
 });
 
+test('leak scanner distinguishes auth challenges from credentials', () => {
+  for (const challenge of [
+    'Bearer realm="northwind", error="invalid_token", error_description="Expired"',
+    'Bearer error="invalid_token"', 'Bearer error=invalid_request', 'Basic realm="payer"',
+  ]) {
+    assert.deepEqual(findTextLeaks(challenge), []);
+    assert.deepEqual(findTextLeaks(JSON.stringify({ header: challenge })), []);
+  }
+  for (const credential of ['Bearer error=', 'Bearer realm=', 'Basic c3ludGhldGljOnNlY3JldA==']) {
+    assert.ok(findTextLeaks(credential).some(l => l.check === 'Bearer/Basic credential'));
+    assert.ok(findJsonLeaks({ requestHeaders: { Authorization: [credential] } }).length > 0);
+  }
+});
+
 // ---- the exported bundle ----
 
 test('manifest has version, commit, generation time and every required scenario', () => {

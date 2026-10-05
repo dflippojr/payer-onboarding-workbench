@@ -125,7 +125,7 @@ class ResponseChecksTest {
             var run = healthy();
             run.hooks = new ArrayList<>(List.of(orderSign(hook(401,
                     "{\"error\":\"unauthorized\",\"error_description\":\"JWT expired\"}", 300), ORDER_SIGN_URL)));
-            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).title().contains("HTTP 401"));
+            assertTrue(check.evaluate(run.build()).isEmpty());
         }
     }
 

@@ -15,17 +15,16 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 
 /**
- * {@code auth.clock-skew}: a request was rejected in a way consistent with the
- * client's clock disagreeing with the payer's: the error mentions {@code exp},
- * {@code iat}, {@code nbf} or expiry, or the JWT's {@code iat}/{@code exp} is off
- * from the payer's {@code Date} response header by more than the tolerance.
+ * {@code auth.clock-skew}: a measured JWT issue-time difference beyond tolerance,
+ * or an explicit payer error indicating a clock difference. Expiry alone does
+ * not establish skew: the credential may simply be stale.
  */
 public final class ClockSkewCheck implements DiagnosticCheck {
 
     public static final String CHECK_ID = "auth.clock-skew";
 
     private static final Pattern TIME_ERROR = Pattern.compile(
-            "(?i)\\b(exp|iat|nbf|expired|not yet valid|issued in the future|in the future|clock|skew|used before)\\b");
+            "(?i)\\b(not yet valid|issued in the future|in the future|clock|skew|used before)\\b");
 
     private final Duration tolerance;
 
@@ -49,7 +48,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
             boolean rejected = exchange.status() == 400 || exchange.status() == 401 || exchange.status() == 403;
             boolean timeError = rejected && exchange.responseBody() != null
                     && TIME_ERROR.matcher(exchange.responseBody()).find();
-            boolean skewed = m != null && (m.skewOverTolerance(tolerance) || m.expired());
+            boolean skewed = m != null && (m.skewOverTolerance(tolerance));
 
             if (rejected && (timeError || skewed)) {
                 findings.add(new Finding(CHECK_ID, Severity.FAIL, "Rejection consistent with clock skew",

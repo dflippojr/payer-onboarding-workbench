@@ -21,7 +21,7 @@ const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
   { name: 'PEM block', re: /-----BEGIN [A-Z0-9 ]*-----/g },
   // Short all-letter words after the scheme are prose ("a bearer token"), as in Redactor.
-  { name: 'Bearer/Basic credential', re: /\b(?:Bearer|Basic)\s+([A-Za-z0-9\-._~+/]+=*)/gi, ok: m => /^[A-Za-z]{1,15}$/.test(m[1]) },
+  { name: 'Bearer/Basic credential', re: /\b(?:Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])([A-Za-z0-9\-._~+/]+=*)/gi, ok: m => /^[A-Za-z]{1,15}$/.test(m[1]) },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+/g },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").

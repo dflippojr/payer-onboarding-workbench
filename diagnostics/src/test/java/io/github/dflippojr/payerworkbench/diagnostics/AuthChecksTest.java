@@ -215,11 +215,11 @@ class AuthChecksTest {
         }
 
         @Test
-        void timingErrorWithoutMeasurementFails() {
+        void expiryWithoutMeasurementIsNotClockSkew() {
             var run = healthy();
             run.token = token(401, "grant_type=client_credentials",
                     "{\"error\":\"invalid_client\",\"error_description\":\"assertion expired\"}", NOW);
-            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(check.evaluate(run.build()).isEmpty());
         }
 
         @Test

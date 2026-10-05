@@ -20,6 +20,13 @@ class RedactorTest {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     @Test
+    void bearerChallengeParametersSurviveRedaction() {
+        String challenge = "Bearer error=\"invalid_token\", error_description=\"Expired\", scope=\"system/*.read\"";
+        assertEquals(challenge, Redactor.redact(challenge));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer a-long-secret-token"));
+    }
+
+    @Test
     void masksBearerHeaderButKeepsScheme() {
         String token = randomToken();
         Map<String, List<String>> headers = new LinkedHashMap<>();
