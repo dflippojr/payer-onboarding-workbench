@@ -158,12 +158,12 @@ public class OnboardingRunner {
         }
 
         OnboardingRun run() {
-            step(RESOLVE, this::resolve)
+            boolean ok = step(RESOLVE, this::resolve)
                     && step(DISCOVERY, this::discover)
                     && step(AUTHENTICATE, this::authenticate)
                     && step(HOOK_REQUEST, this::sendHook)
                     && step(PARSE_RESPONSE, this::parse);
-            for (String id : STEP_ORDER.subList(steps.size(), STEP_ORDER.size())) {
+            for (String id : ok ? List.<String>of() : STEP_ORDER.subList(steps.size(), STEP_ORDER.size())) {
                 steps.add(new StepResult(id, Instant.now(), Duration.ZERO, false,
                         "Skipped: an earlier step failed",
                         Map.of("status", "skipped")));
@@ -290,16 +290,10 @@ public class OnboardingRunner {
                 return Outcome.fail("The SDK could not authenticate: " + failureMessage());
             }
             PayerExchange last = tokens.getLast();
-            JsonNode json = readJson(last.responseBody());
-            JsonNode error = callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN
-                    ? readJson(e.responseBody()) : null;
             // The listener intentionally omits access_token. A HOOK event proves
             // the SDK accepted the token, without exposing its value here.
             boolean accepted = !hookResponses.isEmpty();
-            tokenResponse = new TokenResponseMetadata(accepted, json == null ? null : text(json, "token_type"),
-                    json != null && json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
-                    json != null && json.hasNonNull("scope") ? List.of(json.get("scope").asText().split(" ")) : List.of(),
-                    error == null ? null : text(error, "error"), error == null ? null : text(error, "error_description"));
+            tokenResponse = tokenMetadata(last, accepted);
             details.put("token", Map.of("accessTokenPresent", accepted,
                     "tokenType", String.valueOf(tokenResponse.tokenType()),
                     "expiresInSeconds", String.valueOf(tokenResponse.expiresInSeconds())));
@@ -309,6 +303,16 @@ public class OnboardingRunner {
             return accepted ? Outcome.pass("Got a " + tokenResponse.tokenType() + " access token for client "
                     + record.clientId() + " (expires in " + tokenResponse.expiresInSeconds() + " s; value hidden)")
                     : Outcome.fail("The SDK could not authenticate: " + failureMessage());
+        }
+
+        private TokenResponseMetadata tokenMetadata(PayerExchange event, boolean accepted) {
+            JsonNode json = Optional.ofNullable(readJson(event.responseBody())).orElseGet(mapper::createObjectNode);
+            JsonNode error = callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN
+                    ? readJson(e.responseBody()) : null;
+            return new TokenResponseMetadata(accepted, text(json, "token_type"),
+                    json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
+                    json.hasNonNull("scope") ? List.of(json.get("scope").asText().split(" ")) : List.of(),
+                    text(error, "error"), text(error, "error_description"));
         }
 
         private void observeJwt(String jwt) {
@@ -470,7 +474,8 @@ public class OnboardingRunner {
         }
 
         private String serviceUrl() {
-            return record.baseUrl() + "/cds-services/" + serviceId;
+            String base = record.baseUrl();
+            return (base.endsWith("/") ? base.substring(0, base.length() - 1) : base) + "/cds-services/" + serviceId;
         }
     }
 
@@ -556,7 +561,7 @@ public class OnboardingRunner {
     }
 
     private static String text(JsonNode json, String field) {
-        return json.hasNonNull(field) ? json.get(field).asText() : null;
+        return json != null && json.hasNonNull(field) ? json.get(field).asText() : null;
     }
 
     private static boolean isSet(String value) {

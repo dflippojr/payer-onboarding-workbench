@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import io.github.dflippojr.payerworkbench.samples.SampleCatalog;
 import java.util.stream.Stream;
 
 import static io.github.dflippojr.payerworkbench.app.SyntheticPayers.FABRIKAM_ID;
@@ -141,6 +142,65 @@ class OnboardingFlowTest {
         assertEquals(List.of("perf.latency"), failIds(run));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"expired-token-401", "wrong-audience-reject"})
+    void oauth401RecordsBothAttemptsAndRefresh(String fault) {
+        OnboardingRun run = runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of(fault)));
+        List<ExchangeView> tokens = exchanges(run, "authenticate");
+        List<ExchangeView> hooks = exchanges(run, "hook-request");
+        assertEquals(2, tokens.size());
+        assertEquals(List.of(200, 200), tokens.stream().map(ExchangeView::status).toList());
+        assertEquals(List.of(401, 401), hooks.stream().map(ExchangeView::status).toList());
+        assertEquals(tokens.stream().mapToLong(ExchangeView::latencyMs).sum(),
+                run.steps().get(2).elapsed().toMillis(), 1);
+        assertTrue(tokens.stream().allMatch(e -> e.requestBody() == null));
+        assertTrue(tokens.stream().noneMatch(e -> e.responseBody().contains("access_token")));
+        assertEquals(1, run.findings().stream().filter(f -> f.checkId().equals("response.schema")
+                && f.severity() == Severity.FAIL).count());
+        assertEquals(fault.equals("expired-token-401") ? List.of("auth.clock-skew", "response.schema")
+                : List.of("response.schema"), failIds(run));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    void sdkRequestTimeoutIsReportedAtTheHook(String payerId) {
+        OnboardingRunner timed = new OnboardingRunner(payers, new SampleCatalog(),
+                new WorkbenchProperties(Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(10),
+                        Duration.ofMillis(500), 10));
+        OnboardingRun run = timed.run(request(payerId, HEALTHY_SAMPLE, List.of(Fault.SLOW_RESPONSE.id())));
+        assertEquals("hook-request", firstFailedStep(run));
+        ExchangeView hook = exchanges(run, "hook-request").getFirst();
+        assertEquals(0, hook.status());
+        assertTrue(hook.transportError().contains("HttpTimeoutException"), hook::transportError);
+        assertTrue(failIds(run).contains("perf.latency"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    void sdkNormalizesOneTrailingSlashInBaseUrl(String payerId) {
+        OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides("/", null, null)));
+        assertEquals(List.of(), failIds(run));
+        run.steps().forEach(step -> assertTrue(step.ok(), step::summary));
+    }
+
+    @Test
+    void jwtAuthenticateRecordsActualNonSecretClaims() {
+        OnboardingRun run = runner.run(request(FABRIKAM_ID, HEALTHY_SAMPLE, List.of()));
+        Map<?, ?> claims = (Map<?, ?>) run.steps().get(2).details().get("jwtClaims");
+        assertEquals(exchanges(run, "hook-request").getFirst().url(), claims.get("aud"));
+        assertTrue(claims.containsKey("jti"));
+        assertEquals(true, run.steps().get(2).details().get("audMatchesRequestUrl"));
+        assertEquals("Bearer [REDACTED]", exchanges(run, "hook-request").getFirst().requestHeaders()
+                .entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("authorization"))
+                .findFirst().orElseThrow().getValue().getFirst());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ExchangeView> exchanges(OnboardingRun run, String step) {
+        return (List<ExchangeView>) run.steps().stream().filter(s -> s.stepId().equals(step))
+                .findFirst().orElseThrow().details().get("exchanges");
+    }
+
     @Test
     void wrongAudienceOnTheJwtPayerIsDiagnosedAsTheAudience() {
         OnboardingRun run = runner.run(request(FABRIKAM_ID, HEALTHY_SAMPLE, List.of(Fault.WRONG_AUDIENCE_REJECT.id())));
@@ -171,7 +231,7 @@ class OnboardingFlowTest {
     @ParameterizedTest
     @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
     void baseUrlSuffixBreaksDiscovery(String payerId) {
-        OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides("/r4", null, null, null)));
+        OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides("/r4", null, null)));
 
         assertEquals("discovery", firstFailedStep(run));
         assertEquals(List.of("discovery.reachable"), failIds(run));
@@ -180,7 +240,7 @@ class OnboardingFlowTest {
     @ParameterizedTest
     @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
     void igVersionMismatchFailsIgVersionCheck(String payerId) {
-        OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides(null, "1.0.0", null, null)));
+        OnboardingRun run = runner.run(edited(payerId, new RunRequest.ConnectionOverrides(null, "1.0.0", null)));
 
         assertEquals(null, firstFailedStep(run));
         assertEquals(List.of("ig.version"), failIds(run));
@@ -189,7 +249,7 @@ class OnboardingFlowTest {
     @Test
     void wrongClientIdFailsTheTokenRequest() {
         OnboardingRun run = runner.run(edited(NORTHWIND_ID,
-                new RunRequest.ConnectionOverrides(null, null, null, "someone-else")));
+                new RunRequest.ConnectionOverrides(null, null, "someone-else")));
 
         assertEquals("authenticate", firstFailedStep(run));
         assertTrue(failIds(run).contains("auth.token"), "FAIL ids: " + failIds(run));
@@ -198,24 +258,10 @@ class OnboardingFlowTest {
     @Test
     void wrongIssuerIsRejectedByTheJwtPayer() {
         OnboardingRun run = runner.run(edited(FABRIKAM_ID,
-                new RunRequest.ConnectionOverrides(null, null, null, "someone-else")));
+                new RunRequest.ConnectionOverrides(null, null, "someone-else")));
 
         assertEquals("hook-request", firstFailedStep(run));
         assertTrue(failIds(run).contains("response.schema"), "FAIL ids: " + failIds(run));
-    }
-
-    @Test
-    void audOverrideWithTrailingSlashFailsJwtAudience() {
-        String serviceUrl = payers.payer(FABRIKAM_ID).orElseThrow().baseUrl() + "/cds-services/order-sign-crd";
-        OnboardingRun run = runner.run(edited(FABRIKAM_ID,
-                new RunRequest.ConnectionOverrides(null, null, serviceUrl + "/", null)));
-
-        assertEquals("hook-request", firstFailedStep(run));
-        assertTrue(failIds(run).contains("auth.jwt-audience"), "FAIL ids: " + failIds(run));
-        assertFalse(failIds(run).contains("response.schema"), "the 401 is explained once: " + failIds(run));
-        StepResult auth = run.steps().get(2);
-        assertEquals(false, auth.details().get("audMatchesRequestUrl"));
-        assertEquals(serviceUrl + "/", ((Map<?, ?>) auth.details().get("jwtClaims")).get("aud"));
     }
 
     @Test

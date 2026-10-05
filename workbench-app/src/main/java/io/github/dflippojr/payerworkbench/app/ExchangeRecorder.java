@@ -21,10 +21,6 @@ final class ExchangeRecorder implements PayerExchangeListener {
         return events.stream().filter(e -> e.phase() == phase).toList();
     }
 
-    List<HttpExchange> exchanges() {
-        return events.stream().map(ExchangeRecorder::adapt).toList();
-    }
-
     static HttpExchange adapt(PayerExchange event) {
         return new HttpExchange(event.method(), event.uri().toString(),
                 event.statusCode().orElse(HttpExchange.NO_RESPONSE), event.elapsed(),
