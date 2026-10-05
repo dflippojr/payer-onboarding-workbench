@@ -1,6 +1,5 @@
 package io.github.dflippojr.payerworkbench.app;
 
-import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.RedactedConnection;
@@ -67,10 +66,7 @@ public class WorkbenchApiController {
         return payers.payerIds().stream().map(id -> {
             MockPayer payer = payers.payer(id).orElseThrow();
             List<ConnectionRecord> records = payers.store().findByPayerId(id);
-            boolean jwt = records.stream().anyMatch(r -> r.authType() == AuthType.CDS_HOOKS_JWT);
-            List<String> editable = jwt
-                    ? List.of("baseUrlSuffix", "igVersion", "audOverride", "clientId")
-                    : List.of("baseUrlSuffix", "igVersion", "clientId");
+            List<String> editable = List.of("baseUrlSuffix", "igVersion", "clientId");
             return new PayerView(id, payer.displayName(), payer.igVersion(),
                     records.stream().map(RedactedConnection::of).toList(), editable, faults);
         }).toList();
