@@ -3,17 +3,24 @@ package io.github.dflippojr.payerworkbench.app;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
+import io.github.dflippojr.payerworkbench.core.Redactor;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.Fault;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,7 +40,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The onboarding flow against both in-process mock payers: a healthy run passes, and
  * each fault and each common misconfiguration fails the expected check. The latency
  * budgets are scaled down so {@code slow-response} fails in under a second.
+ *
+ * <p>Everything each test logs is captured and checked: no secret, token or request
+ * body may reach the log.
  */
+@ExtendWith(OutputCaptureExtension.class)
 @SpringBootTest(properties = {
         "workbench.latency-warn=300ms",
         "workbench.latency-fail=600ms",
@@ -43,6 +54,8 @@ class OnboardingFlowTest {
     private static final String HEALTHY_SAMPLE = "order-sign-hospital-bed";
     /** prefetch-missing-400 only fires when the client leaves out prefetch it could have sent. */
     private static final String NO_PREFETCH_SAMPLE = "order-sign-missing-prefetch";
+    /** Everything the tests logged, for the class-level check. */
+    private static final StringBuilder LOG = new StringBuilder();
 
     @Autowired
     OnboardingRunner runner;
@@ -67,6 +80,50 @@ class OnboardingFlowTest {
         }
         assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals("tls.handshake") && f.severity() == Severity.PASS));
         assertTrue(payers.payer(payerId).orElseThrow().baseUrl().startsWith("https://127.0.0.1:"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID})
+    void everyPayerCallCarriesTheRunsCorrelationId(String payerId) {
+        OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of()));
+
+        List<ExchangeView> calls = new ArrayList<>(exchanges(run, "discovery"));
+        List<ExchangeView> tokens = exchanges(run, "authenticate");
+        if (tokens != null) {
+            calls.addAll(tokens);
+        }
+        calls.addAll(exchanges(run, "hook-request"));
+        // Northwind fetches a token; Fabrikam signs its own JWT, so it has no token call.
+        assertEquals(payerId.equals(NORTHWIND_ID) ? 3 : 2, calls.size());
+        for (ExchangeView call : calls) {
+            assertEquals(List.of(run.runId()), header(call.requestHeaders(), "X-Request-Id"), call.url());
+            // The payer echoes what it received, so this proves the header reached it.
+            assertEquals(List.of(run.runId()), header(call.responseHeaders(), "X-Request-Id"), call.url());
+        }
+        RunReport report = RunReport.of(run, payerId, "2.1.0", java.time.Instant.now(), "test");
+        assertEquals(run.runId(), report.correlationId());
+        for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
+            assertTrue(ReportRenderer.render(report, format).contains(run.runId()), format::toString);
+        }
+    }
+
+    /** What each test logged must hold nothing a redactor would mask and no request or response body. */
+    @AfterEach
+    void logCarriesNoSecretsOrBodies(CapturedOutput output) {
+        String log = output.getAll();
+        LOG.append(log);
+        assertEquals(Redactor.redact(log), log, "the log contains something the Redactor masks");
+        for (String body : List.of("draftOrders", "\"hookInstance\"", "client_assertion", "\"cards\"",
+                "-----BEGIN", "eyJ")) {
+            assertFalse(log.contains(body), "the log contains " + body);
+        }
+    }
+
+    /** The checks above saw real traffic: step lines from the runner and request ids from the payers. */
+    @AfterAll
+    static void stepsAndRequestIdsWereLogged() {
+        assertTrue(LOG.toString().contains(" step=discovery status=passed ms="), "no step lines were logged");
+        assertTrue(LOG.toString().contains("requestId="), "the mock payers did not log the request id");
     }
 
     @ParameterizedTest
@@ -181,7 +238,7 @@ class OnboardingFlowTest {
     void sdkRequestTimeoutIsReportedAtTheHook(String payerId) {
         OnboardingRunner timed = new OnboardingRunner(payers, new SampleCatalog(),
                 new WorkbenchProperties(Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(10),
-                        Duration.ofMillis(500), 10));
+                        Duration.ofMillis(500), 10), new RunMetrics(new SimpleMeterRegistry()));
         OnboardingRun run = timed.run(request(payerId, HEALTHY_SAMPLE, List.of(Fault.SLOW_RESPONSE.id())));
         assertEquals("hook-request", firstFailedStep(run));
         ExchangeView hook = exchanges(run, "hook-request").getFirst();
@@ -208,6 +265,11 @@ class OnboardingFlowTest {
         assertEquals("Bearer [REDACTED]", exchanges(run, "hook-request").getFirst().requestHeaders()
                 .entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase("authorization"))
                 .findFirst().orElseThrow().getValue().getFirst());
+    }
+
+    private static List<String> header(Map<String, List<String>> headers, String name) {
+        return headers.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase(name))
+                .map(Map.Entry::getValue).findFirst().orElse(List.of());
     }
 
     @SuppressWarnings("unchecked")

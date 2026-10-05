@@ -48,6 +48,10 @@ import java.util.regex.Pattern;
  *       a faulted response carries an {@value #FAULT_HEADER} header naming the fault.</li>
  * </ul>
  *
+ * <p>Every response echoes a well-formed {@value #REQUEST_ID_HEADER} from its request,
+ * and each such request is logged at INFO (method, path, status and request id; never
+ * another header value or a body).
+ *
  * <p>Admin endpoint: {@code GET /admin/faults} lists faults and their state;
  * {@code POST /admin/faults/{id}} enables one ({@code ?delayMs=N} sets the
  * {@code slow-response} delay); {@code DELETE /admin/faults/{id}} disables one;
@@ -61,6 +65,17 @@ public abstract class MockPayer implements AutoCloseable {
 
     /** Response header naming the {@link Fault#id()} that shaped the response. */
     public static final String FAULT_HEADER = "X-Mock-Fault";
+
+    /**
+     * Correlation header: a well-formed value on a request is logged and echoed on its
+     * response, so a client can match its call to the payer's log line.
+     */
+    public static final String REQUEST_ID_HEADER = "X-Request-Id";
+
+    /** What a request id may look like; anything else is neither logged nor echoed. */
+    private static final Pattern REQUEST_ID = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
+
+    private static final System.Logger LOG = System.getLogger(MockPayer.class.getName());
 
     static final String COVERAGE_INFORMATION_URL =
             "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information";
@@ -183,6 +198,7 @@ public abstract class MockPayer implements AutoCloseable {
 
     private void handle(HttpExchange exchange) {
         try (exchange) {
+            String requestId = requestId(exchange.getRequestHeaders().getFirst(REQUEST_ID_HEADER));
             Response response;
             try {
                 response = route(Request.from(exchange));
@@ -191,6 +207,13 @@ public abstract class MockPayer implements AutoCloseable {
             } catch (RuntimeException e) {
                 response = Response.json(mapper, 500, error("server_error", "Unexpected error: " + e));
             }
+            if (requestId != null) {
+                response = response.withHeader(REQUEST_ID_HEADER, requestId);
+            }
+            // INFO only for correlated calls, so uncorrelated test and admin traffic stays quiet.
+            LOG.log(requestId == null ? System.Logger.Level.DEBUG : System.Logger.Level.INFO,
+                    "{0}: {1} {2} -> {3} requestId={4}", displayName(), exchange.getRequestMethod(),
+                    exchange.getRequestURI().getRawPath(), response.status(), requestId == null ? "-" : requestId);
             send(exchange, response);
         } catch (IOException e) {
             // The client went away; nothing to report it to.
@@ -510,6 +533,11 @@ public abstract class MockPayer implements AutoCloseable {
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
         }
+    }
+
+    /** {@code value} if it is a well-formed request id, else {@code null} (so it can't forge a log line or header). */
+    static String requestId(String value) {
+        return value != null && REQUEST_ID.matcher(value).matches() ? value : null;
     }
 
     static String trimTrailingSlash(String url) {

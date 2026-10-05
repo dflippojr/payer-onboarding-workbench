@@ -83,6 +83,7 @@ public final class ReportRenderer {
         row(md, "CRD IG version expected", orDash(r.igVersion()));
         row(md, "CRD IG version advertised", orDash(r.advertisedIgVersion()));
         row(md, "Run", "`" + r.runId() + "`");
+        row(md, "Correlation id (" + RequestIdClient.HEADER + ")", "`" + r.correlationId() + "`");
         row(md, "Run started", orDash(r.startedAt()));
         row(md, "Findings", counts(r.counts()));
         row(md, "Generated", r.generatedAt());
@@ -164,6 +165,7 @@ public final class ReportRenderer {
         meta(h, "CRD IG version expected", esc(orDash(r.igVersion())));
         meta(h, "CRD IG version advertised", esc(orDash(r.advertisedIgVersion())));
         meta(h, "Run", "<code>" + esc(r.runId()) + "</code>");
+        meta(h, "Correlation id (" + RequestIdClient.HEADER + ")", "<code>" + esc(r.correlationId()) + "</code>");
         meta(h, "Run started", esc(orDash(r.startedAt())));
         meta(h, "Findings", esc(counts(r.counts())));
         meta(h, "Generated", esc(r.generatedAt()));

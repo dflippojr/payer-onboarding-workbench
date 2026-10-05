@@ -52,3 +52,12 @@ Generate a test CA, a second untrusted CA, and server certificates using BouncyC
 Each onboarding run uses a fresh HttpClient and SSLContext trusting only the test CA. This prevents pooled connections and resumed TLS sessions from bypassing fault selection, and leaves JVM default trust untouched. Retire the simulated `tls-required` response in favor of actual handshake failures.
 
 Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT verification key, and Fabrikam?s existing fetcher can continue to use its default client without receiving the payer CA trust configuration. Payer discovery, OAuth token requests and hook requests all use HTTPS.
+
+## Observability (#34)
+
+- **The run id is the correlation id.** One id per run is enough to match a call in the payer's logs, and reusing the run id means the report, the API and the logs never disagree. It is a random UUID, so it carries no data.
+- **`X-Request-Id` is added by a transport decorator, not by the SDK.** The router SDK has no hook for extra headers, so `RequestIdClient` wraps the `HttpClient` the SDK sends through, which covers discovery, token and hook calls (retries too). The SDK reports the request it built, before the decorator ran, so `ExchangeRecorder` adds the header to each recorded request. The mock's echo on the response is the independent proof that the payer got it. A connection with mutual TLS would bypass the decorator, because the SDK builds its own client for those; none of the synthetic payers use mutual TLS.
+- **`ForwardingHttpClient` holds the delegation that `JwtObservingClient` and `RequestIdClient` share.** Both only change or inspect the request on its way out.
+- **The mock logs a request at INFO only when it carries a well-formed request id.** Uncorrelated test and admin traffic stays quiet. A malformed id is neither logged nor echoed, and the logged path is the raw (still percent-encoded) path, so a request can't forge a log line.
+- **The verdict tag reuses `RunReport`'s verdict rules,** so the metric and the report can't disagree. `broke_at` is the step id (`discovery`), not the report's title, and `none` when the flow completed.
+- **Metrics are recorded per HTTP attempt,** so a 401 that the SDK retries shows as two `hook` samples, as it does in the timeline.
