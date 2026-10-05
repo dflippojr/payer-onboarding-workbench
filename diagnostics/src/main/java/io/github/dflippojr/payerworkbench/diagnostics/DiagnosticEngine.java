@@ -54,6 +54,7 @@ public final class DiagnosticEngine {
                 new DiscoveryServicesCheck(config.requiredHooks()),
                 new DiscoveryPrefetchKeysCheck(),
                 new AuthTokenCheck(),
+                new ClientAssertionCheck(),
                 new JwtAudienceCheck(),
                 new ClockSkewCheck(config.clockSkewTolerance()),
                 new IgVersionCheck(),

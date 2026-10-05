@@ -1,7 +1,5 @@
 package io.github.dflippojr.payerworkbench.mock;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
@@ -50,14 +48,6 @@ public final class NorthwindPayer extends MockPayer {
 
     static final String CARD_TYPE_SYSTEM = "http://hl7.org/fhir/us/davinci-crd/CodeSystem/cardType";
 
-    private static final Map<String, CoverageDetermination> RULES = Map.of(
-            "E0250", new CoverageDetermination("covered", "auth-needed", List.of(),
-                    "Covered; prior authorization required"),
-            "E0424", new CoverageDetermination("covered", "no-auth", List.of(),
-                    "Covered; no prior authorization needed"));
-    private static final CoverageDetermination OTHERWISE = new CoverageDetermination(
-            "conditional", "no-auth", List.of("clinical"), "Coverage is conditional; clinical documentation needed");
-
     private static final List<ServiceDefinition> SERVICES = List.of(
             new ServiceDefinition("order-sign", "order-sign", "Northwind coverage requirements (order-sign)",
                     "Coverage and prior authorization requirements for orders being signed.", standardPrefetch()),
@@ -105,7 +95,7 @@ public final class NorthwindPayer extends MockPayer {
         return baseUrl() + TOKEN_PATH;
     }
 
-    private static Map<String, String> standardPrefetch() {
+    static Map<String, String> standardPrefetch() {
         Map<String, String> prefetch = new LinkedHashMap<>();
         prefetch.put("patient", "Patient/{{context.patientId}}");
         prefetch.put("encounter", "Encounter/{{context.encounterId}}");
@@ -216,34 +206,7 @@ public final class NorthwindPayer extends MockPayer {
 
     @Override
     protected ObjectNode handleHook(ServiceDefinition service, ObjectNode hookRequest) {
-        String hookInstance = hookRequest.path("hookInstance").asText();
-        JsonNode coverageBundle = hookRequest.path("prefetch").path("coverage");
-        ObjectNode response = mapper.createObjectNode();
-        ArrayNode cards = response.putArray("cards");
-        ArrayNode systemActions = response.putArray("systemActions");
-
-        for (JsonNode order : draftOrders(hookRequest.path("context").path("draftOrders"))) {
-            String code = orderCode(order);
-            String label = orderLabel(order);
-            CoverageDetermination determination = CoverageDetermination.lookup(RULES, code, OTHERWISE);
-            String seed = hookInstance + "|" + label;
-            if (service.hook().equals("order-select")) {
-                cards.add(card(seed, (code == null ? "Order" : code) + ": " + determination.summary(), "info",
-                        "Preliminary guidance. Northwind returns the coverage determination at order-sign.",
-                        CARD_TYPE_SYSTEM, "coverage-info", "Coverage Information"));
-                continue;
-            }
-            String indicator = "auth-needed".equals(determination.paNeeded()) ? "warning" : "info";
-            cards.add(card(seed, (code == null ? "Order" : code) + ": " + determination.summary(), indicator,
-                    "See the coverage information recorded on " + label + ".",
-                    CARD_TYPE_SYSTEM, "coverage-info", "Coverage Information"));
-            ObjectNode action = systemActions.addObject();
-            action.put("type", "update");
-            action.put("description", "Record Northwind coverage information on " + label);
-            action.set("resource", withCoverageInformation(order, determination, coverageReference(order, coverageBundle),
-                    "coverage-assertion-id", "NW-" + label.replace('/', '-') + "-" + (code == null ? "NOCODE" : code)));
-        }
-        return response;
+        return StandardCoverage.response(this, service, hookRequest, "NW");
     }
 
     private record IssuedToken(String clientId, String audience, Instant expiresAt) { }

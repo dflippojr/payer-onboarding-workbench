@@ -69,6 +69,7 @@ payer_host() {
   case "$1" in
     northwind-synthetic) echo "https://crd.northwind-health.example" ;;
     fabrikam-synthetic) echo "https://crd.fabrikam-benefits.example" ;;
+    tailspin-synthetic) echo "https://crd.tailspin-health.example" ;;
     *) echo "https://crd.$1.example" ;;
   esac
 }

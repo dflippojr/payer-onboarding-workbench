@@ -32,7 +32,7 @@ class DiagnosticEngineTest {
 
     private static final Set<String> CATALOG = Set.of(
             "discovery.reachable", "discovery.services", "discovery.prefetch-keys",
-            "auth.token", "auth.jwt-audience", "auth.clock-skew",
+            "auth.token", "auth.client-assertion", "auth.jwt-audience", "auth.clock-skew",
             "ig.version", "response.schema", "response.coverage-location", "response.coverage-information",
             "perf.latency", "tls.handshake");
 
@@ -48,8 +48,9 @@ class DiagnosticEngineTest {
     void healthyRunYieldsOnePassPerCheck() {
         List<Finding> findings = engine.run(healthy().build());
 
-        assertEquals(CATALOG, findings.stream().map(Finding::checkId).collect(Collectors.toSet()));
-        assertEquals(CATALOG.size(), findings.size(), findings::toString);
+        assertEquals(CATALOG.stream().filter(id -> !id.equals("auth.client-assertion")).collect(Collectors.toSet()),
+                findings.stream().map(Finding::checkId).collect(Collectors.toSet()));
+        assertEquals(CATALOG.size() - 1, findings.size(), findings::toString);
         findings.forEach(f -> assertEquals(Severity.PASS, f.severity(), f::toString));
         findings.forEach(f -> assertFalse(f.explanation().isBlank(), f::toString));
     }

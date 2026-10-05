@@ -116,7 +116,7 @@ class RunReportTest {
         exchange.put("status", 401);
         exchange.put("latencyMs", 7);
         exchange.put("requestHeaders", Map.of("Authorization", List.of("Bearer " + token)));
-        exchange.put("requestBody", "grant_type=client_credentials&client_secret=" + secret);
+        exchange.put("requestBody", "grant_type=client_credentials&client_secret=" + secret + "&client_assertion=" + jwt);
         exchange.put("responseHeaders", Map.of("Set-Cookie", List.of("session=" + secret)));
         exchange.put("responseBody", "{\"access_token\":\"" + token + "\",\"note\":\"" + jwt + "\"}");
 

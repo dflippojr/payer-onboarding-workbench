@@ -167,6 +167,7 @@ public class OnboardingRunner {
         private Object jwtHeader;
         private Object jwtPayload;
         private JwtClaims clientJwt;
+        private JwtClaims clientAssertion;
 
         Attempt(String runId, RunRequest request, SampleMetadata sample, HttpClient http) {
             this.recorder = new ExchangeRecorder(runId);
@@ -284,6 +285,9 @@ public class OnboardingRunner {
                         : Outcome.pass("Signed a CDS Hooks client JWT as " + record.clientId() + " (kid " + record.keyId()
                                 + ") for aud " + serviceUrl());
             }
+            if (clientAssertion != null) {
+                details.put("clientAssertionClaims", clientAssertion);
+            }
             return clientCredentials(details);
         }
 
@@ -337,11 +341,13 @@ public class OnboardingRunner {
         }
 
         private void observeJwt(String jwt) {
-            if (record == null || record.authType() != AuthType.CDS_HOOKS_JWT) {
+            if (record == null) {
                 return;
             }
             String[] parts = jwt.split("\\.");
-            if (parts.length == 3) {
+            if (parts.length == 3 && record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+                clientAssertion = claimsOf(parts[0], parts[1]);
+            } else if (parts.length == 3 && record.authType() == AuthType.CDS_HOOKS_JWT) {
                 jwtHeader = decode(parts[0]);
                 jwtPayload = decode(parts[1]);
                 clientJwt = claimsOf(parts[0], parts[1]);
@@ -434,7 +440,7 @@ public class OnboardingRunner {
             recorder.events(PayerCallPhase.DISCOVERY).stream().map(ExchangeRecorder::adapt).forEach(obs::exchange);
             recorder.events(PayerCallPhase.TOKEN).stream().map(ExchangeRecorder::adapt).forEach(obs::exchange);
             hookResponses.forEach(h -> obs.exchange(h.exchange()));
-            obs.discovery(discovery).tokenResponse(tokenResponse);
+            obs.discovery(discovery).tokenResponse(tokenResponse).clientAssertion(clientAssertion);
             hookResponses.forEach(obs::hookResponse);
             DiagnosticsConfig defaults = DiagnosticsConfig.defaults();
             DiagnosticsConfig config = new DiagnosticsConfig(Set.of(sample.hook()), properties.latencyWarn(),
@@ -569,7 +575,7 @@ public class OnboardingRunner {
                 aud.add(p.get("aud").asText());
             }
             return new JwtClaims(text(p, "iss"), aud, epochSeconds(p, "exp"), epochSeconds(p, "iat"), text(p, "jti"),
-                    text(h, "kid"));
+                    text(h, "kid"), text(p, "sub"));
         } catch (java.io.IOException | IllegalArgumentException e) {
             return null;
         }

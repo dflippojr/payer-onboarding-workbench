@@ -10,6 +10,7 @@ import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import io.github.dflippojr.payerworkbench.mock.TestTls;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
+import io.github.dflippojr.payerworkbench.mock.TailspinPayer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -35,7 +36,7 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * The two mock payers, started in-process on loopback ephemeral ports, plus what an
+ * The three mock payers, started in-process on loopback ephemeral ports, plus what an
  * onboarding engineer would have set up for them: a {@link ConnectionRecord} each in a
  * directory-core file store under a temp directory, and credentials generated at startup
  * and held only in memory ({@link InMemoryCredentials}).
@@ -48,6 +49,7 @@ public class SyntheticPayers implements DisposableBean {
 
     public static final String NORTHWIND_ID = "northwind-synthetic";
     public static final String FABRIKAM_ID = "fabrikam-synthetic";
+    public static final String TAILSPIN_ID = "tailspin-synthetic";
     static final String CLIENT_ID = "payer-workbench";
     static final String KEY_ID = "payer-workbench-key-1";
 
@@ -90,7 +92,9 @@ public class SyntheticPayers implements DisposableBean {
 
             KeyPair key = rsaKey();
             credentials.put("fabrikam-signing-key", PemKeys.toPem("PRIVATE KEY", key.getPrivate().getEncoded()));
-            jwks = new JwksServer(KEY_ID, key.getPublic());
+            KeyPair tailspinKey = rsaKey();
+            credentials.put("tailspin-signing-key", PemKeys.toPem("PRIVATE KEY", tailspinKey.getPrivate().getEncoded()));
+            jwks = new JwksServer(Map.of(KEY_ID, key.getPublic(), "tailspin-key-1", tailspinKey.getPublic()));
             FabrikamPayer fabrikam = FabrikamPayer.builder().client(CLIENT_ID, jwks.url()).build();
             fabrikam.tls(tls).start(0);
             payers.put(FABRIKAM_ID, fabrikam);
@@ -107,6 +111,15 @@ public class SyntheticPayers implements DisposableBean {
                     .igVersion(fabrikam.igVersion())
                     .contactInfo("synthetic; no real payer")
                     .build());
+            TailspinPayer tailspin = TailspinPayer.builder().client(CLIENT_ID, jwks.url()).build();
+            tailspin.tls(tls).start(0);
+            payers.put(TAILSPIN_ID, tailspin);
+            store.save(ConnectionRecord.builder()
+                    .payerId(TAILSPIN_ID).displayName(tailspin.displayName()).environment(Environment.SANDBOX)
+                    .baseUrl(tailspin.baseUrl()).authType(AuthType.OAUTH2_PRIVATE_KEY_JWT)
+                    .tokenEndpoint(tailspin.tokenEndpoint()).clientId(CLIENT_ID).keyId("tailspin-key-1")
+                    .jwksUrl(jwks.url().toString()).credentialRef("tailspin-signing-key")
+                    .igVersion(tailspin.igVersion()).contactInfo("synthetic; no real payer").build());
         } catch (IOException | RuntimeException e) {
             destroy();
             throw e;

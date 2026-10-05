@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.PublicKey;
+import java.util.Map;
 
 /**
  * Publishes the workbench client's public signing key as a JWK Set on a loopback
@@ -20,7 +21,13 @@ final class JwksServer implements AutoCloseable {
     private final HttpServer server;
 
     JwksServer(String keyId, PublicKey publicKey) throws IOException {
-        byte[] body = Jwks.builder().add(keyId, publicKey).toJson().getBytes(StandardCharsets.UTF_8);
+        this(Map.of(keyId, publicKey));
+    }
+
+    JwksServer(Map<String, PublicKey> keys) throws IOException {
+        Jwks jwks = Jwks.builder();
+        keys.forEach(jwks::add);
+        byte[] body = jwks.toJson().getBytes(StandardCharsets.UTF_8);
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext("/jwks.json", exchange -> {
             try (exchange) {

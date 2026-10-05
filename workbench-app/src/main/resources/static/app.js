@@ -85,7 +85,7 @@
   }
 
   function authLabel(type) {
-    return ({ OAUTH2_CLIENT_CREDENTIALS: 'OAuth2 client credentials', CDS_HOOKS_JWT: 'CDS Hooks client JWT' })[type] || type || 'no auth';
+    return ({ OAUTH2_CLIENT_CREDENTIALS: 'OAuth2 client credentials', OAUTH2_PRIVATE_KEY_JWT: 'SMART Backend Services (private_key_jwt)', CDS_HOOKS_JWT: 'CDS Hooks client JWT' })[type] || type || 'no auth';
   }
 
   function renderSamples() {

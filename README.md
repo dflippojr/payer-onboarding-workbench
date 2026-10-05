@@ -64,13 +64,13 @@ Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
 
 ![A failing run: the hook request is rejected with 401 and the findings explain why](docs/screenshots/failing-run.png)
 
-On startup the app launches both mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (owner-only where the file system supports POSIX permissions, and deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's RSA signing key) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
+On startup the app launches all three mock payers in-process on loopback ephemeral ports and seeds a `SANDBOX` `ConnectionRecord` for each in a directory-core `FileBasedConnectionStore` under a temp directory (owner-only where the file system supports POSIX permissions, and deleted on shutdown). Credentials (Northwind's client secret, Fabrikam's and Tailspin's separate RSA signing keys) are generated at startup and held only in memory; they are never written to disk, logged or returned by the API.
 
 A run records these steps, each with its status, latency and redacted HTTP exchanges. The first failing step stops the run; the rest are marked skipped, and diagnostics run on whatever was observed.
 
 1. **Resolve connection**: look up the record for the payer and environment, then apply any edits.
 2. **Discovery**: `GET {baseUrl}/cds-services`, then find the service for the sample's hook.
-3. **Authenticate**: an OAuth2 client-credentials token (Northwind) or a signed CDS Hooks client JWT (Fabrikam).
+3. **Authenticate**: an OAuth2 client-credentials token (Northwind) a signed CDS Hooks client JWT (Fabrikam), or SMART Backend Services `private_key_jwt` (Tailspin).
 4. **Send the sample hook request**, with the prefetch keys the payer's discovery asks for.
 5. **Parse the response** with the fhir-crd-router client types (cards, system actions, coverage information).
 6. **Run diagnostics** (`DiagnosticEngine`, with the sample's hook as the required hook).
@@ -123,6 +123,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | `expired-token-401` | hook request | `auth.clock-skew`, `response.schema` |
 | `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
 | `wrong-audience-reject`, Northwind | hook request | `response.schema` |
+| `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`) |
 | `coverage-info-incomplete` (both payers, `order-sign`) | diagnostics | `response.coverage-information` |
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
@@ -133,12 +134,13 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | base URL suffix `/r4` | discovery | `discovery.reachable` |
 | `igVersion` `1.0.0` | (steps pass) | `ig.version` |
 | wrong client id, Northwind | authenticate | `auth.token` |
+| wrong client id, Tailspin | authenticate | `auth.token`, `auth.client-assertion` |
 | wrong client id, Fabrikam | hook request | `response.schema` |
 | environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
 
-`response.coverage-information` validates every coverage-information extension in system actions and card suggestions using the router's Da Vinci CRD 2.2.1 validator. Evidence identifies the resource, extension location, and each violation's path and message. ERROR violations produce FAIL, WARNING violations produce WARN, and conformant content produces PASS. Healthy Northwind passes; healthy Fabrikam warns about its legacy `identifier` name without failing. With no coverage information, the check adds no finding.
+`response.coverage-information` validates every coverage-information extension in system actions and card suggestions using the router's Da Vinci CRD 2.2.1 validator. Evidence identifies the resource, extension location, and each violation's path and message. ERROR violations produce FAIL, WARNING violations produce WARN, and conformant content produces PASS. Healthy Northwind and Tailspin pass; healthy Fabrikam warns about its legacy `identifier` name without failing. With no coverage information, the check adds no finding.
 
-One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
+One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Tailspin records only `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, and `kid` from the actual assertion signed by `JwtSigner.clientAssertion`; it never stores the assertion, encoded parts, signature or private key. `auth.client-assertion` passes when the token endpoint accepts it, and explains identity, audience, lifetime and replay rejections using the recorded claims and payer error description. Northwind checks the audience of its own access token, which the workbench cannot inspect, so that 401 stays under `response.schema`.
 
 Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 
@@ -226,7 +228,7 @@ node scripts/vendor-into-site.mjs ../personal-website/public/workbench
 
 The export script builds the app, starts it on a free port, records six runs and writes `site-dist/` (gitignored). The slow-response run takes about 11 s. It exits non-zero if a run is missing an expected finding or if any `localhost` or `127.0.0.1` address is left in the bundle.
 
-The mock payers listen on ephemeral `localhost` ports, so after redaction the export rewrites each recorded address to a stable example host: Northwind becomes `https://crd.northwind-health.example`, Fabrikam `https://crd.fabrikam-benefits.example`, and the workbench's own JWKS `https://workbench.example`. The rewrite covers every field (step summaries, exchanges, headers, JWT claims, findings and evidence) so the story stays coherent: in the wrong-audience run the rewritten `aud` still differs from the `https://api.fabrikam-benefits.example` URL Fabrikam expects, by host only, as the finding explains. Only the exported JSON is rewritten; the live app and its reports keep the real addresses.
+The mock payers listen on ephemeral `localhost` ports, so after redaction the export rewrites each recorded address to a stable example host: Northwind becomes `https://crd.northwind-health.example`, Fabrikam `https://crd.fabrikam-benefits.example`, Tailspin `https://crd.tailspin-health.example`, and the workbench's own JWKS `https://workbench.example`. The rewrite covers every field (step summaries, exchanges, headers, JWT claims, findings and evidence) so the story stays coherent: in the wrong-audience run the rewritten `aud` still differs from the `https://api.fabrikam-benefits.example` URL Fabrikam expects, by host only, as the finding explains. Only the exported JSON is rewritten; the live app and its reports keep the real addresses.
 
 | File | What it is |
 |---|---|
@@ -282,6 +284,8 @@ On the site:
 - Puts coverage information inside card suggestions instead of `systemActions`.
 - Auth is the CDS Hooks 2.0 client JWT. Fabrikam checks the signature against the client's JWKS, which it fetches from a URL you register per issuer. It also checks `iss`, that `aud` is exactly the service URL, `exp`, and `jti` replay. RS384 and ES384 are accepted.
 
+**Tailspin Health Plan (synthetic)** exercises SMART Backend Services (`private_key_jwt`). Payer id `tailspin-synthetic`, CRD 2.2.1, standard prefetch keys, and coverage information in `systemActions` share Northwind's synthetic rules. Its `/oauth/token` endpoint accepts client credentials with the JWT bearer assertion type, verifies RS384 or ES384 against the registered client JWKS, requires `iss` = `sub` = client id and exact token endpoint `aud`, checks future `exp` at most five minutes ahead, and rejects reused `jti`. Rejections return `401 invalid_client` naming the claim. All faults apply; `wrong-audience-reject` expects `https://auth.tailspin-health.example/token` and breaks at authenticate.
+
 ### Start one standalone
 
 Install the router first (`bash scripts/install-crd-router.sh`), then:
@@ -300,7 +304,7 @@ Install the router first (`bash scripts/install-crd-router.sh`), then:
   -Dexec.args="--port 8182 --client https://ehr.example/client=http://localhost:9000/jwks.json"
 ```
 
-Northwind options: `--port`, `--client-id`, `--client-secret` (generated if omitted), `--token-lifetime-seconds`, `--public-base-url`. Fabrikam options: `--port`, `--client ISS=JWKS_URL` (repeatable), `--public-base-url`. Use `--port 0` for a free port. No keys or secrets are stored in the repo. Tests generate key pairs at runtime and serve the JWKS themselves.
+Northwind options: `--port`, `--client-id`, `--client-secret` (generated if omitted), `--token-lifetime-seconds`, `--public-base-url`. Fabrikam and Tailspin options: `--port`, `--client ISS=JWKS_URL` (repeatable), `--public-base-url`. Tailspin runs as `io.github.dflippojr.payerworkbench.mock.TailspinPayer` with default port 8183; register clients with `--client ID=JWKS_URL`, just as for Fabrikam. Use `--port 0` for a free port. No keys or secrets are stored in the repo. Tests generate key pairs at runtime and serve the JWKS themselves.
 
 ### Fault injection
 
@@ -317,7 +321,7 @@ curl -X DELETE http://localhost:8181/admin/faults                           # tu
 |-------|----------------------|
 | `slow-response` | Hook calls (`POST /cds-services/{id}`) wait `delayMs` (default 2000) before they are handled. Discovery, the token endpoint and admin stay fast. |
 | `expired-token-401` | Hook calls get 401 as if the credential had expired. |
-| `wrong-audience-reject` | Hook calls get 401 because the payer expects a different audience: Fabrikam wants the JWT `aud` under `https://api.fabrikam-benefits.example`, Northwind wants access tokens issued for `https://crd.northwind-health.example`. |
+| `wrong-audience-reject` | Hook calls get 401 because the payer expects a different audience: Fabrikam wants the JWT `aud` under `https://api.fabrikam-benefits.example`, Northwind wants access tokens issued for `https://crd.northwind-health.example`. Tailspin rejects the token request with `401 invalid_client`, expecting assertion `aud` = `https://auth.tailspin-health.example/token`. |
 | `malformed-card` | Cards come back without the required `summary` and `indicator`. |
 | `discovery-500` | `GET /cds-services` returns 500. |
 | `coverage-info-incomplete` | `order-sign` coverage information omits both assertion-id names and sets `covered` to `invalid-covered`; the content check lists both errors. |
@@ -369,6 +373,6 @@ On Windows, use `;` instead of `:` as the classpath separator.
 
 MIT. See [LICENSE](LICENSE).
 
-The app starts both mock payers over real HTTPS at `https://127.0.0.1:<port>`. A synthetic test CA and server certificates for `localhost` and `127.0.0.1` are generated in memory at startup; no certificate or private-key files are written. Payer calls trust only that test CA, and healthy runs show a `tls.handshake` PASS. Certificate faults fail before HTTP discovery receives a response.
+The app starts all three mock payers over real HTTPS at `https://127.0.0.1:<port>`. A synthetic test CA and server certificates for `localhost` and `127.0.0.1` are generated in memory at startup; no certificate or private-key files are written. Payer calls trust only that test CA, and healthy runs show a `tls.handshake` PASS. Certificate faults fail before HTTP discovery receives a response.
 
-Standalone payers use plain HTTP by default. Add `--tls` to either standalone launcher for HTTPS with an ephemeral test CA. This CA is not installed in the JVM or operating-system trust store. Fabrikam fetches the app's public JWKS over loopback HTTP. TLS faults affect the handshake for every endpoint, including admin endpoints; clear them programmatically or restart a standalone payer to recover.
+Standalone payers use plain HTTP by default. Add `--tls` to any standalone launcher for HTTPS with an ephemeral test CA. This CA is not installed in the JVM or operating-system trust store. Fabrikam and Tailspin fetch the app's public JWKS over loopback HTTP. TLS faults affect the handshake for every endpoint, including admin endpoints; clear them programmatically or restart a standalone payer to recover.

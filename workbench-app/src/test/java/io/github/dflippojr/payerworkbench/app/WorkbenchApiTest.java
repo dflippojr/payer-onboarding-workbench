@@ -37,11 +37,11 @@ class WorkbenchApiTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
     @Test
-    void listsBothPayersWithRedactedConnections() throws Exception {
+    void listsThreePayersWithRedactedConnections() throws Exception {
         HttpResponse<String> response = get("/api/payers");
         assertEquals(200, response.statusCode());
         JsonNode payerList = mapper.readTree(response.body());
-        assertEquals(List.of(SyntheticPayers.NORTHWIND_ID, SyntheticPayers.FABRIKAM_ID),
+        assertEquals(List.of(SyntheticPayers.NORTHWIND_ID, SyntheticPayers.FABRIKAM_ID, SyntheticPayers.TAILSPIN_ID),
                 payerList.findValuesAsText("payerId").stream().distinct().toList());
         JsonNode connection = payerList.get(0).path("connections").get(0);
         assertEquals("SANDBOX", connection.path("environment").asText());
