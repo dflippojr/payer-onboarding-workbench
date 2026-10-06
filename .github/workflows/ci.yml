@@ -26,14 +26,14 @@ jobs:
         run: node --test replay/test/bundle.test.mjs
       - name: Upload demo reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: demo-output
           path: demo-output/
           if-no-files-found: ignore
       - name: Upload replay bundle
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: site-dist
           path: site-dist/
