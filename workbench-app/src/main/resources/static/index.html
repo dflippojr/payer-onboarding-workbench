@@ -38,6 +38,35 @@
         <p id="sample-note" class="muted small"></p>
       </fieldset>
 
+      <fieldset id="custom-endpoint" hidden>
+        <legend>Your payer endpoint</legend>
+        <p class="muted small">Runs the same flow against a payer you name. <code>https</code> to public hosts, or <code>http</code> to a loopback host such as <code>http://127.0.0.1:18090/r4</code>. The credential is sent with this run only, kept in memory and never stored or shown.</p>
+        <div class="grid">
+          <label class="field">Base URL
+            <input name="customBaseUrl" id="customBaseUrl" placeholder="http://127.0.0.1:18090/r4" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">Authentication
+            <select name="customAuthType" id="customAuthType">
+              <option value="NONE">None</option>
+              <option value="OAUTH2_CLIENT_CREDENTIALS">OAuth2 client credentials</option>
+              <option value="CDS_HOOKS_JWT">CDS Hooks client JWT</option>
+            </select>
+          </label>
+          <label class="field">Client id
+            <input name="customClientId" id="customClientId" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field" id="customTokenEndpointField">Token endpoint
+            <input name="customTokenEndpoint" id="customTokenEndpoint" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field" id="customKeyIdField">Key id (kid)
+            <input name="customKeyId" id="customKeyId" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field" id="customCredentialField">Credential (client secret, or PKCS#8 private key PEM)
+            <textarea name="customCredential" id="customCredential" rows="3" autocomplete="off" spellcheck="false"></textarea>
+          </label>
+        </div>
+      </fieldset>
+
       <fieldset>
         <legend>2. Break it</legend>
         <p class="muted small">Switch on payer-side faults for this run only. They are cleared when the run ends.</p>

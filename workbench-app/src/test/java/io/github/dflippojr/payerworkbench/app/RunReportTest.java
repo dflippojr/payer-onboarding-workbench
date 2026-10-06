@@ -60,6 +60,33 @@ class RunReportTest {
         }
     }
 
+    /** A custom endpoint's credential, planted where a careless step might put it, stays out of every format. */
+    @ParameterizedTest
+    @EnumSource(ReportRenderer.Format.class)
+    void noFormatContainsACustomEndpointCredential(ReportRenderer.Format format) {
+        String custom = "PLANTED-CUSTOM-" + random(24);
+        String basic = Base64.getEncoder().encodeToString(("payer-workbench:" + custom).getBytes());
+        Map<String, Object> exchange = new LinkedHashMap<>();
+        exchange.put("method", "POST");
+        exchange.put("url", "http://127.0.0.1:18090/oauth/token");
+        exchange.put("status", 401);
+        exchange.put("requestHeaders", Map.of("Authorization", List.of("Basic " + basic)));
+        exchange.put("requestBody", "grant_type=client_credentials&client_secret=" + custom);
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("status", "failed");
+        details.put("exchanges", List.of(exchange));
+        details.put("customEndpoint", Map.of("clientSecret", custom));
+        OnboardingRun run = new OnboardingRun("run-custom", "custom-endpoint", Environment.SANDBOX,
+                List.of(new StepResult("authenticate", T0, Duration.ofMillis(9), false,
+                        "Token request rejected for Authorization: Basic " + basic, details)),
+                List.of(new Finding("auth.token", Severity.FAIL, "Token request rejected",
+                        "invalid_client for client_secret=" + custom, "Authorization: Basic " + basic
+                        + "\n{\"client_secret\":\"" + custom + "\"}", "Check the secret")));
+        String out = ReportRenderer.render(report(run), format);
+        assertFalse(out.contains(custom), format + ": custom credential leaked");
+        assertFalse(out.contains(basic), format + ": Basic credential leaked");
+    }
+
     @Test
     void findingsAreOrderedBySeverityAndCounted() {
         RunReport report = report(leakyRun());

@@ -1,6 +1,7 @@
 package io.github.dflippojr.payerworkbench.app;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 
@@ -13,6 +14,7 @@ import java.time.Duration;
  * @param latencyFail       hook latency that is a FAIL (CDS Hooks clients often give up around here)
  * @param requestTimeout    how long the workbench waits for any one HTTP response
  * @param maxRuns           how many runs {@code GET /api/runs/{id}} remembers
+ * @param customEndpoints   {@code workbench.custom-endpoints.*}
  */
 @ConfigurationProperties("workbench")
 public record WorkbenchProperties(
@@ -20,9 +22,27 @@ public record WorkbenchProperties(
         Duration latencyWarn,
         Duration latencyFail,
         Duration requestTimeout,
-        Integer maxRuns
+        Integer maxRuns,
+        CustomEndpoints customEndpoints
 ) {
+    /**
+     * @param enabled whether {@code POST /api/runs} accepts a {@code customEndpoint}; off by default
+     *                because an enabled copy forwards requests to hosts the caller names
+     */
+    public record CustomEndpoints(Boolean enabled) {
+        public CustomEndpoints {
+            enabled = enabled != null && enabled;
+        }
+    }
+
+    public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
+                               Duration requestTimeout, Integer maxRuns) {
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null);
+    }
+
+    @ConstructorBinding
     public WorkbenchProperties {
+        customEndpoints = customEndpoints == null ? new CustomEndpoints(false) : customEndpoints;
         slowResponseDelay = slowResponseDelay == null ? Duration.ofSeconds(11) : slowResponseDelay;
         latencyWarn = latencyWarn == null ? Duration.ofSeconds(5) : latencyWarn;
         latencyFail = latencyFail == null ? Duration.ofSeconds(10) : latencyFail;

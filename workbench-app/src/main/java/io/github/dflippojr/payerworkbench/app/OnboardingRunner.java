@@ -110,6 +110,9 @@ public class OnboardingRunner {
      * @throws IllegalArgumentException if the payer, sample or a fault id is unknown
      */
     public OnboardingRun run(RunRequest request) {
+        if (request.customEndpoint() != null) {
+            return runCustom(request);
+        }
         MockPayer payer = payers.payer(request.payerId())
                 .orElseThrow(() -> new IllegalArgumentException("Unknown payerId: " + request.payerId()));
         SampleMetadata sample = samples.list().stream()
@@ -140,12 +143,89 @@ public class OnboardingRunner {
                     .connectTimeout(Duration.ofSeconds(5))
                     .followRedirects(HttpClient.Redirect.NEVER)
                     .build()) {
-                return new Attempt(runId, request, sample, http).run();
+                return new Attempt(runId, request, sample, http, payers.credentials(), null).run();
             }
         } finally {
             payer.faults().clear();
             lock.unlock();
         }
+    }
+
+    /**
+     * Runs the steps against a payer the user named. The destination is checked first and the
+     * credential lives in a store made for this run alone, so it is gone when the run returns.
+     *
+     * @throws IllegalArgumentException if custom endpoints are off, or the endpoint, sample or
+     *                                  credential is not acceptable
+     */
+    private OnboardingRun runCustom(RunRequest request) {
+        if (!properties.customEndpoints().enabled()) {
+            throw new IllegalArgumentException("Custom endpoints are disabled. Set "
+                    + "workbench.custom-endpoints.enabled=true to run against your own payer endpoint.");
+        }
+        SampleMetadata sample = samples.list().stream()
+                .filter(s -> s.id().equals(request.sampleId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Unknown sampleId: " + request.sampleId()));
+        if (!request.faults().isEmpty()) {
+            throw new IllegalArgumentException("Faults only apply to the synthetic payers");
+        }
+        EndpointGuard guard = new EndpointGuard();
+        InMemoryCredentials credentials = new InMemoryCredentials();
+        ConnectionRecord custom = customRecord(request, guard, credentials);
+
+        String runId = UUID.randomUUID().toString();
+        try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
+             MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId());
+             HttpClient http = HttpClient.newBuilder()
+                     .connectTimeout(Duration.ofSeconds(5))
+                     .followRedirects(HttpClient.Redirect.NEVER)
+                     .build()) {
+            return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom).run();
+        } finally {
+            credentials.remove(CUSTOM_CREDENTIAL_REF);
+        }
+    }
+
+    private static final String CUSTOM_CREDENTIAL_REF = "custom-endpoint-credential";
+
+    private static ConnectionRecord customRecord(RunRequest request, EndpointGuard guard, InMemoryCredentials credentials) {
+        RunRequest.CustomEndpoint endpoint = request.customEndpoint();
+        AuthType auth = endpoint.authType() == null ? AuthType.NONE : endpoint.authType();
+        if (auth != AuthType.NONE && auth != AuthType.OAUTH2_CLIENT_CREDENTIALS && auth != AuthType.CDS_HOOKS_JWT) {
+            throw new IllegalArgumentException("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS or CDS_HOOKS_JWT");
+        }
+        String baseUrl = guard.approve("Base URL", endpoint.baseUrl()).toString();
+        ConnectionRecord.Builder builder = ConnectionRecord.builder()
+                .payerId(RunRequest.CUSTOM_PAYER_ID)
+                .displayName("Custom endpoint")
+                .environment(request.environment())
+                .baseUrl(baseUrl)
+                .authType(auth)
+                .igVersion(isSet(endpoint.igVersion()) ? endpoint.igVersion().trim() : "2.0.1")
+                .contactInfo("user-supplied endpoint");
+        if (auth == AuthType.NONE) {
+            if (isSet(endpoint.credential())) {
+                throw new IllegalArgumentException("authType NONE takes no credential");
+            }
+            return builder.build();
+        }
+        if (!isSet(endpoint.clientId())) {
+            throw new IllegalArgumentException("clientId is required for " + auth);
+        }
+        if (!isSet(endpoint.credential())) {
+            throw new IllegalArgumentException("credential is required for " + auth);
+        }
+        builder.clientId(endpoint.clientId().trim());
+        if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS) {
+            builder.tokenEndpoint(guard.approve("Token endpoint", endpoint.tokenEndpoint()).toString());
+        } else if (!isSet(endpoint.keyId())) {
+            throw new IllegalArgumentException("keyId is required for CDS_HOOKS_JWT");
+        } else {
+            builder.keyId(endpoint.keyId().trim());
+        }
+        credentials.put(CUSTOM_CREDENTIAL_REF, endpoint.credential());
+        return builder.credentialRef(CUSTOM_CREDENTIAL_REF).build();
     }
 
     /** One run's state, passed from step to step. */
@@ -156,6 +236,9 @@ public class OnboardingRunner {
         private final ExchangeRecorder recorder;
         private final List<StepResult> steps = new ArrayList<>();
         private final List<HookResponse> hookResponses = new ArrayList<>();
+        private final InMemoryCredentials credentials;
+        /** The user-supplied connection, or null when the run resolves a synthetic payer's stored one. */
+        private final ConnectionRecord custom;
         private ConnectionRecord record;
         private HttpExchange discovery;
         private String serviceId;
@@ -169,10 +252,13 @@ public class OnboardingRunner {
         private JwtClaims clientJwt;
         private JwtClaims clientAssertion;
 
-        Attempt(String runId, RunRequest request, SampleMetadata sample, HttpClient http) {
+        Attempt(String runId, RunRequest request, SampleMetadata sample, HttpClient http,
+                InMemoryCredentials credentials, ConnectionRecord custom) {
             this.recorder = new ExchangeRecorder(runId);
+            this.credentials = credentials;
+            this.custom = custom;
             this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(http, runId), this::observeJwt),
-                    payers.credentials(), null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
+                    credentials, null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
             this.runId = runId;
             this.request = request;
             this.sample = sample;
@@ -206,7 +292,7 @@ public class OnboardingRunner {
         // ---- steps ----
 
         private Outcome resolve(Map<String, Object> details) {
-            Optional<ConnectionRecord> stored = payers.store()
+            Optional<ConnectionRecord> stored = custom != null ? Optional.of(custom) : payers.store()
                     .findByPayerIdAndEnvironment(request.payerId(), request.environment());
             if (stored.isEmpty()) {
                 return Outcome.fail("No connection record for " + request.payerId() + " in "
@@ -231,7 +317,8 @@ public class OnboardingRunner {
             record = builder.build();
             details.put("connection", RedactedConnection.of(record));
             details.put("edited", applied);
-            details.put("credential", payers.credentials().resolve(record.credentialRef()).isPresent()
+            details.put("credential", record.authType() == AuthType.NONE ? "none (no authentication)"
+                    : credentials.resolve(record.credentialRef()).isPresent()
                     ? "present in the in-memory credential store (value never shown)" : "missing");
             return Outcome.pass("Resolved " + record.displayName() + " (" + record.environment() + ", "
                     + record.authType() + ")" + (applied.isEmpty() ? "" : "; edited: " + String.join(", ", applied.keySet())));
