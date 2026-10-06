@@ -21,25 +21,40 @@ concurrency:
 jobs:
   sonar:
     runs-on: ubuntu-latest
-    # Secrets are not passed to pull requests from forks or to Dependabot; skip
-    # rather than fail.
+    # Fork PRs do not receive secrets. Same-repository Dependabot PRs use the
+    # Dependabot secret named SONAR_TOKEN, via the same secrets context.
     if: >-
       github.event_name == 'push' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]')
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      - name: Check SonarCloud token availability
+        id: token
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SonarCloud analysis skipped: SONAR_TOKEN is unavailable. Dependabot runs need a Dependabot secret named SONAR_TOKEN. No analysis was published and the quality gate was not evaluated."
+            echo "SonarCloud analysis skipped because SONAR_TOKEN is unavailable. No analysis was published and the quality gate was not evaluated. For Dependabot runs, add the repository Dependabot secret SONAR_TOKEN, then trigger a new Dependabot PR update." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/checkout@v4
+        if: steps.token.outputs.available == 'true'
         with:
           # Full history so SonarCloud can blame lines and find the PR base.
           fetch-depth: 0
       - uses: actions/setup-java@v4
+        if: steps.token.outputs.available == 'true'
         with:
           distribution: temurin
           java-version: 21
           cache: maven
       - name: Install fhir-crd-router at the pinned commit
+        if: steps.token.outputs.available == 'true'
         run: bash scripts/install-crd-router.sh
       - name: Build, test and analyze
+        if: steps.token.outputs.available == 'true'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: ./mvnw -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true

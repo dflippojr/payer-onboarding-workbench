@@ -1,6 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: maven
+    # The root reactor discovers all five module POMs and the Maven wrapper.
     directory: /
     schedule:
       interval: weekly
