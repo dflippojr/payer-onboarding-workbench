@@ -82,7 +82,7 @@ legend { font: 600 11px var(--mono); letter-spacing: 1px; text-transform: upperc
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; min-width: 0; }
 .field.grow { flex: 1 1 260px; }
 .hint { font: 400 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-input, select {
+input, select, textarea {
   font: 14px var(--mono); padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--paper); color: var(--ink); min-width: 0; width: 100%;
 }

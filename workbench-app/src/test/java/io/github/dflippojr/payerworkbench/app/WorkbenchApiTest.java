@@ -53,6 +53,15 @@ class WorkbenchApiTest {
     }
 
     @Test
+    void customEndpointsAreOffByDefault() throws Exception {
+        assertFalse(mapper.readTree(get("/api/features").body()).path("customEndpoints").asBoolean());
+        HttpResponse<String> response = post("/api/runs", """
+                {"sampleId":"order-sign-hospital-bed","customEndpoint":{"baseUrl":"http://127.0.0.1:18090/r4","authType":"NONE"}}""");
+        assertEquals(400, response.statusCode());
+        assertTrue(response.body().contains("workbench.custom-endpoints.enabled=true"), response.body());
+    }
+
+    @Test
     void listsSamples() throws Exception {
         JsonNode samples = mapper.readTree(get("/api/samples").body());
         assertTrue(samples.size() >= 6);

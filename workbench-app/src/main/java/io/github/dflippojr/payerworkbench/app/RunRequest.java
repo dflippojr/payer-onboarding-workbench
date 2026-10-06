@@ -1,5 +1,6 @@
 package io.github.dflippojr.payerworkbench.app;
 
+import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 
 import java.util.List;
@@ -13,6 +14,8 @@ import java.util.List;
  * @param faults              mock payer fault ids to switch on for this run only
  * @param slowResponseDelayMs the {@code slow-response} delay; defaults to {@code workbench.slow-response-delay}
  * @param connection          edits to the stored connection settings, for this run only
+ * @param customEndpoint      a payer endpoint to run against instead of a synthetic payer; when set,
+ *                            {@code payerId} is ignored and replaced by {@value #CUSTOM_PAYER_ID}
  */
 public record RunRequest(
         String payerId,
@@ -20,9 +23,20 @@ public record RunRequest(
         String sampleId,
         List<String> faults,
         Long slowResponseDelayMs,
-        ConnectionOverrides connection
+        ConnectionOverrides connection,
+        CustomEndpoint customEndpoint
 ) {
+    /** A run against a synthetic payer. */
+    public RunRequest(String payerId, Environment environment, String sampleId, List<String> faults,
+                      Long slowResponseDelayMs, ConnectionOverrides connection) {
+        this(payerId, environment, sampleId, faults, slowResponseDelayMs, connection, null);
+    }
+
+    /** The payer id a run against a {@link CustomEndpoint} carries. */
+    public static final String CUSTOM_PAYER_ID = "custom-endpoint";
+
     public RunRequest {
+        payerId = customEndpoint == null ? payerId : CUSTOM_PAYER_ID;
         environment = environment == null ? Environment.SANDBOX : environment;
         faults = faults == null ? List.of() : List.copyOf(faults);
         connection = connection == null ? ConnectionOverrides.NONE : connection;
@@ -38,5 +52,27 @@ public record RunRequest(
      */
     public record ConnectionOverrides(String baseUrlSuffix, String igVersion, String clientId) {
         static final ConnectionOverrides NONE = new ConnectionOverrides(null, null, null);
+    }
+
+    /**
+     * A payer endpoint the user supplies instead of a synthetic payer. Only accepted when
+     * {@code workbench.custom-endpoints.enabled=true}. The credential is read from the request
+     * body, held in memory for this run only, and never stored, echoed, logged or reported;
+     * {@link #toString()} leaves it out so an accidental log line can't carry it either.
+     *
+     * @param baseUrl       the CDS Hooks base URL, e.g. {@code http://127.0.0.1:18090/r4}
+     * @param authType      {@code NONE}, {@code OAUTH2_CLIENT_CREDENTIALS} or {@code CDS_HOOKS_JWT}
+     * @param clientId      the OAuth2 client, or the JWT {@code iss}
+     * @param tokenEndpoint the OAuth2 token endpoint (client credentials only)
+     * @param keyId         the JWT {@code kid} the payer knows the public key by (CDS Hooks JWT only)
+     * @param igVersion     the CRD IG version the connection expects; defaults to {@code 2.0.1}
+     * @param credential    the client secret (client credentials) or PKCS#8 private key PEM (CDS Hooks JWT)
+     */
+    public record CustomEndpoint(String baseUrl, AuthType authType, String clientId, String tokenEndpoint,
+                                 String keyId, String igVersion, String credential) {
+        @Override
+        public String toString() {
+            return "CustomEndpoint[baseUrl=" + baseUrl + ", authType=" + authType + "]";
+        }
     }
 }

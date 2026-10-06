@@ -27,7 +27,7 @@ abstract class ForwardingHttpClient extends HttpClient {
     }
 
     /** The request to send in place of {@code request}. */
-    protected abstract HttpRequest prepare(HttpRequest request);
+    protected abstract HttpRequest prepare(HttpRequest request) throws IOException;
 
     @Override
     public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> handler)
@@ -37,13 +37,25 @@ abstract class ForwardingHttpClient extends HttpClient {
 
     @Override
     public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> handler) {
-        return delegate.sendAsync(prepare(request), handler);
+        HttpRequest prepared;
+        try {
+            prepared = prepare(request);
+        } catch (IOException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+        return delegate.sendAsync(prepared, handler);
     }
 
     @Override
     public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> handler,
                                                            HttpResponse.PushPromiseHandler<T> pushHandler) {
-        return delegate.sendAsync(prepare(request), handler, pushHandler);
+        HttpRequest prepared;
+        try {
+            prepared = prepare(request);
+        } catch (IOException e) {
+            return CompletableFuture.failedFuture(e);
+        }
+        return delegate.sendAsync(prepared, handler, pushHandler);
     }
 
     @Override public Optional<CookieHandler> cookieHandler() { return delegate.cookieHandler(); }

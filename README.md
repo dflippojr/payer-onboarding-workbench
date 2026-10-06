@@ -86,8 +86,9 @@ The UI has a payer picker, a "Break it" panel of payer faults, connection settin
 | Method and path | Does |
 |---|---|
 | `GET /api/payers` | The synthetic payers, their stored connections (redacted), editable settings and fault ids. |
+| `GET /api/features` | What this deployment allows (`customEndpoints`). |
 | `GET /api/samples` | Sample request metadata. |
-| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). |
+| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). With custom endpoints enabled, `customEndpoint` replaces `payerId` (see below). |
 | `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
 | `GET /api/runs/{id}/report?format=md\|html\|json` | A shareable diagnostic report of a recent run (default `html`). `400` for another format, `404` for an unknown run. |
 
@@ -97,6 +98,31 @@ curl -s localhost:8080/api/runs -H 'Content-Type: application/json' \
 ```
 
 Faults apply to one run only; runs against the same payer are serialized so faults never leak between them.
+
+### Run against your own endpoint
+
+Off by default. The workbench otherwise only talks to its own synthetic payers; with custom endpoints on it forwards requests to a URL the caller supplies, so a deployed copy would be a request-forwarding service. Turn it on only for a copy you run yourself, on your own machine:
+
+```sh
+./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--workbench.custom-endpoints.enabled=true
+```
+
+The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Faults and connection edits don't apply.
+
+```sh
+# The HL7 CRD reference server, started locally in Docker (not run in CI):
+curl -s localhost:8080/api/runs -H 'Content-Type: application/json' -d '{
+  "sampleId": "order-sign-hospital-bed",
+  "customEndpoint": {"baseUrl": "http://127.0.0.1:18090/r4", "authType": "NONE"}
+}'
+```
+
+`customEndpoint` takes `baseUrl`, `authType` (`NONE`, `OAUTH2_CLIENT_CREDENTIALS` or `CDS_HOOKS_JWT`), `clientId`, `tokenEndpoint` (client credentials), `keyId` (CDS Hooks JWT), optional `igVersion` (default `2.0.1`) and `credential` (the client secret, or a PKCS#8 private key PEM).
+
+- **Destinations.** `https` to public hosts, or `http` to `localhost`, `127.0.0.1` or `[::1]`. Private, loopback (for other hosts), link-local, unique-local, carrier-grade NAT and cloud-metadata addresses are refused with a message saying why, for the base URL and the token endpoint. A name that merely resolves to loopback doesn't get plain `http`. URLs with user info, a query or a fragment are refused, and redirects are never followed.
+- **DNS.** A host is resolved when the run starts and every request is checked against that answer; a changed answer aborts the call. The JDK HTTP client does its own lookup when it connects, so a rebind in that instant is narrowed, not impossible. That is another reason to keep this off on anything shared.
+- **Credentials.** Accepted in the request body only, held in memory for that one run, then dropped. They are never stored, returned by `GET /api/runs/{id}`, logged, or put in a report; recorded exchanges go through `Redactor` as before. `CustomEndpointTest` and `RunReportTest` plant a credential and look for it in the run, all three report formats, the log and the actuator endpoints.
+- **Scope.** Passing against your own endpoint still only shows what the workbench observed in that run. Nothing is persisted, the replay bundle stays synthetic-only, and the workbench never retries, crawls or scans.
 
 ### Diagnostic reports
 

@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 /** The workbench REST API under {@code /api}. */
@@ -51,9 +52,12 @@ public class WorkbenchApiController {
     private final SampleCatalog samples;
     private final OnboardingRunner runner;
     private final RunStore runs;
+    private final WorkbenchProperties properties;
     private final String version = workbenchVersion();
 
-    public WorkbenchApiController(SyntheticPayers payers, SampleCatalog samples, OnboardingRunner runner, RunStore runs) {
+    public WorkbenchApiController(SyntheticPayers payers, SampleCatalog samples, OnboardingRunner runner, RunStore runs,
+                                  WorkbenchProperties properties) {
+        this.properties = properties;
         this.payers = payers;
         this.samples = samples;
         this.runner = runner;
@@ -70,6 +74,12 @@ public class WorkbenchApiController {
             return new PayerView(id, payer.displayName(), payer.igVersion(),
                     records.stream().map(RedactedConnection::of).toList(), editable, faults);
         }).toList();
+    }
+
+    /** What this deployment allows; the UI shows the custom endpoint form only when it is on. */
+    @GetMapping("/features")
+    public Map<String, Boolean> features() {
+        return Map.of("customEndpoints", properties.customEndpoints().enabled());
     }
 
     @GetMapping("/samples")

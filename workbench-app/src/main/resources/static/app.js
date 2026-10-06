@@ -29,6 +29,8 @@
   let payers = [];
   let samples = [];
   let lastRunId = null;
+  let customEnabled = false;
+  const CUSTOM = '__custom__';
 
   /** Builds an element; children may be strings, nodes, arrays or null. */
   function h(tag, attrs, ...children) {
@@ -64,6 +66,7 @@
       $('payers').replaceChildren(h('p', { class: 'muted' }, `Could not load payers: ${e.message}`));
       return;
     }
+    customEnabled = await api('api/features').then(f => !!f.customEndpoints, () => false);
     renderPayers();
     renderSamples();
     renderFaults(payers[0] ? payers[0].faults : Object.keys(FAULTS));
@@ -71,6 +74,7 @@
     form.addEventListener('submit', run);
     $('reset-button').addEventListener('click', reset);
     $('sample').addEventListener('change', updateSampleNote);
+    $('customAuthType').addEventListener('change', updateCustomFields);
     $('report-format').addEventListener('change', updateReportLink);
   }
 
@@ -82,7 +86,11 @@
         h('strong', {}, p.displayName),
         h('span', {}, `CRD ${p.advertisedIgVersion} · ${authLabel(conn.authType)}`),
         h('span', {}, p.payerId));
-    }));
+    }).concat(customEnabled ? [h('label', { class: 'pick' },
+      h('input', { type: 'radio', name: 'payerId', value: CUSTOM, onchange: updateConnectionHints }),
+      h('strong', {}, 'Your own endpoint'),
+      h('span', {}, 'A payer you supply, e.g. a local reference server'),
+      h('span', {}, 'custom-endpoint'))] : []));
   }
 
   function authLabel(type) {
@@ -113,7 +121,22 @@
     return payers.find(p => checked && p.payerId === checked.value);
   }
 
+  function customSelected() {
+    const checked = form.querySelector('input[name="payerId"]:checked');
+    return !!checked && checked.value === CUSTOM;
+  }
+
+  function updateCustomFields() {
+    const type = $('customAuthType').value;
+    $('customTokenEndpointField').hidden = type !== 'OAUTH2_CLIENT_CREDENTIALS';
+    $('customKeyIdField').hidden = type !== 'CDS_HOOKS_JWT';
+    $('customCredentialField').hidden = type === 'NONE';
+    $('customClientId').closest('label').hidden = type === 'NONE';
+  }
+
   function updateConnectionHints() {
+    $('custom-endpoint').hidden = !customSelected();
+    updateCustomFields();
     const p = selectedPayer();
     if (!p) return;
     const conn = p.connections.find(c => c.environment === 'SANDBOX') || p.connections[0] || {};
@@ -127,7 +150,7 @@
 
   function reset() {
     form.querySelectorAll('input[name="fault"]').forEach(c => { c.checked = false; });
-    ['baseUrlSuffix', 'igVersion', 'clientId'].forEach(id => { $(id).value = ''; });
+    ['baseUrlSuffix', 'igVersion', 'clientId', 'customCredential'].forEach(id => { $(id).value = ''; });
     $('run-status').textContent = 'Faults and settings reset.';
   }
 
@@ -135,7 +158,8 @@
 
   async function run(event) {
     event.preventDefault();
-    const p = selectedPayer();
+    const custom = customSelected();
+    const p = custom ? { payerId: null, displayName: 'Custom endpoint' } : selectedPayer();
     if (!p) return;
     const value = id => $(id).value.trim() || null;
     const request = {
@@ -149,6 +173,17 @@
         clientId: value('clientId'),
       },
     };
+    if (custom) {
+      request.faults = [];
+      request.customEndpoint = {
+        baseUrl: value('customBaseUrl'),
+        authType: $('customAuthType').value,
+        clientId: value('customClientId'),
+        tokenEndpoint: value('customTokenEndpoint'),
+        keyId: value('customKeyId'),
+        credential: $('customCredential').value.trim() || null,
+      };
+    }
     const button = $('run-button');
     button.disabled = true;
     $('run-status').textContent = request.faults.includes('slow-response')
