@@ -20,6 +20,8 @@ jobs:
           node-version: 22
       - name: Export the website replay bundle (reuses the jar)
         run: EXPORT_SKIP_BUILD=1 bash scripts/export-replays.sh
+      - name: Check the leak scanner against the shared redaction corpus
+        run: node --test replay/test/leaks.test.mjs
       - name: Check the replay bundle
         run: node --test replay/test/bundle.test.mjs
       - name: Upload demo reports
