@@ -21,8 +21,12 @@ concurrency:
 jobs:
   sonar:
     runs-on: ubuntu-latest
-    # Secrets are not passed to pull requests from forks; skip rather than fail.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # Secrets are not passed to pull requests from forks or to Dependabot; skip
+    # rather than fail.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]')
     steps:
       - uses: actions/checkout@v4
         with:
