@@ -41,6 +41,8 @@ CI runs two GitHub Actions workflows on pushes and pull requests:
 - `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [replay export](#embed-on-a-website) and its bundle check, and uploads `demo-output/` and `site-dist/` as build artifacts.
 - `.github/workflows/sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). The organization and project keys are in the parent `pom.xml`.
 
+Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub Actions weekly and opens at most 3 pull requests per ecosystem, labeled `dependencies`. Nothing auto-merges: CI decides whether each update is safe and the owner merges. Major Spring Boot bumps are ignored and handled as deliberate issues. Dependabot-triggered runs get no repository secrets (no `SONAR_TOKEN`), so the SonarCloud job skips on Dependabot pull requests instead of failing; the quality gate and its configuration are unchanged. The `fhir-crd-router` pin (`COMMIT=` in `scripts/install-crd-router.sh`) is invisible to Dependabot and stays a manual bump.
+
 Modules:
 
 | Module | Purpose |
