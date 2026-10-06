@@ -1,0 +1,50 @@
+{
+  "_comment": "Shared contract for workbench-core Redactor (RedactorCorpusTest) and the replay leak scanner (replay/test/leaks.test.mjs). Everything here is synthetic and obviously fake. scannerOnly marks a known gap: the scanner flags it, Redactor does not mask it (RedactorCorpusTest pins that, so closing the gap means removing the flag). A new redaction rule gets its first test here.",
+  "text": [
+    {"id": "pem-block", "rule": "PEM_BLOCK", "input": "key:\n-----BEGIN PRIVATE KEY-----\nFAKE-KEY-MATERIAL-NOT-REAL-0001\nFAKE-KEY-MATERIAL-NOT-REAL-0002\n-----END PRIVATE KEY-----\ndone", "secrets": ["FAKE-KEY-MATERIAL-NOT-REAL-0001", "FAKE-KEY-MATERIAL-NOT-REAL-0002"]},
+    {"id": "pem-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN RSA PRIVATE KEY-----\nFAKE-TRUNCATED-KEY-NOT-REAL-0003", "secrets": ["FAKE-TRUNCATED-KEY-NOT-REAL-0003"]},
+    {"id": "bearer", "rule": "AUTH_SCHEME", "input": "Authorization: Bearer FAKE-bearer-0004-not-real", "secrets": ["FAKE-bearer-0004-not-real"]},
+    {"id": "basic", "rule": "AUTH_SCHEME", "input": "Authorization: Basic RkFLRTpOT1RSRUFM0005=", "secrets": ["RkFLRTpOT1RSRUFM0005"]},
+    {"id": "jwt-signature", "rule": "JWT", "input": "client_assertion is eyJhbGciOiJub25lIn0.eyJzdWIiOiJmYWtlIn0.FAKESIGNATURE0006NOTREAL", "secrets": ["FAKESIGNATURE0006NOTREAL"]},
+    {"id": "json-client-secret", "rule": "JSON_SECRET", "input": "{\"client_secret\": \"FAKE-client-secret-0007\"}", "secrets": ["FAKE-client-secret-0007"]},
+    {"id": "json-access-token", "rule": "JSON_SECRET", "input": "{\"access_token\":\"FAKE-access-token-0008\",\"expires_in\":300}", "secrets": ["FAKE-access-token-0008"]},
+    {"id": "json-refresh-token", "rule": "JSON_SECRET", "input": "{\"refresh_token\":\"FAKE-refresh-token-0009\"}", "secrets": ["FAKE-refresh-token-0009"]},
+    {"id": "json-id-token", "rule": "JSON_SECRET", "input": "{\"id_token\":\"FAKE-id-token-0010\"}", "secrets": ["FAKE-id-token-0010"]},
+    {"id": "json-password", "rule": "JSON_SECRET", "input": "{\"password\":\"FAKE-password-0011\"}", "secrets": ["FAKE-password-0011"]},
+    {"id": "json-api-key", "rule": "JSON_SECRET", "input": "{\"api_key\":\"FAKE-api-key-0012\"}", "secrets": ["FAKE-api-key-0012"]},
+    {"id": "json-apikey", "rule": "JSON_SECRET", "input": "{\"apikey\":\"FAKE-apikey-0013\"}", "secrets": ["FAKE-apikey-0013"]},
+    {"id": "json-in-json-string", "rule": "JSON_SECRET", "scannerOnly": true, "input": "{\"body\":\"{\\\"access_token\\\":\\\"FAKE-embedded-token-0014\\\"}\"}", "secrets": ["FAKE-embedded-token-0014"]},
+    {"id": "form-client-secret", "rule": "FORM_SECRET", "input": "grant_type=client_credentials&client_secret=FAKE-form-secret-0015&scope=x", "secrets": ["FAKE-form-secret-0015"]},
+    {"id": "form-access-token", "rule": "FORM_SECRET", "input": "access_token=FAKE-form-access-0016", "secrets": ["FAKE-form-access-0016"]},
+    {"id": "form-refresh-token", "rule": "FORM_SECRET", "input": "refresh_token=FAKE-form-refresh-0017", "secrets": ["FAKE-form-refresh-0017"]},
+    {"id": "form-id-token", "rule": "FORM_SECRET", "input": "id_token=FAKE-form-idtoken-0018", "secrets": ["FAKE-form-idtoken-0018"]},
+    {"id": "form-password", "rule": "FORM_SECRET", "input": "user=fake&password=FAKE-form-password-0019", "secrets": ["FAKE-form-password-0019"]},
+    {"id": "form-api-key", "rule": "FORM_SECRET", "input": "api_key=FAKE-form-apikey-0020", "secrets": ["FAKE-form-apikey-0020"]},
+    {"id": "form-apikey", "rule": "FORM_SECRET", "input": "apikey=FAKE-form-apikey2-0021", "secrets": ["FAKE-form-apikey2-0021"]}
+  ],
+  "harmless": [
+    {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
+    {"id": "prose-basic", "rule": "PROSE_WORD", "input": "Basic authentication is not supported here"},
+    {"id": "challenge-parameters", "rule": "AUTH_SCHEME", "input": "Bearer error=\"invalid_token\", error_description=\"Expired\", scope=\"system/*.read\""},
+    {"id": "basic-realm", "rule": "AUTH_SCHEME", "input": "Basic realm=\"synthetic-payer\""},
+    {"id": "field-name-in-prose", "rule": "JSON_SECRET", "input": "the client_secret is required and the password must be set"},
+    {"id": "form-no-secrets", "rule": "FORM_SECRET", "input": "grant_type=client_credentials&scope=system%2F*.read"},
+    {"id": "plain-json", "rule": "JSON_SECRET", "input": "{\"resourceType\":\"Patient\",\"id\":\"example\"}"}
+  ],
+  "headers": [
+    {"name": "Authorization", "value": "Bearer FAKE-header-bearer-0022", "secrets": ["FAKE-header-bearer-0022"]},
+    {"name": "Proxy-Authorization", "value": "Basic RkFLRTpIRUFERVIw0023", "secrets": ["RkFLRTpIRUFERVIw0023"]},
+    {"name": "Cookie", "value": "session=FAKE-cookie-0024", "secrets": ["FAKE-cookie-0024"]},
+    {"name": "Set-Cookie", "value": "session=FAKE-set-cookie-0025; HttpOnly", "secrets": ["FAKE-set-cookie-0025"]},
+    {"name": "X-API-Key", "value": "FAKE-x-api-key-0026", "secrets": ["FAKE-x-api-key-0026"]},
+    {"name": "Api-Key", "value": "FAKE-api-key-header-0027", "secrets": ["FAKE-api-key-header-0027"]},
+    {"name": "ApiKey", "value": "FAKE-apikey-header-0028", "secrets": ["FAKE-apikey-header-0028"]},
+    {"name": "X-Auth-Token", "value": "FAKE-auth-token-0029", "secrets": ["FAKE-auth-token-0029"]},
+    {"name": "X-Access-Token", "value": "FAKE-access-token-hdr-0030", "secrets": ["FAKE-access-token-hdr-0030"]},
+    {"name": "X-Client-Secret", "value": "FAKE-client-secret-hdr-0031", "secrets": ["FAKE-client-secret-hdr-0031"]}
+  ],
+  "harmlessHeaders": [
+    {"name": "Content-Type", "value": "application/json"},
+    {"name": "Accept", "value": "application/fhir+json"}
+  ]
+}
