@@ -58,14 +58,18 @@ class FirstRunWarmup implements SmartInitializingSingleton {
         if ("management".equals(event.getApplicationContext().getServerNamespace())) {
             return;
         }
-        port.complete(event.getWebServer().getPort());
+        webServerPort(event.getWebServer().getPort());
+    }
+
+    void webServerPort(int webServerPort) {
+        port.complete(webServerPort);
     }
 
     /** Runs the warm-up on the calling thread. */
     void warmUp() {
         long start = System.nanoTime();
         // The request path needs the web server, not a run, so it warms alongside the first run.
-        Thread path = Thread.ofPlatform().name("first-run-warmup-path").daemon().start(this::warmRequestPath);
+        Thread.ofPlatform().name("first-run-warmup-path").daemon().start(this::warmRequestPath);
         for (String payerId : PAYERS) {
             try {
                 // Serialising the result with the app's mapper also warms the response the API sends.
@@ -76,11 +80,6 @@ class FirstRunWarmup implements SmartInitializingSingleton {
                         e.toString());
             }
         }
-        try {
-            path.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
         LOG.info("First-run warm-up finished in {} ms", (System.nanoTime() - start) / 1_000_000);
     }
 
@@ -89,7 +88,7 @@ class FirstRunWarmup implements SmartInitializingSingleton {
      * starts. That loads the web stack's request path (parsing, the controller, the error response)
      * without creating a run, so nothing is stored or counted.
      */
-    private void warmRequestPath() {
+    void warmRequestPath() {
         if (!(context instanceof WebServerApplicationContext)) {
             return; // no web server to wait for, as in a test with a mock web environment
         }
