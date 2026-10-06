@@ -110,6 +110,19 @@ public class OnboardingRunner {
      * @throws IllegalArgumentException if the payer, sample or a fault id is unknown
      */
     public OnboardingRun run(RunRequest request) {
+        return run(request, true);
+    }
+
+    /**
+     * Runs one onboarding against a synthetic payer to load classes and set up TLS, Jackson and the
+     * SDK, so the first user run is not the one that pays for it. The run is not recorded in the
+     * metrics and the caller discards the result.
+     */
+    OnboardingRun warmUp(RunRequest request) {
+        return run(request, false);
+    }
+
+    private OnboardingRun run(RunRequest request, boolean recordMetrics) {
         if (request.customEndpoint() != null) {
             return runCustom(request);
         }
@@ -143,7 +156,7 @@ public class OnboardingRunner {
                     .connectTimeout(Duration.ofSeconds(5))
                     .followRedirects(HttpClient.Redirect.NEVER)
                     .build()) {
-                return new Attempt(runId, request, sample, http, payers.credentials(), null).run();
+                return new Attempt(runId, request, sample, http, payers.credentials(), null, recordMetrics).run();
             }
         } finally {
             payer.faults().clear();
@@ -181,7 +194,7 @@ public class OnboardingRunner {
                      .connectTimeout(Duration.ofSeconds(5))
                      .followRedirects(HttpClient.Redirect.NEVER)
                      .build()) {
-            return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom).run();
+            return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom, true).run();
         } finally {
             credentials.remove(CUSTOM_CREDENTIAL_REF);
         }
@@ -239,6 +252,7 @@ public class OnboardingRunner {
         private final InMemoryCredentials credentials;
         /** The user-supplied connection, or null when the run resolves a synthetic payer's stored one. */
         private final ConnectionRecord custom;
+        private final boolean recordMetrics;
         private ConnectionRecord record;
         private HttpExchange discovery;
         private String serviceId;
@@ -253,7 +267,8 @@ public class OnboardingRunner {
         private JwtClaims clientAssertion;
 
         Attempt(String runId, RunRequest request, SampleMetadata sample, HttpClient http,
-                InMemoryCredentials credentials, ConnectionRecord custom) {
+                InMemoryCredentials credentials, ConnectionRecord custom, boolean recordMetrics) {
+            this.recordMetrics = recordMetrics;
             this.recorder = new ExchangeRecorder(runId);
             this.credentials = credentials;
             this.custom = custom;
@@ -285,7 +300,9 @@ public class OnboardingRunner {
                         : fails + " failing check" + (fails == 1 ? "" : "s") + " out of " + findings.size() + " findings");
             });
             OnboardingRun run = new OnboardingRun(runId, request.payerId(), request.environment(), steps, findings);
-            metrics.record(run, recorder.events());
+            if (recordMetrics) {
+                metrics.record(run, recorder.events());
+            }
             return run;
         }
 
