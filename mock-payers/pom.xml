@@ -16,7 +16,7 @@
 
   <properties>
     <!-- Same version fhir-crd-router uses; not managed by the Spring Boot parent. -->
-    <nimbus-jose-jwt.version>10.9.1</nimbus-jose-jwt.version>
+    <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
   </properties>
 
   <dependencies>
