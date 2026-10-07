@@ -39,7 +39,7 @@ jobs:
             echo "::notice::SonarCloud analysis skipped: SONAR_TOKEN is unavailable. Dependabot runs need a Dependabot secret named SONAR_TOKEN. No analysis was published and the quality gate was not evaluated."
             echo "SonarCloud analysis skipped because SONAR_TOKEN is unavailable. No analysis was published and the quality gate was not evaluated. For Dependabot runs, add the repository Dependabot secret SONAR_TOKEN, then trigger a new Dependabot PR update." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.token.outputs.available == 'true'
         with:
           # Full history so SonarCloud can blame lines and find the PR base.
