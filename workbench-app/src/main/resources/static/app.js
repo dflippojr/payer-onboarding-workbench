@@ -91,7 +91,7 @@
       const selector = $('recent-runs');
       selector.replaceChildren(h('option', { value: '' }, history.length ? 'Choose a run' : 'No recent runs yet'),
         ...history.map(r => h('option', { value: r.runId },
-          `${r.payerId} ? ${r.environment} ? ${r.startedAt || 'No steps'} ? ${r.verdict}`)));
+          `${r.payerId} | ${r.environment} | ${r.startedAt || 'No steps'} | ${r.verdict}`)));
       selector.value = history.some(r => r.runId === lastRunId) ? lastRunId : '';
       $('history-status').textContent = history.length ? '' : 'Run onboarding to build history. Restarting the server clears it.';
     } catch (e) {
@@ -121,6 +121,7 @@
         $('findings').replaceChildren();
         $('run-meta').textContent = 'Choose another recent run or run onboarding.';
         await refreshHistory();
+        if (ticket !== retrieval) return;
         $('history-status').textContent = 'This run is no longer available. It may have been evicted or the server restarted.';
       } else {
         $('history-status').textContent = `Could not reopen run: ${e.message}`;
