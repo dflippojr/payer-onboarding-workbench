@@ -205,8 +205,9 @@ public class OnboardingRunner {
     private static ConnectionRecord customRecord(RunRequest request, EndpointGuard guard, InMemoryCredentials credentials) {
         RunRequest.CustomEndpoint endpoint = request.customEndpoint();
         AuthType auth = endpoint.authType() == null ? AuthType.NONE : endpoint.authType();
-        if (auth != AuthType.NONE && auth != AuthType.OAUTH2_CLIENT_CREDENTIALS && auth != AuthType.CDS_HOOKS_JWT) {
-            throw new IllegalArgumentException("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS or CDS_HOOKS_JWT");
+        if (auth != AuthType.NONE && auth != AuthType.OAUTH2_CLIENT_CREDENTIALS && auth != AuthType.CDS_HOOKS_JWT
+                && auth != AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+            throw new IllegalArgumentException("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS, CDS_HOOKS_JWT or OAUTH2_PRIVATE_KEY_JWT");
         }
         String baseUrl = guard.approve("Base URL", endpoint.baseUrl()).toString();
         ConnectionRecord.Builder builder = ConnectionRecord.builder()
@@ -230,11 +231,13 @@ public class OnboardingRunner {
             throw new IllegalArgumentException("credential is required for " + auth);
         }
         builder.clientId(endpoint.clientId().trim());
-        if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS) {
+        if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
             builder.tokenEndpoint(guard.approve("Token endpoint", endpoint.tokenEndpoint()).toString());
-        } else if (!isSet(endpoint.keyId())) {
-            throw new IllegalArgumentException("keyId is required for CDS_HOOKS_JWT");
-        } else {
+        }
+        if (auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+            if (!isSet(endpoint.keyId())) {
+                throw new IllegalArgumentException("keyId is required for " + auth);
+            }
             builder.keyId(endpoint.keyId().trim());
         }
         credentials.put(CUSTOM_CREDENTIAL_REF, endpoint.credential());

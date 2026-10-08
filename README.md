@@ -122,7 +122,26 @@ curl -s localhost:8080/api/runs -H 'Content-Type: application/json' -d '{
 }'
 ```
 
-`customEndpoint` takes `baseUrl`, `authType` (`NONE`, `OAUTH2_CLIENT_CREDENTIALS` or `CDS_HOOKS_JWT`), `clientId`, `tokenEndpoint` (client credentials), `keyId` (CDS Hooks JWT), optional `igVersion` (default `2.0.1`) and `credential` (the client secret, or a PKCS#8 private key PEM).
+`customEndpoint` takes `baseUrl`, `authType` (`NONE`, `OAUTH2_CLIENT_CREDENTIALS`, `CDS_HOOKS_JWT` or `OAUTH2_PRIVATE_KEY_JWT` (SMART Backend Services)), `clientId`, `tokenEndpoint` (client credentials or SMART), `keyId` (CDS Hooks JWT or SMART), optional `igVersion` (default `2.0.1`) and `credential` (the client secret, or a PKCS#8 private key PEM).
+
+For SMART Backend Services, supply all four authentication fields. The SDK chooses RS384 for RSA keys and ES384 for EC keys; register the matching public key with your local payer. This placeholder-only request illustrates the API shape (replace the placeholders before use):
+
+```json
+{
+  "sampleId": "order-sign-hospital-bed",
+  "customEndpoint": {
+    "baseUrl": "http://127.0.0.1:18090",
+    "authType": "OAUTH2_PRIVATE_KEY_JWT",
+    "clientId": "<registered-client-id>",
+    "tokenEndpoint": "http://127.0.0.1:18090/oauth/token",
+    "keyId": "<registered-key-id>",
+    "igVersion": "2.2.1",
+    "credential": "<PKCS#8 private key PEM>"
+  }
+}
+```
+
+Keys stay in memory for one run, including rejected authentication. Reports show only the existing allowed assertion claims, never the signed assertion or signature. Custom endpoints remain disabled by default and intended only for your own local workbench.
 
 - **Destinations.** `https` to public hosts, or `http` to `localhost`, `127.0.0.1` or `[::1]`. Private, loopback (for other hosts), link-local, unique-local, carrier-grade NAT and cloud-metadata addresses are refused with a message saying why, for the base URL and the token endpoint. A name that merely resolves to loopback doesn't get plain `http`. URLs with user info, a query or a fragment are refused, and redirects are never followed.
 - **DNS.** A host is resolved when the run starts and every request is checked against that answer; a changed answer aborts the call. The JDK HTTP client does its own lookup when it connects, so a rebind in that instant is narrowed, not impossible. That is another reason to keep this off on anything shared.
