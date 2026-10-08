@@ -179,8 +179,8 @@
 
   function updateCustomFields() {
     const type = $('customAuthType').value;
-    $('customTokenEndpointField').hidden = type !== 'OAUTH2_CLIENT_CREDENTIALS';
-    $('customKeyIdField').hidden = type !== 'CDS_HOOKS_JWT';
+    $('customTokenEndpointField').hidden = type !== 'OAUTH2_CLIENT_CREDENTIALS' && type !== 'OAUTH2_PRIVATE_KEY_JWT';
+    $('customKeyIdField').hidden = type !== 'CDS_HOOKS_JWT' && type !== 'OAUTH2_PRIVATE_KEY_JWT';
     $('customCredentialField').hidden = type === 'NONE';
     $('customClientId').closest('label').hidden = type === 'NONE';
   }

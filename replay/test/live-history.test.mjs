@@ -47,7 +47,7 @@ const summary = id => ({ runId: id, payerId: 'synthetic-payer', environment: 'SA
   startedAt: '2026-10-01T12:00:00Z', verdict: 'PASS_WITH_WARNINGS' });
 const settle = async () => { for (let i = 0; i < 15; i++) await new Promise(resolve => setImmediate(resolve)); };
 
-async function load(history, override = () => undefined) {
+async function load(history, override = () => undefined, customEnabled = false) {
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], new Element()]));
   const $ = id => elements[id];
   $('run-form').append($('payers'), $('faults'));
@@ -56,13 +56,13 @@ async function load(history, override = () => undefined) {
   $('report-actions').hidden = true;
   const requests = [];
   const fetch = async (path, options) => {
-    requests.push({ path, method: options?.method || 'GET' });
+    requests.push({ path, method: options?.method || 'GET', body: options?.body });
     const changed = await override(path, options);
     if (changed) return changed;
     const data = {
       'api/payers': [{ payerId: 'synthetic-payer', displayName: 'Synthetic Payer', connections: [], faults: [] }],
       'api/samples': [{ id: 'synthetic-sample', title: 'Synthetic request', hook: 'order-sign' }],
-      'api/features': {},
+      'api/features': { customEndpoints: customEnabled },
       'api/runs': options?.method === 'POST' ? runFixture('new') : history,
     };
     return { ok: true, status: 200, json: async () => data[path] || runFixture(path.split('/').at(-1)) };
@@ -154,4 +154,44 @@ test('stale response from an earlier selection cannot replace the latest result'
 test('selector uses native keyboard controls, accessible label and live status', () => {
   assert.match(html, /<label class="field">Recent runs\s*<select id="recent-runs" aria-describedby="history-status">/);
   assert.match(html, /id="history-status"[^>]*role="status"[^>]*aria-live="polite"/);
+});
+
+test('SMART custom auth shows token endpoint and key id and submits the required fields', async () => {
+  assert.match(html, /<option value="OAUTH2_PRIVATE_KEY_JWT">SMART Backend Services \(private_key_jwt\)<\/option>/);
+  const ui = await load([], () => undefined, true);
+  const radios = ui.$('run-form').querySelectorAll('input[name="payerId"]');
+  radios.forEach(radio => { radio.checked = radio.value === '__custom__'; });
+  await radios.find(radio => radio.checked).dispatch('change');
+  assert.equal(ui.$('custom-endpoint').hidden, false);
+  ui.$('customAuthType').value = 'OAUTH2_PRIVATE_KEY_JWT';
+  await ui.$('customAuthType').dispatch('change');
+  assert.equal(ui.$('customTokenEndpointField').hidden, false);
+  assert.equal(ui.$('customKeyIdField').hidden, false);
+  assert.equal(ui.$('customCredentialField').hidden, false);
+  const fields = { customBaseUrl: 'http://127.0.0.1:18090', customClientId: 'synthetic-client',
+    customTokenEndpoint: 'http://127.0.0.1:18090/oauth/token', customKeyId: 'synthetic-kid',
+    customCredential: '<synthetic test credential>' };
+  Object.entries(fields).forEach(([id, value]) => { ui.$(id).value = value; });
+  await ui.$('run-form').dispatch('submit');
+  const request = JSON.parse(ui.requests.find(r => r.method === 'POST').body);
+  assert.deepEqual(request.customEndpoint, { baseUrl: fields.customBaseUrl, authType: 'OAUTH2_PRIVATE_KEY_JWT',
+    clientId: fields.customClientId, tokenEndpoint: fields.customTokenEndpoint,
+    keyId: fields.customKeyId, credential: fields.customCredential });
+  assert.deepEqual(request.faults, []);
+  for (const [auth, tokenHidden, keyHidden, credentialHidden] of [
+    ['NONE', true, true, true], ['OAUTH2_CLIENT_CREDENTIALS', false, true, false],
+    ['CDS_HOOKS_JWT', true, false, false], ['OAUTH2_PRIVATE_KEY_JWT', false, false, false]]) {
+    ui.$('customAuthType').value = auth;
+    await ui.$('customAuthType').dispatch('change');
+    assert.equal(ui.$('customTokenEndpointField').hidden, tokenHidden);
+    assert.equal(ui.$('customKeyIdField').hidden, keyHidden);
+    assert.equal(ui.$('customCredentialField').hidden, credentialHidden);
+  }
+});
+
+test('custom endpoint form and picker remain hidden when feature is disabled', async () => {
+  assert.match(html, /<fieldset id="custom-endpoint" hidden>/);
+  const ui = await load([]);
+  assert.equal(ui.$('custom-endpoint').hidden, true);
+  assert.ok(ui.$('run-form').querySelectorAll('input[name="payerId"]').every(r => r.value !== '__custom__'));
 });

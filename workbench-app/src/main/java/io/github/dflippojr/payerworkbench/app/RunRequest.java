@@ -61,12 +61,13 @@ public record RunRequest(
      * {@link #toString()} leaves it out so an accidental log line can't carry it either.
      *
      * @param baseUrl       the CDS Hooks base URL, e.g. {@code http://127.0.0.1:18090/r4}
-     * @param authType      {@code NONE}, {@code OAUTH2_CLIENT_CREDENTIALS} or {@code CDS_HOOKS_JWT}
+     * @param authType      {@code NONE}, {@code OAUTH2_CLIENT_CREDENTIALS}, {@code CDS_HOOKS_JWT}
+     *                      or {@code OAUTH2_PRIVATE_KEY_JWT} (SMART Backend Services)
      * @param clientId      the OAuth2 client, or the JWT {@code iss}
-     * @param tokenEndpoint the OAuth2 token endpoint (client credentials only)
-     * @param keyId         the JWT {@code kid} the payer knows the public key by (CDS Hooks JWT only)
+     * @param tokenEndpoint the OAuth2 token endpoint (client credentials or SMART)
+     * @param keyId         the JWT {@code kid} the payer knows the public key by (CDS Hooks JWT or SMART)
      * @param igVersion     the CRD IG version the connection expects; defaults to {@code 2.0.1}
-     * @param credential    the client secret (client credentials) or PKCS#8 private key PEM (CDS Hooks JWT)
+     * @param credential    the client secret (client credentials) or PKCS#8 private key PEM (CDS Hooks JWT or SMART)
      */
     public record CustomEndpoint(String baseUrl, AuthType authType, String clientId, String tokenEndpoint,
                                  String keyId, String igVersion, String credential) {
