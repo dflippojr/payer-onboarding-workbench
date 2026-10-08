@@ -88,14 +88,6 @@ public record RunReport(
     ) {
     }
 
-    static final Map<String, String> STEP_TITLES = Map.of(
-            OnboardingRunner.RESOLVE, "Resolve connection",
-            OnboardingRunner.DISCOVERY, "Discovery",
-            OnboardingRunner.AUTHENTICATE, "Authenticate",
-            OnboardingRunner.HOOK_REQUEST, "Send sample hook request",
-            OnboardingRunner.PARSE_RESPONSE, "Parse response",
-            OnboardingRunner.DIAGNOSTICS, "Run diagnostics");
-
     /** Field names (lower case, without {@code _} and {@code -}) whose values are always masked. */
     private static final Set<String> SECRET_FIELDS = Set.of(
             "clientsecret", "accesstoken", "refreshtoken", "idtoken", "password", "apikey", "privatekey",
@@ -126,10 +118,7 @@ public record RunReport(
                 .map(f -> new Finding(f.checkId(), f.severity(), redact(f.title()), redact(f.explanation()),
                         f.evidence(), redact(f.suggestedFix())))
                 .toList();
-        Map<Severity, Long> counts = new LinkedHashMap<>();
-        for (Severity severity : List.of(Severity.FAIL, Severity.WARN, Severity.INFO, Severity.PASS)) {
-            counts.put(severity, findings.stream().filter(f -> f.severity() == severity).count());
-        }
+        RunVerdict summary = RunVerdict.of(run);
 
         return new RunReport(
                 "Payer onboarding report: " + (displayName == null ? run.payerId() : displayName),
@@ -138,43 +127,19 @@ public record RunReport(
                 workbenchVersion,
                 run.runId(),
                 run.runId(),
-                verdict(counts, steps),
+                summary.reportVerdict(),
                 new Payer(run.payerId(), displayName),
                 run.environment().name(),
                 (String) connection.get("igVersion"),
                 advertisedIgVersion,
                 run.steps().isEmpty() ? null : run.steps().getFirst().startedAt().toString(),
-                counts,
+                summary.counts(),
                 steps,
                 findings);
     }
 
-    private static Verdict verdict(Map<Severity, Long> counts, List<Step> steps) {
-        String brokeAt = steps.stream()
-                .filter(s -> s.status().equals("failed") && !s.stepId().equals(OnboardingRunner.DIAGNOSTICS))
-                .map(Step::title)
-                .findFirst()
-                .orElse(null);
-        long fails = counts.get(Severity.FAIL);
-        long warns = counts.get(Severity.WARN);
-        if (fails > 0) {
-            return new Verdict("FAIL", "Not ready: " + fails + " failing check" + (fails == 1 ? "" : "s")
-                    + (brokeAt == null ? "" : "; the flow broke at " + brokeAt)
-                    + ". Onboarding cannot succeed until " + (fails == 1 ? "it is" : "they are") + " fixed.", brokeAt);
-        }
-        if (brokeAt != null) {
-            return new Verdict("FAIL", "Not ready: the flow broke at " + brokeAt + ".", brokeAt);
-        }
-        if (warns > 0) {
-            return new Verdict("PASS_WITH_WARNINGS", "Every step passed, with " + warns + " warning"
-                    + (warns == 1 ? "" : "s") + " to review.", null);
-        }
-        return new Verdict("PASS", "Every step passed and no check failed.", null);
-    }
-
     private static Step step(StepResult step) {
         Map<String, Object> details = asMap(sanitize(null, MAPPER.convertValue(step.details(), Map.class)));
-        Object status = details.get("status");
         List<String> exchanges = new ArrayList<>();
         if (details.get("exchanges") instanceof List<?> list) {
             for (Object x : list) {
@@ -183,8 +148,8 @@ public record RunReport(
                 }
             }
         }
-        return new Step(step.stepId(), STEP_TITLES.getOrDefault(step.stepId(), step.stepId()),
-                status instanceof String s ? s : (step.ok() ? "passed" : "failed"),
+        return new Step(step.stepId(), RunVerdict.title(step.stepId()),
+                RunVerdict.stepStatus(step),
                 step.startedAt().toString(), step.elapsed().toMillis(), redact(step.summary()),
                 List.copyOf(exchanges), details);
     }

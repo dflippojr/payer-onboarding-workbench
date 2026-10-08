@@ -10,7 +10,6 @@ import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 
@@ -46,16 +45,16 @@ public class RunMetrics {
     /** Records one finished run and the HTTP attempts it made. */
     void record(OnboardingRun run, List<PayerExchange> exchanges) {
         Tags common = Tags.of("payer", run.payerId(), "environment", run.environment().name());
-        String verdict = RunReport.of(run, null, null, Instant.EPOCH, "").verdict().status();
+        RunVerdict verdict = RunVerdict.of(run);
         Counter.builder(RUNS)
                 .description("Finished onboarding runs")
-                .tags(common.and("verdict", verdict, "broke_at", brokeAt(run)))
+                .tags(common.and("verdict", verdict.status(), "broke_at", verdict.brokeAt() == null ? NONE : verdict.brokeAt()))
                 .register(registry)
                 .increment();
         for (StepResult step : run.steps()) {
             Timer.builder(STEP_DURATION)
                     .description("Time spent in each onboarding step")
-                    .tags(common.and("step", step.stepId(), "status", status(step)))
+                    .tags(common.and("step", step.stepId(), "status", RunVerdict.stepStatus(step)))
                     .register(registry)
                     .record(step.elapsed());
         }
@@ -74,22 +73,6 @@ public class RunMetrics {
                     .register(registry)
                     .increment();
         }
-    }
-
-    /** The first step that failed, before diagnostics; {@value #NONE} if the flow completed. */
-    static String brokeAt(OnboardingRun run) {
-        return run.steps().stream()
-                .filter(s -> !s.stepId().equals(OnboardingRunner.DIAGNOSTICS) && "failed".equals(status(s)))
-                .map(StepResult::stepId)
-                .findFirst()
-                .orElse(NONE);
-    }
-
-    private static String status(StepResult step) {
-        if (step.details().get("status") instanceof String s) {
-            return s;
-        }
-        return step.ok() ? "passed" : "failed";
     }
 
     private static String statusClass(PayerExchange exchange) {
