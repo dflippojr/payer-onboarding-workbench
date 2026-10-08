@@ -109,6 +109,26 @@ class AuditApiTest {
     }
 
     @Test
+    void plantedPayloadsAndLineForgingNeverBecomeAuditMetadata(CapturedOutput output) throws Exception {
+        String planted = SECRET + "\n-----BEGIN PRIVATE KEY-----\nSYNTHETIC_PEM\n-----END PRIVATE KEY-----"
+                + " eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMifQ.synthetic_signature"
+                + " https://synthetic-user:synthetic-password@example.invalid/path?token=synthetic-token"
+                + " {\"resourceType\":\"Patient\",\"id\":\"synthetic-patient-id\",\"name\":\"Synthetic Person\"}"
+                + " synthetic-account-number=123456789\naudit {\"actorId\":\"forged\"}";
+        assertEquals(400, post(mapper.writeValueAsString(Map.of("payerId", planted, "sampleId", planted))).statusCode());
+        assertEquals(400, post(mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", Map.of(
+                "baseUrl", planted, "authType", "OAUTH2_CLIENT_CREDENTIALS", "clientId", planted,
+                "tokenEndpoint", planted, "keyId", planted, "credential", planted)))).statusCode());
+        List<JsonNode> events = events(output, 2);
+        assertEquals(4, events.size());
+        assertSafe(events);
+        for (String forbidden : List.of("PRIVATE KEY", "SYNTHETIC_PEM", "eyJ", "example.invalid",
+                "synthetic-patient-id", "Synthetic Person", "synthetic-account-number", "forged")) {
+            assertFalse(events.toString().contains(forbidden), forbidden);
+        }
+    }
+
+    @Test
     void concurrentRunsKeepRequestAndRunIdsSeparate(CapturedOutput output) throws Exception {
         var first = CompletableFuture.supplyAsync(() -> uncheckedRun("[]"));
         var second = CompletableFuture.supplyAsync(() -> uncheckedRun("[\"discovery-500\"]"));
