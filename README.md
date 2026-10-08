@@ -341,7 +341,7 @@ The replay is embedded on the [dflippojr.dev](https://dflippojr.dev/) home page,
 
 ```sh
 bash scripts/install-crd-router.sh                   # once
-scripts/export-replays.sh                            # or scripts\export-replays.ps1; EXPORT_SKIP_BUILD=1 reuses the jar
+node scripts/export-replays.mjs                     # EXPORT_SKIP_BUILD=1 reuses the jar
 node --test replay/test/bundle.test.mjs              # leak scan, manifest and rendering checks
 node scripts/vendor-into-site.mjs ../personal-website/public/workbench
 ```

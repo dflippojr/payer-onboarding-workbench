@@ -231,11 +231,7 @@ async function main() {
 
   if (process.env.CAPTURE_REUSE_REPLAYS !== '1' || !existsSync(join(siteDist, 'manifest.json'))) {
     log('==> Exporting the replay bundle to site-dist/');
-    if (windows) {
-      run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'scripts\\export-replays.ps1'], { EXPORT_SKIP_BUILD: '1' });
-    } else {
-      run('bash', ['scripts/export-replays.sh'], { EXPORT_SKIP_BUILD: '1' });
-    }
+    run(process.execPath, ['scripts/export-replays.mjs'], { EXPORT_SKIP_BUILD: '1' });
   }
 
   const work = mkdtempSync(join(tmpdir(), 'workbench-capture-'));
