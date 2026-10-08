@@ -53,12 +53,16 @@ class WorkbenchApiTest {
     }
 
     @Test
-    void customEndpointsAreOffByDefault() throws Exception {
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void customEndpointsAreOffByDefault(org.springframework.boot.test.system.CapturedOutput output) throws Exception {
         assertFalse(mapper.readTree(get("/api/features").body()).path("customEndpoints").asBoolean());
         HttpResponse<String> response = post("/api/runs", """
                 {"sampleId":"order-sign-hospital-bed","customEndpoint":{"baseUrl":"http://127.0.0.1:18090/r4","authType":"NONE"}}""");
         assertEquals(400, response.statusCode());
         assertTrue(response.body().contains("workbench.custom-endpoints.enabled=true"), response.body());
+        // Follow-up read waits for the completed request's filter to finish logging.
+        get("/api/runs");
+        assertTrue(output.getAll().contains("\"reasonCode\":\"custom_disabled\""));
     }
 
     @Test

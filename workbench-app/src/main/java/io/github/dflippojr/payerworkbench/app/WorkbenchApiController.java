@@ -89,11 +89,15 @@ public class WorkbenchApiController {
 
     @PostMapping("/runs")
     public OnboardingRun run(@RequestBody RunRequest request) {
+        prepareAudit(request);
         if (request.payerId() == null || request.sampleId() == null) {
             throw new IllegalArgumentException("payerId and sampleId are required");
         }
         OnboardingRun run = runner.run(request);
         runs.save(run);
+        if (AuditContext.current() != null) { AuditContext.current().reasonCode = null; }
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.verdict = RunVerdict.of(run).status(); }
         return run;
     }
 
@@ -104,12 +108,21 @@ public class WorkbenchApiController {
 
     @GetMapping("/runs/{id}")
     public OnboardingRun run(@PathVariable String id) {
-        return runs.find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No run " + id));
+        OnboardingRun run = runs.find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No run " + id));
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.runId = run.runId(); }
+        return run;
     }
 
     /** A shareable, redacted report of a run as {@code md}, {@code html} or {@code json}. */
     @GetMapping("/runs/{id}/report")
     public ResponseEntity<String> report(@PathVariable String id, @RequestParam(defaultValue = "html") String format) {
+        AuditContext audit = AuditContext.current();
+        if (audit != null) {
+            audit.runId = runs.find(id).map(OnboardingRun::runId).orElse(null);
+            audit.reportFormat = ReportRenderer.Format.fromId(format).map(ReportRenderer.Format::extension).orElse(null);
+            if (audit.reportFormat == null) { audit.reasonCode = "invalid_format"; }
+        }
         ReportRenderer.Format f = ReportRenderer.Format.fromId(format)
                 .orElseThrow(() -> new IllegalArgumentException("format must be md, html or json"));
         OnboardingRun run = run(id);
@@ -122,6 +135,22 @@ public class WorkbenchApiController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.inline().filename(filename, StandardCharsets.UTF_8).build().toString())
                 .body(ReportRenderer.render(report, f));
+    }
+
+    private void prepareAudit(RunRequest request) {
+        AuditContext audit = AuditContext.current();
+        if (audit == null) { return; }
+        audit.environment = request.environment();
+        audit.payerId = request.customEndpoint() != null ? RunRequest.CUSTOM_PAYER_ID
+                : (request.payerId() != null && payers.payerIds().contains(request.payerId())) ? request.payerId() : null;
+        audit.sampleId = samples.list().stream().filter(s -> s.id().equals(request.sampleId()))
+                .map(SampleMetadata::id).findFirst().orElse(null);
+        if (request.payerId() == null || request.sampleId() == null) { audit.reasonCode = "missing_input"; }
+        else if (audit.sampleId == null) { audit.reasonCode = "unknown_sample"; }
+        else if (request.customEndpoint() != null) {
+            audit.reasonCode = properties.customEndpoints().enabled() ? "invalid_custom_endpoint" : "custom_disabled";
+        } else if (audit.payerId == null) { audit.reasonCode = "unknown_payer"; }
+        else if (request.faults().stream().anyMatch(id -> Fault.fromId(id).isEmpty())) { audit.reasonCode = "unknown_fault"; }
     }
 
     /** The version from {@code META-INF/build-info.properties}, written by the Spring Boot Maven plugin. */

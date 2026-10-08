@@ -1,0 +1,58 @@
+package io.github.dflippojr.payerworkbench.app;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.github.dflippojr.payerworkbench.core.AuditEvent;
+import io.github.dflippojr.payerworkbench.core.AuditSink;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+import java.time.Clock;
+import java.util.UUID;
+
+/** Best effort logging with a constant warning and a count of missing events. */
+@Component
+public class AuditLog {
+    static final String WARNING = "Audit event write failed; audit trail has a gap";
+    private static final Logger LOG = LoggerFactory.getLogger(AuditLog.class);
+    private final AuditSink sink;
+    private final Clock clock;
+    private final Counter failures;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AuditLog(MeterRegistry registry) {
+        this(loggingSink(), Clock.systemUTC(), registry);
+    }
+
+    AuditLog(AuditSink sink, Clock clock, MeterRegistry registry) {
+        this.sink = sink;
+        this.clock = clock;
+        failures = registry.counter("workbench.audit.write.failures");
+    }
+
+    private static AuditSink loggingSink() {
+        ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return event -> {
+            try {
+                LOG.info("audit {}", mapper.writeValueAsString(event));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                throw new IllegalStateException("Audit serialization failed");
+            }
+        };
+    }
+
+    void emit(AuditContext context, String action, String outcome, String targetType,
+              String targetId, AuditEvent.Metadata metadata) {
+        try {
+            sink.append(new AuditEvent(1, UUID.randomUUID(), clock.instant(), "anonymous", null, "http",
+                    action, outcome, context.requestId, context.runId, targetType, targetId, metadata));
+        } catch (RuntimeException e) {
+            failures.increment();
+            LOG.warn(WARNING);
+        }
+    }
+}
