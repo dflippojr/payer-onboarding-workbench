@@ -125,7 +125,11 @@ public final class FaultSettings {
                 return new Change(before, snapshot());
             }
         } finally {
-            quiet.set(wasQuiet);
+            if (wasQuiet) {
+                quiet.set(true);
+            } else {
+                quiet.remove();
+            }
         }
     }
 
