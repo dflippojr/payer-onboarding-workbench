@@ -137,6 +137,8 @@ public class OnboardingRunner {
                 .toList();
 
         String runId = UUID.randomUUID().toString();
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.runId = runId; }
         ReentrantLock lock = locks.computeIfAbsent(request.payerId(), id -> new ReentrantLock());
         lock.lock();
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
@@ -188,6 +190,8 @@ public class OnboardingRunner {
         ConnectionRecord custom = customRecord(request, guard, credentials);
 
         String runId = UUID.randomUUID().toString();
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.runId = runId; }
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
              MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId());
              HttpClient http = HttpClient.newBuilder()
@@ -200,6 +204,15 @@ public class OnboardingRunner {
         }
     }
 
+    private static java.net.URI approveDestination(EndpointGuard guard, String label, String url) {
+        try { return guard.approve(label, url); }
+        catch (IllegalArgumentException e) {
+            AuditContext audit = AuditContext.current();
+            if (audit != null) { audit.reasonCode = "destination_rejected"; }
+            throw e;
+        }
+    }
+
     private static final String CUSTOM_CREDENTIAL_REF = "custom-endpoint-credential";
 
     private static ConnectionRecord customRecord(RunRequest request, EndpointGuard guard, InMemoryCredentials credentials) {
@@ -209,7 +222,7 @@ public class OnboardingRunner {
                 && auth != AuthType.OAUTH2_PRIVATE_KEY_JWT) {
             throw new IllegalArgumentException("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS, CDS_HOOKS_JWT or OAUTH2_PRIVATE_KEY_JWT");
         }
-        String baseUrl = guard.approve("Base URL", endpoint.baseUrl()).toString();
+        String baseUrl = approveDestination(guard, "Base URL", endpoint.baseUrl()).toString();
         ConnectionRecord.Builder builder = ConnectionRecord.builder()
                 .payerId(RunRequest.CUSTOM_PAYER_ID)
                 .displayName("Custom endpoint")
@@ -232,7 +245,7 @@ public class OnboardingRunner {
         }
         builder.clientId(endpoint.clientId().trim());
         if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
-            builder.tokenEndpoint(guard.approve("Token endpoint", endpoint.tokenEndpoint()).toString());
+            builder.tokenEndpoint(approveDestination(guard, "Token endpoint", endpoint.tokenEndpoint()).toString());
         }
         if (auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
             if (!isSet(endpoint.keyId())) {
@@ -335,10 +348,15 @@ public class OnboardingRunner {
                 applied.put("clientId", edits.clientId().trim());
             }
             record = builder.build();
+            AuditContext audit = AuditContext.current();
+            if (audit != null) {
+                audit.authType = record.authType();
+                audit.overrides = applied.keySet().stream().map(io.github.dflippojr.payerworkbench.core.AuditEvent.OverrideField::valueOf).toList();
+            }
             details.put("connection", RedactedConnection.of(record));
             details.put("edited", applied);
             details.put("credential", record.authType() == AuthType.NONE ? "none (no authentication)"
-                    : credentials.resolve(record.credentialRef()).isPresent()
+                    : credentials.peek(record.credentialRef()).isPresent()
                     ? "present in the in-memory credential store (value never shown)" : "missing");
             return Outcome.pass("Resolved " + record.displayName() + " (" + record.environment() + ", "
                     + record.authType() + ")" + (applied.isEmpty() ? "" : "; edited: " + String.join(", ", applied.keySet())));

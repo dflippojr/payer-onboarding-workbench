@@ -16,6 +16,12 @@ final class InMemoryCredentials implements CredentialProvider {
 
     @Override
     public Optional<String> resolve(String credentialRef) {
+        Optional<String> value = peek(credentialRef);
+        AuditContext.credential(credentialRef, value.isPresent());
+        return value;
+    }
+
+    Optional<String> peek(String credentialRef) {
         return credentialRef == null ? Optional.empty() : Optional.ofNullable(secrets.get(credentialRef));
     }
 

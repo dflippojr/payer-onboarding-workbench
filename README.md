@@ -197,6 +197,57 @@ One finding comes from the app rather than the diagnostics engine: `connection.r
 
 Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
 
+## Audit review (offline)
+
+Run creation, actual credential resolution, run/history reads and report rendering emit one
+JSON object after the `audit ` log message marker. Each HTTP request gets a server-generated
+UUID; produced runs keep their existing outbound run ID. Callers are always `anonymous`
+with a null actor ID and source `http`, regardless of supplied identity/correlation headers.
+`report.rendered` records server rendering, not proof of saving or publishing a report.
+An HTTP 200 `run.completed` can have a diagnostic verdict of `FAIL`.
+
+Capture the existing log destination yourself, for example after building:
+
+```sh
+java -jar workbench-app/target/workbench-app-0.1.0-SNAPSHOT.jar > synthetic-capture.log 2>&1
+node scripts/audit-reader.mjs synthetic-capture.log --run <server-run-uuid>
+node scripts/audit-reader.mjs synthetic-capture.log --action report.rendered --since 2026-10-08T12:00:00Z --until 2026-10-08T13:00:00Z
+```
+
+Review a checked-in synthetic fixture without starting the app:
+
+```sh
+node scripts/audit-reader.mjs scripts/fixtures/audit-synthetic.jsonl --run 00000000-0000-4000-8000-000000000067
+node scripts/audit-reader.mjs scripts/fixtures/audit-synthetic.jsonl --action run.requested
+node --test scripts/audit-reader.test.mjs
+```
+
+The reader accepts one named capture, ignores unrelated logs, and emits matching events
+as JSON lines. UTC `--since`/`--until` boundaries are inclusive, including nanoseconds.
+A run filter selects credential/terminal/report events; the initial request event has no
+run ID yet, so correlate it using the terminal's request ID in the unfiltered capture.
+Malformed audit lines produce a count on stderr and a nonzero exit without echoing contents.
+Review makes no server calls and writes no files. Restrict access to captures using the
+OS owner's permissions; the reader provides no additional authentication.
+
+Audit metadata is an allowlist: known catalog IDs, enums, status/reason codes, verdict,
+applied override field names and logical credential IDs (opaque per-run IDs for custom
+credentials). It excludes credential values, client IDs, URLs, bodies and diagnostic content.
+Availability means a credential was found, not that payer authentication succeeded.
+Startup and warm-up, catalogs, static assets and actuator scrapes are outside this trail.
+Normal operational logs remain separate and are not audit records.
+
+Logging is best effort. An observable sink failure preserves the API/run behavior, emits
+the constant warning `Audit event write failed; audit trail has a gap`, and increments
+`workbench.audit.write.failures` (Prometheus: `workbench_audit_write_failures_total`). No
+side effect is retried. Missing captures or logger/OS loss can also leave evidence gaps.
+There is no automatic durable storage, rotation, backup or retention guarantee in this
+baseline. The policy selected on #69 is 30 days, 10 MiB segments and 100 MiB total, with
+anonymous callers and fail-open behavior; durable enforcement and checksum verification
+belong to #69, and system/admin coverage belongs to #68. Restoring an older capture or
+backup rolls the visible trail back. The machine owner is trusted; this is not tamper-proof
+storage or a compliance journal.
+
 ## Observability
 
 Each run has a correlation id, which is its run id. Payers ask for a request id when you report a failed call, so the workbench sends it as `X-Request-Id` on every discovery, token and hook call, shows it on each recorded request in the timeline, and prints it in all three report formats (the `Correlation id (X-Request-Id)` row, or `correlationId` in JSON). The mock payers echo the header back on the response and log it with the method, path and status, so you can follow one call from the workbench's log to the payer's log:

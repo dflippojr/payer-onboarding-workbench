@@ -1,5 +1,24 @@
 # Decisions
 
+## Safe run audit events and offline review (#67)
+
+- Shared `AuditEvent` and `AuditSink` contracts remain Spring-free. Typed metadata has no
+  arbitrary map, and producers copy only validated IDs, enums, fixed reason codes and
+  applied override field names. No diagnostic object is serialized into the trail.
+- A synchronous MVC filter owns the server request UUID and always removes its thread
+  scope. POST body decoding failures receive the same start/terminal pair as valid runs;
+  credential resolution receives the produced run ID without replacing outbound correlation.
+- Caller attribution is anonymous. Headers, network addresses, payer credentials and JWT
+  claims cannot identify the initiating human. Credential availability is distinct from
+  the run verdict and is emitted only for actual resolve calls, not availability checks.
+- Owner review uses a named captured file and the dependency-free Node reader. The app
+  adds no audit API, mutation route, viewer, database or file sink. Reader output is not audited.
+- Follow #69's recorded decisions: anonymous callers, fail open with a constant warning
+  and gap counter, and a future 30-day / 10 MiB segment / 100 MiB total durable policy.
+  #67 promises only existing logging; #68 system events and #69 storage, checksums,
+  retention and restore verification remain separate work. The machine owner is trusted;
+  older backup restores roll the trail back, with no independent surviving journal.
+
 Choices made while planning the workbench (issue #1). Each has a short rationale so the owner can override it; changing one means a new issue, not a silent edit.
 
 | # | Decision | Rationale |
