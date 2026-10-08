@@ -1,3 +1,4 @@
+import './live-history.test.mjs';
 // Checks the exported replay bundle (site-dist/ by default, or $REPLAY_BUNDLE_DIR).
 // Run scripts/export-replays.sh first, then: node --test replay/test/
 import { mock, test } from 'node:test';

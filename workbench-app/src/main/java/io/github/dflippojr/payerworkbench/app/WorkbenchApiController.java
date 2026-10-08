@@ -97,6 +97,11 @@ public class WorkbenchApiController {
         return run;
     }
 
+    @GetMapping("/runs")
+    public List<RunSummary> recentRuns() {
+        return runs.list();
+    }
+
     @GetMapping("/runs/{id}")
     public OnboardingRun run(@PathVariable String id) {
         return runs.find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No run " + id));

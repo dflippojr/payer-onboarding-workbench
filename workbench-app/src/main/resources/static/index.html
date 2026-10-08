@@ -101,6 +101,12 @@
 
     <section class="panel" aria-labelledby="steps-heading">
       <h2 id="steps-heading" tabindex="-1">Steps</h2>
+      <label class="field">Recent runs
+        <select id="recent-runs" aria-describedby="history-status">
+          <option value="">Loading recent runs...</option>
+        </select>
+      </label>
+      <p id="history-status" class="muted small" role="status" aria-live="polite"></p>
       <p id="run-meta" class="muted small">Run the flow to see each step.</p>
       <div class="actions report-actions" id="report-actions" hidden>
         <label class="field">Report format

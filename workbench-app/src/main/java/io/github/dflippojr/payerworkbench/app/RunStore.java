@@ -4,6 +4,7 @@ import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -26,6 +27,11 @@ public class RunStore {
 
     public synchronized void save(OnboardingRun run) {
         runs.put(run.runId(), run);
+    }
+
+    /** Immutable, newest-saved-first snapshot; reads do not affect insertion-order eviction. */
+    public synchronized List<RunSummary> list() {
+        return runs.values().stream().map(RunSummary::of).toList().reversed();
     }
 
     public synchronized Optional<OnboardingRun> find(String runId) {
