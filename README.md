@@ -91,8 +91,11 @@ The UI has a payer picker, a "Break it" panel of payer faults, connection settin
 | `GET /api/features` | What this deployment allows (`customEndpoints`). |
 | `GET /api/samples` | Sample request metadata. |
 | `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). With custom endpoints enabled, `customEndpoint` replaces `payerId` (see below). |
+| `GET /api/runs` | Newest-saved-first summaries of retained runs: identifiers, first-step timestamp (null without steps), verdict and severity counts only. |
 | `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
 | `GET /api/runs/{id}/report?format=md\|html\|json` | A shareable diagnostic report of a recent run (default `html`). `400` for another format, `404` for an unknown run. |
+
+The live UI's **Recent runs** selector reloads history after a browser refresh and after each run. Reopening retrieves the existing timeline, findings and report without executing a run or changing form settings. History is process-local memory, bounded by `workbench.max-runs` (default 200), with the oldest insertion evicted first. A server restart clears all runs and reports; browser refresh does not.
 
 ```sh
 curl -s localhost:8080/api/runs -H 'Content-Type: application/json' \

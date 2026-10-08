@@ -30,6 +30,7 @@
   let samples = [];
   let lastRunId = null;
   let customEnabled = false;
+  let retrieval = 0;
   const CUSTOM = '__custom__';
 
   /** Builds an element; children may be strings, nodes, arrays or null. */
@@ -53,7 +54,11 @@
   async function api(path, options) {
     const res = await fetch(path, options);
     const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error((body && (body.detail || body.message)) || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const error = new Error((body && (body.detail || body.message)) || `HTTP ${res.status}`);
+      error.status = res.status;
+      throw error;
+    }
     return body;
   }
 
@@ -76,6 +81,52 @@
     $('sample').addEventListener('change', updateSampleNote);
     $('customAuthType').addEventListener('change', updateCustomFields);
     $('report-format').addEventListener('change', updateReportLink);
+    $('recent-runs').addEventListener('change', reopenRun);
+    await refreshHistory();
+  }
+
+  async function refreshHistory() {
+    try {
+      const history = await api('api/runs');
+      const selector = $('recent-runs');
+      selector.replaceChildren(h('option', { value: '' }, history.length ? 'Choose a run' : 'No recent runs yet'),
+        ...history.map(r => h('option', { value: r.runId },
+          `${r.payerId} | ${r.environment} | ${r.startedAt || 'No steps'} | ${r.verdict}`)));
+      selector.value = history.some(r => r.runId === lastRunId) ? lastRunId : '';
+      $('history-status').textContent = history.length ? '' : 'Run onboarding to build history. Restarting the server clears it.';
+    } catch (e) {
+      $('recent-runs').replaceChildren(h('option', { value: '' }, 'History unavailable'));
+      $('history-status').textContent = `Could not load recent runs: ${e.message}. You can still run onboarding.`;
+    }
+  }
+
+  async function reopenRun() {
+    const id = $('recent-runs').value;
+    const ticket = ++retrieval;
+    if (!id) return;
+    $('history-status').textContent = 'Loading run...';
+    try {
+      const result = await api(`api/runs/${encodeURIComponent(id)}`);
+      if (ticket !== retrieval) return;
+      const payer = payers.find(p => p.payerId === result.payerId) || { displayName: result.payerId };
+      renderRun(result, payer);
+      $('history-status').textContent = 'Run reopened.';
+    } catch (e) {
+      if (ticket !== retrieval) return;
+      if (e.status === 404) {
+        lastRunId = null;
+        $('report-actions').hidden = true;
+        $('report-link').removeAttribute('href');
+        $('steps').replaceChildren();
+        $('findings').replaceChildren();
+        $('run-meta').textContent = 'Choose another recent run or run onboarding.';
+        await refreshHistory();
+        if (ticket !== retrieval) return;
+        $('history-status').textContent = 'This run is no longer available. It may have been evicted or the server restarted.';
+      } else {
+        $('history-status').textContent = `Could not reopen run: ${e.message}`;
+      }
+    }
   }
 
   function renderPayers() {
@@ -186,6 +237,8 @@
     }
     const button = $('run-button');
     button.disabled = true;
+    ++retrieval;
+    $('recent-runs').disabled = true;
     $('run-status').textContent = request.faults.includes('slow-response')
       ? 'Running… the slow-response fault takes several seconds.'
       : 'Running…';
@@ -199,10 +252,12 @@
       const fails = result.findings.filter(f => f.severity === 'FAIL').length;
       $('run-status').textContent = fails ? `Done: ${fails} failing check${fails === 1 ? '' : 's'}.` : 'Done: no failures.';
       $('steps-heading').focus();
+      await refreshHistory();
     } catch (e) {
       $('run-status').textContent = `Run failed: ${e.message}`;
     } finally {
       button.disabled = false;
+      $('recent-runs').disabled = false;
     }
   }
 

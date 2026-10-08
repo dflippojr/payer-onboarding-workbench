@@ -86,6 +86,15 @@ class WorkbenchApiTest {
         HttpResponse<String> fetched = get("/api/runs/" + run.path("runId").asText());
         assertEquals(200, fetched.statusCode());
         assertEquals(run, mapper.readTree(fetched.body()));
+        HttpResponse<String> history = get("/api/runs");
+        assertEquals(200, history.statusCode());
+        JsonNode summary = mapper.readTree(history.body()).get(0);
+        assertEquals(run.path("runId"), summary.path("runId"));
+        JsonNode report = mapper.readTree(get("/api/runs/" + run.path("runId").asText() + "/report?format=json").body());
+        assertEquals(report.path("verdict").path("status"), summary.path("verdict"));
+        assertEquals(report.path("counts"), summary.path("counts"));
+        assertEquals(report.path("startedAt"), summary.path("startedAt"));
+        assertEquals(6, summary.size());
     }
 
     @Test
