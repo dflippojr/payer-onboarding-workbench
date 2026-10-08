@@ -86,6 +86,7 @@ public abstract class MockPayer implements AutoCloseable {
     protected final ObjectMapper mapper = new ObjectMapper();
     protected final Clock clock;
     private final FaultSettings faults = new FaultSettings();
+    private final FaultAudit audit = new FaultAudit(getClass().getSimpleName());
     private final String configuredPublicBaseUrl;
     private HttpServer server;
     private TestTls tls;
@@ -109,6 +110,7 @@ public abstract class MockPayer implements AutoCloseable {
     protected MockPayer(Clock clock, String publicBaseUrl) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.configuredPublicBaseUrl = publicBaseUrl == null ? null : trimTrailingSlash(publicBaseUrl);
+        faults.onProgrammaticChange(change -> audit.programmatic(this.clock, change));
     }
 
     /** The payer's name as shown to users, e.g. on card sources. */
@@ -192,6 +194,27 @@ public abstract class MockPayer implements AutoCloseable {
     /** The programmatic fault switchboard; the admin endpoint changes the same settings. */
     public FaultSettings faults() {
         return faults;
+    }
+
+    /**
+     * Replaces where this payer's fault-change audit events go. The default logs one JSON line after
+     * an {@code audit } marker. A sink that throws is counted ({@link #auditWriteFailures()}) and
+     * never fails the admin request or the change.
+     */
+    public MockPayer auditSink(io.github.dflippojr.payerworkbench.core.AuditSink sink) {
+        audit.sink(sink);
+        return this;
+    }
+
+    /** The safe payer identifier recorded on audit events; defaults to the payer class name. */
+    public MockPayer auditPayerId(String payerId) {
+        audit.payerId(payerId);
+        return this;
+    }
+
+    /** How many audit events could not be written since this payer was created. */
+    public long auditWriteFailures() {
+        return audit.failures();
     }
 
     // ---- request handling ----
@@ -359,13 +382,64 @@ public abstract class MockPayer implements AutoCloseable {
     }
 
     private Response admin(Request request) {
+        if (request.method().equals("GET")) {
+            return adminRead(request);
+        }
+        Attempt attempt = new Attempt(request);
+        try {
+            Response response = adminMutation(request, attempt);
+            audit.admin(clock, attempt.action, "success", attempt.targetType, attempt.targetId, response.status(),
+                    null, audit.faults(attempt.change));
+            return response;
+        } catch (HttpError e) {
+            // Rejected attempts carry fixed reason codes only; the request's own text is never copied.
+            FaultSettings.Snapshot now = faults.snapshot();
+            audit.admin(clock, attempt.action, "rejected", attempt.targetType, attempt.targetId, e.status(),
+                    switch (e.status()) {
+                        case 404 -> "unknown_fault";
+                        case 400 -> "invalid_delay";
+                        case 405 -> "method_not_allowed";
+                        default -> "request_failed";
+                    },
+                    audit.faults(new FaultSettings.Change(now, now)));
+            throw e;
+        }
+    }
+
+    /** What one mutating admin request is, worked out from fixed vocabulary only. */
+    private final class Attempt {
+        String action = "fault.change";
+        String targetType = "payer";
+        String targetId = audit.payerId();
+        FaultSettings.Change change;
+
+        Attempt(Request request) {
+            String rest = request.path().substring("/admin/faults".length());
+            if (rest.isEmpty() || rest.equals("/")) {
+                if (request.method().equals("DELETE")) {
+                    action = "fault.clear";
+                }
+                return;
+            }
+            Fault fault = Fault.fromId(rest.substring(1)).orElse(null);
+            targetType = "fault";
+            targetId = fault == null ? null : fault.id();
+            switch (request.method()) {
+                case "POST", "PUT" -> action = fault == Fault.SLOW_RESPONSE && request.queryParameter("delayMs") != null
+                        ? "fault.delay_set" : "fault.enable";
+                case "DELETE" -> action = "fault.disable";
+                default -> { }
+            }
+        }
+    }
+
+    private Response adminMutation(Request request, Attempt attempt) {
         String rest = request.path().substring("/admin/faults".length());
         if (rest.isEmpty() || rest.equals("/")) {
-            switch (request.method()) {
-                case "GET" -> { }
-                case "DELETE" -> faults.clear();
-                default -> throw new HttpError(405, "method_not_allowed", "Use GET or DELETE");
+            if (!request.method().equals("DELETE")) {
+                throw new HttpError(405, "method_not_allowed", "Use GET or DELETE");
             }
+            attempt.change = faults.change(faults::clear);
             return Response.json(mapper, 200, faultState());
         }
         String id = rest.substring(1);
@@ -375,19 +449,34 @@ public abstract class MockPayer implements AutoCloseable {
             case "POST", "PUT" -> {
                 String delayMs = request.queryParameter("delayMs");
                 if (fault == Fault.SLOW_RESPONSE && delayMs != null) {
+                    Duration delay;
                     try {
-                        faults.slowResponse(Duration.ofMillis(Long.parseLong(delayMs)));
+                        delay = Duration.ofMillis(Long.parseLong(delayMs));
+                        if (delay.isNegative()) {
+                            throw new IllegalArgumentException("negative");
+                        }
                     } catch (IllegalArgumentException e) {
                         throw new HttpError(400, "invalid_request", "delayMs must be a non-negative integer");
                     }
+                    attempt.change = faults.change(() -> faults.slowResponse(delay));
                 } else {
-                    faults.enable(fault);
+                    attempt.change = faults.change(() -> faults.enable(fault));
                 }
             }
-            case "DELETE" -> faults.disable(fault);
+            case "DELETE" -> attempt.change = faults.change(() -> faults.disable(fault));
             default -> throw new HttpError(405, "method_not_allowed", "Use POST, PUT or DELETE");
         }
         return Response.json(mapper, 200, faultState());
+    }
+
+    private Response adminRead(Request request) {
+        String rest = request.path().substring("/admin/faults".length());
+        if (rest.isEmpty() || rest.equals("/")) {
+            return Response.json(mapper, 200, faultState());
+        }
+        String id = rest.substring(1);
+        Fault.fromId(id).orElseThrow(() -> new HttpError(404, "not_found", "Unknown fault '" + id + "'"));
+        throw new HttpError(405, "method_not_allowed", "Use POST, PUT or DELETE");
     }
 
     private ObjectNode faultState() {
