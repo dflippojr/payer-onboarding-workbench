@@ -40,7 +40,7 @@ These are smaller calls made while building the skeleton, recorded for the same 
 
 - **Reports redact again, field by field.** `StepResult.details` is only documented as secret-free, so `RunReport` passes every string through `Redactor` and masks any field named like a secret before any format renders. All three formats render from that one sanitized model.
 - **Workbench version from `build-info`.** The Spring Boot plugin's `build-info` goal writes `META-INF/build-info.properties`; reports read `build.version` from it (falling back to the jar manifest, then `unknown`).
-- **The demo starts the app on port 0** and reads the port from the startup log, so it never collides with anything already listening. The bash script checks findings from the Markdown report with `awk` so it needs no `jq`; the PowerShell script reads the JSON report.
+- **The demo starts the app on port 0** and reads the port from the startup log, so it never collides with anything already listening. The Node demo script checks findings from the JSON report (#74), using built-in `fetch` and `JSON.parse` without additional dependencies.
 - **The demo keeps the default latency budgets**, so the `slow-response` run takes about 11 s but shows what a real slow payer looks like.
 
 ## Implementation choices made in #14

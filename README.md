@@ -289,14 +289,14 @@ workbench_step_duration_seconds_count{environment="SANDBOX",payer="northwind-syn
 
 ## Demo
 
-`scripts/demo.sh` (or `scripts\demo.ps1` on Windows) is a repeatable tour of the workbench through its REST API. It builds the app, starts it on a free port, makes four runs, writes each run's report to `demo-output/` (gitignored) as `.md`, `.html` and `.json`, and stops the app. It exits non-zero if any expected finding is missing, so CI runs it after `./mvnw verify`, and keeps `demo-output/` as a build artifact.
+`node scripts/demo.mjs` (Node 22+ on all platforms) is a repeatable tour of the workbench through its REST API. It builds the app, starts it on a free port, makes four runs, writes each run's report to `demo-output/` (gitignored) as `.md`, `.html` and `.json`, and stops the app. It exits non-zero if any expected finding is missing, so CI runs it after `./mvnw verify`, and keeps `demo-output/` as a build artifact.
 
 ```sh
 bash scripts/install-crd-router.sh   # once
-scripts/demo.sh                      # about a minute; DEMO_SKIP_BUILD=1 reuses an existing jar
+node scripts/demo.mjs                # about a minute; DEMO_SKIP_BUILD=1 reuses an existing jar
 ```
 
-It needs JDK 21 (`JAVA_HOME` or `java` on the `PATH`); the bash version also needs `curl` and `awk`.
+It needs Node 22+ and JDK 21 (`JAVA_HOME` or `java` on the `PATH`). Set `DEMO_SKIP_BUILD=1` in your shell environment to reuse an existing jar.
 
 | # | Run | What it shows | Expected findings |
 |---|---|---|---|
