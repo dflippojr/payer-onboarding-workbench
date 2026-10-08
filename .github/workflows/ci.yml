@@ -15,7 +15,7 @@ jobs:
       - run: ./mvnw -B verify
       - name: Demo tour (reuses the jar built by verify)
         run: DEMO_SKIP_BUILD=1 bash scripts/demo.sh
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Export the website replay bundle (reuses the jar)
