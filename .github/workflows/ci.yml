@@ -14,7 +14,7 @@ jobs:
         run: bash scripts/install-crd-router.sh
       - run: ./mvnw -B verify
       - name: Demo tour (reuses the jar built by verify)
-        run: DEMO_SKIP_BUILD=1 bash scripts/demo.sh
+        run: DEMO_SKIP_BUILD=1 node scripts/demo.mjs
       - uses: actions/setup-node@v7
         with:
           node-version: 22
