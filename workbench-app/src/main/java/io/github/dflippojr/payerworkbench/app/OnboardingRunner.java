@@ -27,7 +27,9 @@ import io.github.dflippojr.payerworkbench.core.StepResult;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticEngine;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticsConfig;
+import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.github.dflippojr.payerworkbench.mock.Fault;
+import io.github.dflippojr.payerworkbench.mock.FaultSettings;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import io.github.dflippojr.payerworkbench.samples.PrefetchVariant;
 import io.github.dflippojr.payerworkbench.samples.Sample;
@@ -122,7 +124,30 @@ public class OnboardingRunner {
         return run(request, false);
     }
 
+    /**
+     * Runs inside the caller's audit scope. A run started outside any HTTP request or job is recorded as
+     * a programmatic call by an unknown actor, never as an owner operation; the warm-up is the app itself.
+     */
     private OnboardingRun run(RunRequest request, boolean recordMetrics) {
+        if (AuditContext.current() != null) {
+            return runScoped(request, recordMetrics);
+        }
+        AuditContext fallback = recordMetrics
+                ? AuditContext.actor(payers.audit(), "unknown", null, "programmatic")
+                : AuditContext.actor(payers.audit(), "system", "first-run-warmup", "job");
+        AuditContext.bind(fallback);
+        try {
+            return runScoped(request, recordMetrics);
+        } finally {
+            AuditContext.clear();
+        }
+    }
+
+    AuditLog audit() {
+        return payers.audit();
+    }
+
+    private OnboardingRun runScoped(RunRequest request, boolean recordMetrics) {
         if (request.customEndpoint() != null) {
             return runCustom(request);
         }
@@ -143,16 +168,26 @@ public class OnboardingRunner {
         lock.lock();
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
              MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId())) {
-            payer.faults().clear();
-            for (Fault fault : faults) {
-                if (fault == Fault.SLOW_RESPONSE) {
-                    payer.faults().slowResponse(request.slowResponseDelayMs() == null
-                            ? properties.slowResponseDelay()
-                            : Duration.ofMillis(request.slowResponseDelayMs()));
-                } else {
-                    payer.faults().enable(fault);
-                }
+            // One atomic setup snapshot; the setters inside are quiet so nothing is recorded twice.
+            FaultSettings.Change setup;
+            try {
+                setup = payer.faults().change(() -> {
+                    payer.faults().clear();
+                    for (Fault fault : faults) {
+                        if (fault == Fault.SLOW_RESPONSE) {
+                            payer.faults().slowResponse(request.slowResponseDelayMs() == null
+                                    ? properties.slowResponseDelay()
+                                    : Duration.ofMillis(request.slowResponseDelayMs()));
+                        } else {
+                            payer.faults().enable(fault);
+                        }
+                    }
+                });
+            } catch (RuntimeException e) {
+                auditSetupRejected(request.payerId(), payer.faults().snapshot());
+                throw e;
             }
+            auditFaults("fault.run_setup", request.payerId(), setup);
             try (HttpClient http = HttpClient.newBuilder()
                     .sslContext(payers.tls().clientContext())
                     .connectTimeout(Duration.ofSeconds(5))
@@ -161,8 +196,11 @@ public class OnboardingRunner {
                 return new Attempt(runId, request, sample, http, payers.credentials(), null, recordMetrics).run();
             }
         } finally {
-            payer.faults().clear();
-            lock.unlock();
+            try {
+                auditFaults("fault.run_reset", request.payerId(), payer.faults().change(payer.faults()::clear));
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
@@ -201,6 +239,23 @@ public class OnboardingRunner {
             return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom, true).run();
         } finally {
             credentials.remove(CUSTOM_CREDENTIAL_REF);
+        }
+    }
+
+    /** A setup that could not be applied changed nothing, so before and after are the same state. */
+    private static void auditSetupRejected(String payerId, FaultSettings.Snapshot state) {
+        AuditContext scope = AuditContext.current();
+        if (scope != null) {
+            scope.log.emit(scope, "fault.run_setup", "rejected", "payer", payerId, AuditEvent.Metadata.ofFaults(
+                    null, "setup_failed", payerId, new FaultSettings.Change(state, state).audit()));
+        }
+    }
+
+    private static void auditFaults(String action, String payerId, FaultSettings.Change change) {
+        AuditContext scope = AuditContext.current();
+        if (scope != null) {
+            scope.log.emit(scope, action, "success", "payer", payerId,
+                    AuditEvent.Metadata.ofFaults(null, null, payerId, change.audit()));
         }
     }
 

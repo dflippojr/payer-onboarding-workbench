@@ -47,9 +47,20 @@ public class AuditLog {
 
     void emit(AuditContext context, String action, String outcome, String targetType,
               String targetId, AuditEvent.Metadata metadata) {
+        append(new AuditEvent(1, UUID.randomUUID(), clock.instant(), context.actorType, context.actorId,
+                context.source, action, outcome, context.requestId, context.runId, targetType, targetId, metadata));
+    }
+
+    /** Lifecycle work done by the application itself, outside any request. */
+    void lifecycle(String action, String outcome, String targetType, String targetId, AuditEvent.Metadata metadata) {
+        append(new AuditEvent(1, UUID.randomUUID(), clock.instant(), "system", "application", "lifecycle",
+                action, outcome, null, null, targetType, targetId, metadata));
+    }
+
+    /** Fail open: a lost event is counted and warned about, and the caller carries on. */
+    public void append(AuditEvent event) {
         try {
-            sink.append(new AuditEvent(1, UUID.randomUUID(), clock.instant(), "anonymous", null, "http",
-                    action, outcome, context.requestId, context.runId, targetType, targetId, metadata));
+            sink.append(event);
         } catch (RuntimeException e) {
             failures.increment();
             LOG.warn(WARNING);

@@ -39,12 +39,20 @@ class FirstRunWarmup implements SmartInitializingSingleton {
     private final OnboardingRunner runner;
     private final JsonMapper json;
     private final ApplicationContext context;
+    private final InternalRequestToken internal;
     private final CompletableFuture<Integer> port = new CompletableFuture<>();
 
     FirstRunWarmup(OnboardingRunner runner, JsonMapper json, ApplicationContext context) {
+        this(runner, json, context, new InternalRequestToken());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    FirstRunWarmup(OnboardingRunner runner, JsonMapper json, ApplicationContext context,
+                   InternalRequestToken internal) {
         this.runner = runner;
         this.json = json;
         this.context = context;
+        this.internal = internal;
     }
 
     /** Starts as soon as every bean exists, so the warm-up overlaps the web server starting. */
@@ -70,15 +78,30 @@ class FirstRunWarmup implements SmartInitializingSingleton {
         long start = System.nanoTime();
         // The request path needs the web server, not a run, so it warms alongside the first run.
         Thread.ofPlatform().name("first-run-warmup-path").daemon().start(this::warmRequestPath);
-        for (String payerId : PAYERS) {
-            try {
+        // The app itself is the actor: every event from this thread, including the run's credential
+        // lookups and fault setup, carries the system actor and one correlation id.
+        AuditContext scope = AuditContext.actor(runner.audit(), "system", "first-run-warmup", "job");
+        AuditContext.bind(scope);
+        try {
+            for (String payerId : PAYERS) {
+                scope.runId = null;
+                scope.reasonCode = null;
+                scope.payerId = payerId;
+                scope.log.emit(scope, "warmup.started", "started", "payer", payerId, scope.metadata(null));
+                try {
                 // Serialising the result with the app's mapper also warms the response the API sends.
                 json.writeValueAsString(
                         runner.warmUp(new RunRequest(payerId, Environment.SANDBOX, SAMPLE_ID, List.of(), null, null)));
-            } catch (RuntimeException e) {
-                LOG.warn("First-run warm-up against {} failed; the first run will be slower: {}", payerId,
+                    scope.log.emit(scope, "warmup.finished", "success", "payer", payerId, scope.metadata(null));
+                } catch (RuntimeException e) {
+                    scope.reasonCode = "warmup_failed";
+                    scope.log.emit(scope, "warmup.finished", "failed", "payer", payerId, scope.metadata(null));
+                    LOG.warn("First-run warm-up against {} failed; the first run will be slower: {}", payerId,
                         e.toString());
+                }
             }
+        } finally {
+            AuditContext.clear();
         }
         LOG.info("First-run warm-up finished in {} ms", (System.nanoTime() - start) / 1_000_000);
     }
@@ -97,6 +120,7 @@ class FirstRunWarmup implements SmartInitializingSingleton {
             http.send(HttpRequest.newBuilder(uri)
                             .timeout(Duration.ofSeconds(10))
                             .header("Content-Type", "application/json")
+                            .header(InternalRequestToken.HEADER, internal.issue())
                             .POST(HttpRequest.BodyPublishers.ofString("{}"))
                             .build(),
                     HttpResponse.BodyHandlers.discarding());

@@ -19,6 +19,23 @@
   retention and restore verification remain separate work. The machine owner is trusted;
   older backup restores roll the trail back, with no independent surviving journal.
 
+## Admin, run-fault and lifecycle audit events (#68)
+
+- Fault changes are recorded once, at the layer that knows the actor. The admin route, the runner
+  and a direct programmatic call each snapshot before and after under the `FaultSettings` lock
+  (`change`, all or nothing); setters called inside `change` do not report, so nothing is
+  recorded twice. A direct change outside either is `unknown` / `programmatic`.
+- The metadata gained `faults` and `lifecycle` records, still with no arbitrary map. Schema
+  version stays 1: the additions are optional, and the reader selects by `action`.
+- The warm-up is trusted through a random single-use in-memory value on its self-request, not a
+  header, source or actor claim a caller could send. `AuditContext` is also what the warm-up
+  thread binds, so its credential lookups and fault snapshots share one correlation ID.
+- Audit failures fail open for the admin endpoint, runs and lifecycle (warning and the existing
+  counter, `MockPayer.auditWriteFailures` for standalone use); a side effect is never retried.
+- Cleanup outcome is observed, not assumed: each delete is counted and a leftover directory is
+  `partial`. No shutdown event can be promised after SIGKILL or a crash.
+- Durable segments, checksums, retention and restore verification stay with #69.
+
 Choices made while planning the workbench (issue #1). Each has a short rationale so the owner can override it; changing one means a new issue, not a silent edit.
 
 | # | Decision | Rationale |

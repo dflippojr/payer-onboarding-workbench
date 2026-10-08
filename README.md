@@ -234,7 +234,7 @@ Audit metadata is an allowlist: known catalog IDs, enums, status/reason codes, v
 applied override field names and logical credential IDs (opaque per-run IDs for custom
 credentials). It excludes credential values, client IDs, URLs, bodies and diagnostic content.
 Availability means a credential was found, not that payer authentication succeeded.
-Startup and warm-up, catalogs, static assets and actuator scrapes are outside this trail.
+Catalogs, static assets and actuator scrapes are outside this trail.
 Normal operational logs remain separate and are not audit records.
 
 Logging is best effort. An observable sink failure preserves the API/run behavior, emits
@@ -244,9 +244,25 @@ side effect is retried. Missing captures or logger/OS loss can also leave eviden
 There is no automatic durable storage, rotation, backup or retention guarantee in this
 baseline. The policy selected on #69 is 30 days, 10 MiB segments and 100 MiB total, with
 anonymous callers and fail-open behavior; durable enforcement and checksum verification
-belong to #69, and system/admin coverage belongs to #68. Restoring an older capture or
+belong to #69. Restoring an older capture or
 backup rolls the visible trail back. The machine owner is trusted; this is not tamper-proof
 storage or a compliance journal.
+
+### Fault changes and system operations
+
+The same marker and reader also carry admin and lifecycle events (#68):
+
+| Action | Actor / source | Meaning |
+|---|---|---|
+| `fault.enable`, `fault.disable`, `fault.delay_set`, `fault.clear`, `fault.change` | `anonymous` / `http` | A `POST`, `PUT` or `DELETE` to `/admin/faults[/{id}]` on a synthetic payer, with or without `X-Request-Id`. Outcome `success` or `rejected`. Metadata has the payer ID, the known fault ID (null when the ID was unknown), and `faults`: enabled fault IDs before and after, `slowResponseDelayMs` before and after, and `changed` (false for a no-op or a rejected attempt). Rejected attempts carry fixed `reasonCode`s: `unknown_fault`, `invalid_delay`, `method_not_allowed`. Read-only `GET` creates no event. |
+| `fault.changed` | `unknown` / `programmatic` | `FaultSettings` was changed directly by code outside the admin endpoint and outside a run. It is never reported as an owner operation. |
+| `fault.run_setup`, `fault.run_reset` | the run's actor | One snapshot when a run applies its faults and one when its `finally` clears them, with the run ID and request ID. The reset shows the state that was actually restored. A setup that could not be applied is `rejected` with `setup_failed` and changed nothing. |
+| `warmup.started`, `warmup.finished` | `system` `first-run-warmup` / `job` | The background warm-up run and the app's own empty-body self-request, which is recognised by a random in-memory single-use value (never configuration, logged or returned). Any other caller, including one that sends actor, source or the internal header itself, stays `anonymous`. Warm-up still never appears in run history, metrics or replay exports. |
+| `startup.configuration`, `payer.started`, `connection.seeded`, `credential.put`, `credential.removed`, `payer.stopped`, `cleanup.attempted`, `cleanup.finished`, `startup.failed` | `system` `application` / `lifecycle` | Startup seeding and shutdown cleanup. Targets are payer IDs and logical connection/credential IDs only; never generated values, JWKS or key contents, paths, URLs, environment, arguments or whole property objects. Configuration records the custom-endpoints boolean, max runs and latency/timeout durations. |
+
+`cleanup.finished` reports what was observed: `success`, `partial` (reason `delete_failed`, with safe `attempted`, `deleted` and `failed` counts) or `failed` (`walk_failed`). It never claims a deletion that failed. Logs cannot guarantee a shutdown event after `SIGKILL`, a crash or power loss, so a missing `cleanup.finished` means the process did not stop cleanly, not that cleanup succeeded.
+
+Standalone mocks started without Spring still emit parseable `audit ` lines for their admin changes through `System.Logger`, and an embedding application can replace the sink with `MockPayer.auditSink`. The standalone admin endpoint remains unauthenticated and cannot identify a person, so its events are `anonymous`; a TLS handshake rejected by a certificate fault happens before HTTP, so it is never an admin event. Demo and replay scripts call the API as anonymous HTTP clients; their local output-file deletion, copying and website publication are outside the server's view.
 
 ## Observability
 

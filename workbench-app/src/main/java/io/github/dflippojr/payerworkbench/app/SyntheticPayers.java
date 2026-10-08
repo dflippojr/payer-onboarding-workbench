@@ -6,6 +6,7 @@ import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionStore;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.FileBasedConnectionStore;
+import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import io.github.dflippojr.payerworkbench.mock.TestTls;
@@ -64,11 +65,32 @@ public class SyntheticPayers implements DisposableBean {
 
     private final Path workDir;
     private final FileBasedConnectionStore store;
-    private final InMemoryCredentials credentials = new InMemoryCredentials();
+    private final AuditLog audit;
+    private final PathDeleter deleter;
+    private final InMemoryCredentials credentials;
     private final JwksServer jwks;
     private final Map<String, MockPayer> payers = new LinkedHashMap<>();
 
+    /** Deletes one path during cleanup; replaceable so a test can make a delete fail. */
+    @FunctionalInterface
+    interface PathDeleter {
+        void delete(Path path) throws IOException;
+    }
+
+    /** Standalone use (no Spring): lifecycle events go to the log with a throwaway failure counter. */
     public SyntheticPayers() throws IOException {
+        this(new AuditLog(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SyntheticPayers(AuditLog audit) throws IOException {
+        this(audit, Files::delete);
+    }
+
+    SyntheticPayers(AuditLog audit, PathDeleter deleter) throws IOException {
+        this.audit = audit;
+        this.deleter = deleter;
+        this.credentials = new InMemoryCredentials(audit);
         workDir = createPrivateTempDir();
         store = new FileBasedConnectionStore(workDir.resolve("connections.yaml"));
         try {
@@ -76,8 +98,8 @@ public class SyntheticPayers implements DisposableBean {
             credentials.put("northwind-client-secret", secret);
             NorthwindPayer northwind = NorthwindPayer.builder().client(CLIENT_ID, secret).build();
             northwind.tls(tls).start(0);
-            payers.put(NORTHWIND_ID, northwind);
-            store.save(ConnectionRecord.builder()
+            started(NORTHWIND_ID, northwind);
+            seed(ConnectionRecord.builder()
                     .payerId(NORTHWIND_ID)
                     .displayName(northwind.displayName())
                     .environment(Environment.SANDBOX)
@@ -97,8 +119,8 @@ public class SyntheticPayers implements DisposableBean {
             jwks = new JwksServer(Map.of(KEY_ID, key.getPublic(), "tailspin-key-1", tailspinKey.getPublic()));
             FabrikamPayer fabrikam = FabrikamPayer.builder().client(CLIENT_ID, jwks.url()).build();
             fabrikam.tls(tls).start(0);
-            payers.put(FABRIKAM_ID, fabrikam);
-            store.save(ConnectionRecord.builder()
+            started(FABRIKAM_ID, fabrikam);
+            seed(ConnectionRecord.builder()
                     .payerId(FABRIKAM_ID)
                     .displayName(fabrikam.displayName())
                     .environment(Environment.SANDBOX)
@@ -113,22 +135,41 @@ public class SyntheticPayers implements DisposableBean {
                     .build());
             TailspinPayer tailspin = TailspinPayer.builder().client(CLIENT_ID, jwks.url()).build();
             tailspin.tls(tls).start(0);
-            payers.put(TAILSPIN_ID, tailspin);
-            store.save(ConnectionRecord.builder()
+            started(TAILSPIN_ID, tailspin);
+            seed(ConnectionRecord.builder()
                     .payerId(TAILSPIN_ID).displayName(tailspin.displayName()).environment(Environment.SANDBOX)
                     .baseUrl(tailspin.baseUrl()).authType(AuthType.OAUTH2_PRIVATE_KEY_JWT)
                     .tokenEndpoint(tailspin.tokenEndpoint()).clientId(CLIENT_ID).keyId("tailspin-key-1")
                     .jwksUrl(jwks.url().toString()).credentialRef("tailspin-signing-key")
                     .igVersion(tailspin.igVersion()).contactInfo("synthetic; no real payer").build());
         } catch (IOException | RuntimeException e) {
+            audit.lifecycle("startup.failed", "failed", "application", null,
+                    AuditEvent.Metadata.ofLifecycle("seed_failed", null, null, null));
             destroy();
             throw e;
         }
         payers.forEach((id, payer) -> log.info("Started synthetic payer {} at {}", id, payer.baseUrl()));
     }
 
+    private void started(String payerId, MockPayer payer) {
+        payers.put(payerId, payer);
+        payer.auditSink(audit::append).auditPayerId(payerId);
+        audit.lifecycle("payer.started", "success", "payer", payerId,
+                AuditEvent.Metadata.ofLifecycle(null, payerId, null, null));
+    }
+
+    private void seed(ConnectionRecord record) {
+        store.save(record);
+        audit.lifecycle("connection.seeded", "success", "connection", record.payerId(),
+                AuditEvent.Metadata.ofLifecycle(null, record.payerId(), null, null));
+    }
+
     public ConnectionStore store() {
         return store;
+    }
+
+    AuditLog audit() {
+        return audit;
     }
 
     InMemoryCredentials credentials() {
@@ -171,16 +212,49 @@ public class SyntheticPayers implements DisposableBean {
         }
     }
 
+    /**
+     * Stops the payers and deletes the temp directory, recording what was observed. A delete that fails
+     * is counted, never reported as done. A crash or SIGKILL skips this method, so no shutdown event
+     * is written in that case.
+     */
     @Override
     public void destroy() {
-        payers.values().forEach(MockPayer::close);
+        audit.lifecycle("cleanup.attempted", "started", "application", null,
+                AuditEvent.Metadata.ofLifecycle(null, null, null, null));
+        payers.forEach((id, payer) -> {
+            payer.close();
+            audit.lifecycle("payer.stopped", "success", "payer", id,
+                    AuditEvent.Metadata.ofLifecycle(null, id, null, null));
+        });
         if (jwks != null) {
             jwks.close();
         }
-        try (Stream<Path> paths = Files.walk(workDir)) {
-            paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+        credentials.removeAll();
+        List<Path> paths;
+        try (Stream<Path> walk = Files.walk(workDir)) {
+            paths = walk.sorted(Comparator.reverseOrder()).toList();
         } catch (IOException e) {
+            audit.lifecycle("cleanup.finished", "failed", "application", null,
+                    AuditEvent.Metadata.ofLifecycle("walk_failed", null, null, AuditEvent.Lifecycle.cleanup(0, 0, 0)));
             throw new UncheckedIOException(e);
         }
+        int deleted = 0;
+        int failed = 0;
+        for (Path path : paths) {
+            try {
+                deleter.delete(path);
+                deleted++;
+            } catch (IOException | RuntimeException e) {
+                failed++;
+            }
+        }
+        boolean gone = !Files.exists(workDir);
+        boolean complete = failed == 0 && gone;
+        if (!complete) {
+            log.warn("Cleanup left synthetic temp files behind");
+        }
+        audit.lifecycle("cleanup.finished", complete ? "success" : "partial", "application", null,
+                AuditEvent.Metadata.ofLifecycle(complete ? null : "delete_failed", null, null,
+                        AuditEvent.Lifecycle.cleanup(paths.size(), deleted, failed)));
     }
 }
