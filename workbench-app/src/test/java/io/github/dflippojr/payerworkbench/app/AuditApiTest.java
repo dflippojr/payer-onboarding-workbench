@@ -166,7 +166,9 @@ class AuditApiTest {
         do {
             result = output.getAll().lines().filter(l -> l.contains(" : audit "))
                     .map(l -> { try { return mapper.readTree(l.substring(l.indexOf(" : audit ") + 9)); }
-                                catch (Exception e) { throw new AssertionError("Invalid audit JSON", e); } }).toList();
+                                catch (Exception e) { throw new AssertionError("Invalid audit JSON", e); } })
+                    .filter(e -> e.path("actorType").asText().equals("anonymous") && !e.path("action").asText().startsWith("fault.run_"))
+                    .toList(); // run requests only; setup, lifecycle and warm-up events are asserted in AdminLifecycleAuditTest
             if (terminals(result).size() >= terminalCount) { return result; }
             Thread.sleep(10);
         } while (System.nanoTime() < deadline);

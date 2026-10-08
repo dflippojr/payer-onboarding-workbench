@@ -53,3 +53,14 @@ test('inclusive nanosecond boundaries and invalid calendar dates', async () => {
   assert.equal(output.length, 1);
   assert.throws(() => options(['x', '--since', '2026-02-30T12:00:00Z']));
 });
+
+test('selects admin fault and lifecycle events from the synthetic fixture', async () => {
+  const { createReadStream } = await import('node:fs');
+  const { createInterface } = await import('node:readline');
+  for (const [action, outcome] of [['fault.enable', 'success'], ['cleanup.finished', 'partial']]) {
+    const output = [];
+    const lines = createInterface({ input: createReadStream('scripts/fixtures/audit-synthetic.jsonl') });
+    assert.equal(await review(lines, options(['x', '--action', action]), x => output.push(x)), 0);
+    assert.deepEqual(output.map(x => JSON.parse(x).outcome), [outcome]);
+  }
+});

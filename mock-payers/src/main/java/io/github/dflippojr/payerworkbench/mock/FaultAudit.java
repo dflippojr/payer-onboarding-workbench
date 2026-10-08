@@ -49,12 +49,6 @@ final class FaultAudit {
         return failures.get();
     }
 
-    AuditEvent.Faults faults(FaultSettings.Change change) {
-        return new AuditEvent.Faults(ids(change.before()), ids(change.after()),
-                change.before().slowResponseDelay().toMillis(), change.after().slowResponseDelay().toMillis(),
-                change.changed());
-    }
-
     /** An HTTP admin attempt: anonymous, because the standalone admin endpoint has no authentication. */
     void admin(Clock clock, String action, String outcome, String targetType, String targetId, int status,
                String reasonCode, AuditEvent.Faults faults) {
@@ -67,7 +61,7 @@ final class FaultAudit {
     void programmatic(Clock clock, FaultSettings.Change change) {
         append(new AuditEvent(1, UUID.randomUUID(), clock.instant(), "unknown", null, "programmatic",
                 "fault.changed", "success", null, null, "payer", payerId,
-                AuditEvent.Metadata.ofFaults(null, null, payerId, faults(change))));
+                AuditEvent.Metadata.ofFaults(null, null, payerId, change.audit())));
     }
 
     private void append(AuditEvent event) {
@@ -77,10 +71,6 @@ final class FaultAudit {
             failures.incrementAndGet();
             LOG.log(System.Logger.Level.WARNING, WARNING);
         }
-    }
-
-    private static List<String> ids(FaultSettings.Snapshot snapshot) {
-        return snapshot.enabled().stream().map(Fault::id).toList();
     }
 
     private static AuditSink loggingSink() {

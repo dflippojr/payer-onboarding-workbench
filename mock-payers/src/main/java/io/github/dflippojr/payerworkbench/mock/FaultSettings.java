@@ -1,8 +1,11 @@
 package io.github.dflippojr.payerworkbench.mock;
 
 import java.time.Duration;
+import io.github.dflippojr.payerworkbench.core.AuditEvent;
+
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -30,6 +33,16 @@ public final class FaultSettings {
     public record Change(Snapshot before, Snapshot after) {
         public boolean changed() {
             return !before.equals(after);
+        }
+
+        /** The audit form: fault IDs and delays only, safe to log. */
+        public AuditEvent.Faults audit() {
+            return new AuditEvent.Faults(ids(before), ids(after), before.slowResponseDelay().toMillis(),
+                    after.slowResponseDelay().toMillis(), changed());
+        }
+
+        private static List<String> ids(Snapshot snapshot) {
+            return snapshot.enabled().stream().map(Fault::id).toList();
         }
     }
 
@@ -93,7 +106,8 @@ public final class FaultSettings {
     }
 
     /**
-     * Runs {@code mutations} as one step under the lock and returns the state before and after. The
+     * Runs {@code mutations} as one step under the lock and returns the state before and after. If a
+     * mutation throws, the earlier state is restored and the exception propagates. The
      * mutations are not reported to the programmatic listener; the caller records the returned change.
      */
     public Change change(Runnable mutations) {
@@ -102,12 +116,23 @@ public final class FaultSettings {
         try {
             synchronized (this) {
                 Snapshot before = snapshot();
-                mutations.run();
+                try {
+                    mutations.run();
+                } catch (RuntimeException e) {
+                    restore(before); // all or nothing, so a failed step never leaves half a change behind
+                    throw e;
+                }
                 return new Change(before, snapshot());
             }
         } finally {
             quiet.set(wasQuiet);
         }
+    }
+
+    private synchronized void restore(Snapshot snapshot) {
+        enabled.clear();
+        enabled.addAll(snapshot.enabled());
+        slowResponseDelay = snapshot.slowResponseDelay();
     }
 
     private FaultSettings mutate(Runnable mutation) {

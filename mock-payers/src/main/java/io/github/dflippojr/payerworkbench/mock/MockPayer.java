@@ -389,7 +389,7 @@ public abstract class MockPayer implements AutoCloseable {
         try {
             Response response = adminMutation(request, attempt);
             audit.admin(clock, attempt.action, "success", attempt.targetType, attempt.targetId, response.status(),
-                    null, audit.faults(attempt.change));
+                    null, attempt.change.audit());
             return response;
         } catch (HttpError e) {
             // Rejected attempts carry fixed reason codes only; the request's own text is never copied.
@@ -401,7 +401,7 @@ public abstract class MockPayer implements AutoCloseable {
                         case 405 -> "method_not_allowed";
                         default -> "request_failed";
                     },
-                    audit.faults(new FaultSettings.Change(now, now)));
+                    new FaultSettings.Change(now, now).audit());
             throw e;
         }
     }

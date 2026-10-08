@@ -12,7 +12,15 @@ import java.io.IOException;
 @Component
 public class AuditRequestFilter extends OncePerRequestFilter {
     private final AuditLog log;
-    public AuditRequestFilter(AuditLog log) { this.log = log; }
+    private final InternalRequestToken internal;
+
+    public AuditRequestFilter(AuditLog log) { this(log, new InternalRequestToken()); }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    AuditRequestFilter(AuditLog log, InternalRequestToken internal) {
+        this.log = log;
+        this.internal = internal;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
@@ -22,6 +30,12 @@ public class AuditRequestFilter extends OncePerRequestFilter {
         String action = action(request.getMethod(), path);
         if (action == null) { chain.doFilter(request, response); return; }
         AuditContext context = new AuditContext(log);
+        // Only the app's own warm-up request holds the current single-use value; any other header is ignored.
+        if (post && internal.consume(request.getHeader(InternalRequestToken.HEADER))) {
+            context.actorType = "system";
+            context.actorId = "first-run-warmup";
+            context.source = "job";
+        }
         AuditContext.bind(context);
         boolean failed = false;
         try {
