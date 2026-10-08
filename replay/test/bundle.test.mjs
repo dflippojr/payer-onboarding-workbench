@@ -1,6 +1,6 @@
 import './live-history.test.mjs';
 // Checks the exported replay bundle (site-dist/ by default, or $REPLAY_BUNDLE_DIR).
-// Run scripts/export-replays.sh first, then: node --test replay/test/
+// Run node scripts/export-replays.mjs first, then: node --test replay/test/
 import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -32,7 +32,7 @@ function bundleFiles(dir = dist) {
 
 function requireBundle() {
   assert.ok(existsSync(join(dist, 'manifest.json')),
-    `No bundle at ${dist}; run scripts/export-replays.sh (or .ps1) first`);
+    `No bundle at ${dist}; run node scripts/export-replays.mjs first`);
   return JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
 }
 

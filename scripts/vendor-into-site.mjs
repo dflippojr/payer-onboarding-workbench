@@ -1,4 +1,4 @@
-// Copy the replay bundle (site-dist/, made by scripts/export-replays.sh or .ps1) into a website.
+// Copy the replay bundle (site-dist/, made by node scripts/export-replays.mjs) into a website.
 // Usage: node scripts/vendor-into-site.mjs <site>/public/workbench
 // Overwrites the bundle's files in the target and drops recorded runs the new bundle no longer
 // has (runs/*.json); nothing else in the target is touched.
@@ -16,7 +16,7 @@ function fail(message) {
 
 if (!target) fail('Usage: node scripts/vendor-into-site.mjs <site>/public/workbench');
 if (!existsSync(join(dist, 'manifest.json'))) {
-  fail('No bundle in site-dist/; run scripts/export-replays.sh (or .ps1) first.');
+  fail('No bundle in site-dist/; run node scripts/export-replays.mjs first.');
 }
 const inside = (child, parent) => {
   const rel = relative(parent, child);
