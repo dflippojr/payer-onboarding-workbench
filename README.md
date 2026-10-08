@@ -4,7 +4,7 @@ Connect to a (synthetic) insurance payer's FHIR CRD / CDS Hooks endpoint, inspec
 
 Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which stays independently usable; this workbench is an optional consumer of it.
 
-**Status:** v1 is done. The onboarding flow (API and browser UI), the two mock payers, the diagnostic checks, the sample library, report export, the scripted demo and the replay bundle are merged, and the replay is live on [dflippojr.dev](https://dflippojr.dev/). Later work is tracked in [GitHub issues](https://github.com/dflippojr/payer-onboarding-workbench/issues).
+**Status:** v1 is done. The onboarding flow (API and browser UI), the three mock payers, the diagnostic checks, the sample library, report export, the scripted demo and the replay bundle are merged, and the replay is live on [dflippojr.dev](https://dflippojr.dev/). Later work is tracked in [GitHub issues](https://github.com/dflippojr/payer-onboarding-workbench/issues).
 
 All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
 
@@ -38,7 +38,7 @@ Run the app (serves on http://localhost:8080 by default). Install the sibling mo
 
 CI runs two GitHub Actions workflows on pushes and pull requests:
 
-- `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [replay export](#embed-on-a-website) and its bundle check, and uploads `demo-output/` and `site-dist/` as build artifacts.
+- `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [replay export](#embed-on-a-website), the leak scanner's self-test (`replay/test/leaks.test.mjs`) and the bundle check, and uploads `demo-output/` and `site-dist/` as build artifacts.
 - `.github/workflows/sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). The organization and project keys are in the parent `pom.xml`.
 
 Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub Actions weekly and opens at most 3 pull requests per ecosystem, labeled `dependencies`. The root Maven reactor includes all five module POMs and the Maven wrapper; GitHub Actions updates cover `.github/workflows/`. Nothing auto-merges: CI decides whether each update is safe and the owner merges. Major Spring Boot bumps are ignored and handled as deliberate issues. The `fhir-crd-router` pin (`COMMIT=` in `scripts/install-crd-router.sh`) is invisible to Dependabot and stays a manual bump.
@@ -50,7 +50,7 @@ Modules:
 | Module | Purpose |
 |--------|---------|
 | `workbench-core` | Shared contracts and `Redactor`. Pure Java, no Spring. |
-| `mock-payers` | Two embedded synthetic CDS Hooks payers. |
+| `mock-payers` | Three embedded synthetic CDS Hooks payers. |
 | `diagnostics` | Diagnostic checks and the engine that runs them. |
 | `samples` | Synthetic request payloads. |
 | `workbench-app` | Spring Boot app: REST API and static UI. |
@@ -74,12 +74,12 @@ A run records these steps, each with its status, latency and redacted HTTP excha
 
 1. **Resolve connection**: look up the record for the payer and environment, then apply any edits.
 2. **Discovery**: `GET {baseUrl}/cds-services`, then find the service for the sample's hook.
-3. **Authenticate**: an OAuth2 client-credentials token (Northwind) a signed CDS Hooks client JWT (Fabrikam), or SMART Backend Services `private_key_jwt` (Tailspin).
+3. **Authenticate**: an OAuth2 client-credentials token (Northwind), a signed CDS Hooks client JWT (Fabrikam), or SMART Backend Services `private_key_jwt` (Tailspin).
 4. **Send the sample hook request**, with the prefetch keys the payer's discovery asks for.
 5. **Parse the response** with the fhir-crd-router client types (cards, system actions, coverage information).
 6. **Run diagnostics** (`DiagnosticEngine`, with the sample's hook as the required hook).
 
-Discovery and hook calls go through the router's `CdsHooksClient`, which owns authentication, token caching, retries, timeouts and response parsing. Discovery uses an unauthenticated copy of the connection because both synthetic payers advertise public discovery. The SDK's TOKEN and HOOK exchange events populate the separate Authenticate and Hook request steps; an OAuth2 401 shows both hook attempts and the token refresh. Diagnostics evaluate the final hook outcome once. For the JWT payer, a transport observer retains only the claims of the JWT the SDK actually sends. Token event bodies contain only `token_type`, `expires_in` and `scope`; token failures use the SDK's sanitized typed error metadata.
+Discovery and hook calls go through the router's `CdsHooksClient`, which owns authentication, token caching, retries, timeouts and response parsing. Discovery uses an unauthenticated copy of the connection because all three synthetic payers advertise public discovery. The SDK's TOKEN and HOOK exchange events populate the separate Authenticate and Hook request steps; an OAuth2 401 shows both hook attempts and the token refresh. Diagnostics evaluate the final hook outcome once. For the JWT payer, a transport observer retains only the claims of the JWT the SDK actually sends. Token event bodies contain only `token_type`, `expires_in` and `scope`; token failures use the SDK's sanitized typed error metadata.
 
 The UI has a payer picker, a "Break it" panel of payer faults, connection settings you can edit for one run (base URL suffix, `igVersion`, client id; never a secret), a step timeline with expandable request/response, and findings grouped by severity with explanation and fix, plus a **Download report** button (HTML, Markdown or JSON) once a run finishes. It follows `prefers-color-scheme`, works at 375 px and is keyboard navigable. It is plain HTML, CSS and JS under `workbench-app/src/main/resources/static`, with no build step.
 
@@ -166,7 +166,7 @@ curl -s "localhost:8080/api/runs/$RUN_ID/report?format=md" -o report.md
 
 ### What each fault and misconfiguration fails
 
-The integration tests (`OnboardingFlowTest`) hold the app to this table on both payers.
+The integration tests (`OnboardingFlowTest`) hold the app to this table on all three payers.
 
 | Fault or edit | Breaks at | FAIL `checkId` |
 |---|---|---|
@@ -177,7 +177,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on both 
 | `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
 | `wrong-audience-reject`, Northwind | hook request | `auth.hook-rejected` |
 | `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`) |
-| `coverage-info-incomplete` (both payers, `order-sign`) | diagnostics | `response.coverage-information` |
+| `coverage-info-incomplete` (all payers, `order-sign`) | diagnostics | `response.coverage-information` |
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
 | `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
@@ -390,7 +390,7 @@ On the site:
 
 ## Mock payers
 
-`mock-payers` contains two synthetic CDS Hooks payers built on the JDK's `com.sun.net.httpserver`. They behave differently on purpose, so the workbench has something realistic to onboard against. Tests start them in-process on an ephemeral port (`start(0)`). You can also run either one standalone. Every name, identifier and decision they return is made up.
+`mock-payers` contains three synthetic CDS Hooks payers built on the JDK's `com.sun.net.httpserver`. They behave differently on purpose, so the workbench has something realistic to onboard against. Tests start them in-process on an ephemeral port (`start(0)`). You can also run either one standalone. Every name, identifier and decision they return is made up.
 
 **Northwind Health (synthetic)** follows the spec.
 
@@ -453,6 +453,10 @@ curl -X DELETE http://localhost:8181/admin/faults                           # tu
 
 Faulted HTTP responses carry an `X-Mock-Fault` header naming the fault. A well-formed `X-Request-Id` (up to 128 letters, digits, `.`, `_`, `:` or `-`) is echoed on the response and logged at INFO; anything else is ignored, so it can't forge a header or log line. Certificate faults terminate the TLS handshake before HTTP can be sent and affect admin connections too. The admin endpoint has no authentication; the mocks listen on loopback only.
 
+The app starts all three mock payers over real HTTPS at `https://127.0.0.1:<port>`. A synthetic test CA and server certificates for `localhost` and `127.0.0.1` are generated in memory at startup; no certificate or private-key files are written. Payer calls trust only that test CA, and healthy runs show a `tls.handshake` PASS. Certificate faults fail before HTTP discovery receives a response.
+
+Standalone payers use plain HTTP by default. Add `--tls` to any standalone launcher for HTTPS with an ephemeral test CA. This CA is not installed in the JVM or operating-system trust store. Fabrikam and Tailspin fetch the app's public JWKS over loopback HTTP. TLS faults affect the handshake for every endpoint, including admin endpoints; clear them programmatically or restart a standalone payer to recover.
+
 ## Sample requests
 
 The `samples` module ships synthetic CDS Hooks requests, so you can run meaningful requests without writing FHIR by hand. Each sample is a directory under `samples/src/main/resources/samples/` with `request.json` (the request as sent) and `metadata.json` (title, hook, what it demonstrates, the outcome to expect from each mock payer).
@@ -493,7 +497,3 @@ On Windows, use `;` instead of `:` as the classpath separator.
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-The app starts all three mock payers over real HTTPS at `https://127.0.0.1:<port>`. A synthetic test CA and server certificates for `localhost` and `127.0.0.1` are generated in memory at startup; no certificate or private-key files are written. Payer calls trust only that test CA, and healthy runs show a `tls.handshake` PASS. Certificate faults fail before HTTP discovery receives a response.
-
-Standalone payers use plain HTTP by default. Add `--tls` to any standalone launcher for HTTPS with an ephemeral test CA. This CA is not installed in the JVM or operating-system trust store. Fabrikam and Tailspin fetch the app's public JWKS over loopback HTTP. TLS faults affect the handshake for every endpoint, including admin endpoints; clear them programmatically or restart a standalone payer to recover.
