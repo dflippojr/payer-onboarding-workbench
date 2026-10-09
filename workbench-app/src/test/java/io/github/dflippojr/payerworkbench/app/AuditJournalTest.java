@@ -252,4 +252,119 @@ class AuditJournalTest {
             assertFalse(text.contains(marker));
         }
     }
+
+    private static final class MutableClock extends Clock {
+        Instant now;
+        MutableClock(Instant now) { this.now = now; }
+        @Override public java.time.ZoneId getZone() { return ZoneOffset.UTC; }
+        @Override public Clock withZone(java.time.ZoneId zone) { return this; }
+        @Override public Instant instant() { return now; }
+    }
+
+    /** Serializes normally except for its second event. */
+    private static final class FlakyMapper extends ObjectMapper {
+        private int calls;
+
+        FlakyMapper() {
+            registerModule(new JavaTimeModule());
+            disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        }
+
+        @Override
+        public String writeValueAsString(Object value) throws com.fasterxml.jackson.core.JsonProcessingException {
+            if (++calls == 2) {
+                throw new com.fasterxml.jackson.core.JsonProcessingException("SYNTHETIC_SECRET") { };
+            }
+            return super.writeValueAsString(value);
+        }
+    }
+
+    @Test
+    void invalidAndLinkedPathsAreRejected() throws Exception {
+        assertEquals("invalid_path", assertThrows(IOException.class,
+                () -> AuditJournal.prepareDirectory("bad\u0000path")).getMessage());
+        Path real = AuditJournal.prepareDirectory(tmp.resolve("real").toString());
+        Path link = tmp.resolve("link");
+        try {
+            Files.createSymbolicLink(link, real);
+        } catch (IOException | UnsupportedOperationException e) {
+            org.junit.jupiter.api.Assumptions.abort("symbolic links unavailable");
+        }
+        assertEquals("path_is_link", assertThrows(IOException.class,
+                () -> AuditJournal.prepareDirectory(link.toString())).getMessage());
+    }
+
+    @Test
+    void unsupportedOrForgedManifestsAreRejected() throws Exception {
+        for (String body : List.of("{\"version\":2,\"segments\":[]}",
+                "{\"version\":1,\"segments\":[{\"id\":\"../evil\",\"sha256\":\"x\"}]}")) {
+            Path dir = AuditJournal.prepareDirectory(tmp.resolve("j" + body.length()).toString());
+            Files.writeString(dir.resolve("manifest.json"), body);
+            assertEquals("manifest_unreadable", assertThrows(IOException.class,
+                    () -> open(dir, DEFAULT, NOW)).getMessage());
+        }
+    }
+
+    @Test
+    void leftoverSegmentsAreSealedWithCountsAndDamagedLinesAreNotCounted() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("crash").toString());
+        String good = MAPPER.writeValueAsString(event(NOW, "a"));
+        String nl = String.valueOf((char) 10);
+        Files.writeString(dir.resolve("audit-000004.jsonl"), good + nl + "{not json" + nl + "{\"noTime\":1}" + nl
+                + MAPPER.writeValueAsString(event(NOW.plusSeconds(9), "b")) + nl + "{\"truncated\":\"");
+        AuditJournal journal = open(dir, DEFAULT, NOW.plusSeconds(60));
+        JsonNode segment = MAPPER.readTree(Files.readAllBytes(dir.resolve("manifest.json"))).path("segments").get(0);
+        assertEquals("audit-000004", segment.path("id").asText());
+        assertEquals(2, segment.path("events").asInt());
+        assertEquals("2026-10-08T12:00:00Z", segment.path("firstAt").asText());
+        assertEquals("2026-10-08T12:00:09Z", segment.path("lastAt").asText());
+        journal.append(event(NOW.plusSeconds(61), "next"));
+        assertTrue(Files.exists(dir.resolve("audit-000005.jsonl")), "numbering continues after what was found");
+    }
+
+    @Test
+    void retentionAlsoRunsHourlyInsideALongRunningProcess() throws Exception {
+        Path dir = tmp.resolve("long");
+        MutableClock clock = new MutableClock(NOW);
+        AuditJournal journal = AuditJournal.open(dir.toString(),
+                new AuditJournal.Policy(Duration.ofDays(30), 300, 1_000_000), null, clock, MAPPER);
+        for (int i = 0; i < 4; i++) {
+            journal.append(event(NOW.plusSeconds(i), "old"));
+        }
+        assertTrue(Files.exists(dir.resolve("audit-000001.jsonl")));
+        clock.now = NOW.plus(Duration.ofDays(31));
+        journal.append(event(clock.now, "new"));
+        assertFalse(Files.exists(dir.resolve("audit-000001.jsonl")));
+        assertTrue(allText(dir).contains("\"reasonCode\":\"age\""));
+    }
+
+    @Test
+    void ageAndSizeCapCanBothApplyInOnePass() throws Exception {
+        Path dir = tmp.resolve("both");
+        MutableClock clock = new MutableClock(NOW);
+        AuditJournal.Policy policy = new AuditJournal.Policy(Duration.ofDays(30), 300, 1_000_000);
+        AuditJournal first = AuditJournal.open(dir.toString(), policy, null, clock, MAPPER);
+        for (int i = 0; i < 8; i++) {
+            first.append(event(NOW.plusSeconds(i), "x"));
+        }
+        clock.now = NOW.plus(Duration.ofDays(29));
+        AuditJournal second = AuditJournal.open(dir.toString(),
+                new AuditJournal.Policy(Duration.ofDays(30), 300, 700), null, clock, MAPPER);
+        clock.now = NOW.plus(Duration.ofDays(30)).plusSeconds(3);
+        second.append(event(clock.now, "y"));
+        assertTrue(allText(dir).contains("age_and_size_cap") || allText(dir).contains("size_cap"));
+    }
+
+    @Test
+    void aSerializationFailureMidSegmentClosesItAndLaterEventsStillLand() throws Exception {
+        Path dir = tmp.resolve("abandon");
+        ObjectMapper flaky = new FlakyMapper();
+        AuditJournal journal = AuditJournal.open(dir.toString(), DEFAULT, null, Clock.fixed(NOW, ZoneOffset.UTC), flaky);
+        journal.append(event(NOW, "one"));
+        RuntimeException e = assertThrows(RuntimeException.class, () -> journal.append(event(NOW, "two")));
+        assertFalse(String.valueOf(e).contains("SYNTHETIC_SECRET"));
+        journal.append(event(NOW, "three"));
+        assertEquals(2, segments(dir).size());
+        assertTrue(allText(dir).contains("\"targetId\":\"three\""));
+    }
 }
