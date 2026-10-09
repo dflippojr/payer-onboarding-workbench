@@ -14,9 +14,7 @@
 - Owner review uses a named captured file and the dependency-free Node reader. The app
   adds no audit API, mutation route, viewer, database or file sink. Reader output is not audited.
 - Follow #69's recorded decisions: anonymous callers, fail open with a constant warning
-  and gap counter, and a future 30-day / 10 MiB segment / 100 MiB total durable policy.
-  #67 promises only existing logging; #68 system events and #69 storage, checksums,
-  retention and restore verification remain separate work. The machine owner is trusted;
+  and gap counter, and a 30-day / 10 MiB segment / 100 MiB total durable policy (built in #69). The machine owner is trusted;
   older backup restores roll the trail back, with no independent surviving journal.
 
 ## Admin, run-fault and lifecycle audit events (#68)
@@ -35,6 +33,25 @@
 - Cleanup outcome is observed, not assumed: each delete is counted and a leftover directory is
   `partial`. No shutdown event can be promised after SIGKILL or a crash.
 - Durable segments, checksums, retention and restore verification stay with #69.
+
+## Durable audit journal (#69)
+
+Owner decisions of 2026-10-08, implemented as written on the issue.
+
+- Opt-in, in the app: one `AuditJournal` sink next to the logging sink, selected by
+  `workbench.audit.journal-dir`. Segments are bare JSON lines of the same `AuditEvent`; no new schema,
+  database or framework. Run history (`RunStore`) is untouched.
+- 30 days, 10 MiB segments, 100 MiB total. Expiry removes whole closed segments (age first, then
+  oldest-first for the size cap) and appends an `audit.retention` event with segment IDs and counts.
+- Setup is refused rather than weakened: relative or linked paths, paths inside a checkout, directories
+  others can access and an unreadable manifest leave the journal off, bump the failure counter and
+  show `workbench.audit.journal.protected` = 0.
+- Review stays owner-only and offline (`scripts/audit-reader.mjs` on a directory, plus `--verify`).
+  No endpoint, role or page. Callers stay anonymous; the operator label is manifest-only.
+- Integrity is SHA-256 per closed segment in a versioned manifest. It detects accidents, not a
+  rewrite by the machine owner; no signing or WORM. Restoring a backup rolls the trail back.
+- Fail open with the existing constant warning and counter; a failed write closes its segment so a
+  partial line is never extended.
 
 Choices made while planning the workbench (issue #1). Each has a short rationale so the owner can override it; changing one means a new issue, not a silent edit.
 

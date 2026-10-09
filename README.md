@@ -195,7 +195,7 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on all t
 
 One finding comes from the app rather than the diagnostics engine: `connection.record`, reported when no connection record exists, since nothing is sent. `Redactor` masks a bearer JWT whole in the recorded exchange, so for `auth.jwt-audience` the app records the non-secret claims of the CDS Hooks client JWT the SDK signs (`iss`, `aud`, `exp`, `iat`, `jti`, `kid`, never the token or its signature) with each hook call, and the engine compares `aud` with the service URL. When `aud` already is the service URL but the payer's 401 is about the audience, as with Fabrikam's `wrong-audience-reject`, the finding says the payer expects another URL and quotes the one it names. Tailspin records only `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, and `kid` from the actual assertion signed by `JwtSigner.clientAssertion`; it never stores the assertion, encoded parts, signature or private key. `auth.client-assertion` passes when the token endpoint accepts it, and explains identity, audience, lifetime and replay rejections using the recorded claims and payer error description. Northwind checks the audience of its own access token, which the workbench cannot inspect, so `auth.hook-rejected` explains that 401 from the payer's `WWW-Authenticate` header and JSON error body. Fabrikam client-id rejections use the same check. It names the rejected credential, quotes the payer's reason, and recommends a fix for RFC 6750 `invalid_token`, `insufficient_scope` or `invalid_request`. Generic response-schema failures are suppressed for explained authentication and throttling errors. An expired credential alone is not clock skew; `auth.clock-skew` requires a measured difference or an explicit clock error.
 
-Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`).
+Settings (`workbench.*` in `application.properties` or on the command line): `slow-response-delay` (default `11s`, past the 10 s budget), `latency-warn` (`5s`), `latency-fail` (`10s`), `request-timeout` (`15s`), `max-runs` (`200`). The audit journal settings are listed under *Durable audit journal*.
 
 ## Audit review (offline)
 
@@ -241,12 +241,74 @@ Logging is best effort. An observable sink failure preserves the API/run behavio
 the constant warning `Audit event write failed; audit trail has a gap`, and increments
 `workbench.audit.write.failures` (Prometheus: `workbench_audit_write_failures_total`). No
 side effect is retried. Missing captures or logger/OS loss can also leave evidence gaps.
-There is no automatic durable storage, rotation, backup or retention guarantee in this
-baseline. The policy selected on #69 is 30 days, 10 MiB segments and 100 MiB total, with
-anonymous callers and fail-open behavior; durable enforcement and checksum verification
-belong to #69. Restoring an older capture or
-backup rolls the visible trail back. The machine owner is trusted; this is not tamper-proof
-storage or a compliance journal.
+Durable storage is opt-in; see the next section. Without it, the only copy is the log
+you capture yourself.
+
+### Durable audit journal (#69)
+
+Set `workbench.audit.journal-dir` to an **absolute** directory (for example
+`--workbench.audit.journal-dir=/var/lib/workbench-audit`) and every audit event is also appended
+to rolling JSON-lines segments there. Stdout logging continues unchanged as the secondary sink.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `workbench.audit.journal-dir` | unset (journal off) | Absolute directory outside any source checkout |
+| `workbench.audit.retention` | `30d` | Closed segments whose newest event is older than this are deleted |
+| `workbench.audit.segment-bytes` | `10485760` (10 MiB) | A segment is closed before it would pass this size |
+| `workbench.audit.total-bytes` | `104857600` (100 MiB) | When all segments exceed this, the oldest closed ones are deleted first, so the size cap can shorten the 30 days |
+| `workbench.audit.operator-label` | unset | Optional `[A-Za-z0-9._-]` label written to the manifest to name the deployment |
+
+- **Location and access.** The directory is created owner-only (mode `0700`, or an ACL for the
+  owner on Windows). An existing directory that group/others (or other Windows principals) can access,
+  a relative path, a symlink, a path inside a checkout (a `.git` or `pom.xml` above it) or an
+  unreadable manifest is **rejected**: the application logs the constant warning
+  `Audit journal unavailable; durable audit trail is not being written`, counts it in
+  `workbench.audit.write.failures`, sets the gauge `workbench.audit.journal.protected` to `0`
+  and keeps running with log-only audit. It never silently counts as a protected journal. Review
+  access is the OS owner's file access; there is no web page, endpoint or role.
+- **Files.** `audit-000001.jsonl`, `audit-000002.jsonl`, ... plus `manifest.json`, a versioned list
+  of closed segments (ID, bytes, event count, first/last UTC time, SHA-256). The open segment is
+  not in the manifest until it is closed by size or by the next start. Nothing in the application
+  updates or deletes events except retention. Run history stays memory-only (`max-runs`) and is
+  independent of the journal.
+- **Retention is a recorded operation.** Expiry deletes whole closed segments and appends one
+  `audit.retention` event (`system` `audit-journal`, reason `age`, `size_cap` or `age_and_size_cap`,
+  and the expired segment IDs and count, never record contents). It is retention, not evidence of
+  immutable storage.
+- **Who.** Callers are `anonymous`; system work is `system` with a named actor. The operator label
+  only labels the process in the manifest. It does not say who made a request, and no header,
+  payer credential or JWT claim is ever used as an actor.
+- **Failure.** If a write or a rotation fails (full disk, deleted directory) the run, the API and
+  the logging sink carry on, the constant warning `Audit event write failed; audit trail has a gap`
+  is logged and `workbench.audit.write.failures` is incremented. The event is lost from the
+  journal; that is the documented gap. A failed write closes the segment so the next event starts
+  a fresh one. No side effect is retried.
+- **Review and verify (offline).**
+
+```sh
+node scripts/audit-reader.mjs /var/lib/workbench-audit --run <run-uuid>
+node scripts/audit-reader.mjs /var/lib/workbench-audit --action audit.retention
+node scripts/audit-reader.mjs /var/lib/workbench-audit --verify
+```
+
+  Review accepts a journal directory as well as a log capture and takes the same filters. `--verify`
+  prints one `{"segment":...,"status":...}` line per segment: `ok`, `missing`, `checksum_mismatch`,
+  `truncated`, `malformed`, `event_count_mismatch`, or `unsealed` (a segment the manifest does not
+  list yet, such as the one being written or left by a crash; not a failure). It exits nonzero on any
+  problem and never prints event content. Checksums detect accidental corruption, truncation and
+  missing files. They do **not** stop anyone with write access from changing a segment and the
+  manifest together; the machine owner is trusted, and there is no signing or WORM storage.
+- **Backup and restore.** Copy the directory (stop the app or accept an unsealed last segment).
+  A restored copy reads the same events with the same IDs and timestamps; nothing is rewritten.
+  **Restoring an older backup rolls the trail back** to that point: events after the backup are
+  gone, and there is no separate journal that survives a restore. On the next start any leftover
+  segment is sealed and a new segment begins, so processes are never silently merged.
+- The journal records only the allowlisted metadata above. It never holds credentials, request or
+  response bodies, FHIR/financial content or reports, and it cannot attest that a report was saved
+  or a site published. Synthetic marker tests cover segments, reader output and the manifest.
+
+Restoring an older log capture rolls the visible trail back too. The machine owner is trusted;
+this is not tamper-proof storage or a compliance journal.
 
 ### Fault changes and system operations
 
