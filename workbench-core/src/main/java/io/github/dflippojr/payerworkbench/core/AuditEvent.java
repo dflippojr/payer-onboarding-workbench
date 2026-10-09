@@ -53,14 +53,25 @@ public record AuditEvent(int schemaVersion, UUID eventId, Instant occurredAt,
      * Safe startup configuration (booleans and durations only) and cleanup counts. Unused fields stay null.
      */
     public record Lifecycle(Boolean customEndpointsEnabled, Integer maxRuns, Long latencyWarnMs,
-            Long latencyFailMs, Long requestTimeoutMs, Integer attempted, Integer deleted, Integer failed) {
+            Long latencyFailMs, Long requestTimeoutMs, Integer attempted, Integer deleted, Integer failed,
+            List<String> segmentIds) {
+        public Lifecycle {
+            segmentIds = segmentIds == null ? null : List.copyOf(segmentIds);
+        }
+
         public static Lifecycle configuration(boolean customEndpoints, int maxRuns, long warnMs, long failMs,
                 long timeoutMs) {
-            return new Lifecycle(customEndpoints, maxRuns, warnMs, failMs, timeoutMs, null, null, null);
+            return new Lifecycle(customEndpoints, maxRuns, warnMs, failMs, timeoutMs, null, null, null, null);
+        }
+
+        /** Journal segments deliberately expired: generated segment IDs and counts, never record contents. */
+        public static Lifecycle retention(List<String> segmentIds) {
+            return new Lifecycle(null, null, null, null, null, segmentIds.size(), segmentIds.size(), 0,
+                    segmentIds);
         }
 
         public static Lifecycle cleanup(int attempted, int deleted, int failed) {
-            return new Lifecycle(null, null, null, null, null, attempted, deleted, failed);
+            return new Lifecycle(null, null, null, null, null, attempted, deleted, failed, null);
         }
     }
 

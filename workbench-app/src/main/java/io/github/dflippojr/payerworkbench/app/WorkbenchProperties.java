@@ -15,6 +15,7 @@ import java.time.Duration;
  * @param requestTimeout    how long the workbench waits for any one HTTP response
  * @param maxRuns           how many runs {@code GET /api/runs/{id}} remembers
  * @param customEndpoints   {@code workbench.custom-endpoints.*}
+ * @param audit             {@code workbench.audit.*}: the optional durable audit journal
  */
 @ConfigurationProperties("workbench")
 public record WorkbenchProperties(
@@ -23,7 +24,8 @@ public record WorkbenchProperties(
         Duration latencyFail,
         Duration requestTimeout,
         Integer maxRuns,
-        CustomEndpoints customEndpoints
+        CustomEndpoints customEndpoints,
+        Audit audit
 ) {
     /**
      * @param enabled whether {@code POST /api/runs} accepts a {@code customEndpoint}; off by default
@@ -35,13 +37,38 @@ public record WorkbenchProperties(
         }
     }
 
+    /**
+     * Durable audit journal; off unless {@code journalDir} is set.
+     *
+     * @param journalDir    absolute directory outside any checkout, owner-only
+     * @param retention     how long closed segments are kept (default 30 days)
+     * @param segmentBytes  size at which a segment is closed (default 10 MiB)
+     * @param totalBytes    cap on all segments; the oldest closed ones expire first (default 100 MiB)
+     * @param operatorLabel optional label for the process in the manifest; never an actor
+     */
+    public record Audit(String journalDir, Duration retention, Long segmentBytes, Long totalBytes,
+                        String operatorLabel) {
+        public Audit {
+            retention = retention == null ? Duration.ofDays(30) : retention;
+            segmentBytes = segmentBytes == null ? 10L * 1024 * 1024 : segmentBytes;
+            totalBytes = totalBytes == null ? 100L * 1024 * 1024 : totalBytes;
+            journalDir = journalDir == null || journalDir.isBlank() ? null : journalDir;
+        }
+    }
+
+    public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
+                               Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints) {
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null);
+    }
+
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null);
     }
 
     @ConstructorBinding
     public WorkbenchProperties {
+        audit = audit == null ? new Audit(null, null, null, null, null) : audit;
         customEndpoints = customEndpoints == null ? new CustomEndpoints(false) : customEndpoints;
         slowResponseDelay = slowResponseDelay == null ? Duration.ofSeconds(11) : slowResponseDelay;
         latencyWarn = latencyWarn == null ? Duration.ofSeconds(5) : latencyWarn;

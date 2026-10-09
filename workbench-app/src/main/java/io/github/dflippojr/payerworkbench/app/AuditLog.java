@@ -22,9 +22,45 @@ public class AuditLog {
     private final Clock clock;
     private final Counter failures;
 
-    @org.springframework.beans.factory.annotation.Autowired
+    static final String JOURNAL_WARNING = "Audit journal unavailable; durable audit trail is not being written";
+
     public AuditLog(MeterRegistry registry) {
         this(loggingSink(), Clock.systemUTC(), registry);
+    }
+
+    /** Logging sink plus, when {@code workbench.audit.journal-dir} is set, the durable journal. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AuditLog(MeterRegistry registry, WorkbenchProperties properties) {
+        this(withJournal(properties.audit(), registry), Clock.systemUTC(), registry);
+    }
+
+    private static AuditSink withJournal(WorkbenchProperties.Audit audit, MeterRegistry registry) {
+        AuditSink logging = loggingSink();
+        if (audit.journalDir() == null) {
+            return logging;
+        }
+        AuditJournal journal = null;
+        try {
+            journal = AuditJournal.open(audit.journalDir(), new AuditJournal.Policy(audit.retention(),
+                    audit.segmentBytes(), audit.totalBytes()), audit.operatorLabel(), Clock.systemUTC(), MAPPER);
+        } catch (java.io.IOException | RuntimeException e) {
+            registry.counter("workbench.audit.write.failures").increment();
+            LOG.warn(JOURNAL_WARNING);
+        }
+        int protectedFlag = journal == null ? 0 : 1;
+        io.micrometer.core.instrument.Gauge.builder("workbench.audit.journal.protected", () -> protectedFlag)
+                .register(registry);
+        if (journal == null) {
+            return logging;
+        }
+        AuditJournal active = journal;
+        return event -> {
+            try {
+                logging.append(event);
+            } finally {
+                active.append(event);
+            }
+        };
     }
 
     AuditLog(AuditSink sink, Clock clock, MeterRegistry registry) {
@@ -33,12 +69,13 @@ public class AuditLog {
         failures = registry.counter("workbench.audit.write.failures");
     }
 
+    private static final ObjectMapper MAPPER = new ObjectMapper().registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
     private static AuditSink loggingSink() {
-        ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         return event -> {
             try {
-                LOG.info("audit {}", mapper.writeValueAsString(event));
+                LOG.info("audit {}", MAPPER.writeValueAsString(event));
             } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 throw new IllegalStateException("Audit serialization failed");
             }
