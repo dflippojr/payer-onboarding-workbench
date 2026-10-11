@@ -163,3 +163,26 @@ test('J08 connection edit belongs to one retained run and has matching audit met
   await page.getByText('Step details', { exact: true }).first().click();
   await expect(page.locator('#steps details[open]').first()).toContainText('2.2.1');
 });
+
+test('synthetic banner and incomplete coverage fault explain the supported scenario', async ({ page }) => {
+  await ready(page);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await expect(page.getByRole('note')).toContainText('All three synthetic payers run inside this app with generated credentials');
+  await expect(page.getByRole('note')).toContainText('no real payer, patient or PHI is involved');
+  await expect(page.getByRole('note')).toContainText('passing here does not prove real-payer interoperability');
+  const fault = page.getByRole('checkbox', { name: 'Incomplete coverage information' });
+  const label = page.locator('.check').filter({ has: fault });
+  await expect(label).toContainText('Order-sign responses omit the coverage assertion ID and use an invalid covered value.');
+  await expect(label.locator('code')).toHaveText('coverage-info-incomplete');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await label.click();
+  await expect(fault).toBeChecked();
+  await fault.focus();
+  await page.keyboard.press('Space');
+  await expect(fault).not.toBeChecked();
+  await page.keyboard.press('Space');
+  await expect(fault).toBeChecked();
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  await runOnboarding(page);
+  await expect(page.locator('.finding.FAIL').filter({ hasText: 'response.coverage-information' })).toHaveCount(1);
+});

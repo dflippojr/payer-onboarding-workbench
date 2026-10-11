@@ -83,7 +83,8 @@ legend { font: 600 11px var(--mono); letter-spacing: 1px; text-transform: upperc
 .field.grow { flex: 1 1 260px; }
 .hint { font: 400 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 input:not([type="radio"]):not([type="checkbox"]), select, textarea {
-  font: 16px var(--mono); padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+  font-family: var(--mono); font-size: 16px; font-weight: 400; line-height: normal;
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--paper); color: var(--ink); min-width: 0; width: 100%; min-height: 44px;
 }
 input:disabled { opacity: .55; }
