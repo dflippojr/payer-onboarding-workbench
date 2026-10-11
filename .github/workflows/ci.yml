@@ -22,6 +22,8 @@ jobs:
         run: npm ci
       - name: Install UI browsers
         run: npx playwright install --with-deps chromium webkit
+      - name: Verify disposable-instance safety boundaries
+        run: npm run test:ui-instance
       - name: Disposable synthetic UI journeys (one worker)
         run: npm run test:ui
       - name: Stop the owned UI instance even on failure

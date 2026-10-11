@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { test, expect, ready, runOnboarding, reopen, audit } from './fixtures';
+import { test, expect, ready, runOnboarding, reopen, audit, auditEvent } from './fixtures';
 
 for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
   test('J01/J05/J06 healthy ' + payer + ', reload, history and reports', async ({ page }) => {
@@ -13,6 +13,7 @@ for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
     await expect(page.locator('#steps .failed')).toHaveCount(0);
     await audit('run.completed', result.runId, payer + '-synthetic');
     await reopen(page, result.runId);
+    await auditEvent('run.read', result.runId);
     await page.locator('#clientId').fill('synthetic-unsent');
     await page.getByLabel('Sample request').selectOption('order-sign-home-oxygen');
     let posts = 0;
@@ -32,8 +33,8 @@ for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
       expect(report).toContain(result.runId);
       expect(report.toLowerCase()).toContain('synthetic');
       expect(report).toContain('PASS');
+      await auditEvent('report.rendered', result.runId, { reportFormat: format });
     }
-    await expect.poll(async () => (await readFile('.ui-test/app.log', 'utf8')).includes('"action":"report.rendered"')).toBe(true);
     expect(errors).toEqual([]);
   });
 }
@@ -48,6 +49,16 @@ test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page
   await expect(page.locator('.finding.FAIL .fix').first()).toBeVisible();
   await audit('run.completed', failed.runId, 'northwind-synthetic');
   await reopen(page, failed.runId);
+  for (const format of ['html', 'md', 'json']) {
+    await page.getByLabel('Report format').selectOption(format);
+    const pending = page.waitForEvent('download');
+    await page.getByRole('link', { name: 'Download report' }).click();
+    const report = await readFile((await (await pending).path())!, 'utf8');
+    expect(report).toContain(failed.runId);
+    expect(report).toContain('FAIL');
+    expect(report.toLowerCase()).toContain('synthetic');
+    await auditEvent('report.rendered', failed.runId, { reportFormat: format });
+  }
   await expect(page.locator('#steps .step.failed h3')).toHaveText(['Discovery', 'Run diagnostics']);
   await expect(page.locator('#steps .step.skipped')).toHaveCount(3);
   const evidence = page.locator('.finding.FAIL summary').first();
@@ -100,11 +111,17 @@ test('live resize preserves open disclosure, unsent settings, selection and focu
   expect(errors).toEqual([]);
 });
 
-test('J07 keyboard reaches form and submits with results focus', async ({ page }) => {
+test('J07 keyboard reaches form and submits with results focus', async ({ page, browserName }) => {
   await ready(page);
   await page.keyboard.press('Tab');
-  await expect(page.getByRole('link', { name: 'Skip to results' })).toBeFocused();
+  const skip = page.getByRole('link', { name: 'Skip to results' });
+  if (browserName !== 'webkit') await expect(skip).toBeFocused();
+  // WebKit link traversal depends on its platform preference; either native path must reach the radio.
+  if (await skip.evaluate(element => element === document.activeElement)) await page.keyboard.press('Tab');
+  await expect(page.locator('input[value="northwind-synthetic"]')).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(page.getByRole('combobox', { name: 'Environment', exact: true })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(page.locator('input[value="northwind-synthetic"]')).toBeFocused();
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('input[value="fabrikam-synthetic"]')).toBeChecked();
@@ -118,4 +135,31 @@ test('J07 keyboard reaches form and submits with results focus', async ({ page }
   await page.keyboard.press('Enter');
   await expect(page.locator('#run-status')).toContainText('Done:');
   await expect(page.getByRole('heading', { name: 'Steps', exact: true })).toBeFocused();
+  // Exercise link activation/focus independently of the browser's native traversal preference.
+  await page.getByRole('link', { name: 'Skip to results' }).focus();
+  await expect(page.getByRole('link', { name: 'Skip to results' })).toBeInViewport();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Steps', exact: true })).toBeFocused();
+});
+
+test('J08 connection edit belongs to one retained run and has matching audit metadata', async ({ page }) => {
+  await ready(page);
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  await page.locator('#igVersion').fill('2.0.1');
+  const edited = await runOnboarding(page);
+  expect(edited.steps[0].details.edited).toEqual({ igVersion: '2.0.1' });
+  await audit('run.completed', edited.runId, 'northwind-synthetic');
+  await auditEvent('run.completed', edited.runId, { overrides: ['igVersion'] });
+  await reopen(page, edited.runId);
+  const details = page.getByText('Step details', { exact: true }).first();
+  await details.click();
+  await expect(page.locator('#steps details[open]').first()).toContainText('2.0.1');
+  await page.getByRole('button', { name: 'Reset faults and settings' }).click();
+  const normal = await runOnboarding(page);
+  expect(normal.steps[0].details.connection.igVersion).toBe('2.2.1');
+  expect(normal.steps[0].details.edited).toEqual({});
+  await auditEvent('run.completed', normal.runId, { overrides: [] });
+  await reopen(page, normal.runId);
+  await page.getByText('Step details', { exact: true }).first().click();
+  await expect(page.locator('#steps details[open]').first()).toContainText('2.2.1');
 });
