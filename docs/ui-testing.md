@@ -4,7 +4,7 @@ Contract version: 1
 
 ## Scope and isolation
 
-Target: payer-onboarding-workbench live browser UI at loopback only. Node 22+, JDK 21, npm, gh 2.99+ (screenshot attachments), playwright-cli and Git are required. Install the pinned router with `.\scripts\install-crd-router.ps1` (PowerShell) or `bash scripts/install-crd-router.sh` (POSIX); build with `.\mvnw.cmd verify` / `./mvnw verify`. Install tests with `npm ci`, then `npx playwright install chromium webkit` (CI adds --with-deps).
+Target: payer-onboarding-workbench live browser UI at loopback only. Node 22+, JDK 21, npm, gh 2.99+ (screenshot attachments), playwright-cli and Git are required. Install the pinned router with `.\scripts\install-crd-router.ps1` (PowerShell) or `bash scripts/install-crd-router.sh` (POSIX); build with `.\mvnw.cmd verify` / `./mvnw verify`. Install tests with `npm ci --ignore-scripts`, then `node node_modules/@playwright/test/cli.js install chromium webkit` (CI adds --with-deps).
 
 No payer credentials, production data, login, email/payment/model credentials or external integrations are needed. The launcher accepts no URL, credential or configuration arguments. It refuses SPRING_*, WORKBENCH_* and Java option overrides and passes only platform/tool paths to Java. It loads only packaged application.properties, binds 127.0.0.1 on a fresh ephemeral port, and forces custom endpoints off. The three payers bind ephemeral loopback HTTPS ports, use synthetic fixtures and generate credentials/CA in memory. Connection stores and audit journal are under a fresh OS-temp ui-workbench-* directory, including java.io.tmpdir. Nothing is copied from an existing database. The launcher verifies disabled custom endpoints and all three synthetic payer IDs before publishing readiness.
 

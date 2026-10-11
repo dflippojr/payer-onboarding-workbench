@@ -59,7 +59,7 @@ Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
 
 ## UI interaction tests
 
-Use the [UI testing contract](docs/ui-testing.md) for the disposable synthetic instance, device/theme journeys and cleanup. After building the jar with Maven, run `npm ci`, `npx playwright install chromium webkit`, `npm run test:ui-instance` and `npm run test:ui`. The browser tests start a fresh owned loopback instance for every test and run with one worker. Start an exploratory instance with `node scripts/ui-instance.mjs start`; stop it with `node scripts/ui-instance.mjs stop`.
+Use the [UI testing contract](docs/ui-testing.md) for the disposable synthetic instance, device/theme journeys and cleanup. After building the jar with Maven, run `npm ci --ignore-scripts`, `node node_modules/@playwright/test/cli.js install chromium webkit`, `npm run test:ui-instance` and `npm run test:ui`. The browser tests start a fresh owned loopback instance for every test and run with one worker. Start an exploratory instance with `node scripts/ui-instance.mjs start`; stop it with `node scripts/ui-instance.mjs stop`.
 
 ## Onboarding flow
 

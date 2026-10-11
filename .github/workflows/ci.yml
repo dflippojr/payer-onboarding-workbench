@@ -19,9 +19,9 @@ jobs:
         with:
           node-version: 22
       - name: Install locked UI test dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Install UI browsers
-        run: npx playwright install --with-deps chromium webkit
+        run: node node_modules/@playwright/test/cli.js install --with-deps chromium webkit
       - name: Verify disposable-instance safety boundaries
         run: npm run test:ui-instance
       - name: Disposable synthetic UI journeys (one worker)
