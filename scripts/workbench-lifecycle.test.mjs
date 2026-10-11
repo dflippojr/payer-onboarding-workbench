@@ -1,6 +1,6 @@
 // node --experimental-vm-modules --test scripts/workbench-lifecycle.test.mjs
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { test } from 'node:test';
@@ -33,7 +33,7 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-2.
       openSync(...args) { calls.opens.push(args); return 42; },
       closeSync(fd) { calls.closes.push(fd); },
     },
-    'node:path': path, 'node:url': url,
+    'node:path': path, 'node:url': url, 'node:events': { once },
     'node:timers/promises': { async setTimeout(ms) {
       calls.delays.push(ms);
       afterDelay?.(child, calls.delays.length);
@@ -167,6 +167,20 @@ test('concurrent and repeated stops share one pending exit and signal only the o
   await Promise.all([first, second, app.stop()]);
   assert.equal(f.child.kills, 1);
   assert.equal(unrelatedKills, 0);
+});
+
+test('a child error during stop rejects all waiters instead of hanging', async () => {
+  const f = await fixture();
+  const app = f.create('DEMO_SKIP_BUILD');
+  await app.start('app.jar', 'app.log');
+  const error = new Error('cannot signal child');
+  f.child.kill = () => { f.child.kills++; f.child.emit('error', error); return false; };
+  const first = app.stop();
+  assert.equal(first, app.stop());
+  await assert.rejects(first, value => value === error);
+  await assert.rejects(app.stop(), value => value === error);
+  assert.equal(f.child.kills, 1);
+  assert.equal(f.child.listenerCount('exit'), 0);
 });
 
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {

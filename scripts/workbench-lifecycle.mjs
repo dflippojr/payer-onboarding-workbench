@@ -1,5 +1,5 @@
-// App lifecycle shared by the synthetic demo and replay export; importing does no work.
 import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { closeSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,7 @@ export function createWorkbench(skipBuild) {
   }
   function stop() {
     if (!stopping && app?.pid && app.exitCode === null && app.signalCode === null) {
-      stopping = new Promise(resolve => app.once('exit', resolve));
+      stopping = once(app, 'exit');
       app.kill();
     }
     return stopping ?? Promise.resolve();
