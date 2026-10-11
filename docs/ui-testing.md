@@ -1,0 +1,53 @@
+# UI testing contract
+
+Contract version: 1
+
+## Scope and isolation
+
+Target: payer-onboarding-workbench live browser UI at loopback only. Node 22+, JDK 21, npm, gh 2.99+ (screenshot attachments), playwright-cli and Git are required. Install the pinned router with `.\scripts\install-crd-router.ps1` (PowerShell) or `bash scripts/install-crd-router.sh` (POSIX); build with `.\mvnw.cmd verify` / `./mvnw verify`. Install tests with `npm ci`, then `npx playwright install chromium webkit` (CI adds --with-deps).
+
+No payer credentials, production data, login, email/payment/model credentials or external integrations are needed. The launcher accepts no URL, credential or configuration arguments. It refuses SPRING_*, WORKBENCH_* and Java option overrides and passes only platform/tool paths to Java. It loads only packaged application.properties, binds 127.0.0.1 on a fresh ephemeral port, and forces custom endpoints off. The three payers bind ephemeral loopback HTTPS ports, use synthetic fixtures and generate credentials/CA in memory. Connection stores and audit journal are under a fresh OS-temp ui-workbench-* directory, including java.io.tmpdir. Nothing is copied from an existing database. The launcher verifies disabled custom endpoints and all three synthetic payer IDs before publishing readiness.
+
+## Start
+
+One command from repo root, in PowerShell or a POSIX shell:
+
+`node scripts/ui-instance.mjs start`
+
+Build the jar first as described above. This starts an owned supervisor and prints exactly `UI_TEST_URL=http://127.0.0.1:<owned-ephemeral-port>` after its own Java child reports startup and API isolation checks pass. It atomically reserves the worktree handle before launching Java, refuses an existing handle, and uses server.port=0 so the OS assigns a unique owned socket; it never reuses a server. The handle is .ui-test/instance.json (owned PIDs, data path, authenticated loopback control URL); logs are .ui-test/app.log and supervisor.log. Partial startup invokes cleanup. In CI, `node scripts/ui-instance.mjs serve` runs the same instance in the foreground under each Playwright test fixture. SIGINT/SIGTERM clean the owned child/data. Abrupt machine/process termination cannot guarantee cleanup; use the handle and logs for investigation rather than killing an arbitrary PID.
+
+## Seed and sign-in
+
+No authentication. Browser operations have anonymous/http audit actor. Startup seeds northwind-synthetic (OAuth2), fabrikam-synthetic (CDS JWT) and tailspin-synthetic (SMART), SANDBOX connections, and the packaged sample catalog. Use order-sign-hospital-bed for healthy/fault runs; order-sign-home-oxygen is the alternate selection. Default Northwind connection IG is 2.2.1. No real endpoint option appears.
+
+Deterministic reset: `node scripts/ui-instance.mjs reset` stops the owned instance and starts a fresh one, clearing history and faults. Run at most one mutating worker; choose payer/sample and reset faults/settings through the UI before each journey. Run IDs are generated, so select the ID returned by that case's POST, never another case's history row. Independent tests use a new instance fixture per test; exploratory cases may retain only their own history to test reload. Reset between device/theme cases.
+
+## Journeys
+
+The only primary app page is /. Ready: three payer radios, six sample options, Run onboarding enabled, history loading complete. Results/findings/history are sections of the same page; report HTML is a downloaded artifact, not a second app page. Replay is a separate exported viewer outside this pass.
+
+| ID | Actions | Observable outcome after reload | Audit expectation |
+| --- | --- | --- | --- |
+| J01 healthy onboarding | Choose each synthetic payer, SANDBOX, hospital-bed, clear faults/settings, Run onboarding | Six steps; no failing checks; retained run can be reopened after reload | run.completed success, matching runId, anonymous/http, metadata payerId/sampleId/SANDBOX |
+| J02 diagnostic failure | Northwind + Discovery is down; run; open failure detail/evidence | Discovery failed, later transport steps skipped, discovery.reachable FAIL with fix; same result after reload/reopen | run.completed success with verdict FAIL and matching runId (diagnostic failure is a successful API request) |
+| J03 settings/reset | Part-fill suffix /r4, IG 2.0.1 and synthetic client id; select fault; Reset faults and settings | Edits empty, faults clear, payer/sample/environment selection retained; next healthy run is unaffected. Form edits are deliberately per run and not persisted on reload | Overrides captured only when submitted; reset alone has no server write/audit |
+| J04 unavailable environment | Choose STAGING and run, then return to SANDBOX | A failed resolve-connection step explains missing connection; it remains in recent history after reload | Matching run.completed, metadata environment STAGING |
+| J05 recent history | Run J01/J02; reload; choose each returned run; reopen while alternate sample/edit remains selected | Saved timeline, findings, correct report ID; no POST when reopening and form settings unchanged | run.read success with matching runId; run_history.read |
+| J06 reports | For retained healthy and failure run, select HTML/Markdown/JSON and download | Nonempty matching-run report, synthetic disclaimer and correct verdict; report still works after reload/reopen | report.rendered success with runId and reportFormat |
+| J07 keyboard/disclosure | Tab/Shift+Tab through form; arrows change radio/select; Space toggles fault; Enter submits; toggle Step details / Evidence with Enter/Space | Visible focus, results heading receives focus after submission, details expand/collapse, controls remain reachable | No new writes beyond the submitted run |
+
+No persisted connection CRUD, delete, edit modal, app menu or cancel-in-flight control exists. Fault/reset actions are per-run controls. Use native selects and a Step details disclosure as the menu/disclosure alternative during resize, with partly filled connection inputs. No sheet route/deep link: a fresh phone visit to / loads the same app. Browser Back follows normal document history; there is no in-app subpage to dismiss. History/report reads and run writes are audited in .ui-test/app.log; no audit screen is present.
+
+## Theme and layout
+
+Theme follows prefers-color-scheme, no app switch. Verify --paper is #f6f3eb in light and #151b18 in dark. Desktop 1440x900; iPhone SE 375x667 and iPhone 15 393x852 WebKit; Pixel 7 412x915 Chromium; iPad Mini 768x1024 WebKit. Phones also landscape; both themes for every case. Rotate partly filled inputs and open Step details; shrink focused field height to 60%, restore and verify submit remains reachable. Sweep 320/360/375/390/414/600/768/820/1024/1280/1440/1920 at height 900, short desktop 1280x600/1024x500, and very wide 2560. Record effective CSS viewport, overflow sources, touch target rectangles/gaps, input fonts, focus and errors. Test root font scaling at 200% as an approximation, inspect fixed-pixel fonts separately, and test 320 CSS px independently. Native select popup rendering and iOS keyboard/zoom/notch behavior require a physical device; emulation cannot verify those OS effects.
+
+No PWA, manifest, service worker, bottom tabs, fixed header/footer, edge-to-edge/notch design or swipe/drag exists. No standalone/offline app promise: offline browser error is expected when navigating; failed API requests must show a readable error while already loaded. Measure useful-content readiness (loaded payers/samples/run enabled) with Pixel CDP Slow 4G (150ms, 1.6Mbps down, 750Kbps up) and 4x CPU; record cache and CLS. WebKit has no CDP throttle.
+
+## Playwright and CI
+
+npm package.json/package-lock.json, playwright.config.ts, tests/ui/*.spec.ts, tests/ui/fixtures.ts. Run `npm run test:ui` (--workers=1). Browser projects are desktop Chromium and iPhone SE WebKit, light/dark. Each test fixture starts a fresh foreground instance with a local-only URL and stops/removes it in finally. No existing server reuse, shared rows or external baseURL override. CI uses ubuntu-latest in the existing ci workflow; this repo is PUBLIC (verified through gh api), never self-hosted. Install dependencies/browsers after Maven verify, run tests, always run `node scripts/ui-instance.mjs stop`. Reports: playwright-report/, test-results/; failure traces/screenshots plus sanitized .ui-test/app.log upload with always(). Auth state is never saved.
+
+## Teardown
+
+One repeatable command: `node scripts/ui-instance.mjs stop`. It sends an authenticated request only to this instance's loopback supervisor, waits for Java exit, removes the verified ui-workbench-* directory, and removes the handle. Windows recursive deletion uses native PowerShell after verifying the absolute target is directly under OS temp with that prefix. It preserves logs and output/ui-pass/ screenshots. It is safe when no handle exists; an unreachable/stale control handle is an explicit cleanup error, never permission to kill a recycled PID. Verify no instance.json/data directory/owned PID/listening app port remains; ephemeral payer/JWKS ports close with Java. Close owned CLI sessions then `playwright-cli close-all` in this worktree's dedicated namespace; inspect inventory first to avoid other workers. Never start an extra preview server for this pass.

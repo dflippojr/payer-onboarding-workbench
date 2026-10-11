@@ -12,3 +12,12 @@ target/
 demo-output/
 
 site-dist/
+
+# Disposable UI testing resources and evidence
+node_modules/
+.ui-test/
+.playwright-cli/
+playwright-report/
+test-results/
+output/
+ui-build.log
