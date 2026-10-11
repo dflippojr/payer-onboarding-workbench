@@ -1,73 +1,18 @@
 #!/usr/bin/env node
 // Repeatable REST demo; Node 22+, JDK 21, synthetic payers only.
 // node scripts/demo.mjs; DEMO_SKIP_BUILD=1 reuses the existing jar.
-import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { setTimeout as delay } from 'node:timers/promises';
-import { once } from 'node:events';
+import { createWorkbench, root } from './workbench-lifecycle.mjs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'demo-output');
-const windows = process.platform === 'win32';
-let app;
-
-async function stopApp() {
-  if (app?.pid && app.exitCode === null && app.signalCode === null) {
-    const exited = once(app, 'exit');
-    app.kill();
-    await exited;
-  }
-}
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.once(signal, () => {
-    stopApp().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143));
-  });
-}
+const app = createWorkbench('DEMO_SKIP_BUILD');
 
 async function main() {
-  if (process.env.DEMO_SKIP_BUILD !== '1') {
-    console.log('==> Building (tests skipped; run ./mvnw verify for those)');
-    const args = ['-B', '-q', '-pl', 'workbench-app', '-am', 'package', '-DskipTests'];
-    const result = windows
-      ? spawnSync('cmd.exe', ['/d', '/c', '.\\mvnw.cmd', ...args], { cwd: root, stdio: 'inherit', windowsHide: true })
-      : spawnSync('./mvnw', args, { cwd: root, stdio: 'inherit' });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`Build failed with exit code ${result.status}`);
-  }
-  const target = join(root, 'workbench-app', 'target');
-  const jar = readdirSync(target).sort().find(name => /^workbench-app-.*\.jar$/.test(name));
-  if (!jar) throw new Error('No workbench-app jar; run without DEMO_SKIP_BUILD');
+  const jar = app.build();
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
-  const log = join(out, 'app.log');
-  const fd = openSync(log, 'w');
-  console.log('==> Starting the workbench on a free port');
-  const java = process.env.JAVA_HOME
-    ? join(process.env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
-  try {
-    app = spawn(java, ['-jar', join(target, jar), '--server.port=0'], {
-      cwd: root, stdio: ['ignore', fd, fd], windowsHide: true,
-    });
-  } finally {
-    closeSync(fd);
-  }
-  let startupError;
-  app.on('error', error => { startupError = error; });
-  let port;
-  for (let attempt = 0; attempt < 120; attempt++) {
-    if (startupError) throw startupError;
-    if (app.exitCode !== null || app.signalCode !== null) {
-      throw new Error(`The workbench exited during startup; see ${log}`);
-    }
-    port = readFileSync(log, 'utf8').match(/started on port (\d+)/)?.[1];
-    if (port) break;
-    await delay(1000);
-  }
-  if (!port) throw new Error(`The workbench did not start within 120 s; see ${log}`);
-  const base = `http://127.0.0.1:${port}`;
-  console.log(`    ${base}`);
+  const base = await app.start(jar, join(out, 'app.log'));
   let failures = 0;
   let step = 0;
   async function request(path, options) {
@@ -123,5 +68,5 @@ try {
   console.error(error.message);
   process.exitCode = 1;
 } finally {
-  await stopApp();
+  await app.stop();
 }

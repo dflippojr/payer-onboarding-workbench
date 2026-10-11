@@ -1,75 +1,21 @@
 #!/usr/bin/env node
 // Static replay export; Node 22+, JDK 21, git, synthetic payers only.
 // node scripts/export-replays.mjs; EXPORT_SKIP_BUILD=1 reuses the existing jar.
-import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, copyFileSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { setTimeout as delay } from 'node:timers/promises';
-import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { createWorkbench, root } from './workbench-lifecycle.mjs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'site-dist');
 const work = join(root, 'target', 'export-replays');
-const windows = process.platform === 'win32';
-let app;
-
-async function stopApp() {
-  if (app?.pid && app.exitCode === null && app.signalCode === null) {
-    const exited = once(app, 'exit');
-    app.kill();
-    await exited;
-  }
-}
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.once(signal, () => {
-    stopApp().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143));
-  });
-}
+const app = createWorkbench('EXPORT_SKIP_BUILD');
 
 async function main() {
-  if (process.env.EXPORT_SKIP_BUILD !== '1') {
-    console.log('==> Building (tests skipped; run ./mvnw verify for those)');
-    const args = ['-B', '-q', '-pl', 'workbench-app', '-am', 'package', '-DskipTests'];
-    const result = windows
-      ? spawnSync('cmd.exe', ['/d', '/c', '.\\mvnw.cmd', ...args], { cwd: root, stdio: 'inherit', windowsHide: true })
-      : spawnSync('./mvnw', args, { cwd: root, stdio: 'inherit' });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`Build failed with exit code ${result.status}`);
-  }
-  const target = join(root, 'workbench-app', 'target');
-  const jar = readdirSync(target).sort().find(name => /^workbench-app-.*\.jar$/.test(name));
-  if (!jar) throw new Error('No workbench-app jar; run without EXPORT_SKIP_BUILD');
+  const jar = app.build();
   for (const dir of [out, work]) rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(out, 'runs'), { recursive: true });
   mkdirSync(work, { recursive: true });
-  const log = join(work, 'app.log');
-  const fd = openSync(log, 'w');
-  console.log('==> Starting the workbench on a free port');
-  const java = process.env.JAVA_HOME
-    ? join(process.env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
-  try {
-    app = spawn(java, ['-jar', join(target, jar), '--server.port=0'], {
-      cwd: root, stdio: ['ignore', fd, fd], windowsHide: true,
-    });
-  } finally {
-    closeSync(fd);
-  }
-  let startupError;
-  app.on('error', error => { startupError = error; });
-  let port;
-  for (let attempt = 0; attempt < 120; attempt++) {
-    if (startupError) throw startupError;
-    if (app.exitCode !== null || app.signalCode !== null) {
-      throw new Error(`The workbench exited during startup; see ${log}`);
-    }
-    port = readFileSync(log, 'utf8').match(/started on port (\d+)/)?.[1];
-    if (port) break;
-    await delay(1000);
-  }
-  if (!port) throw new Error(`The workbench did not start within 120 s; see ${log}`);
-  const base = `http://127.0.0.1:${port}`;
-  console.log(`    ${base}`);
+  const base = await app.start(jar, join(work, 'app.log'));
   async function request(path, options) {
     const response = await fetch(`${base}${path}`, { ...options, signal: AbortSignal.timeout(120_000) });
     if (!response.ok) throw new Error(`${path}: HTTP ${response.status}: ${await response.text()}`);
@@ -139,7 +85,7 @@ async function main() {
   await record('northwind-slow-response', 'Northwind is slow', 'Payer is slow',
     'Discovery and auth answer quickly, but the hook call is held past the latency budget.',
     'northwind-synthetic', 'slow-response', ['FAIL perf.latency']);
-  await stopApp();
+  await app.stop();
   for (const name of ['replay.js', 'replay.css', 'index.html']) copyFileSync(join(root, 'replay', name), join(out, name));
   const head = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' });
   let commit = head.status === 0 ? head.stdout.trim() : 'unknown';
@@ -174,5 +120,5 @@ try {
   console.error(error.message);
   process.exitCode = 1;
 } finally {
-  await stopApp();
+  await app.stop();
 }
