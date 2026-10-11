@@ -369,6 +369,8 @@ workbench_step_duration_seconds_count{environment="SANDBOX",payer="northwind-syn
 
 `node scripts/demo.mjs` (Node 22+ on all platforms) is a repeatable tour of the workbench through its REST API. It builds the app, starts it on a free port, makes four runs, writes each run's report to `demo-output/` (gitignored) as `.md`, `.html` and `.json`, and stops the app. It exits non-zero if any expected finding is missing, so CI runs it after `./mvnw verify`, and keeps `demo-output/` as a build artifact.
 
+Cleanup gives the owned Java child five seconds to exit after `SIGTERM`, then sends `SIGKILL` and waits at most five more seconds. If exit cannot be observed, it reports a cleanup failure and exits non-zero; this policy also applies to replay export and interruption. Failed signal attempts escalate immediately, and interruption exits 130/143 after successful cleanup or 1 after cleanup failure.
+
 ```sh
 bash scripts/install-crd-router.sh   # once
 node scripts/demo.mjs                # about a minute; DEMO_SKIP_BUILD=1 reuses an existing jar

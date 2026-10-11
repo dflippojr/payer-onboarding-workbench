@@ -120,5 +120,10 @@ try {
   console.error(error.message);
   process.exitCode = 1;
 } finally {
-  await app.stop();
+  try {
+    await app.stop();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }
