@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -50,6 +51,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     private static final Pattern SEGMENT_FILE = Pattern.compile("audit-(\\d{6})\\.jsonl");
     private static final Pattern LABEL = Pattern.compile("[A-Za-z0-9._-]{1,64}");
     private static final Duration RETENTION_CHECK = Duration.ofHours(1);
+    private static final Set<Path> WRITERS = ConcurrentHashMap.newKeySet();
 
     /** Rejected setup; the message is a constant reason code, never a path or content. */
     static final class UnsafeJournalException extends IOException {
@@ -72,6 +74,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     private FileChannel channel;
     private FileChannel lockChannel;
     private FileLock writerLock;
+    private Path ownershipKey;
     private boolean shutdown;
     private String activeId;
     private long activeBytes;
@@ -108,6 +111,13 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     }
 
     private void acquireWriter() throws IOException {
+        Path key = dir.toRealPath();
+        // On some OSes closing ANY channel for a lock file releases this JVM's locks on it.
+        // Reserve the real directory first, so same-JVM contenders never open a second channel.
+        if (!WRITERS.add(key)) {
+            throw new UnsafeJournalException("journal_busy");
+        }
+        ownershipKey = key;
         // Keep the lock file permanently: deleting it can let writers lock different inodes.
         lockChannel = FileChannel.open(dir.resolve(WRITER_LOCK), StandardOpenOption.CREATE,
                 StandardOpenOption.WRITE);
@@ -138,6 +148,9 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         } finally {
             channel = null;
             activeBytes = 0;
+            if (ownershipKey != null) {
+                WRITERS.remove(ownershipKey);
+            }
         }
     }
 

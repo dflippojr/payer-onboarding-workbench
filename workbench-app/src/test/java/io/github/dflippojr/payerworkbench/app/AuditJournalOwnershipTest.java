@@ -100,6 +100,8 @@ class AuditJournalOwnershipTest {
         try (AuditJournal writer = open(dir)) {
             writer.append(event("before"));
             byte[] manifest = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
+            // A rejected same-JVM opener must not inadvertently release the owner's OS lock.
+            assertThrows(IOException.class, () -> open(dir));
             assertEquals("journal_busy", child(dir, "busy"));
             assertArrayEquals(manifest, Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)));
             writer.append(event("after"));
