@@ -82,14 +82,14 @@ legend { font: 600 11px var(--mono); letter-spacing: 1px; text-transform: upperc
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; min-width: 0; }
 .field.grow { flex: 1 1 260px; }
 .hint { font: 400 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-input, select, textarea {
-  font: 14px var(--mono); padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--paper); color: var(--ink); min-width: 0; width: 100%;
+input:not([type="radio"]):not([type="checkbox"]), select, textarea {
+  font: 16px var(--mono); padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink); min-width: 0; width: 100%; min-height: 44px;
 }
 input:disabled { opacity: .55; }
 
-.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 6px 16px; }
-.check { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; cursor: pointer; padding: 4px 0; }
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 16px; }
+.check { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; cursor: pointer; padding: 4px 0; min-height: 44px; }
 .check input { accent-color: var(--bad); margin-top: 4px; width: 16px; height: 16px; flex: none; }
 .check code { font: 12px var(--mono); color: var(--muted); display: block; }
 
@@ -126,7 +126,7 @@ a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration:
 .step p { margin: 4px 0; overflow-wrap: anywhere; }
 
 details { border: 1px solid var(--line); border-radius: 6px; background: var(--paper); margin-top: 6px; }
-summary { cursor: pointer; padding: 6px 10px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+summary { cursor: pointer; padding: 10px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; min-height: 44px; }
 details > div { padding: 0 10px 10px; }
 pre {
   font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
