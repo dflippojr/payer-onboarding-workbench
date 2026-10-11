@@ -93,18 +93,17 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
         Path dir = prepareDirectory(directory);
         AuditJournal journal = new AuditJournal(dir, policy, operatorLabel, clock, mapper);
+        boolean initialized = false;
         try {
             journal.acquireWriter();
             journal.adoptExisting();
             journal.retention();
+            initialized = true;
             return journal;
-        } catch (IOException | RuntimeException | Error e) {
-            try {
+        } finally {
+            if (!initialized) {
                 journal.close();
-            } catch (IOException cleanup) {
-                e.addSuppressed(cleanup);
             }
-            throw e;
         }
     }
 
@@ -129,21 +128,10 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             return;
         }
         shutdown = true;
-        try {
-            try {
-                if (channel != null) {
-                    channel.close();
-                }
-            } finally {
-                try {
-                    if (writerLock != null) {
-                        writerLock.release();
-                    }
-                } finally {
-                    if (lockChannel != null) {
-                        lockChannel.close();
-                    }
-                }
+        // Release the lock and ownership channel even if segment close fails.
+        try (FileChannel ownership = lockChannel; FileLock lock = writerLock) {
+            if (channel != null) {
+                channel.close();
             }
         } catch (IOException e) {
             throw new IOException("close_failed");
