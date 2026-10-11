@@ -7,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -34,13 +35,34 @@ class AuditJournalTest {
     @TempDir
     Path tmp;
 
+    private final List<AutoCloseable> resources = new java.util.ArrayList<>();
+
+    @AfterEach
+    void releaseWriters() throws Exception {
+        for (AutoCloseable resource : resources.reversed()) {
+            resource.close();
+        }
+    }
+
+    private AuditJournal openTracked(String dir, AuditJournal.Policy policy, String label,
+                                     Clock clock, ObjectMapper mapper) throws IOException {
+        AuditJournal journal = AuditJournal.open(dir, policy, label, clock, mapper);
+        resources.add(journal);
+        return journal;
+    }
+
+    private AuditLog track(AuditLog log) {
+        resources.add(log::destroy);
+        return log;
+    }
+
     private static AuditEvent event(Instant at, String marker) {
         return new AuditEvent(1, UUID.randomUUID(), at, "anonymous", null, "http", "run.requested", "started",
                 UUID.randomUUID(), null, "run", marker, null);
     }
 
     private AuditJournal open(Path dir, AuditJournal.Policy policy, Instant now) throws IOException {
-        return AuditJournal.open(dir.toString(), policy, "bench-1", Clock.fixed(now, ZoneOffset.UTC), MAPPER);
+        return openTracked(dir.toString(), policy, "bench-1", Clock.fixed(now, ZoneOffset.UTC), MAPPER);
     }
 
     private static List<Path> segments(Path dir) throws IOException {
@@ -52,7 +74,7 @@ class AuditJournalTest {
     private static String allText(Path dir) throws IOException {
         StringBuilder all = new StringBuilder();
         try (Stream<Path> s = Files.list(dir)) {
-            for (Path p : s.toList()) {
+            for (Path p : s.filter(p -> !p.getFileName().toString().equals(AuditJournal.WRITER_LOCK)).toList()) {
                 all.append(Files.readString(p));
             }
         }
@@ -62,20 +84,22 @@ class AuditJournalTest {
     @Test
     void openingAnExistingEmptyJournalPreservesItsManifest() throws Exception {
         Path dir = tmp.resolve("journal");
-        open(dir, DEFAULT, NOW);
+        open(dir, DEFAULT, NOW).close();
         byte[] manifest = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
 
-        AuditJournal.open(dir.toString(), DEFAULT, null, Clock.fixed(NOW, ZoneOffset.UTC), MAPPER);
+        openTracked(dir.toString(), DEFAULT, null, Clock.fixed(NOW, ZoneOffset.UTC), MAPPER);
 
         assertArrayEquals(manifest, Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)));
         assertTrue(segments(dir).isEmpty());
     }
 
     @Test
-    void eventsSurviveANewProcessAndKeepIdsAndTimestamps() throws Exception {
+    void eventsSurviveAReopenAndKeepIdsAndTimestamps() throws Exception {
         Path dir = tmp.resolve("journal");
         AuditEvent first = event(NOW, "run-1");
-        open(dir, DEFAULT, NOW).append(first);
+        AuditJournal initial = open(dir, DEFAULT, NOW);
+        initial.append(first);
+        initial.close();
         AuditEvent second = event(NOW.plusSeconds(5), "run-2");
         open(dir, DEFAULT, NOW.plusSeconds(10)).append(second);
 
@@ -115,6 +139,7 @@ class AuditJournalTest {
             old.append(event(NOW.plusSeconds(i), "SYNTHETIC_MARKER"));
         }
         List<Path> before = segments(dir);
+        old.close();
         AuditJournal later = open(dir, tiny, NOW.plus(Duration.ofDays(31)));
         later.append(event(NOW.plus(Duration.ofDays(31)), "new"));
 
@@ -205,7 +230,7 @@ class AuditJournalTest {
         AuditEvent fixed = event(NOW, "fixed");
         long lineBytes = (MAPPER.writeValueAsString(fixed) + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         MutableClock clock = new MutableClock(NOW);
-        AuditJournal journal = AuditJournal.open(dir.toString(),
+        AuditJournal journal = openTracked(dir.toString(),
                 new AuditJournal.Policy(Duration.ofDays(30), 2 * lineBytes, lineBytes), null, clock, new FlakyMapper());
         journal.append(fixed);
         assertThrows(RuntimeException.class, () -> journal.append(fixed));
@@ -234,7 +259,7 @@ class AuditJournalTest {
         assertEquals("not_a_directory", assertThrows(IOException.class,
                 () -> AuditJournal.prepareDirectory(file.toString())).getMessage());
 
-        assertThrows(IOException.class, () -> AuditJournal.open(tmp.resolve("j").toString(), DEFAULT,
+        assertThrows(IOException.class, () -> openTracked(tmp.resolve("j").toString(), DEFAULT,
                 "bad label!", Clock.systemUTC(), MAPPER));
     }
 
@@ -289,7 +314,7 @@ class AuditJournalTest {
         AuditJournal journal = open(dir, new AuditJournal.Policy(Duration.ofDays(30), 300, 1_000_000), NOW);
         Files.createDirectory(dir.resolve("manifest.json.tmp"));
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        AuditLog log = new AuditLog(journal, Clock.fixed(NOW, ZoneOffset.UTC), registry);
+        AuditLog log = track(new AuditLog(journal, Clock.fixed(NOW, ZoneOffset.UTC), registry));
         log.append(event(NOW, "one"));
         log.append(event(NOW, "two"));
         log.append(event(NOW, "three"));
@@ -301,14 +326,14 @@ class AuditJournalTest {
     void springWiringCreatesTheJournalAndStaysOffWhenUnconfigured() throws Exception {
         Path dir = tmp.resolve("wired");
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        AuditLog log = new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
-                new WorkbenchProperties.Audit(dir.toString(), null, null, null, "bench-1")));
+        AuditLog log = track(new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
+                new WorkbenchProperties.Audit(dir.toString(), null, null, null, "bench-1"))));
         log.lifecycle("startup.configuration", "success", "configuration", null, null);
         assertEquals(1, segments(dir).size());
         assertEquals(1.0, registry.get("workbench.audit.journal.protected").gauge().value());
 
         SimpleMeterRegistry off = new SimpleMeterRegistry();
-        new AuditLog(off, new WorkbenchProperties(null, null, null, null, null)).lifecycle("a", "success", "c", null, null);
+        track(new AuditLog(off, new WorkbenchProperties(null, null, null, null, null))).lifecycle("a", "success", "c", null, null);
         assertThrows(io.micrometer.core.instrument.search.MeterNotFoundException.class,
                 () -> off.get("workbench.audit.journal.protected").gauge());
     }
@@ -316,8 +341,8 @@ class AuditJournalTest {
     @Test
     void unsafeConfiguredJournalIsNotProtectedAndTheApplicationKeepsLogging(CapturedOutput output) {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        AuditLog log = new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
-                new WorkbenchProperties.Audit("relative/path", null, null, null, null)));
+        AuditLog log = track(new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
+                new WorkbenchProperties.Audit("relative/path", null, null, null, null))));
         log.lifecycle("startup.configuration", "success", "configuration", null, null);
         assertEquals(0.0, registry.get("workbench.audit.journal.protected").gauge().value());
         assertEquals(1.0, registry.get("workbench.audit.write.failures").counter().count());
@@ -331,8 +356,8 @@ class AuditJournalTest {
         Path dir = AuditJournal.prepareDirectory(tmp.resolve("SYNTHETIC_PRIVATE_PATH").toString());
         Files.createDirectory(dir.resolve("manifest.json.tmp"));
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        AuditLog log = new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
-                new WorkbenchProperties.Audit(dir.toString(), null, null, null, "bench-1")));
+        AuditLog log = track(new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
+                new WorkbenchProperties.Audit(dir.toString(), null, null, null, "bench-1"))));
         log.lifecycle("startup.configuration", "success", "configuration", null, null);
 
         assertEquals(0.0, registry.get("workbench.audit.journal.protected").gauge().value());
@@ -430,7 +455,7 @@ class AuditJournalTest {
     void retentionAlsoRunsHourlyInsideALongRunningProcess() throws Exception {
         Path dir = tmp.resolve("long");
         MutableClock clock = new MutableClock(NOW);
-        AuditJournal journal = AuditJournal.open(dir.toString(),
+        AuditJournal journal = openTracked(dir.toString(),
                 new AuditJournal.Policy(Duration.ofDays(30), 300, 1_000_000), null, clock, MAPPER);
         for (int i = 0; i < 4; i++) {
             journal.append(event(NOW.plusSeconds(i), "old"));
@@ -447,12 +472,13 @@ class AuditJournalTest {
         Path dir = tmp.resolve("both");
         MutableClock clock = new MutableClock(NOW);
         AuditJournal.Policy policy = new AuditJournal.Policy(Duration.ofDays(30), 300, 1_000_000);
-        AuditJournal first = AuditJournal.open(dir.toString(), policy, null, clock, MAPPER);
+        AuditJournal first = openTracked(dir.toString(), policy, null, clock, MAPPER);
         for (int i = 0; i < 8; i++) {
             first.append(event(NOW.plusSeconds(i), "x"));
         }
+        first.close();
         clock.now = NOW.plus(Duration.ofDays(29));
-        AuditJournal second = AuditJournal.open(dir.toString(),
+        AuditJournal second = openTracked(dir.toString(),
                 new AuditJournal.Policy(Duration.ofDays(30), 300, 700), null, clock, MAPPER);
         clock.now = NOW.plus(Duration.ofDays(30)).plusSeconds(3);
         second.append(event(clock.now, "y"));
@@ -463,7 +489,7 @@ class AuditJournalTest {
     void aSerializationFailureMidSegmentClosesItAndLaterEventsStillLand() throws Exception {
         Path dir = tmp.resolve("abandon");
         ObjectMapper flaky = new FlakyMapper();
-        AuditJournal journal = AuditJournal.open(dir.toString(), DEFAULT, null, Clock.fixed(NOW, ZoneOffset.UTC), flaky);
+        AuditJournal journal = openTracked(dir.toString(), DEFAULT, null, Clock.fixed(NOW, ZoneOffset.UTC), flaky);
         journal.append(event(NOW, "one"));
         RuntimeException e = assertThrows(RuntimeException.class, () -> journal.append(event(NOW, "two")));
         assertFalse(String.valueOf(e).contains("SYNTHETIC_SECRET"));

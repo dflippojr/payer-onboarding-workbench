@@ -10,15 +10,17 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.DisposableBean;
 import java.time.Clock;
 import java.util.UUID;
 
 /** Best effort logging with a constant warning and a count of missing events. */
 @Component
-public class AuditLog {
+public class AuditLog implements DisposableBean {
     static final String WARNING = "Audit event write failed; audit trail has a gap";
     private static final Logger LOG = LoggerFactory.getLogger(AuditLog.class);
     private final AuditSink sink;
+    private final AuditJournal journal;
     private final Clock clock;
     private final Counter failures;
 
@@ -34,10 +36,19 @@ public class AuditLog {
         this(withJournal(properties.audit(), registry), Clock.systemUTC(), registry);
     }
 
-    private static AuditSink withJournal(WorkbenchProperties.Audit audit, MeterRegistry registry) {
+    private record Output(AuditSink sink, AuditJournal journal) { }
+
+    private AuditLog(Output output, Clock clock, MeterRegistry registry) {
+        this.sink = output.sink();
+        this.journal = output.journal();
+        this.clock = clock;
+        failures = registry.counter("workbench.audit.write.failures");
+    }
+
+    private static Output withJournal(WorkbenchProperties.Audit audit, MeterRegistry registry) {
         AuditSink logging = loggingSink();
         if (audit.journalDir() == null) {
-            return logging;
+            return new Output(logging, null);
         }
         AuditJournal journal = null;
         try {
@@ -50,23 +61,24 @@ public class AuditLog {
         int protectedFlag = journal == null ? 0 : 1;
         io.micrometer.core.instrument.Gauge.builder("workbench.audit.journal.protected", () -> protectedFlag)
                 .register(registry);
-        if (journal == null) {
-            return logging;
-        }
-        AuditJournal active = journal;
-        return event -> {
-            try {
-                logging.append(event);
-            } finally {
-                active.append(event);
-            }
-        };
+        return new Output(logging, journal);
     }
 
     AuditLog(AuditSink sink, Clock clock, MeterRegistry registry) {
-        this.sink = sink;
-        this.clock = clock;
-        failures = registry.counter("workbench.audit.write.failures");
+        this(new Output(sink, null), clock, registry);
+    }
+
+    /** Spring destroys dependent beans first, so their shutdown events still reach the journal. */
+    @Override
+    public void destroy() {
+        if (journal != null) {
+            try {
+                journal.close();
+            } catch (java.io.IOException e) {
+                failures.increment();
+                LOG.warn(WARNING);
+            }
+        }
     }
 
     private static final ObjectMapper MAPPER = new ObjectMapper().registerModule(new JavaTimeModule())
@@ -97,7 +109,13 @@ public class AuditLog {
     /** Fail open: a lost event is counted and warned about, and the caller carries on. */
     public void append(AuditEvent event) {
         try {
-            sink.append(event);
+            try {
+                sink.append(event);
+            } finally {
+                if (journal != null) {
+                    journal.append(event);
+                }
+            }
         } catch (RuntimeException e) {
             failures.increment();
             LOG.warn(WARNING);
