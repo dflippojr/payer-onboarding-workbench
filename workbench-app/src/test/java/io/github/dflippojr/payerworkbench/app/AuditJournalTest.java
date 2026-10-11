@@ -147,6 +147,78 @@ class AuditJournalTest {
     }
 
     @Test
+    void rotationAtTheTotalSizeBoundaryKeepsEverySegment() throws Exception {
+        Path dir = tmp.resolve("boundary");
+        AuditEvent fixed = event(NOW, "fixed");
+        long lineBytes = (MAPPER.writeValueAsString(fixed) + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        AuditJournal journal = open(dir, new AuditJournal.Policy(Duration.ofDays(30), 2 * lineBytes, 7 * lineBytes), NOW);
+        for (int i = 0; i < 7; i++) {
+            journal.append(fixed);
+        }
+
+        assertEquals(List.of("audit-000001.jsonl", "audit-000002.jsonl", "audit-000003.jsonl", "audit-000004.jsonl"),
+                segments(dir).stream().map(p -> p.getFileName().toString()).toList());
+        long total = 0;
+        for (Path p : segments(dir)) {
+            total += Files.size(p);
+        }
+        assertEquals(7 * lineBytes, total);
+        assertFalse(allText(dir).contains("audit.retention"));
+    }
+
+    @Test
+    void rotationOverTheSizeCapExpiresOnlyTheNecessaryOldestSegment() throws Exception {
+        Path dir = tmp.resolve("over-cap");
+        AuditEvent fixed = event(NOW, "fixed");
+        long lineBytes = (MAPPER.writeValueAsString(fixed) + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        AuditJournal journal = open(dir, new AuditJournal.Policy(Duration.ofDays(30), 2 * lineBytes, 7 * lineBytes), NOW);
+        for (int i = 0; i < 9; i++) {
+            journal.append(fixed);
+        }
+
+        assertEquals(List.of("audit-000002.jsonl", "audit-000003.jsonl", "audit-000004.jsonl", "audit-000005.jsonl"),
+                segments(dir).stream().map(p -> p.getFileName().toString()).toList());
+        JsonNode manifest = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST))).path("segments");
+        assertEquals(3, manifest.size());
+        for (int i = 0; i < manifest.size(); i++) {
+            assertEquals(String.format("audit-%06d", i + 2), manifest.get(i).path("id").asText());
+            assertEquals(2 * lineBytes, manifest.get(i).path("bytes").asLong());
+            assertEquals(2, manifest.get(i).path("events").asInt());
+        }
+        List<AuditEvent> retained = new java.util.ArrayList<>();
+        for (Path p : segments(dir)) {
+            for (String line : Files.readAllLines(p)) {
+                retained.add(MAPPER.readValue(line, AuditEvent.class));
+            }
+        }
+        List<AuditEvent> expirations = retained.stream().filter(e -> e.action().equals("audit.retention")).toList();
+        assertEquals(1, expirations.size());
+        AuditEvent.Metadata metadata = expirations.getFirst().metadata();
+        assertEquals("size_cap", metadata.reasonCode());
+        assertEquals(AuditEvent.Lifecycle.retention(List.of("audit-000001")), metadata.lifecycle());
+        assertEquals(7, retained.stream().filter(fixed::equals).count());
+    }
+
+    @Test
+    void hourlyRetentionCountsAnAbandonedSegmentOnlyOnce() throws Exception {
+        Path dir = tmp.resolve("abandoned-boundary");
+        AuditEvent fixed = event(NOW, "fixed");
+        long lineBytes = (MAPPER.writeValueAsString(fixed) + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        MutableClock clock = new MutableClock(NOW);
+        AuditJournal journal = AuditJournal.open(dir.toString(),
+                new AuditJournal.Policy(Duration.ofDays(30), 2 * lineBytes, lineBytes), null, clock, new FlakyMapper());
+        journal.append(fixed);
+        assertThrows(RuntimeException.class, () -> journal.append(fixed));
+        clock.now = NOW.plus(Duration.ofHours(2));
+        journal.append(fixed);
+
+        assertEquals(List.of("audit-000001.jsonl", "audit-000002.jsonl"),
+                segments(dir).stream().map(p -> p.getFileName().toString()).toList());
+        assertEquals(lineBytes, Files.size(dir.resolve("audit-000001.jsonl")));
+        assertFalse(allText(dir).contains("audit.retention"));
+    }
+
+    @Test
     void unsafeSetupIsRejectedWithoutEchoingThePath() throws Exception {
         IOException relative = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory("journal"));
         assertEquals("path_not_absolute", relative.getMessage());

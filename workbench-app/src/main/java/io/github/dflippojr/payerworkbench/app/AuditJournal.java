@@ -256,6 +256,7 @@ final class AuditJournal implements AuditSink {
             closed.add(sealQuietly(activeId));
             channel = null;
         }
+        activeBytes = 0;
     }
 
     private Segment sealQuietly(String id) {
@@ -270,6 +271,7 @@ final class AuditJournal implements AuditSink {
         String id = activeId;
         channel.close();
         channel = null;
+        activeBytes = 0;
         closed.add(seal(id));
         writeManifest();
         retention();
