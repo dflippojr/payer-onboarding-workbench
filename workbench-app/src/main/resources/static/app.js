@@ -16,6 +16,7 @@
     'expired-token-401': ['Token rejected as expired', 'Hook calls get 401 invalid_token, "expired".'],
     'wrong-audience-reject': ['Payer expects another audience', 'The payer checks tokens against a different aud.'],
     'malformed-card': ['Malformed cards', 'Cards come back without summary and indicator.'],
+    'coverage-info-incomplete': ['Incomplete coverage information', 'Order-sign responses omit the coverage assertion ID and use an invalid covered value.'],
     'discovery-500': ['Discovery is down', 'GET /cds-services returns 500.'],
     'prefetch-missing-400': ['Strict about prefetch', 'Rejects requests that leave out prefetch. Pick the "missing prefetch" sample to see it.'],
     'untrusted-certificate': ['Untrusted certificate', 'Presents a certificate issued by an untrusted test CA.'],
