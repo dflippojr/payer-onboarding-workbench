@@ -62,12 +62,12 @@ function prepareStop(child) {
     if (exited()) finish();
     else if (failures.length) force();
   }
-  return { promise, terminate };
+  return { promise, terminate, force };
 }
 
 export function createWorkbench(skipBuild) {
   const windows = process.platform === 'win32';
-  let app, stopping;
+  let app, stopping, shutdown, interrupted = false;
   function build() {
     if (process.env[skipBuild] !== '1') {
       console.log('==> Building (tests skipped; run ./mvnw verify for those)');
@@ -85,16 +85,26 @@ export function createWorkbench(skipBuild) {
   }
   function stop() {
     if (!stopping && app?.pid && app.exitCode === null && app.signalCode === null) {
-      const shutdown = prepareStop(app);
+      shutdown = prepareStop(app);
       // Publish the shared promise before kill() can emit exit/error or reenter stop().
       stopping = shutdown.promise;
       shutdown.terminate();
     }
     return stopping ?? Promise.resolve();
   }
+  // Stay subscribed: with once(), a second Ctrl+C would take Node's default exit
+  // and orphan a JVM that is still inside its grace period.
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.once(signal, () => {
-      stop().then(
+    process.on(signal, () => {
+      if (interrupted) {
+        // Escalate now; the first signal's handler still exits only after the child is gone.
+        shutdown?.force();
+        return;
+      }
+      interrupted = true;
+      const pending = stop();
+      if (shutdown) console.log(`Stopping workbench PID ${app.pid} (Ctrl+C again to force)`);
+      pending.then(
         () => process.exit(signal === 'SIGINT' ? 130 : 143),
         error => { console.error(error.message); process.exit(1); },
       );
@@ -105,6 +115,9 @@ export function createWorkbench(skipBuild) {
     console.log('==> Starting the workbench on a free port');
     const java = process.env.JAVA_HOME
       ? join(process.env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
+    if (windows && !process.env.JAVA_HOME) {
+      console.log('    JAVA_HOME is unset; if java on the PATH is a launcher shim, cleanup can leave the JVM running');
+    }
     try {
       app = spawn(java, ['-jar', jar, '--server.port=0'], {
         cwd: root, stdio: ['ignore', fd, fd], windowsHide: true,

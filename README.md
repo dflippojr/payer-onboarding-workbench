@@ -373,7 +373,13 @@ workbench_step_duration_seconds_count{environment="SANDBOX",payer="northwind-syn
 
 `node scripts/demo.mjs` (Node 22+ on all platforms) is a repeatable tour of the workbench through its REST API. It builds the app, starts it on a free port, makes four runs, writes each run's report to `demo-output/` (gitignored) as `.md`, `.html` and `.json`, and stops the app. It exits non-zero if any expected finding is missing, so CI runs it after `./mvnw verify`, and keeps `demo-output/` as a build artifact.
 
-Cleanup gives the owned Java child five seconds to exit after `SIGTERM`, then sends `SIGKILL` and waits at most five more seconds. If exit cannot be observed, it reports a cleanup failure and exits non-zero; this policy also applies to replay export and interruption. Failed signal attempts escalate immediately, and interruption exits 130/143 after successful cleanup or 1 after cleanup failure.
+Cleanup stops only the Java child the script started. This policy also applies to replay export and interruption:
+
+- **Linux and macOS:** the child gets `SIGTERM` and five seconds to exit, so JVM shutdown hooks can run. Then the script sends `SIGKILL` and waits at most five more seconds. A failed signal attempt escalates to `SIGKILL` immediately.
+- **Windows:** Node maps both `SIGTERM` and `SIGKILL` to `TerminateProcess`, so the JVM ends at once, with no grace period, and its shutdown hooks do not run. If `java` on the `PATH` is a launcher shim (a parent process that starts the real JVM), terminating the shim can leave the JVM running and holding the port and `app.log`. Set `JAVA_HOME` so the scripts start `JAVA_HOME\bin\java.exe` directly; they print a warning when it is unset.
+- **Interruption:** the first Ctrl+C prints `Stopping workbench PID n (Ctrl+C again to force)` and starts the stop above. A second Ctrl+C (or `SIGTERM`) sends `SIGKILL` at once, but the script still waits for the child to exit before it exits.
+
+If exit cannot be observed, the script reports a cleanup failure and exits non-zero. Interruption exits 130 (`SIGINT`) or 143 (`SIGTERM`) after successful cleanup, or 1 after cleanup failure.
 
 ```sh
 bash scripts/install-crd-router.sh   # once
