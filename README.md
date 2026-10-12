@@ -271,6 +271,13 @@ to rolling JSON-lines segments there. Stdout logging continues unchanged as the 
   not in the manifest until it is closed by size or by the next start. Nothing in the application
   updates or deletes events except retention. Run history stays memory-only (`max-runs`) and is
   independent of the journal.
+- **One writer per directory.** An exclusive OS file lock is held for the lifetime of the journal,
+  before recovery or retention runs. A competing process or application context falls back to
+  logging, emits the constant journal-unavailable warning, increments `workbench.audit.write.failures`
+  and reports `workbench.audit.journal.protected=0`. It does not adopt or change the active writer's
+  segments or manifest. The empty `.writer.lock` file stays in the directory; do not delete it while
+  any writer is running. Context shutdown writes dependent cleanup events, closes the active segment
+  without sealing it, then releases ownership. The next successful start seals leftover segments.
 - **Retention is a recorded operation.** Expiry deletes whole closed segments and appends one
   `audit.retention` event (`system` `audit-journal`, reason `age`, `size_cap` or `age_and_size_cap`,
   and the expired segment IDs and count, never record contents). It is retention, not evidence of
