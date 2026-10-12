@@ -21,6 +21,7 @@ import java.nio.file.attribute.AclEntryFlag;
 import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
@@ -36,6 +37,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
 
 /**
@@ -51,7 +53,9 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     private static final Pattern SEGMENT_FILE = Pattern.compile("audit-(\\d{6})\\.jsonl");
     private static final Pattern LABEL = Pattern.compile("[A-Za-z0-9._-]{1,64}");
     private static final Duration RETENTION_CHECK = Duration.ofHours(1);
-    private static final Set<Path> WRITERS = ConcurrentHashMap.newKeySet();
+    private static final Set<Object> WRITERS = ConcurrentHashMap.newKeySet();
+    /** Channels whose close could drop a lock this JVM already holds; kept open and reachable forever. */
+    private static final List<FileChannel> RETAINED = new CopyOnWriteArrayList<>();
 
     /** Rejected setup; the message is a constant reason code, never a path or content. */
     static final class UnsafeJournalException extends IOException {
@@ -74,7 +78,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     private FileChannel channel;
     private FileChannel lockChannel;
     private FileLock writerLock;
-    private Path ownershipKey;
+    private Object ownershipKey;
     private boolean shutdown;
     private String activeId;
     private long activeBytes;
@@ -111,9 +115,9 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     }
 
     private void acquireWriter() throws IOException {
-        Path key = dir.toRealPath();
+        Object key = ownershipKey(dir);
         // On some OSes closing ANY channel for a lock file releases this JVM's locks on it.
-        // Reserve the real directory first, so same-JVM contenders never open a second channel.
+        // Reserve the directory's identity first, so same-JVM contenders never open a second channel.
         if (!WRITERS.add(key)) {
             throw new UnsafeJournalException("journal_busy");
         }
@@ -124,11 +128,21 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         try {
             writerLock = lockChannel.tryLock();
         } catch (OverlappingFileLockException e) {
+            // This JVM already holds the lock through an alias the reservation missed. Closing this
+            // channel would release that owner's POSIX lock, so it is never closed or collected.
+            RETAINED.add(lockChannel);
+            lockChannel = null;
             throw new UnsafeJournalException("journal_busy");
         }
         if (writerLock == null) {
             throw new UnsafeJournalException("journal_busy");
         }
+    }
+
+    /** File identity, so aliased paths (bind mounts, symlinked parents) share one reservation. */
+    static Object ownershipKey(Path dir) throws IOException {
+        Object fileKey = Files.readAttributes(dir, BasicFileAttributes.class).fileKey();
+        return fileKey != null ? fileKey : dir.toRealPath();
     }
 
     /** Release the segment before ownership; leave it unsealed for the next successful opener. */

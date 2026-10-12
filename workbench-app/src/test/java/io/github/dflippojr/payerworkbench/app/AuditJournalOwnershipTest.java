@@ -6,8 +6,11 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
@@ -24,6 +27,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 @ExtendWith(OutputCaptureExtension.class)
 class AuditJournalOwnershipTest {
@@ -113,6 +117,44 @@ class AuditJournalOwnershipTest {
             assertEquals(2, segments.size());
             assertEquals(1, segments.get(1).path("events").asInt());
             reopened.append(event("parent-reopened"));
+        }
+    }
+
+    @Test
+    void aliasedPathIsRejectedWithoutReleasingTheOwnersLock() throws Exception {
+        Path real = Files.createDirectory(tmp.resolve("real"));
+        Path alias = tmp.resolve("alias");
+        try {
+            Files.createSymbolicLink(alias, real);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "symbolic links unavailable");
+        }
+        Path dir = real.resolve("journal");
+        try (AuditJournal writer = open(dir)) {
+            writer.append(event("owner"));
+            Path aliased = alias.resolve("journal");
+            assertEquals(AuditJournal.ownershipKey(dir), AuditJournal.ownershipKey(aliased));
+            IOException busy = assertThrows(IOException.class, () -> open(aliased));
+            assertEquals("journal_busy", busy.getMessage());
+            assertEquals("journal_busy", child(dir, "busy"));
+            writer.append(event("still-owner"));
+        }
+        assertEquals("opened", child(dir, "open"));
+    }
+
+    @Test
+    void overlappingLockIsTreatedAsHeldAndItsChannelIsNeverClosed() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("overlap").toString());
+        // An owner this JVM's reservation cannot see, such as another classloader or an unmerged alias.
+        try (FileChannel owner = FileChannel.open(dir.resolve(AuditJournal.WRITER_LOCK),
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock lock = owner.lock()) {
+            IOException busy = assertThrows(IOException.class, () -> open(dir));
+            assertEquals("journal_busy", busy.getMessage());
+            System.gc();
+            assertTrue(lock.isValid());
+            // Under POSIX fcntl semantics closing the contender's channel would have dropped this lock.
+            assertEquals("journal_busy", child(dir, "busy"));
         }
     }
 
