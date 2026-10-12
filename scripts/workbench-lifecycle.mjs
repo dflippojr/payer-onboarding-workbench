@@ -1,11 +1,70 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { once } from 'node:events';
 import { closeSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Allow 5 s for SIGTERM, then at most 5 s to observe SIGKILL's exit.
+const STOP_GRACE_MS = 5000;
+const STOP_FORCE_MS = 5000;
+
+function prepareStop(child) {
+  let resolveStop, rejectStop, timer, forcing = false, settled = false;
+  const failures = [];
+  const promise = new Promise((resolve, reject) => { resolveStop = resolve; rejectStop = reject; });
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  function finish(error) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    child.removeListener('exit', onExit);
+    child.removeListener('error', onError);
+    if (error) {
+      // A live ChildProcess handle must not keep the failed script alive.
+      // This releases the parent's handle; it does not claim the child exited.
+      child.unref();
+      rejectStop(error);
+    } else resolveStop();
+  }
+  function onExit() { finish(); }
+  function signal(name) {
+    try {
+      if (!child.kill(name)) failures.push(name + ' kill() returned false');
+    } catch (error) {
+      failures.push(name + ': ' + error.message);
+    }
+  }
+  function force() {
+    if (settled || forcing) return;
+    if (exited()) { finish(); return; }
+    forcing = true;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (exited()) { finish(); return; }
+      const detail = failures.length ? '; ' + failures.join('; ') : '';
+      finish(new Error('Workbench cleanup failed: owned child PID ' + child.pid
+        + ' did not exit within ' + STOP_FORCE_MS + ' ms after SIGKILL' + detail));
+    }, STOP_FORCE_MS);
+    signal('SIGKILL');
+    if (exited()) finish();
+  }
+  function onError(error) {
+    failures.push((forcing ? 'SIGKILL' : 'SIGTERM') + ': ' + error.message);
+    force();
+  }
+  function terminate() {
+    child.on('exit', onExit);
+    child.on('error', onError);
+    if (exited()) { finish(); return; }
+    timer = setTimeout(force, STOP_GRACE_MS);
+    signal('SIGTERM');
+    if (exited()) finish();
+    else if (failures.length) force();
+  }
+  return { promise, terminate };
+}
+
 export function createWorkbench(skipBuild) {
   const windows = process.platform === 'win32';
   let app, stopping;
@@ -26,14 +85,19 @@ export function createWorkbench(skipBuild) {
   }
   function stop() {
     if (!stopping && app?.pid && app.exitCode === null && app.signalCode === null) {
-      stopping = once(app, 'exit');
-      app.kill();
+      const shutdown = prepareStop(app);
+      // Publish the shared promise before kill() can emit exit/error or reenter stop().
+      stopping = shutdown.promise;
+      shutdown.terminate();
     }
     return stopping ?? Promise.resolve();
   }
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => {
-      stop().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143));
+      stop().then(
+        () => process.exit(signal === 'SIGINT' ? 130 : 143),
+        error => { console.error(error.message); process.exit(1); },
+      );
     });
   }
   async function start(jar, log) {

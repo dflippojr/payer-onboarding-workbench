@@ -1,6 +1,6 @@
 // node --experimental-vm-modules --test scripts/workbench-lifecycle.test.mjs
 import assert from 'node:assert/strict';
-import { EventEmitter, once } from 'node:events';
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { test } from 'node:test';
@@ -12,12 +12,30 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-2.
   'workbench-app-1.jar', 'workbench-app-0.jar.original'], log = 'started on port 43210',
   buildResult = { status: 0 }, spawnError, synchronousError, afterDelay } = {}) {
   const child = new EventEmitter();
-  Object.assign(child, { pid: 12345, exitCode: null, signalCode: null, kills: 0 });
-  child.kill = () => { child.kills++; return true; };
+  Object.assign(child, { pid: 12345, exitCode: null, signalCode: null, kills: 0, signals: [], unrefs: 0 });
+  child.kill = signal => { child.kills++; child.signals.push(signal); return true; };
+  child.unref = () => { child.unrefs++; };
   const parent = new EventEmitter();
   Object.assign(parent, { platform, env, exits: [], exit(code) { this.exits.push(code); } });
-  const calls = { builds: [], spawns: [], opens: [], closes: [], delays: [], logs: [] };
-  const context = createContext({ process: parent, console: { log: text => calls.logs.push(text) } });
+  const calls = { builds: [], spawns: [], opens: [], closes: [], delays: [], logs: [], errors: [] };
+  let now = 0, nextTimer = 0;
+  const timers = new Map();
+  function advance(ms) {
+    const end = now + ms;
+    while (true) {
+      const due = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!due) break;
+      const [id, timer] = due;
+      timers.delete(id);
+      now = timer.at;
+      timer.callback();
+    }
+    now = end;
+  }
+  const context = createContext({ process: parent, console: {
+    log: text => calls.logs.push(text), error: text => calls.errors.push(text),
+  }, setTimeout(callback, ms) { const id = ++nextTimer; timers.set(id, { callback, at: now + ms }); return id; },
+  clearTimeout(id) { timers.delete(id); } });
   const modules = {
     'node:child_process': {
       spawnSync(...args) { calls.builds.push(args); return buildResult; },
@@ -33,7 +51,7 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-2.
       openSync(...args) { calls.opens.push(args); return 42; },
       closeSync(fd) { calls.closes.push(fd); },
     },
-    'node:path': path, 'node:url': url, 'node:events': { once },
+    'node:path': path, 'node:url': url,
     'node:timers/promises': { async setTimeout(ms) {
       calls.delays.push(ms);
       afterDelay?.(child, calls.delays.length);
@@ -48,7 +66,7 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-2.
     }, { context });
   });
   await module.evaluate();
-  return { child, parent, calls, create: module.namespace.createWorkbench, root: module.namespace.root };
+  return { child, parent, calls, timers, advance, create: module.namespace.createWorkbench, root: module.namespace.root };
 }
 
 test('import is inert; creation installs signals but does not build or spawn', async () => {
@@ -169,20 +187,6 @@ test('concurrent and repeated stops share one pending exit and signal only the o
   assert.equal(unrelatedKills, 0);
 });
 
-test('a child error during stop rejects all waiters instead of hanging', async () => {
-  const f = await fixture();
-  const app = f.create('DEMO_SKIP_BUILD');
-  await app.start('app.jar', 'app.log');
-  const error = new Error('cannot signal child');
-  f.child.kill = () => { f.child.kills++; f.child.emit('error', error); return false; };
-  const first = app.stop();
-  assert.equal(first, app.stop());
-  await assert.rejects(first, value => value === error);
-  await assert.rejects(app.stop(), value => value === error);
-  assert.equal(f.child.kills, 1);
-  assert.equal(f.child.listenerCount('exit'), 0);
-});
-
 for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
   test(`${signal} waits for cleanup then exits ${code}, including a concurrent finally stop`, async () => {
     const f = await fixture();
@@ -199,5 +203,204 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
     await Promise.resolve();
     assert.deepEqual(f.parent.exits, [code]);
     assert.equal(f.child.kills, 1);
+  });
+}
+
+function assertCleanStop(f) {
+  assert.equal(f.child.listenerCount('exit'), 0);
+  // The startup error observer remains; cleanup adds no lasting error listener.
+  assert.equal(f.child.listenerCount('error'), 1);
+  assert.equal(f.timers.size, 0);
+}
+
+test('a stubborn child gets only owned SIGKILL after the full grace period', async () => {
+  const f = await fixture();
+  const unrelated = new EventEmitter();
+  let unrelatedKills = 0;
+  unrelated.kill = () => { unrelatedKills++; };
+  const app = f.create('DEMO_SKIP_BUILD');
+  await app.start('app.jar', 'app.log');
+  const stopped = app.stop();
+  f.advance(4999);
+  assert.deepEqual(f.child.signals, ['SIGTERM']);
+  unrelated.emit('exit');
+  f.advance(1);
+  assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(stopped, app.stop());
+  assert.equal(f.timers.size, 1);
+  f.advance(4999);
+  f.child.signalCode = 'SIGKILL';
+  f.child.emit('exit', null, 'SIGKILL');
+  await stopped;
+  f.advance(10000);
+  assertCleanStop(f);
+  assert.equal(f.child.unrefs, 0);
+  assert.equal(unrelatedKills, 0);
+});
+
+test('final exit timeout rejects every waiter and releases the live child handle', async () => {
+  const f = await fixture();
+  const app = f.create('EXPORT_SKIP_BUILD');
+  await app.start('app.jar', 'app.log');
+  const first = app.stop();
+  const rejected = assert.rejects(first, /owned child PID 12345 did not exit within 5000 ms after SIGKILL/);
+  assert.equal(first, app.stop());
+  f.advance(10000);
+  await rejected;
+  assert.equal(first, app.stop());
+  await assert.rejects(app.stop(), /cleanup failed/);
+  assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(f.child.unrefs, 1);
+  assertCleanStop(f);
+  f.child.emit('exit', 0);
+  f.advance(10000);
+  assert.equal(f.child.unrefs, 1);
+});
+
+for (const outcome of ['false', 'throw', 'error']) {
+  test('SIGTERM ' + outcome + ' immediately escalates and can still observe exit', async () => {
+    const f = await fixture();
+    const app = f.create('DEMO_SKIP_BUILD');
+    await app.start('app.jar', 'app.log');
+    const kill = f.child.kill;
+    f.child.kill = signal => {
+      kill(signal);
+      if (signal === 'SIGKILL') { f.child.emit('exit', null, signal); return true; }
+      if (outcome === 'throw') throw new Error('denied');
+      if (outcome === 'error') f.child.emit('error', new Error('denied'));
+      return false;
+    };
+    const first = app.stop();
+    assert.equal(first, app.stop());
+    await first;
+    assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+    assertCleanStop(f);
+  });
+
+  test('SIGKILL ' + outcome + ' is bounded and preserves useful failure detail', async () => {
+    const f = await fixture();
+    const app = f.create('EXPORT_SKIP_BUILD');
+    await app.start('app.jar', 'app.log');
+    const kill = f.child.kill;
+    f.child.kill = signal => {
+      kill(signal);
+      if (signal === 'SIGTERM') return true;
+      if (outcome === 'throw') throw new Error('denied');
+      if (outcome === 'error') f.child.emit('error', new Error('denied'));
+      return false;
+    };
+    const stopped = app.stop();
+    const rejected = assert.rejects(stopped, outcome === 'false' ? /SIGKILL kill[(][)] returned false/ : /SIGKILL: denied/);
+    f.advance(10000);
+    await rejected;
+    assert.equal(stopped, app.stop());
+    assert.equal(f.child.unrefs, 1);
+    assertCleanStop(f);
+  });
+}
+
+test('false for both kills without events retains both outcomes', async () => {
+  const f = await fixture();
+  const app = f.create('DEMO_SKIP_BUILD');
+  await app.start('app.jar', 'app.log');
+  f.child.kill = signal => { f.child.signals.push(signal); return false; };
+  const stopped = app.stop();
+  const rejected = assert.rejects(stopped, /SIGTERM kill[(][)] returned false; SIGKILL kill[(][)] returned false/);
+  assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+  f.advance(5000);
+  await rejected;
+  assertCleanStop(f);
+});
+
+test('an asynchronous graceful kill error escalates without duplicate force attempts', async () => {
+  const f = await fixture();
+  const app = f.create('DEMO_SKIP_BUILD');
+  await app.start('app.jar', 'app.log');
+  const stopped = app.stop();
+  f.child.emit('error', new Error('SIGTERM failed'));
+  f.child.emit('error', new Error('SIGKILL failed'));
+  assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+  f.child.exitCode = 0;
+  f.child.emit('exit', 0);
+  await stopped;
+  assertCleanStop(f);
+});
+
+for (const phase of ['SIGTERM', 'SIGKILL']) {
+  test('synchronous exit during ' + phase + ' clears waits and shares a reentrant stop', async () => {
+    const f = await fixture();
+    const app = f.create('DEMO_SKIP_BUILD');
+    await app.start('app.jar', 'app.log');
+    let reentrant;
+    const kill = f.child.kill;
+    f.child.kill = signal => {
+      kill(signal);
+      reentrant = app.stop();
+      if (signal === phase) f.child.emit('exit', 0);
+      return false;
+    };
+    const first = app.stop();
+    assert.equal(first, reentrant);
+    await first;
+    assert.deepEqual(f.child.signals, phase === 'SIGTERM' ? ['SIGTERM'] : ['SIGTERM', 'SIGKILL']);
+    assertCleanStop(f);
+  });
+}
+
+for (const elapsed of [5000, 10000]) {
+  test('exit state racing a timeout at ' + elapsed + ' ms wins without an exit event', async () => {
+    const f = await fixture();
+    const app = f.create('DEMO_SKIP_BUILD');
+    await app.start('app.jar', 'app.log');
+    const stopped = app.stop();
+    f.advance(elapsed - 1);
+    f.child.exitCode = 0;
+    f.advance(1);
+    await stopped;
+    assert.equal(f.child.kills, elapsed === 5000 ? 1 : 2);
+    assertCleanStop(f);
+  });
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  test(signal + ' reports rejected cleanup and exits 1 without an unhandled rejection', async () => {
+    const f = await fixture();
+    const app = f.create('DEMO_SKIP_BUILD');
+    await app.start('app.jar', 'app.log');
+    f.parent.emit(signal);
+    const stopped = app.stop();
+    const rejected = assert.rejects(stopped, /cleanup failed/);
+    f.advance(10000);
+    await rejected;
+    assert.deepEqual(f.parent.exits, [1]);
+    assert.match(f.calls.errors[0], /owned child PID 12345/);
+    assertCleanStop(f);
+  });
+}
+
+for (const script of ['demo.mjs', 'export-replays.mjs']) {
+  test(script + ' explicitly reports cleanup rejection in its finally path', async () => {
+    const errors = [];
+    const parent = { exitCode: 0 };
+    let stops = 0;
+    const context = createContext({ process: parent, console: { error: message => errors.push(message) } });
+    const lifecycle = { root: '.', createWorkbench: () => ({
+      build() { throw new Error('build failed'); },
+      async stop() { stops++; throw new Error('cleanup failed'); },
+    }) };
+    const modules = { 'node:path': path, 'node:child_process': { spawnSync() {} },
+      'node:fs': Object.fromEntries(['mkdirSync', 'readdirSync', 'readFileSync', 'rmSync', 'writeFileSync', 'copyFileSync']
+        .map(name => [name, () => {}])), './workbench-lifecycle.mjs': lifecycle };
+    const module = new SourceTextModule(readFileSync(new URL(script, import.meta.url), 'utf8'), { context });
+    await module.link(specifier => {
+      const values = modules[specifier];
+      return new SyntheticModule(Object.keys(values), function () {
+        for (const [key, value] of Object.entries(values)) this.setExport(key, value);
+      }, { context });
+    });
+    await module.evaluate();
+    assert.equal(stops, 1);
+    assert.equal(parent.exitCode, 1);
+    assert.deepEqual(errors, ['build failed', 'cleanup failed']);
   });
 }
