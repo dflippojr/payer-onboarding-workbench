@@ -405,3 +405,69 @@ for (const script of ['demo.mjs', 'export-replays.mjs']) {
     assert.deepEqual(errors, ['build failed', 'cleanup failed']);
   });
 }
+
+for (const second of ['SIGINT', 'SIGTERM']) {
+  test('a second ' + second + ' in the grace window forces SIGKILL but exits only after the child', async () => {
+    const f = await fixture();
+    const app = f.create('DEMO_SKIP_BUILD');
+    await app.start('app.jar', 'app.log');
+    f.parent.emit('SIGINT');
+    assert.equal(f.calls.logs.at(-1), 'Stopping workbench PID 12345 (Ctrl+C again to force)');
+    f.advance(1000);
+    assert.deepEqual(f.child.signals, ['SIGTERM']);
+    f.parent.emit(second);
+    assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+    f.parent.emit(second);
+    assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+    await Promise.resolve();
+    assert.deepEqual(f.parent.exits, []);
+    assert.equal(f.calls.logs.filter(line => line.startsWith('Stopping')).length, 1);
+    f.child.signalCode = 'SIGKILL';
+    f.child.emit('exit', null, 'SIGKILL');
+    await app.stop();
+    await Promise.resolve();
+    assert.deepEqual(f.parent.exits, [130]);
+    assertCleanStop(f);
+  });
+}
+
+test('a forced child that never exits still reports the bounded cleanup failure', async () => {
+  const f = await fixture();
+  const app = f.create('DEMO_SKIP_BUILD');
+  await app.start('app.jar', 'app.log');
+  f.parent.emit('SIGTERM');
+  f.parent.emit('SIGINT');
+  const rejected = assert.rejects(app.stop(), /did not exit within 5000 ms after SIGKILL/);
+  f.advance(4999);
+  assert.deepEqual(f.parent.exits, []);
+  f.advance(1);
+  await rejected;
+  await Promise.resolve();
+  assert.deepEqual(f.parent.exits, [1]);
+  assert.deepEqual(f.child.signals, ['SIGTERM', 'SIGKILL']);
+  assertCleanStop(f);
+});
+
+test('signals without an owned child print no hint and repeat harmlessly', async () => {
+  const f = await fixture();
+  f.create('DEMO_SKIP_BUILD');
+  f.parent.emit('SIGINT');
+  f.parent.emit('SIGINT');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(f.parent.exits, [130]);
+  assert.deepEqual(f.calls.logs, []);
+  assert.equal(f.child.kills, 0);
+});
+
+for (const env of [{}, { JAVA_HOME: path.resolve('jdk') }]) {
+  test('Windows warns about a PATH java shim only without JAVA_HOME ' + JSON.stringify(Object.keys(env)), async () => {
+    const f = await fixture({ platform: 'win32', env });
+    await f.create('DEMO_SKIP_BUILD').start('app.jar', 'app.log');
+    const warned = f.calls.logs.some(line => /launcher shim/.test(line));
+    assert.equal(warned, !env.JAVA_HOME);
+    const posix = await fixture();
+    await posix.create('DEMO_SKIP_BUILD').start('app.jar', 'app.log');
+    assert.equal(posix.calls.logs.some(line => /launcher shim/.test(line)), false);
+  });
+}
