@@ -1,4 +1,5 @@
-// node --experimental-vm-modules --test scripts/workbench-lifecycle.test.mjs
+// node --experimental-vm-modules --test --test-timeout=10000 scripts/workbench-lifecycle.test.mjs
+// The timeout turns a regression to an unbounded cleanup wait into a failed test instead of a hung job.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
