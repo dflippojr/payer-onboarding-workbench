@@ -1,0 +1,14 @@
+{
+  "name": "payer-workbench-ui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:ui": "playwright test --workers=1",
+    "ui:start": "node scripts/ui-instance.mjs start",
+    "ui:stop": "node scripts/ui-instance.mjs stop",
+    "test:ui-instance": "node --test scripts/ui-instance.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0"
+  }
+}

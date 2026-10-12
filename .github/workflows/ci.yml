@@ -18,6 +18,27 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: Install locked UI test dependencies
+        run: npm ci --ignore-scripts
+      - name: Install UI browsers
+        run: node node_modules/@playwright/test/cli.js install --with-deps chromium webkit
+      - name: Verify disposable-instance safety boundaries
+        run: npm run test:ui-instance
+      - name: Disposable synthetic UI journeys (one worker)
+        run: npm run test:ui
+      - name: Stop the owned UI instance even on failure
+        if: always()
+        run: node scripts/ui-instance.mjs stop
+      - name: Upload UI test evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ui-test-results
+          path: |
+            playwright-report/
+            test-results/
+            .ui-test/app.log
+          if-no-files-found: ignore
       - name: Export the website replay bundle (reuses the jar)
         run: EXPORT_SKIP_BUILD=1 node scripts/export-replays.mjs
       - name: Check the leak scanner against the shared redaction corpus
