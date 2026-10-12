@@ -206,7 +206,7 @@ final class AuditJournal implements AuditSink {
             }
         }
         closed.sort((a, b) -> a.id().compareTo(b.id()));
-        if (sealed) {
+        if (sealed || !Files.exists(manifest)) {
             writeManifest();
         }
     }

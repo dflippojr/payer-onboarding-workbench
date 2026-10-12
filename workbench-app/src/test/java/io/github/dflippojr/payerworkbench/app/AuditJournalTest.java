@@ -60,6 +60,18 @@ class AuditJournalTest {
     }
 
     @Test
+    void openingAnExistingEmptyJournalPreservesItsManifest() throws Exception {
+        Path dir = tmp.resolve("journal");
+        open(dir, DEFAULT, NOW);
+        byte[] manifest = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
+
+        AuditJournal.open(dir.toString(), DEFAULT, null, Clock.fixed(NOW, ZoneOffset.UTC), MAPPER);
+
+        assertArrayEquals(manifest, Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)));
+        assertTrue(segments(dir).isEmpty());
+    }
+
+    @Test
     void eventsSurviveANewProcessAndKeepIdsAndTimestamps() throws Exception {
         Path dir = tmp.resolve("journal");
         AuditEvent first = event(NOW, "run-1");
@@ -240,6 +252,26 @@ class AuditJournalTest {
         assertTrue(output.getAll().contains(AuditLog.JOURNAL_WARNING));
         assertFalse(output.getAll().contains("relative/path"));
         assertTrue(output.getAll().contains("audit {"));
+    }
+
+    @Test
+    void initialManifestFailureKeepsLoggingWithSafeWarningAndCounter(CapturedOutput output) throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("SYNTHETIC_PRIVATE_PATH").toString());
+        Files.createDirectory(dir.resolve("manifest.json.tmp"));
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AuditLog log = new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
+                new WorkbenchProperties.Audit(dir.toString(), null, null, null, "bench-1")));
+        log.lifecycle("startup.configuration", "success", "configuration", null, null);
+
+        assertEquals(0.0, registry.get("workbench.audit.journal.protected").gauge().value());
+        assertEquals(1.0, registry.get("workbench.audit.write.failures").counter().count());
+        assertTrue(output.getAll().contains(AuditLog.JOURNAL_WARNING));
+        assertTrue(output.getAll().contains("audit {"));
+        assertFalse(output.getAll().contains(dir.toString()));
+        assertFalse(output.getAll().contains("SYNTHETIC_PRIVATE_PATH"));
+        assertFalse(output.getAll().contains("manifest.json.tmp"));
+        assertTrue(segments(dir).isEmpty());
+        assertFalse(Files.exists(dir.resolve(AuditJournal.MANIFEST)));
     }
 
     @Test
