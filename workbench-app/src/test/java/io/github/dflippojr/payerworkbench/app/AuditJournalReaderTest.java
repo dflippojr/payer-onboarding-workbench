@@ -39,8 +39,8 @@ class AuditJournalReaderTest {
         assertEquals("", reader(dir).stdout());
         assertEquals("", reader(dir, "--verify").stdout());
         try (var files = Files.list(dir)) {
-            assertEquals(List.of(AuditJournal.MANIFEST),
-                    files.map(p -> p.getFileName().toString()).toList());
+            assertEquals(List.of(AuditJournal.WRITER_LOCK, AuditJournal.MANIFEST),
+                    files.map(p -> p.getFileName().toString()).sorted().toList());
         }
     }
 
@@ -58,7 +58,7 @@ class AuditJournalReaderTest {
         assertEquals("audit-000001", verification.path("segment").asText());
         assertEquals("unsealed", verification.path("status").asText());
         try (var files = Files.list(dir)) {
-            assertEquals(List.of("audit-000001.jsonl", AuditJournal.MANIFEST),
+            assertEquals(List.of(AuditJournal.WRITER_LOCK, "audit-000001.jsonl", AuditJournal.MANIFEST),
                     files.map(p -> p.getFileName().toString()).sorted().toList());
         }
         assertEquals(0, manifest(dir).path("segments").size());
@@ -118,11 +118,12 @@ class AuditJournalReaderTest {
         private Writer() { }
 
         public static void main(String[] args) throws Exception {
-            AuditJournal journal = AuditJournal.open(args[0],
+            try (AuditJournal journal = AuditJournal.open(args[0],
                     new AuditJournal.Policy(Duration.ofDays(30), 10L * 1024 * 1024, 100L * 1024 * 1024),
-                    LABEL, Clock.fixed(NOW, ZoneOffset.UTC), MAPPER);
-            if (Boolean.parseBoolean(args[1])) {
-                journal.append(EVENT);
+                    LABEL, Clock.fixed(NOW, ZoneOffset.UTC), MAPPER)) {
+                if (Boolean.parseBoolean(args[1])) {
+                    journal.append(EVENT);
+                }
             }
         }
     }

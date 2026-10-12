@@ -8,6 +8,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -19,6 +21,7 @@ import java.nio.file.attribute.AclEntryFlag;
 import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
@@ -33,6 +36,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
 
 /**
@@ -41,12 +46,16 @@ import java.util.regex.Pattern;
  * inside the application; the machine owner is trusted and checksums detect accidental damage, not a
  * deliberate rewrite. Failures throw a constant-message exception and never include event content.
  */
-final class AuditJournal implements AuditSink {
+final class AuditJournal implements AuditSink, AutoCloseable {
     static final String MANIFEST = "manifest.json";
+    static final String WRITER_LOCK = ".writer.lock";
     static final int MANIFEST_VERSION = 1;
     private static final Pattern SEGMENT_FILE = Pattern.compile("audit-(\\d{6})\\.jsonl");
     private static final Pattern LABEL = Pattern.compile("[A-Za-z0-9._-]{1,64}");
     private static final Duration RETENTION_CHECK = Duration.ofHours(1);
+    private static final Set<Object> WRITERS = ConcurrentHashMap.newKeySet();
+    /** Channels whose close could drop a lock this JVM already holds; kept open and reachable forever. */
+    private static final List<FileChannel> RETAINED = new CopyOnWriteArrayList<>();
 
     /** Rejected setup; the message is a constant reason code, never a path or content. */
     static final class UnsafeJournalException extends IOException {
@@ -67,6 +76,10 @@ final class AuditJournal implements AuditSink {
     private final List<Segment> closed = new ArrayList<>();
     private int nextSeq = 1;
     private FileChannel channel;
+    private FileChannel lockChannel;
+    private FileLock writerLock;
+    private Object ownershipKey;
+    private boolean shutdown;
     private String activeId;
     private long activeBytes;
     private Instant lastRetentionCheck;
@@ -87,9 +100,72 @@ final class AuditJournal implements AuditSink {
         }
         Path dir = prepareDirectory(directory);
         AuditJournal journal = new AuditJournal(dir, policy, operatorLabel, clock, mapper);
-        journal.adoptExisting();
-        journal.retention();
-        return journal;
+        boolean initialized = false;
+        try {
+            journal.acquireWriter();
+            journal.adoptExisting();
+            journal.retention();
+            initialized = true;
+            return journal;
+        } finally {
+            if (!initialized) {
+                journal.close();
+            }
+        }
+    }
+
+    private void acquireWriter() throws IOException {
+        Object key = ownershipKey(dir);
+        // On some OSes closing ANY channel for a lock file releases this JVM's locks on it.
+        // Reserve the directory's identity first, so same-JVM contenders never open a second channel.
+        if (!WRITERS.add(key)) {
+            throw new UnsafeJournalException("journal_busy");
+        }
+        ownershipKey = key;
+        // Keep the lock file permanently: deleting it can let writers lock different inodes.
+        lockChannel = FileChannel.open(dir.resolve(WRITER_LOCK), StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE);
+        try {
+            writerLock = lockChannel.tryLock();
+        } catch (OverlappingFileLockException e) {
+            // This JVM already holds the lock through an alias the reservation missed. Closing this
+            // channel would release that owner's POSIX lock, so it is never closed or collected.
+            RETAINED.add(lockChannel);
+            lockChannel = null;
+            throw new UnsafeJournalException("journal_busy");
+        }
+        if (writerLock == null) {
+            throw new UnsafeJournalException("journal_busy");
+        }
+    }
+
+    /** File identity, so aliased paths (bind mounts, symlinked parents) share one reservation. */
+    static Object ownershipKey(Path dir) throws IOException {
+        Object fileKey = Files.readAttributes(dir, BasicFileAttributes.class).fileKey();
+        return fileKey != null ? fileKey : dir.toRealPath();
+    }
+
+    /** Release the segment before ownership; leave it unsealed for the next successful opener. */
+    @Override
+    public synchronized void close() throws IOException {
+        if (shutdown) {
+            return;
+        }
+        shutdown = true;
+        // Release the lock and ownership channel even if segment close fails.
+        try (FileChannel ownership = lockChannel; FileLock lock = writerLock) {
+            if (channel != null) {
+                channel.close();
+            }
+        } catch (IOException e) {
+            throw new IOException("close_failed");
+        } finally {
+            channel = null;
+            activeBytes = 0;
+            if (ownershipKey != null) {
+                WRITERS.remove(ownershipKey);
+            }
+        }
     }
 
     static Path prepareDirectory(String directory) throws IOException {
@@ -217,6 +293,9 @@ final class AuditJournal implements AuditSink {
 
     @Override
     public synchronized void append(AuditEvent event) {
+        if (shutdown) {
+            throw new UncheckedIOException("Audit journal write failed", new IOException("journal_closed"));
+        }
         try {
             byte[] line = (mapper.writeValueAsString(event) + "\n").getBytes(StandardCharsets.UTF_8);
             maybeRetention();
@@ -256,6 +335,7 @@ final class AuditJournal implements AuditSink {
             closed.add(sealQuietly(activeId));
             channel = null;
         }
+        activeBytes = 0;
     }
 
     private Segment sealQuietly(String id) {
@@ -270,6 +350,7 @@ final class AuditJournal implements AuditSink {
         String id = activeId;
         channel.close();
         channel = null;
+        activeBytes = 0;
         closed.add(seal(id));
         writeManifest();
         retention();

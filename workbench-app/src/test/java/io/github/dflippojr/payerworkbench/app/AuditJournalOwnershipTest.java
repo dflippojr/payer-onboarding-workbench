@@ -1,0 +1,296 @@
+package io.github.dflippojr.payerworkbench.app;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.github.dflippojr.payerworkbench.core.AuditEvent;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.DisposableBean;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+
+@ExtendWith(OutputCaptureExtension.class)
+class AuditJournalOwnershipTest {
+    private static final ObjectMapper MAPPER = new ObjectMapper().registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private static final AuditJournal.Policy POLICY =
+            new AuditJournal.Policy(Duration.ofDays(30), 10L * 1024 * 1024, 100L * 1024 * 1024);
+
+    @TempDir
+    Path tmp;
+
+    private static AuditJournal open(Path dir) throws IOException {
+        return AuditJournal.open(dir.toString(), POLICY, "bench-1", Clock.systemUTC(), MAPPER);
+    }
+
+    private static AuditEvent event(String marker) {
+        return new AuditEvent(1, UUID.randomUUID(), Instant.now(), "anonymous", null, "http",
+                "run.requested", "started", UUID.randomUUID(), null, "run", marker, null);
+    }
+
+    private static void assertSealedIntact(Path dir, int events) throws Exception {
+        var segment = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)))
+                .path("segments").get(0);
+        assertEquals(events, segment.path("events").asInt());
+        byte[] bytes = Files.readAllBytes(dir.resolve(segment.path("file").asText()));
+        assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+                segment.path("sha256").asText());
+    }
+
+    @Test
+    void sameJvmContenderCannotSealOrExpireTheLiveWritersFiles() throws Exception {
+        Path dir = tmp.resolve("journal");
+        AuditEvent first = event("first");
+        AuditEvent next = event("next");
+        AuditJournal writer = open(dir);
+        try (writer) {
+            writer.append(first);
+            byte[] manifest = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
+            byte[] segment = Files.readAllBytes(dir.resolve("audit-000001.jsonl"));
+            var destructivePolicy = new AuditJournal.Policy(Duration.ZERO, 1, 1);
+            IOException busy = assertThrows(IOException.class, () -> AuditJournal.open(dir.toString(),
+                    destructivePolicy, null, Clock.systemUTC(), MAPPER));
+            assertEquals("journal_busy", busy.getMessage());
+            assertNull(busy.getCause());
+            assertArrayEquals(manifest, Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)));
+            assertArrayEquals(segment, Files.readAllBytes(dir.resolve("audit-000001.jsonl")));
+            writer.append(next);
+        }
+        byte[] afterClose = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
+        assertEquals(0, MAPPER.readTree(afterClose).path("segments").size());
+        writer.close();
+        assertThrows(RuntimeException.class, () -> writer.append(event("closed")));
+        assertArrayEquals(afterClose, Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)));
+        try (AuditJournal reopened = open(dir)) {
+            assertSealedIntact(dir, 2);
+            reopened.append(event("reopened"));
+            assertEquals(List.of(first, next), Files.readAllLines(dir.resolve("audit-000001.jsonl")).stream()
+                    .map(line -> {
+                        try {
+                            return MAPPER.readValue(line, AuditEvent.class);
+                        } catch (IOException e) {
+                            throw new java.io.UncheckedIOException(e);
+                        }
+                    }).toList());
+            // Closing the old instance again cannot release the new writer's lock.
+            writer.close();
+            assertThrows(IOException.class, () -> open(dir));
+        }
+    }
+
+    @Test
+    void separateProcessIsRejectedThenCanAdoptAfterTheOwnerCloses() throws Exception {
+        Path dir = tmp.resolve("process");
+        try (AuditJournal writer = open(dir)) {
+            writer.append(event("before"));
+            byte[] manifest = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
+            // A rejected same-JVM opener must not inadvertently release the owner's OS lock.
+            assertThrows(IOException.class, () -> open(dir));
+            assertEquals("journal_busy", child(dir, "busy"));
+            assertArrayEquals(manifest, Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)));
+            writer.append(event("after"));
+        }
+        assertEquals("opened", child(dir, "open"));
+        try (AuditJournal reopened = open(dir)) {
+            assertSealedIntact(dir, 2);
+            var segments = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST))).path("segments");
+            assertEquals(2, segments.size());
+            assertEquals(1, segments.get(1).path("events").asInt());
+            reopened.append(event("parent-reopened"));
+        }
+    }
+
+    @Test
+    void aliasedPathIsRejectedWithoutReleasingTheOwnersLock() throws Exception {
+        Path real = Files.createDirectory(tmp.resolve("real"));
+        Path alias = tmp.resolve("alias");
+        try {
+            Files.createSymbolicLink(alias, real);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "symbolic links unavailable");
+        }
+        Path dir = real.resolve("journal");
+        try (AuditJournal writer = open(dir)) {
+            writer.append(event("owner"));
+            Path aliased = alias.resolve("journal");
+            assertEquals(AuditJournal.ownershipKey(dir), AuditJournal.ownershipKey(aliased));
+            IOException busy = assertThrows(IOException.class, () -> open(aliased));
+            assertEquals("journal_busy", busy.getMessage());
+            assertEquals("journal_busy", child(dir, "busy"));
+            writer.append(event("still-owner"));
+        }
+        assertEquals("opened", child(dir, "open"));
+    }
+
+    @Test
+    void overlappingLockIsTreatedAsHeldAndItsChannelIsNeverClosed() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("overlap").toString());
+        // An owner this JVM's reservation cannot see, such as another classloader or an unmerged alias.
+        try (FileChannel owner = FileChannel.open(dir.resolve(AuditJournal.WRITER_LOCK),
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock lock = owner.lock()) {
+            IOException busy = assertThrows(IOException.class, () -> open(dir));
+            assertEquals("journal_busy", busy.getMessage());
+            System.gc();
+            assertTrue(lock.isValid());
+            // Under POSIX fcntl semantics closing the contender's channel would have dropped this lock.
+            assertEquals("journal_busy", child(dir, "busy"));
+        }
+    }
+
+    private String child(Path dir, String mode) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
+        Path output = tmp.resolve("child-" + mode + ".txt");
+        Process child = new ProcessBuilder(java, "-cp", System.getProperty("surefire.test.class.path",
+                System.getProperty("java.class.path")), Contender.class.getName(), dir.toString(), mode)
+                .redirectErrorStream(true).redirectOutput(output.toFile()).start();
+        try {
+            assertTrue(child.waitFor(30, TimeUnit.SECONDS), "child must finish");
+            assertEquals(0, child.exitValue(), Files.readString(output));
+            return Files.readString(output).strip();
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+                assertTrue(child.waitFor(10, TimeUnit.SECONDS), "child must stop");
+            }
+        }
+    }
+
+    public static final class Contender {
+        private Contender() { }
+
+        public static void main(String[] args) throws Exception {
+            Path dir = Path.of(args[0]);
+            if (args[1].equals("busy")) {
+                try (AuditJournal unexpected = open(dir)) {
+                    unexpected.append(event("unexpected"));
+                    throw new IllegalStateException("competing writer accepted");
+                } catch (AuditJournal.UnsafeJournalException e) {
+                    if (!e.getMessage().equals("journal_busy")) {
+                        throw e;
+                    }
+                    System.out.println(e.getMessage());
+                }
+            } else {
+                try (AuditJournal journal = open(dir)) {
+                    journal.append(event("child"));
+                }
+                System.out.println("opened");
+            }
+        }
+    }
+
+    @Test
+    void failedInitializationReleasesOwnershipForTheNextOpen() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("failed").toString());
+        Files.createDirectory(dir.resolve(AuditJournal.MANIFEST + ".tmp"));
+        assertThrows(IOException.class, () -> open(dir));
+        Files.delete(dir.resolve(AuditJournal.MANIFEST + ".tmp"));
+        try (AuditJournal journal = open(dir)) {
+            journal.append(event("recovered"));
+        }
+        // An unchecked failure after adoption must also release ownership.
+        assertThrows(RuntimeException.class, () -> AuditJournal.open(dir.toString(),
+                new AuditJournal.Policy(null, 1000, 10000), null, Clock.systemUTC(), MAPPER));
+        try (AuditJournal journal = open(dir)) {
+            assertSealedIntact(dir, 1);
+            journal.append(event("recovered-again"));
+        }
+    }
+
+    private AnnotationConfigApplicationContext context(Path dir) {
+        var context = configuredContext(dir);
+        context.registerBean(ShutdownAudit.class);
+        context.refresh();
+        return context;
+    }
+
+    private AnnotationConfigApplicationContext configuredContext(Path dir) {
+        var context = new AnnotationConfigApplicationContext();
+        context.registerBean(SimpleMeterRegistry.class);
+        context.registerBean(WorkbenchProperties.class, () -> new WorkbenchProperties(null, null, null,
+                null, null, null, new WorkbenchProperties.Audit(dir.toString(), null, null, null, "bench-1")));
+        context.registerBean(AuditLog.class);
+        return context;
+    }
+
+    static final class FailedStartup {
+        FailedStartup(AuditLog log) {
+            log.lifecycle("startup.failed", "failed", "application", null, null);
+            throw new IllegalStateException("synthetic startup failure");
+        }
+    }
+
+    @Test
+    void failedContextRefreshClosesItsActiveJournal() throws Exception {
+        Path dir = tmp.resolve("failed-context");
+        try (var context = configuredContext(dir)) {
+            context.registerBean(FailedStartup.class);
+            assertThrows(org.springframework.beans.factory.BeanCreationException.class, context::refresh);
+            try (AuditJournal journal = open(dir)) {
+                assertSealedIntact(dir, 1);
+                assertTrue(Files.readString(dir.resolve("audit-000001.jsonl")).contains("startup.failed"));
+                journal.append(event("after-failed-context"));
+            }
+        }
+    }
+
+    static final class ShutdownAudit implements DisposableBean {
+        private final AuditLog log;
+
+        ShutdownAudit(AuditLog log) { this.log = log; }
+
+        @Override
+        public void destroy() {
+            log.lifecycle("cleanup.finished", "success", "application", null, null);
+        }
+    }
+
+    @Test
+    void contextShutdownRecordsDependentEventsAndReleasesWriter(CapturedOutput output) throws Exception {
+        Path dir = tmp.resolve("SYNTHETIC_PRIVATE_PATH");
+        try (var owner = context(dir)) {
+            owner.getBean(AuditLog.class).append(event("first"));
+            try (var contender = context(dir)) {
+                var registry = contender.getBean(SimpleMeterRegistry.class);
+                assertEquals(0, registry.get("workbench.audit.journal.protected").gauge().value());
+                assertEquals(1, registry.get("workbench.audit.write.failures").counter().count());
+                assertTrue(output.getAll().contains(AuditLog.JOURNAL_WARNING));
+                assertFalse(output.getAll().contains("SYNTHETIC_PRIVATE_PATH"));
+                contender.getBean(AuditLog.class).append(event("log-only"));
+            }
+            owner.getBean(AuditLog.class).append(event("continued"));
+            assertEquals(0, owner.getBean(SimpleMeterRegistry.class)
+                    .get("workbench.audit.write.failures").counter().count());
+        }
+        try (var reopened = context(dir)) {
+            assertEquals(1, reopened.getBean(SimpleMeterRegistry.class)
+                    .get("workbench.audit.journal.protected").gauge().value());
+            assertSealedIntact(dir, 3);
+            String contents = Files.readString(dir.resolve("audit-000001.jsonl"));
+            assertTrue(contents.contains("cleanup.finished"));
+            assertFalse(contents.contains("log-only"));
+        }
+    }
+}
