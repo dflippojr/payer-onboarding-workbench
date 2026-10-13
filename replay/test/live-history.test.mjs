@@ -67,10 +67,11 @@ async function load(history, override = () => undefined, customEnabled = false) 
     };
     return { ok: true, status: 200, json: async () => data[path] || runFixture(path.split('/').at(-1)) };
   };
-  runInNewContext(app, { document: { getElementById: $, createElement: tag => new Element(tag) }, Node: Element, fetch });
+  const context = { document: { getElementById: $, createElement: tag => new Element(tag) }, Node: Element, fetch };
+  runInNewContext(app, context);
   await settle();
   $('sample').value = 'synthetic-sample';
-  return { $, requests };
+  return { $, requests, compareRuns: context.PayerWorkbench.compareRuns };
 }
 
 async function choose(ui, id) {
@@ -152,7 +153,8 @@ test('stale response from an earlier selection cannot replace the latest result'
 });
 
 test('selector uses native keyboard controls, accessible label and live status', () => {
-  assert.match(html, /<label class="field">Recent runs\s*<select id="recent-runs" aria-describedby="history-status">/);
+  assert.match(html, /<label class="field grow">Recent runs\s*<select id="recent-runs" aria-describedby="history-status">/);
+  assert.match(html, /<label class="field grow">Compare with\s*<select id="compare-runs" aria-describedby="history-status" disabled>/);
   assert.match(html, /id="history-status"[^>]*role="status"[^>]*aria-live="polite"/);
 });
 
@@ -194,4 +196,166 @@ test('custom endpoint form and picker remain hidden when feature is disabled', a
   const ui = await load([]);
   assert.equal(ui.$('custom-endpoint').hidden, true);
   assert.ok(ui.$('run-form').querySelectorAll('input[name="payerId"]').every(r => r.value !== '__custom__'));
+});
+
+const STEPS = ['resolve-connection', 'discovery', 'authenticate', 'hook-request', 'parse-response', 'diagnostics'];
+function stepStatus(index, broke) {
+  const at = STEPS.indexOf(broke);
+  if (at < 0 || index < at) return 'passed';
+  return index === at || STEPS[index] === 'diagnostics' ? 'failed' : 'skipped';
+}
+const flow = (id, findings, broke) => ({ runId: id, payerId: 'synthetic-payer', environment: 'SANDBOX',
+  steps: STEPS.map((stepId, i) => ({ stepId, details: { status: stepStatus(i, broke) }, elapsed: 0.01, summary: `${stepId} ${id}` })),
+  findings: Object.entries(findings).flatMap(([checkId, severities]) =>
+    [].concat(severities).map(severity => ({ severity, checkId, title: `${checkId} title` }))) });
+const plain = value => JSON.parse(JSON.stringify(value));
+const ids = list => list.map(c => `${c.checkId}:${c.before}->${c.after}`);
+
+test('comparison of identical runs leaves every check unchanged', async () => {
+  const { compareRuns } = await load([]);
+  const run = flow('same', { 'a.pass': 'PASS', 'b.warn': 'WARN', 'c.info': 'INFO' });
+  const diff = plain(compareRuns(run, run));
+  assert.deepEqual(diff.verdict, { before: 'PASS_WITH_WARNINGS', after: 'PASS_WITH_WARNINGS', change: 'unchanged' });
+  assert.deepEqual(diff.brokeAt, { before: null, after: null });
+  assert.deepEqual(diff.steps, []);
+  assert.deepEqual(diff.worse, []);
+  assert.deepEqual(diff.better, []);
+  assert.deepEqual(diff.oneSided, []);
+  assert.deepEqual(ids(diff.unchanged), ['b.warn:WARN->WARN', 'c.info:INFO->INFO', 'a.pass:PASS->PASS']);
+});
+
+test('comparison groups a fixed FAIL, a new FAIL, WARN to FAIL and FAIL to PASS in severity order', async () => {
+  const { compareRuns } = await load([]);
+  const before = flow('before', { 'fixed.fail': 'FAIL', 'warn.to.fail': 'WARN', 'new.fail': 'PASS',
+    'fail.to.warn': 'FAIL', 'same.warn': 'WARN' });
+  const after = flow('after', { 'fixed.fail': 'PASS', 'warn.to.fail': 'FAIL', 'new.fail': 'FAIL',
+    'fail.to.warn': 'WARN', 'same.warn': 'WARN' });
+  const diff = plain(compareRuns(before, after));
+  assert.deepEqual(diff.verdict, { before: 'FAIL', after: 'FAIL', change: 'unchanged' });
+  assert.deepEqual(ids(diff.worse), ['warn.to.fail:WARN->FAIL', 'new.fail:PASS->FAIL']);
+  assert.deepEqual(ids(diff.better), ['fail.to.warn:FAIL->WARN', 'fixed.fail:FAIL->PASS']);
+  assert.deepEqual(ids(diff.unchanged), ['same.warn:WARN->WARN']);
+  assert.equal(diff.worse[1].title, 'new.fail title');
+});
+
+test('comparison lists a check reported by only one run separately, not as better, worse or unchanged', async () => {
+  const { compareRuns } = await load([]);
+  const before = flow('before', { 'gone.fail': 'FAIL', 'gone.pass': 'PASS', 'same.pass': 'PASS' });
+  const after = flow('after', { 'added.warn': 'WARN', 'added.pass': 'PASS', 'same.pass': 'PASS' });
+  const diff = plain(compareRuns(before, after));
+  assert.deepEqual(diff.worse, []);
+  assert.deepEqual(diff.better, []);
+  assert.deepEqual(ids(diff.unchanged), ['same.pass:PASS->PASS']);
+  assert.deepEqual(ids(diff.oneSided),
+    ['gone.fail:FAIL->null', 'added.warn:null->WARN', 'added.pass:null->PASS', 'gone.pass:PASS->null']);
+  assert.deepEqual(diff.verdict, { before: 'FAIL', after: 'PASS_WITH_WARNINGS', change: 'better' });
+});
+
+test('comparison uses the most severe finding when a check has several', async () => {
+  const { compareRuns } = await load([]);
+  const before = flow('before', { 'multi.check': ['PASS', 'WARN', 'INFO'] });
+  const after = flow('after', { 'multi.check': ['PASS', 'FAIL', 'WARN'] });
+  assert.deepEqual(ids(plain(compareRuns(before, after)).worse), ['multi.check:WARN->FAIL']);
+  assert.deepEqual(ids(plain(compareRuns(after, after)).unchanged), ['multi.check:FAIL->FAIL']);
+});
+
+test('comparison reports the broke-at step moving or disappearing and the steps that changed', async () => {
+  const { compareRuns } = await load([]);
+  const healthy = flow('healthy', { 'x.pass': 'PASS' });
+  const discovery = flow('discovery', { 'discovery.reachable': 'FAIL' }, 'discovery');
+  const auth = flow('auth', { 'auth.token': 'FAIL' }, 'authenticate');
+  const moved = plain(compareRuns(discovery, auth));
+  assert.deepEqual(moved.brokeAt, { before: 'discovery', after: 'authenticate' });
+  assert.deepEqual(moved.steps, [
+    { stepId: 'discovery', before: 'failed', after: 'passed' },
+    { stepId: 'authenticate', before: 'skipped', after: 'failed' }]);
+  const fixed = plain(compareRuns(discovery, healthy));
+  assert.deepEqual(fixed.brokeAt, { before: 'discovery', after: null });
+  assert.deepEqual(fixed.verdict, { before: 'FAIL', after: 'PASS', change: 'better' });
+  assert.equal(fixed.steps.length, 5);
+  assert.deepEqual(fixed.better, []);
+  assert.deepEqual(ids(fixed.oneSided), ['discovery.reachable:FAIL->null', 'x.pass:null->PASS']);
+  const broken = plain(compareRuns(healthy, discovery));
+  assert.deepEqual(broken.brokeAt, { before: null, after: 'discovery' });
+  assert.deepEqual(broken.verdict, { before: 'PASS', after: 'FAIL', change: 'worse' });
+  assert.deepEqual(broken.worse, []);
+  assert.deepEqual(ids(broken.oneSided), ['discovery.reachable:null->FAIL', 'x.pass:PASS->null']);
+  assert.equal(plain(compareRuns(healthy, flow('no-findings', {}, 'hook-request'))).verdict.after, 'FAIL');
+});
+
+const compareHistory = [summary('shown'), summary('baseline'), summary('other')];
+const ok = run => ({ ok: true, json: async () => run });
+const compareRoutes = extra => path => {
+  const changed = extra?.(path);
+  if (changed) return changed;
+  if (path === 'api/runs/shown') return ok(flow('shown', { 'discovery.reachable': 'FAIL', 'new.check': 'WARN' }, 'discovery'));
+  if (path === 'api/runs/baseline') return ok(flow('baseline', { 'discovery.reachable': 'PASS', 'old.check': 'INFO' }));
+  return undefined;
+};
+async function pick(ui, id) {
+  ui.$('compare-runs').value = id;
+  await ui.$('compare-runs').dispatch('change');
+}
+
+test('compare select is enabled once a run is shown and renders the changes section', async () => {
+  const ui = await load(compareHistory, compareRoutes());
+  assert.equal(ui.$('compare-runs').disabled, true);
+  await choose(ui, 'shown');
+  assert.equal(ui.$('compare-runs').disabled, false);
+  assert.deepEqual(ui.$('compare-runs').children.map(o => o.attributes.value), ['', 'baseline', 'other']);
+  await pick(ui, 'baseline');
+  assert.equal(ui.$('comparison').hidden, false);
+  assert.equal(ui.$('comparison-heading').textContent, 'Changes since run baseline');
+  const text = ui.$('comparison-body').textContent;
+  assert.match(text, /Verdict.*PASS → FAIL.*worse/);
+  assert.match(text, /Broke at.*every step passed → Discovery/);
+  assert.match(text, /Discovery: passed → failed/);
+  assert.match(text, /Newly failing or worse \(1\)discovery\.reachable.*PASS → FAIL/);
+  assert.match(text, /Fixed or better \(0\)None\./);
+  assert.match(text, /Only in one run \(2\)new\.check new\.check title only in run shown: WARNold\.check old\.check title only in run baseline: INFO/);
+  assert.match(text, /Unchanged: 0 checks\./);
+  assert.equal(ui.$('history-status').textContent, 'Comparison shown.');
+  assert.ok(ui.requests.every(r => r.method === 'GET'));
+  await choose(ui, 'baseline');
+  assert.equal(ui.$('comparison').hidden, true);
+  assert.deepEqual(ui.$('compare-runs').children.map(o => o.attributes.value), ['', 'shown', 'other']);
+});
+
+test('evicted comparison run refreshes history, clears the comparison and says so', async () => {
+  const ui = await load(compareHistory, compareRoutes(path => path === 'api/runs/other' ? errorResponse(404) : undefined));
+  await choose(ui, 'shown');
+  await pick(ui, 'baseline');
+  await pick(ui, 'other');
+  assert.equal(ui.$('comparison').hidden, true);
+  assert.equal(ui.$('comparison-body').textContent, '');
+  assert.equal(ui.$('compare-runs').value, '');
+  assert.match(ui.$('history-status').textContent, /^That run is no longer available/);
+  assert.equal(ui.requests.filter(r => r.path === 'api/runs').length, 2);
+  assert.match(ui.$('findings').textContent, /discovery\.reachable/);
+});
+
+test('stale comparison fetch is ignored after a newer selection, a reopen or a new run', async () => {
+  let resolve;
+  const late = () => resolve(ok(flow('other', { 'late.fail': 'FAIL' })));
+  const ui = await load(compareHistory, compareRoutes(path =>
+    path === 'api/runs/other' ? new Promise(done => { resolve = done; }) : undefined));
+  await choose(ui, 'shown');
+  let earlier = pick(ui, 'other');
+  await pick(ui, 'baseline');
+  late();
+  await earlier;
+  assert.equal(ui.$('comparison-heading').textContent, 'Changes since run baseline');
+  assert.doesNotMatch(ui.$('comparison-body').textContent, /late\.fail/);
+  earlier = pick(ui, 'other');
+  await choose(ui, 'baseline');
+  late();
+  await earlier;
+  assert.equal(ui.$('comparison').hidden, true);
+  await choose(ui, 'shown');
+  earlier = pick(ui, 'other');
+  await ui.$('run-form').dispatch('submit');
+  late();
+  await earlier;
+  assert.equal(ui.$('comparison').hidden, true);
+  assert.equal(ui.$('compare-runs').disabled, false);
 });

@@ -74,6 +74,31 @@ test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page
   await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
 });
 
+test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => {
+  await ready(page);
+  await expect(page.getByLabel('Compare with')).toBeDisabled();
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  const healthy = await runOnboarding(page);
+  await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
+  const failed = await runOnboarding(page);
+  const compare = page.getByLabel('Compare with');
+  await expect(compare).toBeEnabled();
+  await expect(compare.locator('option[value="' + failed.runId + '"]')).toHaveCount(0);
+  await compare.focus();
+  await compare.selectOption(healthy.runId);
+  await expect(page.locator('#history-status')).toHaveText('Comparison shown.');
+  const comparison = page.getByRole('region', { name: 'Changes since run ' + healthy.runId.slice(0, 8) });
+  await expect(comparison).toBeVisible();
+  await expect(comparison.locator('dd').first()).toContainText('PASS → FAIL worse');
+  await expect(comparison.locator('dd').nth(1)).toHaveText('every step passed → Discovery');
+  await expect(comparison.getByRole('heading', { name: /^Newly failing or worse/ }).locator('xpath=following-sibling::ul[1]'))
+    .toContainText('discovery.reachable');
+  await auditEvent('run.read', healthy.runId);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByLabel('Recent runs').selectOption(healthy.runId);
+  await expect(comparison).toBeHidden();
+});
+
 test('J04 unavailable environment produces retained diagnostic run', async ({ page }) => {
   await ready(page);
   await page.getByRole('combobox', { name: 'Environment', exact: true }).selectOption('STAGING');

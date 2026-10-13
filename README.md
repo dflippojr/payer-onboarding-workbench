@@ -103,6 +103,8 @@ The UI has a payer picker, a "Break it" panel of payer faults, connection settin
 
 The live UI's **Recent runs** selector reloads history after a browser refresh and after each run. Reopening retrieves the existing timeline, findings and report without executing a run or changing form settings. History is process-local memory, bounded by `workbench.max-runs` (default 200), with the oldest insertion evicted first. A server restart clears all runs and reports; browser refresh does not.
 
+Once a run is on screen, **Compare with** picks another retained run and shows a **Changes since run** section: the verdict and broke-at step before and after, the steps whose status changed, and checks grouped as **Newly failing or worse**, **Fixed or better** and **Only in one run**, with unchanged checks counted. Checks are matched by `checkId` using each run's most severe finding. A check that only one run reported, such as checks skipped after a Discovery failure, is listed under **Only in one run** with the run that reported it and its status, and is never ranked as better, worse or unchanged. The comparison runs in the browser from two `GET /api/runs/{id}` reads, and is not part of reports or the replay viewer.
+
 ```sh
 curl -s localhost:8080/api/runs -H 'Content-Type: application/json' \
   -d '{"payerId":"northwind-synthetic","sampleId":"order-sign-hospital-bed","faults":["expired-token-401"]}'

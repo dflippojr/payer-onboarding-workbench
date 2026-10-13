@@ -102,11 +102,18 @@
 
     <section class="panel" aria-labelledby="steps-heading">
       <h2 id="steps-heading" tabindex="-1">Steps</h2>
-      <label class="field">Recent runs
-        <select id="recent-runs" aria-describedby="history-status">
-          <option value="">Loading recent runs...</option>
-        </select>
-      </label>
+      <div class="row history">
+        <label class="field grow">Recent runs
+          <select id="recent-runs" aria-describedby="history-status">
+            <option value="">Loading recent runs...</option>
+          </select>
+        </label>
+        <label class="field grow">Compare with
+          <select id="compare-runs" aria-describedby="history-status" disabled>
+            <option value="">Show a run first</option>
+          </select>
+        </label>
+      </div>
       <p id="history-status" class="muted small" role="status" aria-live="polite"></p>
       <p id="run-meta" class="muted small">Run the flow to see each step.</p>
       <div class="actions report-actions" id="report-actions" hidden>
@@ -120,6 +127,10 @@
         <a class="button" id="report-link" href="#" download>Download report <span aria-hidden="true">↓</span></a>
         <span class="muted small">Redacted, with the synthetic-data disclaimer.</span>
       </div>
+      <section id="comparison" class="comparison" aria-labelledby="comparison-heading" hidden>
+        <h3 id="comparison-heading">Changes since run</h3>
+        <div id="comparison-body"></div>
+      </section>
       <ol id="steps" class="timeline"></ol>
     </section>
 
