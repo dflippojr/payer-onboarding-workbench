@@ -424,9 +424,9 @@
     return run.findings.some(f => f.severity === 'WARN') ? 'PASS_WITH_WARNINGS' : 'PASS';
   }
 
-  /** Severity rank, lower is worse; a check the run did not report ranks as PASS. */
+  /** Severity rank, lower is worse. */
   function rank(severity) {
-    return SEVERITIES.indexOf(severity || 'PASS');
+    return SEVERITIES.indexOf(severity);
   }
 
   /** The most severe finding per checkId. */
@@ -447,7 +447,8 @@
 
   /**
    * Pure comparison of two runs as returned by GET /api/runs/{id}: what changed from before to after.
-   * A severity or step status is null when that run did not report it.
+   * A severity or step status is null when that run did not report it; checks reported by only one run
+   * are listed in oneSided rather than ranked as better or worse.
    */
   function compareRuns(before, after) {
     const was = worstByCheck(before.findings);
@@ -456,7 +457,9 @@
       const b = was.get(checkId);
       const a = now.get(checkId);
       return { checkId, title: (a || b).title, before: b ? b.severity : null, after: a ? a.severity : null };
-    }).sort((x, y) => rank(x.after) - rank(y.after) || rank(x.before) - rank(y.before) || x.checkId.localeCompare(y.checkId));
+    }).sort((x, y) => rank(x.after || x.before) - rank(y.after || y.before)
+      || rank(x.before || x.after) - rank(y.before || y.after) || x.checkId.localeCompare(y.checkId));
+    const both = checks.filter(c => c.before && c.after);
     const statuses = run => new Map(run.steps.map(s => [s.stepId, stepStatus(s)]));
     const stepsBefore = statuses(before);
     const stepsAfter = statuses(after);
@@ -472,20 +475,24 @@
         change: direction(VERDICTS.indexOf(verdictBefore), VERDICTS.indexOf(verdictAfter)) },
       brokeAt: { before: brokeAt(before), after: brokeAt(after) },
       steps,
-      worse: checks.filter(c => rank(c.after) < rank(c.before)),
-      better: checks.filter(c => rank(c.after) > rank(c.before)),
-      unchanged: checks.filter(c => rank(c.after) === rank(c.before)),
+      worse: both.filter(c => rank(c.after) < rank(c.before)),
+      better: both.filter(c => rank(c.after) > rank(c.before)),
+      unchanged: both.filter(c => rank(c.after) === rank(c.before)),
+      oneSided: checks.filter(c => !c.before || !c.after),
     };
   }
 
   function renderComparison(baseline, diff) {
     const arrow = (b, a) => h('span', { class: 'transition' }, `${b} → ${a}`);
     const brokeLabel = id => (id ? stepTitle(id) : 'every step passed');
-    const group = (title, items) => [
+    const run = id => `run ${String(id).slice(0, 8)}`;
+    const oneSided = c => h('span', { class: 'transition' },
+      c.after ? `only in ${run(diff.after)}: ${c.after}` : `only in ${run(diff.before)}: ${c.before}`);
+    const group = (title, items, change = c => arrow(c.before, c.after)) => [
       h('h4', {}, `${title} (${items.length})`),
       items.length
         ? h('ul', { class: 'changes' }, items.map(c => h('li', {},
-          h('code', {}, c.checkId), ' ', c.title, ' ', arrow(c.before || 'not reported', c.after || 'not reported'))))
+          h('code', {}, c.checkId), ' ', c.title, ' ', change(c))))
         : h('p', { class: 'muted small' }, 'None.'),
     ];
     const { before: brokeBefore, after: brokeAfter } = diff.brokeAt;
@@ -505,6 +512,7 @@
         : h('p', { class: 'muted small' }, 'No step changed status.'),
       ...group('Newly failing or worse', diff.worse),
       ...group('Fixed or better', diff.better),
+      ...group('Only in one run', diff.oneSided, oneSided),
       h('p', { class: 'muted small' }, `Unchanged: ${diff.unchanged.length} check${diff.unchanged.length === 1 ? '' : 's'}.`));
     $('comparison').hidden = false;
   }

@@ -220,6 +220,7 @@ test('comparison of identical runs leaves every check unchanged', async () => {
   assert.deepEqual(diff.steps, []);
   assert.deepEqual(diff.worse, []);
   assert.deepEqual(diff.better, []);
+  assert.deepEqual(diff.oneSided, []);
   assert.deepEqual(ids(diff.unchanged), ['b.warn:WARN->WARN', 'c.info:INFO->INFO', 'a.pass:PASS->PASS']);
 });
 
@@ -237,14 +238,16 @@ test('comparison groups a fixed FAIL, a new FAIL, WARN to FAIL and FAIL to PASS 
   assert.equal(diff.worse[1].title, 'new.fail title');
 });
 
-test('comparison treats a check reported by only one run as not reported on the other side', async () => {
+test('comparison lists a check reported by only one run separately, not as better, worse or unchanged', async () => {
   const { compareRuns } = await load([]);
-  const before = flow('before', { 'gone.fail': 'FAIL', 'gone.pass': 'PASS' });
-  const after = flow('after', { 'added.warn': 'WARN', 'added.pass': 'PASS' });
+  const before = flow('before', { 'gone.fail': 'FAIL', 'gone.pass': 'PASS', 'same.pass': 'PASS' });
+  const after = flow('after', { 'added.warn': 'WARN', 'added.pass': 'PASS', 'same.pass': 'PASS' });
   const diff = plain(compareRuns(before, after));
-  assert.deepEqual(ids(diff.worse), ['added.warn:null->WARN']);
-  assert.deepEqual(ids(diff.better), ['gone.fail:FAIL->null']);
-  assert.deepEqual(ids(diff.unchanged), ['added.pass:null->PASS', 'gone.pass:PASS->null']);
+  assert.deepEqual(diff.worse, []);
+  assert.deepEqual(diff.better, []);
+  assert.deepEqual(ids(diff.unchanged), ['same.pass:PASS->PASS']);
+  assert.deepEqual(ids(diff.oneSided),
+    ['gone.fail:FAIL->null', 'added.warn:null->WARN', 'added.pass:null->PASS', 'gone.pass:PASS->null']);
   assert.deepEqual(diff.verdict, { before: 'FAIL', after: 'PASS_WITH_WARNINGS', change: 'better' });
 });
 
@@ -270,11 +273,13 @@ test('comparison reports the broke-at step moving or disappearing and the steps 
   assert.deepEqual(fixed.brokeAt, { before: 'discovery', after: null });
   assert.deepEqual(fixed.verdict, { before: 'FAIL', after: 'PASS', change: 'better' });
   assert.equal(fixed.steps.length, 5);
-  assert.deepEqual(ids(fixed.better), ['discovery.reachable:FAIL->null']);
+  assert.deepEqual(fixed.better, []);
+  assert.deepEqual(ids(fixed.oneSided), ['discovery.reachable:FAIL->null', 'x.pass:null->PASS']);
   const broken = plain(compareRuns(healthy, discovery));
   assert.deepEqual(broken.brokeAt, { before: null, after: 'discovery' });
   assert.deepEqual(broken.verdict, { before: 'PASS', after: 'FAIL', change: 'worse' });
-  assert.deepEqual(ids(broken.worse), ['discovery.reachable:null->FAIL']);
+  assert.deepEqual(broken.worse, []);
+  assert.deepEqual(ids(broken.oneSided), ['discovery.reachable:null->FAIL', 'x.pass:PASS->null']);
   assert.equal(plain(compareRuns(healthy, flow('no-findings', {}, 'hook-request'))).verdict.after, 'FAIL');
 });
 
@@ -283,8 +288,8 @@ const ok = run => ({ ok: true, json: async () => run });
 const compareRoutes = extra => path => {
   const changed = extra?.(path);
   if (changed) return changed;
-  if (path === 'api/runs/shown') return ok(flow('shown', { 'discovery.reachable': 'FAIL' }, 'discovery'));
-  if (path === 'api/runs/baseline') return ok(flow('baseline', { 'discovery.reachable': 'PASS' }));
+  if (path === 'api/runs/shown') return ok(flow('shown', { 'discovery.reachable': 'FAIL', 'new.check': 'WARN' }, 'discovery'));
+  if (path === 'api/runs/baseline') return ok(flow('baseline', { 'discovery.reachable': 'PASS', 'old.check': 'INFO' }));
   return undefined;
 };
 async function pick(ui, id) {
@@ -307,6 +312,7 @@ test('compare select is enabled once a run is shown and renders the changes sect
   assert.match(text, /Discovery: passed → failed/);
   assert.match(text, /Newly failing or worse \(1\)discovery\.reachable.*PASS → FAIL/);
   assert.match(text, /Fixed or better \(0\)None\./);
+  assert.match(text, /Only in one run \(2\)new\.check new\.check title only in run shown: WARNold\.check old\.check title only in run baseline: INFO/);
   assert.match(text, /Unchanged: 0 checks\./);
   assert.equal(ui.$('history-status').textContent, 'Comparison shown.');
   assert.ok(ui.requests.every(r => r.method === 'GET'));
