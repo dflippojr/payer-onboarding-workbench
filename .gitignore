@@ -16,6 +16,7 @@ site-dist/
 # Disposable UI testing resources and evidence
 node_modules/
 .ui-test/
+.verify/
 .playwright-cli/
 playwright-report/
 test-results/

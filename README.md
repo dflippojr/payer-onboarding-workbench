@@ -61,6 +61,8 @@ Design decisions and how to override them: [DECISIONS.md](DECISIONS.md).
 
 Use the [UI testing contract](docs/ui-testing.md) for the disposable synthetic instance, device/theme journeys and cleanup. After building the jar with Maven, run `npm ci --ignore-scripts`, `node node_modules/@playwright/test/cli.js install chromium webkit`, `npm run test:ui-instance` and `npm run test:ui`. The browser tests start a fresh owned loopback instance for every test and run with one worker. Start an exploratory instance with `node scripts/ui-instance.mjs start`; stop it with `node scripts/ui-instance.mjs stop`.
 
+To check a change in the running app (launch, doctor, drive the main path, evidence, cleanup), use the [verify skill](.claude/skills/verify/SKILL.md): `npm run verify`.
+
 ## Onboarding flow
 
 `workbench-app` walks you through connecting to a payer and shows exactly where it breaks. Start it and open http://localhost:8080:
