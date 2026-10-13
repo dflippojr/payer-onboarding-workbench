@@ -105,6 +105,19 @@ a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration:
 .report-actions[hidden] { display: none; }
 .link { background: none; border: 0; padding: 0; color: var(--green); font-family: inherit; font-size: 14px; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; min-height: 44px; }
 
+.history { margin-bottom: 4px; }
+.comparison { border: 1px solid var(--line); border-left: 4px solid var(--info); border-radius: 6px; background: var(--paper); padding: 10px 12px; margin: 0 0 16px; }
+.comparison[hidden] { display: none; }
+.comparison h3 { font-size: 16px; margin: 0 0 6px; }
+.comparison h4 { font-size: 14px; margin: 10px 0 4px; }
+.compare-summary { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.compare-summary dt { font-weight: 600; }
+.compare-summary dd { margin: 0; overflow-wrap: anywhere; }
+.changes { margin: 0; padding-left: 20px; }
+.changes li { overflow-wrap: anywhere; margin-bottom: 2px; }
+.changes code { font: 12px var(--mono); }
+.transition { font: 12px var(--mono); color: var(--muted); }
+
 .timeline { list-style: none; margin: 0; padding: 0; counter-reset: step; }
 .step { position: relative; border-left: 3px solid var(--line); padding: 0 0 16px 18px; margin-left: 8px; }
 .step:last-child { padding-bottom: 0; }

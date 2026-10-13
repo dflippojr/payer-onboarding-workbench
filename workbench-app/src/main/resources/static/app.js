@@ -24,6 +24,7 @@
     'hostname-mismatch': ['Certificate hostname mismatch', 'Presents a trusted certificate for a different payer host.'],
   };
   const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
+  const VERDICTS = ['FAIL', 'PASS_WITH_WARNINGS', 'PASS'];
 
   const $ = id => document.getElementById(id);
   const form = $('run-form');
@@ -32,6 +33,9 @@
   let lastRunId = null;
   let customEnabled = false;
   let retrieval = 0;
+  let comparing = 0;
+  let history = [];
+  let currentRun = null;
   const CUSTOM = '__custom__';
 
   /** Builds an element; children may be strings, nodes, arrays or null. */
@@ -83,22 +87,79 @@
     $('customAuthType').addEventListener('change', updateCustomFields);
     $('report-format').addEventListener('change', updateReportLink);
     $('recent-runs').addEventListener('change', reopenRun);
+    $('compare-runs').addEventListener('change', compareRun);
     await refreshHistory();
   }
 
   async function refreshHistory() {
     try {
-      const history = await api('api/runs');
+      history = await api('api/runs');
       const selector = $('recent-runs');
       selector.replaceChildren(h('option', { value: '' }, history.length ? 'Choose a run' : 'No recent runs yet'),
-        ...history.map(r => h('option', { value: r.runId },
-          `${r.payerId} | ${r.environment} | ${r.startedAt || 'No steps'} | ${r.verdict}`)));
+        ...history.map(r => h('option', { value: r.runId }, historyLabel(r))));
       selector.value = history.some(r => r.runId === lastRunId) ? lastRunId : '';
       $('history-status').textContent = history.length ? '' : 'Run onboarding to build history. Restarting the server clears it.';
     } catch (e) {
+      history = [];
       $('recent-runs').replaceChildren(h('option', { value: '' }, 'History unavailable'));
       $('history-status').textContent = `Could not load recent runs: ${e.message}. You can still run onboarding.`;
     }
+    renderCompareOptions();
+  }
+
+  function historyLabel(r) {
+    return `${r.payerId} | ${r.environment} | ${r.startedAt || 'No steps'} | ${r.verdict}`;
+  }
+
+  /** Offers every retained run except the one on screen; enabled only while a run is shown. */
+  function renderCompareOptions() {
+    const selector = $('compare-runs');
+    const others = currentRun ? history.filter(r => r.runId !== currentRun.runId) : [];
+    let prompt = 'Show a run first';
+    if (currentRun) prompt = others.length ? 'Choose a run to compare' : 'No other runs to compare';
+    const keep = selector.value;
+    selector.replaceChildren(h('option', { value: '' }, prompt), ...others.map(r => h('option', { value: r.runId }, historyLabel(r))));
+    selector.value = others.some(r => r.runId === keep) ? keep : '';
+    selector.disabled = !currentRun || $('run-button').disabled;
+  }
+
+  async function compareRun() {
+    const id = $('compare-runs').value;
+    const ticket = ++comparing;
+    if (!id || !currentRun) {
+      clearComparison();
+      return;
+    }
+    const shown = currentRun;
+    $('history-status').textContent = 'Loading run to compare...';
+    try {
+      const baseline = await api(`api/runs/${encodeURIComponent(id)}`);
+      if (ticket !== comparing) return;
+      renderComparison(baseline, compareRuns(baseline, shown));
+      $('history-status').textContent = 'Comparison shown.';
+    } catch (e) {
+      if (ticket !== comparing) return;
+      if (e.status === 404) {
+        hideComparison();
+        await refreshHistory();
+        if (ticket !== comparing) return;
+        $('history-status').textContent = 'That run is no longer available. It may have been evicted or the server restarted.';
+      } else {
+        $('history-status').textContent = `Could not load run to compare: ${e.message}`;
+      }
+    }
+  }
+
+  /** Hides the comparison and invalidates any comparison fetch still in flight. */
+  function clearComparison() {
+    ++comparing;
+    hideComparison();
+  }
+
+  function hideComparison() {
+    $('compare-runs').value = '';
+    $('comparison').hidden = true;
+    $('comparison-body').replaceChildren();
   }
 
   async function reopenRun() {
@@ -116,6 +177,8 @@
       if (ticket !== retrieval) return;
       if (e.status === 404) {
         lastRunId = null;
+        currentRun = null;
+        clearComparison();
         $('report-actions').hidden = true;
         $('report-link').removeAttribute('href');
         $('steps').replaceChildren();
@@ -239,7 +302,9 @@
     const button = $('run-button');
     button.disabled = true;
     ++retrieval;
+    clearComparison();
     $('recent-runs').disabled = true;
+    $('compare-runs').disabled = true;
     $('run-status').textContent = request.faults.includes('slow-response')
       ? 'Running… the slow-response fault takes several seconds.'
       : 'Running…';
@@ -259,16 +324,20 @@
     } finally {
       button.disabled = false;
       $('recent-runs').disabled = false;
+      renderCompareOptions();
     }
   }
 
   function renderRun(result, payer) {
-    const failed = result.steps.find(s => s.details.status === 'failed' && s.stepId !== 'diagnostics');
+    const failed = brokeAt(result);
     $('run-meta').textContent = `${payer.displayName} · ${result.environment} · run ${result.runId}` +
-      (failed ? ` · broke at: ${STEP_TITLES[failed.stepId] || failed.stepId}` : ' · every step passed');
+      (failed ? ` · broke at: ${stepTitle(failed)}` : ' · every step passed');
     $('steps').replaceChildren(...result.steps.map(renderStep));
     renderFindings(result.findings);
     lastRunId = result.runId;
+    currentRun = result;
+    clearComparison();
+    renderCompareOptions();
     updateReportLink();
     $('report-actions').hidden = false;
   }
@@ -282,7 +351,7 @@
   }
 
   function renderStep(step) {
-    const status = step.details.status || (step.ok ? 'passed' : 'failed');
+    const status = stepStatus(step);
     const extra = Object.fromEntries(Object.entries(step.details).filter(([k]) => k !== 'status' && k !== 'exchanges'));
     return h('li', { class: `step ${status}` },
       h('div', { class: 'step-head' },
@@ -333,6 +402,113 @@
     }).filter(Boolean));
   }
 
+  // ---- comparison ----
+
+  function stepStatus(step) {
+    return step.details.status || (step.ok ? 'passed' : 'failed');
+  }
+
+  function stepTitle(stepId) {
+    return STEP_TITLES[stepId] || stepId;
+  }
+
+  /** The first failed step other than diagnostics, as in RunVerdict. */
+  function brokeAt(run) {
+    const failed = run.steps.find(s => s.stepId !== 'diagnostics' && stepStatus(s) === 'failed');
+    return failed ? failed.stepId : null;
+  }
+
+  /** Same rule as RunVerdict.status: a failing check or a broken step fails the run. */
+  function verdictOf(run) {
+    if (brokeAt(run) || run.findings.some(f => f.severity === 'FAIL')) return 'FAIL';
+    return run.findings.some(f => f.severity === 'WARN') ? 'PASS_WITH_WARNINGS' : 'PASS';
+  }
+
+  /** Severity rank, lower is worse; a check the run did not report ranks as PASS. */
+  function rank(severity) {
+    return SEVERITIES.indexOf(severity || 'PASS');
+  }
+
+  /** The most severe finding per checkId. */
+  function worstByCheck(findings) {
+    const worst = new Map();
+    for (const f of findings) {
+      const seen = worst.get(f.checkId);
+      if (!seen || rank(f.severity) < rank(seen.severity)) worst.set(f.checkId, f);
+    }
+    return worst;
+  }
+
+  /** Lower ranks are worse. */
+  function direction(before, after) {
+    if (after < before) return 'worse';
+    return after > before ? 'better' : 'unchanged';
+  }
+
+  /**
+   * Pure comparison of two runs as returned by GET /api/runs/{id}: what changed from before to after.
+   * A severity or step status is null when that run did not report it.
+   */
+  function compareRuns(before, after) {
+    const was = worstByCheck(before.findings);
+    const now = worstByCheck(after.findings);
+    const checks = [...new Set([...was.keys(), ...now.keys()])].map(checkId => {
+      const b = was.get(checkId);
+      const a = now.get(checkId);
+      return { checkId, title: (a || b).title, before: b ? b.severity : null, after: a ? a.severity : null };
+    }).sort((x, y) => rank(x.after) - rank(y.after) || rank(x.before) - rank(y.before) || x.checkId.localeCompare(y.checkId));
+    const statuses = run => new Map(run.steps.map(s => [s.stepId, stepStatus(s)]));
+    const stepsBefore = statuses(before);
+    const stepsAfter = statuses(after);
+    const steps = [...new Set([...stepsBefore.keys(), ...stepsAfter.keys()])]
+      .map(stepId => ({ stepId, before: stepsBefore.get(stepId) || null, after: stepsAfter.get(stepId) || null }))
+      .filter(s => s.before !== s.after);
+    const verdictBefore = verdictOf(before);
+    const verdictAfter = verdictOf(after);
+    return {
+      before: before.runId,
+      after: after.runId,
+      verdict: { before: verdictBefore, after: verdictAfter,
+        change: direction(VERDICTS.indexOf(verdictBefore), VERDICTS.indexOf(verdictAfter)) },
+      brokeAt: { before: brokeAt(before), after: brokeAt(after) },
+      steps,
+      worse: checks.filter(c => rank(c.after) < rank(c.before)),
+      better: checks.filter(c => rank(c.after) > rank(c.before)),
+      unchanged: checks.filter(c => rank(c.after) === rank(c.before)),
+    };
+  }
+
+  function renderComparison(baseline, diff) {
+    const arrow = (b, a) => h('span', { class: 'transition' }, `${b} → ${a}`);
+    const brokeLabel = id => (id ? stepTitle(id) : 'every step passed');
+    const group = (title, items) => [
+      h('h4', {}, `${title} (${items.length})`),
+      items.length
+        ? h('ul', { class: 'changes' }, items.map(c => h('li', {},
+          h('code', {}, c.checkId), ' ', c.title, ' ', arrow(c.before || 'not reported', c.after || 'not reported'))))
+        : h('p', { class: 'muted small' }, 'None.'),
+    ];
+    const { before: brokeBefore, after: brokeAfter } = diff.brokeAt;
+    $('comparison-heading').textContent = `Changes since run ${String(baseline.runId).slice(0, 8)}`;
+    $('comparison-body').replaceChildren(
+      h('dl', { class: 'compare-summary' },
+        h('dt', {}, 'Verdict'),
+        h('dd', {}, arrow(diff.verdict.before, diff.verdict.after), ' ', h('strong', {}, diff.verdict.change)),
+        h('dt', {}, 'Broke at'),
+        h('dd', {}, brokeBefore === brokeAfter
+          ? `${brokeLabel(brokeAfter)} (unchanged)`
+          : arrow(brokeLabel(brokeBefore), brokeLabel(brokeAfter)))),
+      h('h4', {}, 'Steps that changed'),
+      diff.steps.length
+        ? h('ul', { class: 'changes' }, diff.steps.map(s =>
+          h('li', {}, `${stepTitle(s.stepId)}: `, arrow(s.before || 'not run', s.after || 'not run'))))
+        : h('p', { class: 'muted small' }, 'No step changed status.'),
+      ...group('Newly failing or worse', diff.worse),
+      ...group('Fixed or better', diff.better),
+      h('p', { class: 'muted small' }, `Unchanged: ${diff.unchanged.length} check${diff.unchanged.length === 1 ? '' : 's'}.`));
+    $('comparison').hidden = false;
+  }
+
   // ---- formatting ----
 
   /** Jackson may send a Duration as seconds (number) or ISO-8601 ("PT0.012S"). */
@@ -354,5 +530,7 @@
     try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
   }
 
+  // Exposed so the Node tests can exercise the comparison without a browser.
+  globalThis.PayerWorkbench = Object.freeze({ compareRuns });
   init();
 })();
