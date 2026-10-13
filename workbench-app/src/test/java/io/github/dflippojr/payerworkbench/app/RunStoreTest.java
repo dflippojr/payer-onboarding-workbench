@@ -8,6 +8,7 @@ import io.github.dflippojr.payerworkbench.core.StepResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
@@ -18,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -68,6 +70,35 @@ class RunStoreTest {
         assertEquals("PASS", store.list().getFirst().verdict());
     }
 
+    static Stream<OnboardingRun> parityRuns() {
+        Instant at = Instant.parse("2026-10-01T12:00:00.123456Z");
+        StepResult passed = new StepResult("discovery", at, Duration.ZERO, true, "ok", Map.of());
+        StepResult broken = new StepResult("authenticate", at.plusSeconds(1), Duration.ZERO, false, "broken", Map.of());
+        StepResult diagnosticsFailed = new StepResult("diagnostics", at, Duration.ZERO, false, "diag",
+                Map.of("status", "failed"));
+        return Stream.of(
+                parityRun("pass", List.of(passed), Severity.PASS, Severity.INFO),
+                parityRun("warnings", List.of(passed), Severity.PASS, Severity.WARN, Severity.WARN),
+                parityRun("fail-finding", List.of(passed), Severity.FAIL, Severity.WARN, Severity.PASS),
+                parityRun("fail-broken-step", List.of(passed, broken), Severity.WARN, Severity.PASS),
+                parityRun("diagnostics-only", List.of(passed, diagnosticsFailed), Severity.PASS),
+                parityRun("diagnostics-with-fail", List.of(diagnosticsFailed), Severity.FAIL),
+                parityRun("no-steps", List.of()));
+    }
+
+    @ParameterizedTest
+    @MethodSource("parityRuns")
+    void summaryFromRawRunMatchesReport(OnboardingRun run) {
+        var summary = RunSummary.of(run);
+        var report = RunReport.of(run, null, null, Instant.EPOCH, "unknown");
+        assertEquals(new RunSummary(run.runId(), run.payerId(), report.environment(), report.startedAt(),
+                report.verdict().status(), report.counts()), summary);
+        assertEquals(List.copyOf(report.counts().keySet()), List.copyOf(summary.counts().keySet()));
+        var mapper = JsonMapper.builder().build();
+        assertEquals(mapper.valueToTree(report.counts()).toString(), mapper.valueToTree(summary.counts()).toString());
+        assertThrows(UnsupportedOperationException.class, () -> summary.counts().put(Severity.FAIL, 0L));
+    }
+
     @Test
     void concurrentSaveAndListAreBoundedSafeSnapshots() throws Exception {
         try (var executor = Executors.newFixedThreadPool(4)) {
@@ -81,6 +112,11 @@ class RunStoreTest {
             for (var result : executor.invokeAll(tasks)) result.get();
         }
         assertEquals(2, store.list().size());
+    }
+
+    private static OnboardingRun parityRun(String id, List<StepResult> steps, Severity... severities) {
+        return new OnboardingRun(id, "synthetic-payer", Environment.SANDBOX, steps,
+                Stream.of(severities).map(s -> new Finding("synthetic", s, "Synthetic", "Synthetic", null, null)).toList());
     }
 
     private static OnboardingRun run(String id, Severity severity, boolean ok) {
