@@ -128,6 +128,171 @@ class RunReportTest {
         assertTrue(html.contains("&lt;b&gt;"), "markup in a finding must be escaped");
     }
 
+    @ParameterizedTest
+    @EnumSource(value = ReportRenderer.Format.class, names = {"MD", "HTML"})
+    void failingCallSitsBetweenTheVerdictTableAndTheTimeline(ReportRenderer.Format format) {
+        String out = ReportRenderer.render(report(leakyRun()), format);
+        int section = out.indexOf("Failing call");
+        assertTrue(section > out.indexOf("Workbench version"), format + ": section is before the verdict table");
+        assertTrue(section < out.indexOf("Step timeline"), format + ": section is after the timeline");
+        for (String expected : List.of("Authenticate", "POST http://127.0.0.1:1/token", "HTTP 401 · 7 ms",
+                "Authorization: Bearer [REDACTED]", "Content-Type: application/x-www-form-urlencoded",
+                "WWW-Authenticate: Bearer error=", "grant_type=client_credentials&client_secret=[REDACTED]",
+                "Reproduce with curl", "request-body.txt")) {
+            assertTrue(out.contains(format == ReportRenderer.Format.HTML ? ReportRenderer.esc(expected) : expected),
+                    format + " is missing " + expected);
+        }
+    }
+
+    @Test
+    void jsonReportHasNoFailingCallSection() {
+        String json = ReportRenderer.json(report(leakyRun()));
+        assertFalse(json.contains("Failing call"));
+        assertFalse(json.contains("curl"));
+    }
+
+    @Test
+    void curlCarriesPlaceholdersAndNoCredential() {
+        FailingCall call = FailingCall.of(report(leakyRun())).orElseThrow();
+        String curl = call.curl();
+        assertTrue(curl.startsWith("curl -X POST 'http://127.0.0.1:1/token'"), curl);
+        assertTrue(curl.contains("-H 'Authorization: Bearer <ACCESS_TOKEN>'"), curl);
+        assertTrue(curl.contains("-H 'Content-Type: application/x-www-form-urlencoded'"), curl);
+        assertTrue(curl.contains("-H 'X-Debug-Assertion: "), curl);
+        assertTrue(curl.endsWith("--data-binary @request-body.txt"), curl);
+        for (String absent : List.of("[REDACTED]", "Cookie", "X-Api-Key", "Content-Length", "Host:", token, secret,
+                jwtSignature, keyChunk, "-----BEGIN")) {
+            assertFalse(curl.contains(absent), "curl contains " + absent + ": " + curl);
+        }
+        for (ReportRenderer.Format format : List.of(ReportRenderer.Format.MD, ReportRenderer.Format.HTML)) {
+            String out = ReportRenderer.render(report(leakyRun()), format);
+            assertTrue(out.contains(format == ReportRenderer.Format.HTML ? ReportRenderer.esc(curl) : curl),
+                    format::toString);
+        }
+    }
+
+    @Test
+    void cdsHooksJwtGetsAClientJwtPlaceholderAndJsonBodiesArePrettyPrinted() {
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd-order-sign", 401,
+                Map.of("Authorization", List.of("Bearer " + token), "Content-Type", List.of("application/json")),
+                "{\"hook\":\"order-sign\",\"prefetch\":{\"patient\":{\"resourceType\":\"Patient\"}}}",
+                "{\"error\":\"invalid_token\"}");
+        OnboardingRun run = runWith("CDS_HOOKS_JWT", hookStep(false, exchange), List.of());
+        FailingCall call = FailingCall.of(report(run)).orElseThrow();
+        assertEquals("Send sample hook request", call.stepTitle());
+        assertTrue(call.curl().contains("-H 'Authorization: Bearer <CLIENT_JWT>'"), call.curl());
+        assertTrue(call.curl().endsWith("--data-binary @request.json"), call.curl());
+        assertTrue(call.requestBody().json());
+        assertTrue(call.requestBody().text().contains("\"prefetch\" : {"), call.requestBody().text());
+        String md = ReportRenderer.markdown(report(run));
+        assertTrue(md.contains("```json\n{\n  \"hook\" : \"order-sign\""), md);
+        assertFalse(md.contains(token));
+    }
+
+    @Test
+    void completedRunWithAFailingCheckShowsTheHookRequest() {
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 200,
+                Map.of("Authorization", List.of("Bearer " + token)), "{}", "{\"cards\":[]}");
+        OnboardingRun run = runWith("OAUTH2_CLIENT_CREDENTIALS", hookStep(true, exchange),
+                List.of(new Finding("perf.latency", Severity.FAIL, "Slow", "Took 9 s", null, "Speed up")));
+        RunReport report = report(run);
+        assertEquals("FAIL", report.verdict().status());
+        assertEquals(null, report.verdict().brokeAt());
+        assertEquals("HTTP 200", FailingCall.of(report).orElseThrow().status());
+        assertTrue(ReportRenderer.html(report).contains("<section class=\"failing-call\">"));
+    }
+
+    @Test
+    void noSectionWithoutAFailureOrWithoutAnExchange() {
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 200, Map.of(), "{}", "{}");
+        OnboardingRun healthy = runWith("NONE", hookStep(true, exchange), List.of());
+        assertEquals("PASS", report(healthy).verdict().status());
+        OnboardingRun resolveFailed = new OnboardingRun("run-r", "northwind-synthetic", Environment.PRODUCTION,
+                List.of(new StepResult("resolve-connection", T0, Duration.ofMillis(1), false, "No record",
+                                Map.of("status", "failed")),
+                        new StepResult("hook-request", T0, Duration.ZERO, false, "Skipped", Map.of("status", "skipped"))),
+                List.of(new Finding("connection.record", Severity.FAIL, "No record", "none", null, "Add one")));
+        for (OnboardingRun run : List.of(healthy, resolveFailed)) {
+            assertTrue(FailingCall.of(report(run)).isEmpty());
+            assertFalse(ReportRenderer.markdown(report(run)).contains("Failing call"));
+            assertFalse(ReportRenderer.html(report(run)).contains("Failing call"));
+        }
+    }
+
+    @Test
+    void bodiesOverSixteenKibAreTruncatedInMarkdownAndHtmlOnly() {
+        String tail = "END-OF-BODY-" + random(8);
+        String big = "x".repeat(FailingCall.BODY_LIMIT_BYTES) + tail;
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 500,
+                Map.of(), big, "é".repeat(FailingCall.BODY_LIMIT_BYTES));
+        RunReport report = report(runWith("NONE", hookStep(false, exchange), List.of()));
+        FailingCall call = FailingCall.of(report).orElseThrow();
+        assertTrue(call.requestBody().truncated());
+        assertEquals(FailingCall.BODY_LIMIT_BYTES, call.requestBody().text().length());
+        assertTrue(call.responseBody().truncated());
+        assertEquals(FailingCall.BODY_LIMIT_BYTES / 2, call.responseBody().text().length(), "two bytes per é");
+        for (ReportRenderer.Format format : List.of(ReportRenderer.Format.MD, ReportRenderer.Format.HTML)) {
+            String out = ReportRenderer.render(report, format);
+            assertTrue(out.contains(FailingCall.TRUNCATED_NOTE), format::toString);
+            assertFalse(out.contains(tail), format + " has the full body");
+        }
+        assertTrue(ReportRenderer.json(report).contains(tail), "JSON lost the full body");
+        assertFalse(ReportRenderer.json(report).contains(FailingCall.TRUNCATED_NOTE));
+    }
+
+    /** A credential hidden behind a JSON escape is unescaped by pretty-printing, then redacted again. */
+    @Test
+    void prettyPrintingCannotRevealAnEscapedCredential() {
+        String body = "{\"hint\":\"Bearer\\u0020" + token + "\",\"pem\":\"-----BEGIN PRIVATE KEY\\u002D----\\n"
+                + keyChunk + "\\n-----END PRIVATE KEY-----\"}";
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 400,
+                Map.of("Content-Type", List.of("application/json")), body, body);
+        RunReport report = report(runWith("NONE", hookStep(false, exchange), List.of()));
+        for (ReportRenderer.Format format : List.of(ReportRenderer.Format.MD, ReportRenderer.Format.HTML)) {
+            String out = ReportRenderer.render(report, format);
+            assertFalse(out.contains(token), format + ": escaped token leaked");
+            assertFalse(out.contains(keyChunk), format + ": escaped key leaked");
+        }
+    }
+
+    @Test
+    void curlQuotesValuesForTheShell() {
+        Map<String, Object> exchange = exchange("GET", "https://payer.example/cds-services?q=it's", 500,
+                Map.of("X-Note", List.of("it's $(id) `x`")), null, null);
+        FailingCall call = FailingCall.of(report(runWith("NONE", hookStep(false, exchange), List.of()))).orElseThrow();
+        assertEquals("curl -X GET 'https://payer.example/cds-services?q=it'\\''s' \\\n  -H 'X-Note: it'\\''s $(id) `x`'",
+                call.curl());
+        assertEquals(null, call.bodyFile());
+    }
+
+    private static Map<String, Object> exchange(String method, String url, int status, Map<String, List<String>> headers,
+                                                String requestBody, String responseBody) {
+        Map<String, Object> exchange = new LinkedHashMap<>();
+        exchange.put("method", method);
+        exchange.put("url", url);
+        exchange.put("status", status);
+        exchange.put("latencyMs", 12);
+        exchange.put("requestHeaders", headers);
+        exchange.put("requestBody", requestBody);
+        exchange.put("responseHeaders", Map.of());
+        exchange.put("responseBody", responseBody);
+        return exchange;
+    }
+
+    private static StepResult hookStep(boolean ok, Map<String, Object> exchange) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("status", ok ? "passed" : "failed");
+        details.put("exchanges", List.of(exchange));
+        return new StepResult("hook-request", T0, Duration.ofMillis(12), ok, ok ? "ok" : "Rejected", details);
+    }
+
+    private static OnboardingRun runWith(String authType, StepResult hook, List<Finding> findings) {
+        Map<String, Object> connection = Map.of("displayName", "Synthetic", "igVersion", "2.0.1", "authType", authType);
+        return new OnboardingRun("run-x", "northwind-synthetic", Environment.SANDBOX,
+                List.of(new StepResult("resolve-connection", T0, Duration.ofMillis(1), true, "Resolved",
+                        Map.of("status", "passed", "connection", connection)), hook), findings);
+    }
+
     private RunReport report(OnboardingRun run) {
         return RunReport.of(run, "Northwind Health Plan (synthetic)", "2.1.0", Instant.parse("2026-10-01T12:30:00Z"),
                 "9.9.9-test");
@@ -142,10 +307,23 @@ class RunReportTest {
         exchange.put("url", "http://127.0.0.1:1/token");
         exchange.put("status", 401);
         exchange.put("latencyMs", 7);
-        exchange.put("requestHeaders", Map.of("Authorization", List.of("Bearer " + token)));
-        exchange.put("requestBody", "grant_type=client_credentials&client_secret=" + secret + "&client_assertion=" + jwt);
-        exchange.put("responseHeaders", Map.of("Set-Cookie", List.of("session=" + secret)));
-        exchange.put("responseBody", "{\"access_token\":\"" + token + "\",\"note\":\"" + jwt + "\"}");
+        Map<String, List<String>> requestHeaders = new LinkedHashMap<>();
+        requestHeaders.put("Authorization", List.of("Bearer " + token));
+        requestHeaders.put("Content-Type", List.of("application/x-www-form-urlencoded"));
+        requestHeaders.put("Content-Length", List.of("512"));
+        requestHeaders.put("Host", List.of("127.0.0.1:1"));
+        requestHeaders.put("Cookie", List.of("session=" + secret));
+        requestHeaders.put("X-Api-Key", List.of(secret));
+        requestHeaders.put("X-Debug-Assertion", List.of(jwt));
+        exchange.put("requestHeaders", requestHeaders);
+        exchange.put("requestBody", "grant_type=client_credentials&client_secret=" + secret + "&client_assertion=" + jwt
+                + "\n" + pem);
+        Map<String, List<String>> responseHeaders = new LinkedHashMap<>();
+        responseHeaders.put("Set-Cookie", List.of("session=" + secret));
+        responseHeaders.put("WWW-Authenticate", List.of("Bearer error=\"invalid_token\", token=\"" + jwt + "\""));
+        exchange.put("responseHeaders", responseHeaders);
+        exchange.put("responseBody", "{\"access_token\":\"" + token + "\",\"note\":\"" + jwt + "\",\"client_secret\":\""
+                + secret + "\",\"key\":\"" + pem.replace("\n", "\\n") + "\"}");
 
         Map<String, Object> auth = new LinkedHashMap<>();
         auth.put("status", "failed");

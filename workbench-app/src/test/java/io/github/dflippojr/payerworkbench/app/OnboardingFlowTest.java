@@ -287,6 +287,51 @@ class OnboardingFlowTest {
                 .findFirst().orElseThrow().details().get("exchanges");
     }
 
+    static Stream<Arguments> failingCalls() {
+        return Stream.of(
+                Arguments.of(NORTHWIND_ID, Fault.EXPIRED_TOKEN_401, "hook-request", "<ACCESS_TOKEN>"),
+                Arguments.of(TAILSPIN_ID, Fault.WRONG_AUDIENCE_REJECT, "authenticate", null),
+                Arguments.of(NORTHWIND_ID, Fault.DISCOVERY_500, "discovery", null),
+                Arguments.of(NORTHWIND_ID, Fault.RATE_LIMITED_429, "hook-request", "<ACCESS_TOKEN>"),
+                Arguments.of(FABRIKAM_ID, Fault.SLOW_RESPONSE, "hook-request", "<CLIENT_JWT>"));
+    }
+
+    /** A failing report shows the call that broke, and its curl command, in HTML and Markdown. */
+    @ParameterizedTest(name = "{0} {1}")
+    @MethodSource("failingCalls")
+    void failingReportShowsTheCallThatBroke(String payerId, Fault fault, String step, String placeholder) {
+        OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of(fault.id())));
+        ExchangeView expected = exchanges(run, step).getLast();
+        RunReport report = RunReport.of(run, payerId, "2.1.0", java.time.Instant.now(), "test");
+        FailingCall call = FailingCall.of(report).orElseThrow();
+        assertEquals(RunVerdict.title(step), call.stepTitle());
+        assertEquals(expected.url(), call.url());
+        assertEquals("HTTP " + expected.status(), call.status());
+        if (placeholder != null) {
+            assertTrue(call.curl().contains("-H 'Authorization: Bearer " + placeholder + "'"), call::curl);
+        }
+        assertFalse(call.curl().contains(Redactor.MASK), call::curl);
+        for (ReportRenderer.Format format : List.of(ReportRenderer.Format.MD, ReportRenderer.Format.HTML)) {
+            String out = ReportRenderer.render(report, format);
+            assertTrue(out.contains("Failing call"), format::toString);
+            assertTrue(out.contains(format == ReportRenderer.Format.HTML ? ReportRenderer.esc(call.curl()) : call.curl()),
+                    format::toString);
+        }
+    }
+
+    @Test
+    void healthyAndProductionReportsShowNoFailingCall() {
+        OnboardingRun healthy = runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of()));
+        OnboardingRun production = runner.run(new RunRequest(NORTHWIND_ID, Environment.PRODUCTION, HEALTHY_SAMPLE,
+                List.of(), null, null));
+        for (OnboardingRun run : List.of(healthy, production)) {
+            RunReport report = RunReport.of(run, NORTHWIND_ID, "2.1.0", java.time.Instant.now(), "test");
+            for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
+                assertFalse(ReportRenderer.render(report, format).contains("Failing call"), format::toString);
+            }
+        }
+    }
+
     @Test
     void wrongAudienceOnTheJwtPayerIsDiagnosedAsTheAudience() {
         OnboardingRun run = runner.run(request(FABRIKAM_ID, HEALTHY_SAMPLE, List.of(Fault.WRONG_AUDIENCE_REJECT.id())));
