@@ -3,7 +3,80 @@ import { spawn } from 'node:child_process';
 import { readFile, access } from 'node:fs/promises';
 import { once } from 'node:events';
 
-export const test = base.extend<{ instance: void }>({
+type Instance = { baseURL: string; generation: number; used: boolean; restart(): Promise<void> };
+type Handle = { baseURL: string; stop(): Promise<void> };
+
+async function exists(path: string) {
+  return access(path).then(() => true, () => false);
+}
+async function waitGone(path: string) {
+  for (let i = 0; i < 150 && await exists(path); i++) await new Promise(resolve => setTimeout(resolve, 100));
+  if (await exists(path)) throw new Error('Instance cleanup left ' + path);
+}
+async function startInstance(): Promise<Handle> {
+  const child = spawn(process.execPath, ['scripts/ui-instance.mjs', 'serve'], { windowsHide: true });
+  let output = '';
+  const ready = new Promise<void>((resolve, reject) => {
+    child.stdout.on('data', chunk => { output += chunk; if (output.includes('UI_TEST_URL=')) resolve(); });
+    child.stderr.on('data', chunk => { output += chunk; });
+    child.once('error', reject);
+    child.once('exit', code => reject(new Error('Instance exited: ' + code + '\n' + output)));
+  });
+  const stop = async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const state = JSON.parse(await readFile('.ui-test/instance.json', 'utf8'));
+    const exited = once(child, 'exit');
+    const response = await fetch(state.control + '/stop', { method: 'POST', headers: { 'X-Instance': state.token } });
+    if (!response.ok) throw new Error('Instance cleanup refused');
+    await exited;
+    await waitGone(state.data);
+    await waitGone('.ui-test/instance.json');
+  };
+  try { await ready; } catch (error) { await stop().catch(() => {}); throw error; }
+  const state = JSON.parse(await readFile('.ui-test/instance.json', 'utf8'));
+  if (!/^http:\/\/127[.]0[.]0[.]1:[0-9]+$/.test(state.baseURL)) { await stop(); throw new Error('Non-local test origin refused'); }
+  return { baseURL: state.baseURL, stop };
+}
+
+// One disposable instance per Playwright worker (one worker per project with --workers=1).
+// Tests isolate themselves by their own run IDs; a test that needs an untouched instance sets freshInstance.
+export const test = base.extend<{ freshInstance: boolean; instanceLog: void }, { instance: Instance }>({
+  freshInstance: [false, { option: true }],
+  instance: [async ({}, use) => {
+    let handle: Handle | undefined;
+    try {
+      handle = await startInstance();
+      const instance: Instance = {
+        baseURL: handle.baseURL, generation: 0, used: false,
+        async restart() {
+          const previous = handle!;
+          handle = undefined;
+          await previous.stop();
+          handle = await startInstance();
+          instance.baseURL = handle.baseURL;
+          instance.generation++;
+          instance.used = false;
+        },
+      };
+      await use(instance);
+    } finally { await handle?.stop(); }
+  }, { scope: 'worker', timeout: 150_000 }],
+  instanceLog: [async ({ instance, freshInstance }, use, testInfo) => {
+    if (freshInstance && instance.used) await instance.restart();
+    instance.used = true;
+    const generation = instance.generation;
+    const start = (await readFile('.ui-test/app.log')).length;
+    try { await use(); }
+    finally {
+      // Attach only this test's slice of the shared instance log.
+      const log = await readFile('.ui-test/app.log').catch(() => Buffer.alloc(0));
+      const body = instance.generation === generation ? log.subarray(start) : log;
+      await testInfo.attach('synthetic-instance-log', { body, contentType: 'text/plain' });
+    }
+  }, { auto: true, timeout: 150_000 }],
+  baseURL: async ({ instance, instanceLog }, use) => {
+    await use(instance.baseURL);
+  },
   page: async ({ page }, use) => {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -12,34 +85,6 @@ export const test = base.extend<{ instance: void }>({
     await use(page);
     expect(errors, 'unexpected browser/HTTP errors').toEqual([]);
   },
-  baseURL: async ({ instance }, use) => {
-    const state = JSON.parse(await readFile('.ui-test/instance.json', 'utf8'));
-    if (!/^http:\/\/127[.]0[.]0[.]1:[0-9]+$/.test(state.baseURL)) throw new Error('Non-local test origin refused');
-    await use(state.baseURL);
-  },
-  instance: [async ({}, use, testInfo) => {
-    const child = spawn(process.execPath, ['scripts/ui-instance.mjs', 'serve'], { windowsHide: true });
-    let output = '';
-    const ready = new Promise<void>((resolve, reject) => {
-      child.stdout.on('data', chunk => { output += chunk; if (output.includes('UI_TEST_URL=')) resolve(); });
-      child.stderr.on('data', chunk => { output += chunk; });
-      child.once('error', reject);
-      child.once('exit', code => reject(new Error('Instance exited: ' + code + '\n' + output)));
-    });
-    try { await ready; await use(); }
-    finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        const state = JSON.parse(await readFile('.ui-test/instance.json', 'utf8'));
-        const exited = once(child, 'exit');
-        const response = await fetch(state.control + '/stop', { method: 'POST', headers: { 'X-Instance': state.token } });
-        if (!response.ok) throw new Error('Instance cleanup refused');
-        await exited;
-        await expect.poll(async () => access(state.data).then(() => true, () => false)).toBe(false);
-        await expect.poll(async () => access('.ui-test/instance.json').then(() => true, () => false)).toBe(false);
-      }
-      await testInfo.attach('synthetic-instance-log', { path: '.ui-test/app.log', contentType: 'text/plain' });
-    }
-  }, { auto: true, timeout: 150_000 }],
 });
 export { expect };
 
