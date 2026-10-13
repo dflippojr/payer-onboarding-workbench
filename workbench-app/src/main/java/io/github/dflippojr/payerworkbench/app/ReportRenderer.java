@@ -88,6 +88,7 @@ public final class ReportRenderer {
         row(md, "Findings", counts(r.counts()));
         row(md, "Generated", r.generatedAt());
         row(md, "Workbench version", r.workbenchVersion());
+        FailingCall.of(r).ifPresent(call -> mdFailingCall(md, call));
         md.append("\n## Step timeline\n\n");
         int n = 1;
         for (RunReport.Step step : r.steps()) {
@@ -125,6 +126,56 @@ public final class ReportRenderer {
         }
         md.append("\n---\n\n").append(inline(r.disclaimer())).append('\n');
         return md.toString();
+    }
+
+    private static void mdFailingCall(StringBuilder md, FailingCall call) {
+        md.append("\n## Failing call\n\n");
+        md.append("The last call of the **").append(inline(call.stepTitle())).append("** step. ")
+                .append(FAILING_CALL_NOTE).append("\n\n");
+        md.append("`").append(call.method().replace("`", "'")).append(' ').append(call.url().replace("`", "'"))
+                .append("` → ").append(callOutcome(call)).append("\n\n");
+        mdBlock(md, "Request headers", String.join("\n", call.requestHeaders()), "");
+        mdBody(md, "Request body", call.requestBody());
+        if (call.transportError() != null) {
+            mdBlock(md, "Transport error", call.transportError(), "");
+        }
+        mdBlock(md, "Response headers", String.join("\n", call.responseHeaders()), "");
+        mdBody(md, "Response body", call.responseBody());
+        md.append("**Reproduce with curl**\n\n").append(inline(curlNote(call))).append("\n\n");
+        String fence = fenceFor(call.curl());
+        md.append(fence).append("sh\n").append(call.curl()).append('\n').append(fence).append('\n');
+    }
+
+    private static void mdBody(StringBuilder md, String label, FailingCall.Body body) {
+        if (body == null) {
+            md.append("**").append(label).append(":** none\n\n");
+            return;
+        }
+        mdBlock(md, label, body.text().stripTrailing(), body.json() ? "json" : "");
+        if (body.truncated()) {
+            md.append("*").append(FailingCall.TRUNCATED_NOTE).append("*\n\n");
+        }
+    }
+
+    private static void mdBlock(StringBuilder md, String label, String text, String language) {
+        if (text.isBlank()) {
+            md.append("**").append(label).append(":** none\n\n");
+            return;
+        }
+        String fence = fenceFor(text);
+        md.append("**").append(label).append("**\n\n").append(fence).append(language).append('\n')
+                .append(text).append('\n').append(fence).append("\n\n");
+    }
+
+    private static final String FAILING_CALL_NOTE = "Credentials, tokens, cookies and secrets are redacted.";
+
+    private static String callOutcome(FailingCall call) {
+        return call.status() + (call.latencyMs() == null ? "" : " · " + call.latencyMs() + " ms");
+    }
+
+    private static String curlNote(FailingCall call) {
+        return (call.bodyFile() == null ? "" : "Save the request body above as " + call.bodyFile() + ". ")
+                + "Replace each placeholder in angle brackets with your own credential.";
     }
 
     private static void row(StringBuilder md, String label, String value) {
@@ -171,8 +222,9 @@ public final class ReportRenderer {
         meta(h, "Generated", esc(r.generatedAt()));
         meta(h, "Workbench version", esc(r.workbenchVersion()));
         h.append("</table>\n");
+        FailingCall.of(r).ifPresent(call -> htmlFailingCall(h, call));
 
-        h.append("<h2>Step timeline</h2>\n<ol class=\"timeline\">\n");
+        h.append("<h2>Step timeline\n<ol class=\"timeline\">\n");
         for (RunReport.Step step : r.steps()) {
             h.append("<li class=\"step ").append(esc(step.status())).append("\">\n<div class=\"step-head\"><strong>")
                     .append(esc(step.title())).append("</strong> <span class=\"status ").append(esc(step.status()))
@@ -222,6 +274,45 @@ public final class ReportRenderer {
                 .append(" by payer onboarding workbench ").append(esc(r.workbenchVersion())).append(".</footer>\n");
         h.append("</main>\n</body>\n</html>\n");
         return h.toString();
+    }
+
+    private static void htmlFailingCall(StringBuilder h, FailingCall call) {
+        h.append("<section class=\"failing-call\">\n<h2>Failing call</h2>\n<p>The last call of the <strong>")
+                .append(esc(call.stepTitle())).append("</strong> step. ").append(esc(FAILING_CALL_NOTE)).append("</p>\n");
+        h.append("<p class=\"call-line\"><code>").append(esc(call.method())).append(' ').append(esc(call.url()))
+                .append("</code> → <strong>").append(esc(callOutcome(call))).append("</strong></p>\n");
+        htmlBlock(h, "Request headers", String.join("\n", call.requestHeaders()));
+        htmlBody(h, "Request body", call.requestBody());
+        if (call.transportError() != null) {
+            htmlBlock(h, "Transport error", call.transportError());
+        }
+        htmlBlock(h, "Response headers", String.join("\n", call.responseHeaders()));
+        htmlBody(h, "Response body", call.responseBody());
+        h.append("<div class=\"call-part\">\n<p class=\"label\">Reproduce with curl</p>\n<p class=\"muted\">")
+                .append(esc(curlNote(call))).append("</p>\n<pre class=\"curl\">").append(esc(call.curl()))
+                .append("</pre>\n</div>\n</section>\n");
+    }
+
+    private static void htmlBody(StringBuilder h, String label, FailingCall.Body body) {
+        if (body == null) {
+            htmlBlock(h, label, "");
+            return;
+        }
+        h.append("<div class=\"call-part\">\n<p class=\"label\">").append(esc(label)).append("</p>\n<pre>")
+                .append(esc(body.text().stripTrailing())).append("</pre>\n");
+        if (body.truncated()) {
+            h.append("<p class=\"muted\">").append(esc(FailingCall.TRUNCATED_NOTE)).append("</p>\n");
+        }
+        h.append("</div>\n");
+    }
+
+    private static void htmlBlock(StringBuilder h, String label, String text) {
+        if (text.isBlank()) {
+            h.append("<p class=\"label\">").append(esc(label)).append(": <span class=\"muted\">none</span></p>\n");
+            return;
+        }
+        h.append("<div class=\"call-part\">\n<p class=\"label\">").append(esc(label)).append("</p>\n<pre>")
+                .append(esc(text)).append("</pre>\n</div>\n");
     }
 
     private static void meta(StringBuilder h, String label, String valueHtml) {
@@ -284,10 +375,12 @@ public final class ReportRenderer {
             .finding.PASS{border-left-color:var(--pass)}.finding.INFO{border-left-color:var(--info)}
             .finding.WARN{border-left-color:var(--warn)}.finding.FAIL{border-left-color:var(--fail)}
             .finding p{margin:6px 0}.fix{background:#f1f7f2;padding:6px 8px;border-radius:4px}
+            .failing-call{border:1px solid var(--line);border-left:5px solid var(--fail);border-radius:6px;padding:4px 14px 10px;margin:16px 0}
+            .failing-call h2{border:0;margin:10px 0 4px}.call-line{overflow-wrap:anywhere}.call-part{margin:0 0 8px}
             footer{margin-top:32px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:.85em}
             @page{margin:16mm}
             @media print{body{font-size:11pt}main{max-width:none;padding:0}
             *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-            .finding,.step,.verdict,pre,tr{break-inside:avoid}h2,h3,h4{break-after:avoid}}
+            .finding,.step,.verdict,.call-part,pre,tr{break-inside:avoid}h2,h3,h4{break-after:avoid}}
             """;
 }
