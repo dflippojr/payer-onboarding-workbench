@@ -1,6 +1,6 @@
 # UI testing contract
 
-Contract version: 1
+Contract version: 2
 
 ## Scope and isolation
 
@@ -14,13 +14,13 @@ One command from repo root, in PowerShell or a POSIX shell:
 
 `node scripts/ui-instance.mjs start`
 
-Build the jar first as described above. This starts an owned supervisor and prints exactly `UI_TEST_URL=http://127.0.0.1:<owned-ephemeral-port>` after its own Java child reports startup and API isolation checks pass. It atomically reserves the worktree handle before launching Java, refuses an existing handle, and uses server.port=0 so the OS assigns a unique owned socket; it never reuses a server. The handle is .ui-test/instance.json (owned PIDs, data path, authenticated loopback control URL); logs are .ui-test/app.log and supervisor.log. Partial startup invokes cleanup. In CI, `node scripts/ui-instance.mjs serve` runs the same instance in the foreground under each Playwright test fixture. SIGINT/SIGTERM clean the owned child/data. Abrupt machine/process termination cannot guarantee cleanup; use the handle and logs for investigation rather than killing an arbitrary PID.
+Build the jar first as described above. This starts an owned supervisor and prints exactly `UI_TEST_URL=http://127.0.0.1:<owned-ephemeral-port>` after its own Java child reports startup and API isolation checks pass. It atomically reserves the worktree handle before launching Java, refuses an existing handle, and uses server.port=0 so the OS assigns a unique owned socket; it never reuses a server. The handle is .ui-test/instance.json (owned PIDs, data path, authenticated loopback control URL); logs are .ui-test/app.log and supervisor.log. Partial startup invokes cleanup. In CI, `node scripts/ui-instance.mjs serve` runs the same instance in the foreground under each Playwright worker fixture. SIGINT/SIGTERM clean the owned child/data. Abrupt machine/process termination cannot guarantee cleanup; use the handle and logs for investigation rather than killing an arbitrary PID.
 
 ## Seed and sign-in
 
 No authentication. Browser operations have anonymous/http audit actor. Startup seeds northwind-synthetic (OAuth2), fabrikam-synthetic (CDS JWT) and tailspin-synthetic (SMART), SANDBOX connections, and the packaged sample catalog. Use order-sign-hospital-bed for healthy/fault runs; order-sign-home-oxygen is the alternate selection. Default Northwind connection IG is 2.2.1. No real endpoint option appears.
 
-Deterministic reset: `node scripts/ui-instance.mjs reset` stops the owned instance and starts a fresh one, clearing history and faults. Run at most one mutating worker; choose payer/sample and reset faults/settings through the UI before each journey. Run IDs are generated, so select the ID returned by that case's POST, never another case's history row. Independent tests use a new instance fixture per test; exploratory cases may retain only their own history to test reload. Reset between device/theme cases.
+Deterministic reset: `node scripts/ui-instance.mjs reset` stops the owned instance and starts a fresh one, clearing history and faults. Run at most one mutating worker; choose payer/sample and reset faults/settings through the UI before each journey. Run IDs are generated, so select the ID returned by that case's POST, never another case's history row. Tests in one Playwright project share one disposable instance per worker (contract version 2): each test isolates itself by the run IDs its own POSTs return, and matches history options, reports and audit lines only on those IDs, never on history length or total audit counts. A test that needs an instance no earlier test touched opts into a per-test fresh instance (`test.use({ freshInstance: true })`, as tests/ui/isolation.spec.ts does), which restarts the worker's instance only if a test already used it. Exploratory cases may retain only their own history to test reload. Reset between device/theme cases.
 
 ## Journeys
 
@@ -47,7 +47,7 @@ No PWA, manifest, service worker, bottom tabs, fixed header/footer, edge-to-edge
 
 ## Playwright and CI
 
-Playwright Test 1.64.0 pinned exactly in npm package.json/package-lock.json, playwright.config.ts, tests/ui/*.spec.ts, tests/ui/fixtures.ts. Run `npm run test:ui` (--workers=1). Browser projects are desktop Chromium and iPhone SE WebKit, light/dark. Each test fixture starts a fresh foreground instance with a local-only URL and stops/removes it in finally. No existing server reuse, shared rows or external baseURL override. CI uses ubuntu-latest in the existing ci workflow; this repo is PUBLIC (verified through gh api), never self-hosted. Install dependencies/browsers after Maven verify, run tests, always run `node scripts/ui-instance.mjs stop`. Reports: playwright-report/, test-results/; failure traces/screenshots plus sanitized .ui-test/app.log upload with always(). Auth state is never saved.
+Playwright Test 1.64.0 pinned exactly in npm package.json/package-lock.json, playwright.config.ts, tests/ui/*.spec.ts, tests/ui/fixtures.ts. Run `npm run test:ui` (--workers=1). Browser projects are desktop Chromium and iPhone SE WebKit, light/dark. Each Playwright worker (one per project with --workers=1, and a new one after any failure) starts a fresh foreground instance with a local-only URL and stops/removes it in finally, so a run starts four instances, not one per test. Tests in that worker share its rows and isolate by their own run IDs; each test attaches only its slice of .ui-test/app.log. No existing server reuse across workers or runs, and no external baseURL override. CI uses ubuntu-latest in the existing ci workflow; this repo is PUBLIC (verified through gh api), never self-hosted. Install dependencies/browsers after Maven verify, run tests, always run `node scripts/ui-instance.mjs stop`. Reports: playwright-report/, test-results/; failure traces/screenshots plus sanitized .ui-test/app.log upload with always(). Auth state is never saved.
 
 ## Teardown
 

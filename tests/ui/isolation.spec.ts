@@ -1,6 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect } from './fixtures';
 
+// Isolation is checked on an instance no earlier test in this worker has touched.
+test.use({ freshInstance: true });
+
 test('disposable instance exposes only generated loopback synthetic payers', async ({ request }) => {
   const state = JSON.parse(await readFile('.ui-test/instance.json', 'utf8'));
   expect(state.baseURL).toMatch(/^http:\/\/127[.]0[.]0[.]1:[0-9]+$/);
