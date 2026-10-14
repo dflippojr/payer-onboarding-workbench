@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Pattern;
 
 /**
  * {@code discovery.services}: discovery advertises at least one Da Vinci CRD hook,
@@ -24,10 +25,20 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
             "appointment-book", "encounter-start", "encounter-discharge",
             "order-dispatch", "order-select", "order-sign");
 
+    private static final Pattern URL_SAFE_ID = Pattern.compile("[A-Za-z0-9._~-]+");
+
     private final Set<String> requiredHooks;
 
     public DiscoveryServicesCheck(Set<String> requiredHooks) {
         this.requiredHooks = requiredHooks == null ? Set.of() : Set.copyOf(requiredHooks);
+    }
+
+    /**
+     * Whether a service id can be the last segment of {@code /cds-services/{id}}: unreserved URL
+     * characters only, so it needs no escaping and cannot change the request's path, query or host.
+     */
+    public static boolean isUrlSafeServiceId(String id) {
+        return id != null && URL_SAFE_ID.matcher(id).matches() && !id.equals(".") && !id.equals("..");
     }
 
     @Override
@@ -79,8 +90,30 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
                     "Ask the payer whether they support " + String.join(", ", missing)
                             + " in this environment, or drop it from the hooks this integration calls."));
         }
+        for (String hook : new TreeSet<>(requiredHooks)) {
+            for (JsonNode service : services) {
+                if (hook.equals(service.path("hook").asText(""))) {
+                    // The client calls the first service for a hook, so that is the id that must be usable.
+                    String id = service.path("id").asText("");
+                    if (!isUrlSafeServiceId(id)) {
+                        return List.of(unusableId(hook, id, evidence));
+                    }
+                    break;
+                }
+            }
+        }
         return List.of(new Finding(CHECK_ID, Severity.PASS, "CRD hooks advertised: " + String.join(", ", crd),
                 "Discovery lists CRD services" + (requiredHooks.isEmpty() ? "." : ", including every required hook."),
                 evidence, null));
+    }
+
+    private static Finding unusableId(String hook, String id, String evidence) {
+        return new Finding(CHECK_ID, Severity.FAIL, "Service id for " + hook + " is not URL-safe: '" + id + "'",
+                "A CDS service is called at /cds-services/{id}, so its id has to be usable as one URL path "
+                        + "segment. This one has characters that are not allowed there, so the client cannot "
+                        + "build the request URL and never sent the hook.",
+                evidence + "; unusable id: '" + id + "'",
+                "Ask the payer to advertise an id made only of letters, digits, '-', '_', '.' or '~' for "
+                        + hook + ".");
     }
 }

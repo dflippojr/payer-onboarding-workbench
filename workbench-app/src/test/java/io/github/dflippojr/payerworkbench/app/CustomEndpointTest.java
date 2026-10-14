@@ -263,6 +263,52 @@ class CustomEndpointTest {
         assertFalse(run.steps().stream().allMatch(s -> s.ok()));
     }
 
+    /** A payer-advertised service id that is not URL-safe fails at discovery, with a finding that names it. */
+    @Test
+    void unusableServiceIdFailsAtDiscoveryWithAFinding() throws Exception {
+        HttpServer fake = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        fake.createContext("/space/cds-services", exchange -> {
+            byte[] bytes = "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"order sign\",\"prefetch\":{}}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        fake.start();
+        open.add(() -> fake.stop(0));
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + fake.getAddress().getPort() + "/space",
+                AuthType.NONE, null, null, null));
+
+        var failed = run.steps().stream().filter(s -> !s.ok() && !s.stepId().equals("diagnostics")
+                && !"skipped".equals(s.details().get("status"))).toList();
+        assertEquals(List.of("discovery"), failed.stream().map(s -> s.stepId()).toList());
+        assertTrue(failed.getFirst().summary().contains("'order sign'"), failed.getFirst()::summary);
+        assertFalse(failed.getFirst().summary().contains("Unexpected error"), failed.getFirst()::summary);
+        assertEquals("skipped", run.steps().get(2).details().get("status"));
+        var finding = run.findings().stream().filter(f -> f.checkId().equals("discovery.services")
+                && f.severity() == io.github.dflippojr.payerworkbench.core.Severity.FAIL).findFirst().orElseThrow();
+        assertTrue(finding.evidence().contains("order sign"), finding::evidence);
+        assertFalse(run.steps().getLast().ok(), "diagnostics must not pass a broken run");
+    }
+
+    /** A request URL the SDK cannot build fails discovery with a summary and a finding, not "Unexpected error". */
+    @Test
+    void unbuildableBaseUrlFailsAtDiscoveryWithAFinding() {
+        OnboardingRun run;
+        try {
+            run = runner.run(custom("http://127.0.0.1:9/sp ace", AuthType.NONE, null, null, null));
+        } catch (IllegalArgumentException refused) {
+            return; // the endpoint guard may refuse it before the run starts
+        }
+        assertEquals("discovery", run.steps().stream().filter(s -> !s.ok()).findFirst().orElseThrow().stepId());
+        assertFalse(run.steps().get(1).summary().contains("Unexpected error"), run.steps().get(1)::summary);
+        OnboardingFlowTest.assertBrokenRunExplained(run);
+        assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals(OnboardingRunner.STEP_FAILED_CHECK)
+                || f.checkId().equals("discovery.reachable")), run.findings()::toString);
+    }
+
     @Test
     void plantedCredentialNeverLeaves(CapturedOutput output) throws Exception {
         String secret = "PLANTED-" + secret();

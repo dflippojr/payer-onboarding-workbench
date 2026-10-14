@@ -164,6 +164,7 @@ class OnboardingFlowTest {
         OnboardingRun run = runner.run(request(payerId, sampleId, List.of(fault.id())));
 
         assertTrue(failIds(run).contains(expectedCheckId), "FAIL ids: " + failIds(run));
+        assertBrokenRunExplained(run);
         if (fault == Fault.EXPIRED_TOKEN_401 || fault == Fault.RATE_LIMITED_429) {
             assertEquals(List.of(expectedCheckId), failIds(run));
             Finding rejection = run.findings().stream().filter(f -> f.checkId().equals(expectedCheckId))
@@ -399,6 +400,7 @@ class OnboardingFlowTest {
 
         assertEquals("discovery", firstFailedStep(run));
         assertEquals(List.of("discovery.reachable"), failIds(run));
+        assertBrokenRunExplained(run);
     }
 
     @Test
@@ -407,6 +409,7 @@ class OnboardingFlowTest {
 
         assertEquals("discovery", firstFailedStep(run));
         assertEquals(List.of("discovery.reachable"), failIds(run));
+        assertBrokenRunExplained(run);
     }
 
     @ParameterizedTest
@@ -479,6 +482,14 @@ class OnboardingFlowTest {
         assertThrows(IllegalArgumentException.class, () -> runner.run(request(NORTHWIND_ID, "nothing", List.of())));
         assertThrows(IllegalArgumentException.class,
                 () -> runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of("set-on-fire"))));
+    }
+
+    /** A run that FAILs, by a failed step or a failing check, shows at least one FAIL finding. */
+    static void assertBrokenRunExplained(OnboardingRun run) {
+        if ("FAIL".equals(RunVerdict.of(run).status())) {
+            assertFalse(failIds(run).isEmpty(), "FAIL run with no FAIL finding: "
+                    + run.steps().stream().map(StepResult::summary).toList());
+        }
     }
 
     private static RunRequest request(String payerId, String sampleId, List<String> faults) {

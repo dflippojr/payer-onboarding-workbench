@@ -27,6 +27,7 @@ import io.github.dflippojr.payerworkbench.core.StepResult;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticEngine;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticsConfig;
+import io.github.dflippojr.payerworkbench.diagnostics.DiscoveryServicesCheck;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import io.github.dflippojr.payerworkbench.mock.FaultSettings;
@@ -84,6 +85,8 @@ public class OnboardingRunner {
     public static final String DIAGNOSTICS = "diagnostics";
     /** Workbench-level finding for a run that found no connection record (not in the diagnostics catalog). */
     public static final String CONNECTION_RECORD_CHECK = "connection.record";
+    /** A step failed and no other check explains it. */
+    public static final String STEP_FAILED_CHECK = "run.step-failed";
     static final List<String> STEP_ORDER = List.of(RESOLVE, DISCOVERY, AUTHENTICATE, HOOK_REQUEST, PARSE_RESPONSE);
     /** MDC keys set for the length of a run. */
     static final String MDC_RUN_ID = "runId";
@@ -476,6 +479,10 @@ public class OnboardingRunner {
                 services = client.discoverServices(copy(record).authType(AuthType.NONE).build());
             } catch (PayerCallException e) {
                 return callFailed("Discovery", e);
+            } catch (IllegalArgumentException e) {
+                // The SDK builds the URL before it sends anything, so no exchange exists to explain this.
+                callFailure = e;
+                return Outcome.fail("Discovery could not build its request URL: " + e.getMessage());
             } finally {
                 List<PayerExchange> events = recorder.events(PayerCallPhase.DISCOVERY);
                 if (!events.isEmpty()) {
@@ -501,6 +508,10 @@ public class OnboardingRunner {
                         + sample.id() + " needs");
             }
             details.put("selectedService", serviceId);
+            if (!DiscoveryServicesCheck.isUrlSafeServiceId(serviceId)) {
+                return Outcome.fail("The payer advertises service id '" + serviceId + "' for " + sample.hook()
+                        + ", which cannot be used in a URL; it must be URL-safe");
+            }
             return Outcome.pass("Found " + listed.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
 
@@ -529,7 +540,8 @@ public class OnboardingRunner {
             // TOKEN and HOOK events into their separate timeline steps below.
             try {
                 response = client.callHook(record, serviceId, loaded.request());
-            } catch (RouterException e) {
+            } catch (RouterException | IllegalArgumentException e) {
+                // IllegalArgumentException: the SDK could not build the request URL, so nothing was sent.
                 callFailure = e;
             }
             List<PayerExchange> hooks = recorder.events(PayerCallPhase.HOOK);
@@ -678,6 +690,9 @@ public class OnboardingRunner {
                     properties.latencyFail(), defaults.clockSkewTolerance());
             List<Finding> findings = new ArrayList<>(new DiagnosticEngine(config).run(obs.build()));
             findings.addAll(workbenchFindings());
+            if (findings.stream().noneMatch(f -> f.severity() == Severity.FAIL)) {
+                brokenStepFinding().ifPresent(findings::add);
+            }
             findings.sort(Comparator.comparing(Finding::severity).reversed());
             return findings;
         }
@@ -698,6 +713,20 @@ public class OnboardingRunner {
                                 + "and a credential reference), or pick an environment that has one."));
             }
             return findings;
+        }
+
+        /**
+         * A step that failed without leaving evidence any check could read, such as a request the SDK
+         * could not build. Without this the report would say FAIL with an empty Findings section.
+         */
+        private Optional<Finding> brokenStepFinding() {
+            return steps.stream().filter(s -> !s.ok() && !DIAGNOSTICS.equals(s.stepId())).findFirst().map(step ->
+                    new Finding(STEP_FAILED_CHECK, Severity.FAIL,
+                            RunVerdict.title(step.stepId()) + " failed with no payer response to diagnose",
+                            "The run stopped at this step before the payer answered, so none of the checks that read "
+                                    + "payer responses had anything to say.",
+                            "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
+                            "Fix what the summary names and run again. The step's details show what was attempted."));
         }
 
         // ---- helpers ----
