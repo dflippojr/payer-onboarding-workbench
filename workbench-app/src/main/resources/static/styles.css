@@ -129,6 +129,8 @@ details.drawer > summary::after {
   border: solid var(--muted); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 details.drawer[open] > summary::after { transform: rotate(-135deg); margin: 4px 4px 0 0; }
+/* A long state ("1 on: Payer expects another audience") wraps; the drawer's name stays on one line. */
+details.drawer > summary > span:first-child { flex: none; white-space: nowrap; }
 .drawer-state { margin-left: auto; text-align: right; font-size: 13px; font-weight: 400; color: var(--muted); }
 .drawer-state.on { color: var(--bad); font-weight: 600; }
 details.drawer > .drawer-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
