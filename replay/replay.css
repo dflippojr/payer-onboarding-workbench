@@ -1,22 +1,38 @@
 /* Replay widget for recorded workbench runs. Everything is scoped under .pw-replay.
  *
- * Colours come from the host page's tokens when it defines them (--paper --ink --green
- * --muted --line --accent --warn, plus optional --fail) and fall back to neutral
- * defaults that follow prefers-color-scheme. To theme only the widget, set the
- * --pw-* properties on a more specific selector, e.g. `#replay.pw-replay { --pw-accent: … }`.
+ * Colours come from the host page's tokens when it defines them (--paper --panel --ink
+ * --muted --line --accent --green --warn --fail --info --focus, plus optional tints
+ * --bad-bg --warn-bg --pass-bg --info-bg, --code, --mono and --serif). Without them the
+ * fallbacks are the workbench app's own tokens in light and dark. To theme only the widget,
+ * set the --pw-* properties on a more specific selector, e.g. `#replay.pw-replay { --pw-accent: … }`.
+ *
+ * The widget lays itself out by its own width (a container query), not the viewport: the
+ * result card and the step timeline sit side by side from 48rem, and the scenario cards
+ * compact below 36rem.
  */
 .pw-replay {
-  --pw-paper: var(--paper, #ffffff);
-  --pw-ink: var(--ink, #1d2125);
-  --pw-muted: var(--muted, #5c6570);
-  --pw-line: var(--line, #d5dae0);
-  --pw-accent: var(--accent, #2b5d8c);
-  --pw-green: var(--green, #1d7348);
-  --pw-warn: var(--warn, #8f5b00);
-  --pw-fail: var(--fail, #b3261e);
+  --pw-paper: var(--paper, #f6f3eb);
+  --pw-panel: var(--panel, #fbfaf6);
+  --pw-ink: var(--ink, #24362e);
+  --pw-muted: var(--muted, #54604f);
+  --pw-line: var(--line, #d9ded1);
+  --pw-accent: var(--accent, #375d46);
+  --pw-on-accent: var(--on-accent, var(--pw-paper));
+  --pw-green: var(--green, #375d46);
+  --pw-warn: var(--warn, #7a5a24);
+  --pw-fail: var(--fail, #9a3b2b);
+  --pw-info: var(--info, #2f5873);
+  --pw-focus: var(--focus, #1f6feb);
+  --pw-fail-bg: var(--bad-bg, color-mix(in srgb, var(--pw-fail) 12%, var(--pw-paper)));
+  --pw-warn-bg: var(--warn-bg, color-mix(in srgb, var(--pw-warn) 12%, var(--pw-paper)));
+  --pw-pass-bg: var(--pass-bg, color-mix(in srgb, var(--pw-green) 12%, var(--pw-paper)));
+  --pw-info-bg: var(--info-bg, color-mix(in srgb, var(--pw-info) 12%, var(--pw-paper)));
+  --pw-code: var(--code, color-mix(in srgb, var(--pw-ink) 4%, var(--pw-paper)));
   --pw-radius: 6px;
-  --pw-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --pw-mono: var(--mono, Consolas, "SFMono-Regular", Menlo, monospace);
+  --pw-serif: var(--serif, Georgia, "Times New Roman", serif);
 
+  container: pw-replay / inline-size;
   color: var(--pw-ink);
   background: var(--pw-paper);
   font: inherit;
@@ -27,14 +43,19 @@
 
 @media (prefers-color-scheme: dark) {
   .pw-replay {
-    --pw-paper: var(--paper, #16191d);
-    --pw-ink: var(--ink, #e6e9ed);
-    --pw-muted: var(--muted, #a1a9b3);
-    --pw-line: var(--line, #343a42);
-    --pw-accent: var(--accent, #7fb0e0);
-    --pw-green: var(--green, #5cc28d);
-    --pw-warn: var(--warn, #e0a84a);
-    --pw-fail: var(--fail, #f0857d);
+    --pw-paper: var(--paper, #151b18);
+    --pw-panel: var(--panel, #1c2420);
+    --pw-ink: var(--ink, #e4e9e2);
+    --pw-muted: var(--muted, #a4b0a2);
+    --pw-line: var(--line, #34413a);
+    --pw-accent: var(--accent, #7fb894);
+    --pw-on-accent: var(--on-accent, #10160f);
+    --pw-green: var(--green, #8fcfa3);
+    --pw-warn: var(--warn, #e3c07c);
+    --pw-fail: var(--fail, #f0907d);
+    --pw-info: var(--info, #8fc1e3);
+    --pw-focus: var(--focus, #79b8ff);
+    --pw-code: var(--code, #121815);
   }
 }
 
@@ -43,20 +64,60 @@
 .pw-replay *::after { box-sizing: border-box; }
 
 .pw-replay :focus-visible {
-  outline: 2px solid var(--pw-accent);
+  outline: 3px solid var(--pw-focus);
   outline-offset: 2px;
 }
 
 .pw-replay [hidden] { display: none !important; }
 
-.pw-disclaimer {
-  margin: 0 0 1rem;
-  padding: 0.6rem 0.8rem;
-  border: 1px solid var(--pw-line);
-  border-left: 4px solid var(--pw-warn);
-  border-radius: var(--pw-radius);
-  font-size: 0.9rem;
+.pw-icon { flex: none; vertical-align: middle; }
+
+.pw-sr {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
+
+.pw-disclaimer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin: 0 0 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--pw-warn);
+  border-radius: var(--pw-radius);
+  background: var(--pw-warn-bg);
+  font-size: 0.875rem;
+}
+.pw-disclaimer .pw-icon { color: var(--pw-warn); margin-top: 0.15rem; }
+
+/* ---- status chips: an icon plus a word, never colour alone ---- */
+
+.pw-badge,
+.pw-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font: 700 0.7rem/1.6 var(--pw-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.pw-badge.PASS, .pw-status-tag.passed { color: var(--pw-green); background: var(--pw-pass-bg); }
+.pw-badge.PASS_WITH_WARNINGS, .pw-badge.WARN { color: var(--pw-warn); background: var(--pw-warn-bg); }
+.pw-badge.FAIL, .pw-status-tag.failed { color: var(--pw-fail); background: var(--pw-fail-bg); }
+.pw-badge.INFO { color: var(--pw-info); background: var(--pw-info-bg); }
+.pw-status-tag.skipped { color: var(--pw-muted); }
+.pw-status-tag.active { color: var(--pw-accent); }
 
 /* ---- scenario picker ---- */
 
@@ -64,18 +125,22 @@
 .pw-picker legend { font-weight: 600; margin-bottom: 0.5rem; padding: 0; }
 .pw-choices {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(17rem, 100%), 1fr));
   gap: 0.5rem;
 }
-/* Each scenario is a card around a visually hidden radio, so arrow keys still move through the group. */
+/* Each scenario is a card around a visually hidden radio, so arrow keys still move through
+   the group. The verdict line is pinned to the card's bottom and the chip to that line's
+   last row, so the chips of a row line up however the titles and teasers wrap. */
 .pw-choice {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  padding: 0.65rem 0.8rem;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 0.15rem;
+  min-height: 6rem;
+  padding: 0.75rem 0.9rem;
   border: 1px solid var(--pw-line);
   border-radius: var(--pw-radius);
+  background: var(--pw-panel);
   cursor: pointer;
   min-width: 0;
 }
@@ -84,7 +149,7 @@
   border-color: var(--pw-accent);
   box-shadow: inset 0 0 0 1px var(--pw-accent);
 }
-.pw-choice:has(input:focus-visible) { outline: 2px solid var(--pw-accent); outline-offset: 2px; }
+.pw-choice:has(input:focus-visible) { outline: 3px solid var(--pw-focus); outline-offset: 2px; }
 .pw-radio {
   position: absolute;
   top: 0;
@@ -95,117 +160,154 @@
   opacity: 0;
   pointer-events: none;
 }
-.pw-choice-title { font-weight: 600; }
-.pw-choice-payer { color: var(--pw-muted); font-size: 0.8rem; }
-.pw-choice-line { margin-top: auto; padding-top: 0.2rem; font-size: 0.9rem; overflow-wrap: anywhere; }
-.pw-choice-line .pw-badge { margin-right: 0.2rem; }
+.pw-choice-title { font-weight: 600; overflow-wrap: anywhere; }
+.pw-choice-payer { color: var(--pw-muted); font-size: 0.85rem; }
+.pw-choice-line {
+  align-self: end;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
+  gap: 0.5rem;
+  padding-top: 0.4rem;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
 
-.pw-status { color: var(--pw-muted); font-size: 0.85rem; margin: 0.75rem 0; min-height: 1.3em; }
+.pw-status { color: var(--pw-muted); font-size: 0.875rem; margin: 0.75rem 0; }
 
 /* ---- run view ---- */
 
-.pw-title { margin: 0.5rem 0 0.25rem; font-size: 1.25rem; }
-.pw-meta { margin: 0 0 0.75rem; color: var(--pw-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.pw-runhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  margin: 1rem 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--pw-line);
+}
+.pw-runhead-text { min-width: 0; }
+.pw-title { margin: 0; font: 400 1.4rem/1.25 var(--pw-serif); overflow-wrap: anywhere; }
+.pw-meta { margin: 0.15rem 0 0; color: var(--pw-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 
-.pw-controls { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: center; margin-bottom: 1rem; }
+.pw-controls { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: center; }
 .pw-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.5rem 1.1rem;
   font: inherit;
-  font-size: 0.9rem;
   font-weight: 600;
-  padding: 0.4rem 0.9rem;
   border: 1px solid var(--pw-accent);
   border-radius: var(--pw-radius);
   background: transparent;
   color: var(--pw-accent);
   cursor: pointer;
 }
-.pw-btn.pw-primary { background: var(--pw-accent); color: var(--pw-paper); }
+.pw-btn.pw-primary { background: var(--pw-accent); color: var(--pw-on-accent); }
 .pw-hint { color: var(--pw-muted); font-size: 0.85rem; }
 
+/* The result card: a tinted band with the verdict, then the Fix and the explanation.
+   No coloured left border: the band's icon and words carry the status. */
 .pw-result {
   margin: 0 0 1.25rem;
-  padding: 0.9rem 1rem;
   border: 1px solid var(--pw-line);
-  border-left-width: 6px;
-  border-radius: var(--pw-radius);
+  border-radius: 8px;
+  background: var(--pw-panel);
+  overflow: hidden;
   min-width: 0;
   animation: pw-in 0.3s ease-out;
 }
-.pw-result.FAIL { border-left-color: var(--pw-fail); }
-.pw-result.PASS { border-left-color: var(--pw-green); }
-.pw-result.PASS_WITH_WARNINGS { border-left-color: var(--pw-warn); }
-.pw-result-kicker { margin: 0; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-.pw-result.FAIL .pw-result-kicker { color: var(--pw-fail); }
-.pw-result.PASS .pw-result-kicker { color: var(--pw-green); }
-.pw-result.PASS_WITH_WARNINGS .pw-result-kicker { color: var(--pw-warn); }
-.pw-result > .pw-result-title { margin: 0.2rem 0 0.4rem; font-size: 1.2rem; overflow-wrap: anywhere; }
-.pw-result > p { margin: 0.4rem 0; overflow-wrap: anywhere; }
-
-.pw-section { margin-top: 1.25rem; }
-.pw-section > :is(h2, h3, h4, h5) { font-size: 1.05rem; margin: 0 0 0.5rem; }
-
-.pw-badge,
-.pw-status-tag {
-  display: inline-block;
-  padding: 0.05rem 0.45rem;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
+.pw-result-band { padding: 0.9rem 1rem; background: var(--pw-pass-bg); }
+.pw-result.FAIL .pw-result-band { background: var(--pw-fail-bg); }
+.pw-result.PASS_WITH_WARNINGS .pw-result-band { background: var(--pw-warn-bg); }
+.pw-result-kicker {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0;
+  font: 700 0.75rem/1.4 var(--pw-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--pw-green);
 }
-.pw-badge.PASS, .pw-status-tag.passed { color: var(--pw-green); }
-.pw-badge.PASS_WITH_WARNINGS, .pw-badge.WARN { color: var(--pw-warn); }
-.pw-badge.FAIL, .pw-status-tag.failed { color: var(--pw-fail); }
-.pw-badge.INFO, .pw-status-tag.skipped { color: var(--pw-muted); }
-.pw-status-tag.active { color: var(--pw-accent); }
+.pw-result.FAIL .pw-result-kicker { color: var(--pw-fail); }
+.pw-result.PASS_WITH_WARNINGS .pw-result-kicker { color: var(--pw-warn); }
+.pw-result-band > .pw-result-title { margin: 0.25rem 0 0; font: 400 1.35rem/1.3 var(--pw-serif); overflow-wrap: anywhere; }
+.pw-result-body { display: flex; flex-direction: column; gap: 0.6rem; padding: 0.9rem 1rem 1rem; }
+.pw-result-body > * { margin: 0; }
+.pw-result-body p { margin: 0; overflow-wrap: anywhere; }
+
+.pw-fix {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--pw-accent);
+  border-radius: var(--pw-radius);
+  background: var(--pw-paper);
+  overflow-wrap: anywhere;
+}
+.pw-fix > .pw-icon { color: var(--pw-accent); margin-top: 0.15rem; }
+.pw-fix > p { margin: 0; }
+.pw-fix strong {
+  display: block;
+  font: 700 0.7rem/1.6 var(--pw-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pw-accent);
+}
+
+.pw-section { margin-top: 1.25rem; min-width: 0; }
+.pw-section > :is(h2, h3, h4, h5) { font-size: 1rem; margin: 0 0 0.4rem; }
+
+/* ---- step timeline: icon, title and status word, latency on the right ---- */
 
 .pw-steps { list-style: none; margin: 0; padding: 0; }
 .pw-step {
-  position: relative;
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  gap: 0.15rem 0.6rem;
+  align-items: start;
   margin: 0;
-  padding: 0 0 0.9rem 1.1rem;
-  border-left: 2px solid var(--pw-line);
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--pw-line);
   min-width: 0;
   animation: pw-in 0.25s ease-out;
 }
-.pw-step::before {
-  content: "";
-  position: absolute;
-  left: -7px;
-  top: 0.4rem;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--pw-paper);
-  border: 2px solid var(--pw-muted);
+.pw-step:first-child { border-top: 0; }
+.pw-step-mark { grid-column: 1; grid-row: 1 / span 2; display: flex; padding-top: 0.15rem; color: var(--pw-muted); }
+.pw-step-head { grid-column: 2; grid-row: 1; display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; align-items: center; min-width: 0; }
+.pw-step-head > :is(h3, h4, h5, h6) { margin: 0; font-size: 1rem; font-weight: 600; overflow-wrap: anywhere; }
+.pw-latency {
+  grid-column: 3;
+  grid-row: 1;
+  color: var(--pw-muted);
+  font: 0.8rem/1.9 var(--pw-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.pw-step.passed::before { border-color: var(--pw-green); background: var(--pw-green); }
-.pw-step.failed::before { border-color: var(--pw-fail); background: var(--pw-fail); }
-.pw-step.active::before {
-  border-color: var(--pw-accent);
-  background: var(--pw-accent);
-  animation: pw-pulse 0.9s ease-in-out infinite;
-}
+.pw-step > :not(.pw-step-mark, .pw-step-head, .pw-latency) { grid-column: 2 / -1; min-width: 0; }
+.pw-step > p { margin: 0; overflow-wrap: anywhere; }
+.pw-summary { font-size: 0.9rem; color: var(--pw-muted); }
+.pw-step.passed .pw-step-mark { color: var(--pw-green); }
+.pw-step.failed .pw-step-mark { color: var(--pw-fail); }
+.pw-step.active .pw-step-mark { color: var(--pw-accent); animation: pw-pulse 0.9s ease-in-out infinite; }
+/* The step where the flow broke reads in the fail colour. A step after the break that still
+   ran (Run diagnostics) keeps its status icon and word; only skipped steps are muted. */
 .pw-step.failed:not(.pw-after) .pw-step-head > :is(h3, h4, h5, h6) { color: var(--pw-fail); }
-.pw-step:last-child { border-left-color: transparent; }
-.pw-step-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; align-items: center; }
-.pw-step-head > :is(h3, h4, h5, h6) { margin: 0; font-size: 1rem; }
-.pw-step > p { margin: 0.25rem 0; overflow-wrap: anywhere; }
-.pw-summary { font-size: 0.9rem; }
-/* Steps after the one where the flow broke were not played back. */
-.pw-step.skipped, .pw-step.pw-after { color: var(--pw-muted); }
-.pw-step.pw-after .pw-status-tag { color: var(--pw-muted); }
-.pw-step.pw-after::before { border-color: var(--pw-muted); background: var(--pw-paper); }
-.pw-latency { color: var(--pw-muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.pw-step.failed:not(.pw-after) .pw-summary { color: var(--pw-ink); }
+.pw-step.skipped { color: var(--pw-muted); }
 
-@keyframes pw-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--pw-accent) 30%, transparent); } }
+@keyframes pw-pulse { 50% { opacity: 0.35; } }
 @keyframes pw-in { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes pw-fill { from { width: 0; } }
 
 /* Latency bar: the fill is the real recorded time, on a track that runs past the fail budget. */
-.pw-bar { margin: 0.5rem 0; max-width: 32rem; }
+.pw-bar { margin: 0.4rem 0; max-width: 32rem; }
 .pw-bar-track {
   position: relative;
   display: block;
@@ -223,24 +325,54 @@
 .pw-bar-fill.FAIL { background: var(--pw-fail); }
 .pw-step.active .pw-bar-fill { animation: pw-fill var(--pw-dur, 1s) linear both; }
 .pw-bar-mark { position: absolute; top: -0.25rem; bottom: -0.25rem; width: 2px; background: var(--pw-ink); }
-.pw-bar-label { margin: 0.35rem 0 0; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
-.pw-bar-label .pw-icon { font-weight: 700; }
+.pw-bar-label {
+  display: flex;
+  gap: 0.35rem;
+  align-items: flex-start;
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.pw-bar-label .pw-icon { margin-top: 0.2rem; }
 .pw-bar-label.FAIL .pw-icon { color: var(--pw-fail); }
 .pw-bar-label.WARN .pw-icon { color: var(--pw-warn); }
 
-.pw-replay details { margin: 0.35rem 0; min-width: 0; }
+/* ---- disclosures: every summary is a 44 px target with its own chevron ---- */
+
+.pw-replay details { margin: 0; min-width: 0; }
 .pw-replay summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
   cursor: pointer;
-  overflow-wrap: anywhere;
+  list-style: none;
   font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--pw-accent);
+  overflow-wrap: anywhere;
 }
-.pw-step-details > summary { color: var(--pw-muted); font-size: 0.85rem; }
+.pw-replay summary::-webkit-details-marker { display: none; }
+.pw-replay summary::before {
+  content: "";
+  flex: none;
+  width: 0.45em;
+  height: 0.45em;
+  margin: 0 0.3em 0 0.15em;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+.pw-replay details[open] > summary::before { transform: rotate(45deg); }
+.pw-why > p { margin: 0 0 0.25rem; }
 .pw-replay details > div {
-  margin-top: 0.35rem;
+  margin: 0.15rem 0 0.4rem;
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--pw-line);
   border-radius: var(--pw-radius);
+  background: var(--pw-paper);
 }
+.pw-replay details > div > :first-child { margin-top: 0; }
 .pw-exchange + .pw-exchange { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--pw-line); }
 .pw-exchange > .pw-mono { margin: 0; overflow-wrap: anywhere; }
 .pw-replay pre {
@@ -250,6 +382,7 @@
   overflow: auto;
   border-radius: 4px;
   border: 1px solid var(--pw-line);
+  background: var(--pw-code);
   font: 0.78rem/1.45 var(--pw-mono);
   white-space: pre;
   tab-size: 2;
@@ -259,28 +392,61 @@
 .pw-label { margin: 0.4rem 0 0; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--pw-muted); }
 .pw-muted { color: var(--pw-muted); font-size: 0.8rem; }
 
+/* ---- other findings ---- */
+
 .pw-finding {
   margin: 0 0 0.5rem;
-  padding: 0.5rem 0.8rem;
+  padding: 0.15rem 0.75rem;
   border: 1px solid var(--pw-line);
-  border-left-width: 4px;
   border-radius: var(--pw-radius);
+  background: var(--pw-panel);
   min-width: 0;
 }
-.pw-finding.FAIL { border-left-color: var(--pw-fail); }
-.pw-finding.WARN { border-left-color: var(--pw-warn); }
-.pw-finding-head { display: flex; flex-wrap: wrap; gap: 0.2rem 0.5rem; align-items: baseline; }
+.pw-finding-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; align-items: center; min-height: 44px; }
 .pw-finding-head > :is(h3, h4, h5, h6) { margin: 0; font-size: 0.95rem; overflow-wrap: anywhere; }
 .pw-finding p { margin: 0.4rem 0 0; overflow-wrap: anywhere; }
-.pw-fix strong { color: var(--pw-accent); }
-.pw-passed > summary .pw-icon,
-.pw-result.PASS .pw-icon { color: var(--pw-green); }
+.pw-finding .pw-fix { margin-bottom: 0.4rem; }
+.pw-finding .pw-fix p { margin: 0; }
+.pw-passed > summary .pw-icon { color: var(--pw-green); }
 .pw-passed ul { margin: 0; padding-left: 1.2rem; }
 .pw-passed li { margin: 0.2rem 0; overflow-wrap: anywhere; }
 
-@media (max-width: 480px) {
-  .pw-choices { grid-template-columns: 1fr; }
-  .pw-step { padding-left: 0.8rem; }
+/* ---- the widget's own width decides the layout ---- */
+
+/* Wide: the result card on the left and the step timeline beside it, with the run head across
+   the top and Other findings across the bottom. */
+@container pw-replay (min-width: 48rem) {
+  .pw-run {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    column-gap: 1.25rem;
+    align-items: start;
+  }
+  .pw-run > * { grid-column: 1 / -1; }
+  .pw-run > .pw-result-slot { grid-column: 1; }
+  .pw-result-slot > .pw-result { margin-bottom: 0; }
+  .pw-result-slot + .pw-section { grid-column: 2; margin-top: 0; }
+}
+
+/* Narrow: one scenario per row with only its title and verdict, a full-width Replay button. */
+@container pw-replay (max-width: 36rem) {
+  .pw-choices { grid-template-columns: 1fr; gap: 0.4rem; }
+  /* Title and chip share a line; in a narrow card (a host's scrolling row) the chip wraps
+     under the title instead of squeezing it. */
+  .pw-choice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
+    min-height: 3.5rem;
+  }
+  .pw-choice-title { flex: 1 1 9rem; min-width: 0; }
+  .pw-choice-payer,
+  .pw-choice-teaser { display: none; }
+  .pw-choice-line { display: flex; padding-top: 0; }
+  .pw-controls { width: 100%; }
+  .pw-btn { flex: 1 1 0; }
+  .pw-hint { flex-basis: 100%; }
   .pw-replay pre { font-size: 0.72rem; }
 }
 

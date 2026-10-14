@@ -48,14 +48,18 @@ class FakeElement extends FakeNode {
 
 /**
  * Installs document/Node/fetch/matchMedia globals; `files` maps URL pathnames to response
- * bodies. `reducedMotion` is what prefers-reduced-motion: reduce reports.
+ * bodies. `reducedMotion` is what prefers-reduced-motion: reduce reports, and `narrow`
+ * what a max-width (phone) query reports.
  */
-export function installFakeDom(files, { reducedMotion = false } = {}) {
+export function installFakeDom(files, { reducedMotion = false, narrow = false } = {}) {
   globalThis.Node = FakeNode;
-  globalThis.matchMedia = query => ({ matches: query.includes('reduced-motion') && reducedMotion });
+  globalThis.matchMedia = query => ({
+    matches: (query.includes('reduced-motion') && reducedMotion) || (query.includes('max-width') && narrow),
+  });
   globalThis.document = {
     baseURI: 'https://site.example/page/',
     createElement: tag => new FakeElement(tag),
+    createElementNS: (ns, tag) => Object.assign(new FakeElement(tag), { namespaceURI: ns }),
   };
   globalThis.fetch = async url => {
     const body = files(new URL(url).pathname);
