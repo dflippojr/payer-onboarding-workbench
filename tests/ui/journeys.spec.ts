@@ -125,12 +125,31 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   await expect(page.locator('#history-status')).toHaveText('Comparison shown.');
   const comparison = page.getByRole('region', { name: 'Changes since run ' + healthy.runId.slice(0, 8) });
   await expect(comparison).toBeVisible();
-  await expect(comparison.locator('dd').first()).toContainText('PASS → FAIL worse');
-  await expect(comparison.locator('dd').nth(1)).toHaveText('every step passed → Discovery');
-  await expect(comparison.getByRole('heading', { name: /^Newly failing or worse/ }).locator('xpath=following-sibling::ul[1]'))
-    .toContainText('discovery.reachable');
+  await expect(page.locator('#comparison-note')).toHaveText(
+    /^Earlier run \d\d:\d\d:\d\d UTC \(Pass\) compared with the run on screen, \d\d:\d\d:\d\d UTC \(Fail\)$/);
+  await expect(comparison.locator('.tile dd').first()).toHaveText('Pass → Fail Worse');
+  await expect(comparison.locator('.tile dd').nth(1)).toHaveText('every step passed → Discovery');
+  await expect(comparison.locator('.step-changes li').first()).toHaveText('Discovery, Run diagnostics Passed → Failed');
+  const changed = comparison.getByRole('table').first();
+  await expect(changed.getByRole('columnheader')).toHaveText(['Check', 'Earlier run', 'This run', 'Change']);
+  await expect(changed.getByRole('row', { name: /discovery\.reachable/ })).toContainText('Newly failing');
+  await expect(comparison.getByText(/^Fixed or better: none\. Unchanged: \d+ checks? \(.+\)\.$/)).toBeVisible();
+  // The one-sided group is collapsed and says why its checks are not counted.
+  const oneSided = comparison.locator('details.one-sided');
+  await expect(oneSided).not.toHaveAttribute('open', '');
+  await expect(oneSided.locator('summary')).toHaveText(/^Only in one run · \d+ checks?$/);
+  await oneSided.locator('summary').click();
+  await expect(oneSided.getByText(/usually because a step was skipped/)).toBeVisible();
+  await expect(oneSided.getByRole('row', { name: /auth\.token/ })).toContainText('Earlier run only');
   await auditEvent('run.read', healthy.runId);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Stop comparing' }).click();
+  await expect(comparison).toBeHidden();
+  await expect(page.locator('#history-status')).toHaveText('Comparison closed.');
+  await expect(compare).toBeFocused();
+  await expect(compare).toHaveValue('');
+  await compare.selectOption(healthy.runId);
+  await expect(comparison).toBeVisible();
   await page.getByLabel('Recent runs').selectOption(healthy.runId);
   await expect(comparison).toBeHidden();
 });
