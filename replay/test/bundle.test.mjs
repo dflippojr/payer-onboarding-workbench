@@ -154,7 +154,7 @@ test('no token, secret or PEM pattern appears anywhere in the bundle', () => {
 });
 
 /** Mounts the bundle's replay.js on a fake DOM; `editManifest` rewrites manifest.json on the way in. */
-async function mountBundle(options = {}, { reducedMotion = false, editManifest } = {}) {
+async function mountBundle(options = {}, { reducedMotion = false, narrow = false, editManifest } = {}) {
   const { createRoot } = installFakeDom(pathname => {
     const prefix = '/workbench/';
     if (!pathname.startsWith(prefix)) return undefined;
@@ -163,7 +163,7 @@ async function mountBundle(options = {}, { reducedMotion = false, editManifest }
     if (!existsSync(p)) return undefined;
     const body = readFileSync(p, 'utf8');
     return rel === 'manifest.json' && editManifest ? JSON.stringify(editManifest(JSON.parse(body))) : body;
-  }, { reducedMotion });
+  }, { reducedMotion, narrow });
   const mod = await import(pathToFileURL(join(dist, 'replay.js')).href);
   const el = createRoot();
   const replay = await mod.mountReplay(el, { baseUrl: '/workbench', ...options });
@@ -176,6 +176,8 @@ const byClass = (el, cls) => el.findAll(n => n.className.split(' ').includes(cls
 const visibleSteps = el => byClass(el, 'pw-step').filter(n => n.getAttribute('hidden') === null);
 const statusText = el => byClass(el, 'pw-status')[0].textContent;
 const runButton = el => el.findAll(n => n.tagName === 'BUTTON')[0];
+/** The kinds of the decorative SVG status icons inside `el`, in document order. */
+const iconKinds = el => el.findAll(n => n.tagName === 'SVG').map(n => n.getAttribute('class').replace('pw-icon ', ''));
 
 /** The example host each payer's local address is rewritten to by the export scripts. */
 const PAYER_HOSTS = {
@@ -318,9 +320,18 @@ test('Run plays the steps in order, then stops at the failing step', async () =>
     const steps = visibleSteps(el);
     assert.equal(steps.length, report.steps.length);
     assert.equal(steps[stop].className, 'pw-step failed');
-    assert.ok(steps[stop].textContent.includes('✗ failed'), 'failure needs an icon and text');
-    for (const later of steps.slice(stop + 1)) assert.match(later.className, /\bpw-after\b/);
+    assert.equal(byClass(steps[stop], 'pw-status-tag')[0].textContent, 'failed', 'failure needs a word');
+    assert.deepEqual(iconKinds(byClass(steps[stop], 'pw-step-mark')[0]), ['fail'], 'failure needs an icon');
+    // Steps after the break keep their recorded status: Run diagnostics ran, so it is not greyed out.
+    const kinds = { passed: 'pass', failed: 'fail', skipped: 'skipped' };
+    for (const [j, later] of steps.slice(stop + 1).entries()) {
+      const recorded = report.steps[stop + 1 + j].status;
+      assert.equal(later.className, `pw-step ${recorded} pw-after`);
+      assert.equal(byClass(later, 'pw-status-tag')[0].textContent, recorded);
+      assert.deepEqual(iconKinds(byClass(later, 'pw-step-mark')[0]), [kinds[recorded]]);
+    }
     assert.ok(report.steps.slice(stop + 1).some(s => s.status === 'skipped'));
+    assert.ok(report.steps.slice(stop + 1).some(s => s.status !== 'skipped'), 'a step after the break should have run');
     assert.equal(byClass(el, 'pw-result').length, 1);
     assert.ok(runButton(el).textContent.startsWith('Replay'));
     assert.equal(statusText(el), `${run.title}: onboarding would fail. ${report.findings.find(f => f.severity === 'FAIL').title}.`);
@@ -339,7 +350,8 @@ test('the result card leads with the first failure, or says a healthy run would 
     const [card] = byClass(el, 'pw-result');
     assert.ok(card, `${run.id}: no result card`);
     const view = byClass(el, 'pw-run')[0];
-    assert.equal(view.childNodes.indexOf(card.parentNode), 3, `${run.id}: card is not above the timeline`);
+    assert.equal(view.childNodes.indexOf(card.parentNode), 1, `${run.id}: card is not right under the run head`);
+    assert.equal(view.childNodes[2].className, 'pw-section pw-timeline', `${run.id}: card is not above the timeline`);
     const fails = report.findings.filter(f => f.severity === 'FAIL');
     if (fails.length) {
       assert.match(card.className, /\bFAIL\b/);
@@ -348,6 +360,14 @@ test('the result card leads with the first failure, or says a healthy run would 
       for (const part of [first.explanation, first.suggestedFix, first.checkId]) {
         assert.ok(card.textContent.includes(part), `${run.id}: card lacks ${part}`);
       }
+      assert.deepEqual(iconKinds(byClass(card, 'pw-result-kicker')[0]), ['fail']);
+      // The Fix comes first; the explanation follows in a Why it fails disclosure, open on desktop.
+      const text = card.textContent;
+      assert.ok(text.indexOf(first.suggestedFix) < text.indexOf(first.explanation), `${run.id}: Fix is not above the why`);
+      const [why] = byClass(card, 'pw-why');
+      assert.equal(why.tagName, 'DETAILS');
+      assert.equal(why.childNodes[0].textContent, 'Why it fails');
+      assert.equal(why.getAttribute('open'), '', `${run.id}: Why it fails should be open on desktop`);
       const more = fails.length - 1;
       assert.equal(card.textContent.includes(`+${more} more failing check`), more > 0, `${run.id}: +N more`);
     } else {
@@ -357,7 +377,8 @@ test('the result card leads with the first failure, or says a healthy run would 
     const passed = report.findings.filter(f => f.severity === 'PASS').length;
     const [collapse] = byClass(el, 'pw-passed');
     assert.equal(collapse.tagName, 'DETAILS');
-    assert.equal(collapse.childNodes[0].textContent, `✓ ${passed} check${passed === 1 ? '' : 's'} passed`);
+    assert.equal(collapse.childNodes[0].textContent, `${passed} check${passed === 1 ? '' : 's'} passed`);
+    assert.deepEqual(iconKinds(collapse.childNodes[0]), ['pass']);
     assert.equal(collapse.findAll(n => n.tagName === 'LI').length, passed);
   }
 });
@@ -392,6 +413,34 @@ test('under reduced motion, Run shows the final state at once', async () => {
     assert.ok(statusText(el).startsWith(`${run.title}: onboarding would fail.`));
   } finally {
     mock.timers.reset();
+  }
+});
+
+test('on phones the Fix leads and the explanation folds under Why it fails', async () => {
+  const run = findRun('fabrikam-wrong-audience-reject');
+  const fail = readRun(run).findings.find(f => f.severity === 'FAIL');
+  const { el, replay } = await mountBundle({ run: run.id }, { narrow: true });
+  replay.showResult();
+  const [card] = byClass(el, 'pw-result');
+  const body = byClass(card, 'pw-result-body')[0];
+  assert.ok(body.childNodes[0].textContent.includes(fail.suggestedFix), 'Fix is not first');
+  const [why] = byClass(card, 'pw-why');
+  assert.equal(why.getAttribute('open'), null, 'Why it fails should start folded');
+  assert.ok(why.textContent.includes(fail.explanation));
+});
+
+test('the status line is for screen readers once a run shows; errors stay visible', async () => {
+  const run = findRun('fabrikam-wrong-audience-reject');
+  const { el, replay } = await mountBundle({ run: run.id });
+  const status = () => byClass(el, 'pw-status')[0];
+  assert.equal(status().className, 'pw-status pw-sr', 'the selected card already says what is shown');
+  replay.showResult();
+  assert.equal(status().className, 'pw-status pw-sr');
+  // Each card's verdict is an icon plus a word.
+  for (const [i, r] of requireBundle().runs.entries()) {
+    const [chip] = byClass(byClass(el, 'pw-choice')[i], 'pw-badge');
+    assert.equal(chip.textContent, r.verdict === 'FAIL' ? 'Fail' : r.verdict === 'PASS' ? 'Pass' : 'Pass with warnings');
+    assert.deepEqual(iconKinds(chip), [{ FAIL: 'fail', PASS: 'pass', PASS_WITH_WARNINGS: 'warn' }[r.verdict]]);
   }
 });
 
@@ -435,6 +484,7 @@ test('replay.js reports a missing bundle without throwing', async () => {
   await mountReplay(el, { baseUrl: '/nowhere/' });
   assert.ok(el.textContent.includes(DISCLAIMER));
   assert.ok(el.textContent.includes('Could not load the recorded runs (HTTP 404).'));
+  assert.equal(byClass(el, 'pw-status')[0].className, 'pw-status', 'the error must be visible');
 });
 
 test('vendor-into-site.mjs copies the bundle and drops stale runs', () => {

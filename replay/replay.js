@@ -4,8 +4,9 @@
 // textContent, never as HTML.
 //
 // Picking a scenario shows a Run button; Run plays the recorded steps back one at a
-// time, stops at the step where the flow broke, then leads with a result card.
-// Under prefers-reduced-motion, Run shows the final state at once.
+// time, stops at the step where the flow broke, then leads with a result card: the
+// verdict, the Fix, then why (folded on phones). Under prefers-reduced-motion, Run
+// shows the final state at once.
 //
 // Rendering is adapted from workbench-app/src/main/resources/static/app.js to the
 // report JSON (GET /api/runs/{id}/report?format=json), whose steps carry status and
@@ -30,10 +31,31 @@ const LATENCY_BUDGET = { warnMs: 5000, failMs: 10000 };
 
 const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
 const VERDICT_LABELS = { PASS: 'Pass', PASS_WITH_WARNINGS: 'Pass with warnings', FAIL: 'Fail' };
-const ICONS = { passed: '✓', failed: '✗', skipped: '–', active: '●', FAIL: '✗', WARN: '!', INFO: 'i', PASS: '✓' };
+const SEVERITY_LABELS = { FAIL: 'Fail', WARN: 'Warn', INFO: 'Info', PASS: 'Pass' };
 const STATE_LABELS = { active: 'running' };
 
+const SVG = 'http://www.w3.org/2000/svg';
+/** Icon shapes on a 20 px grid; the status ones match the workbench app's (static/app.js). */
+const ICONS = {
+  pass: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M6.5 10.2l2.3 2.3 4.7-4.9' }]],
+  fail: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M7 7l6 6M13 7l-6 6' }]],
+  warn: [['path', { d: 'M10 2.5l8 14.5H2z' }], ['path', { d: 'M10 8v4M10 14.5v.5' }]],
+  info: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 9v5M10 6v.5' }]],
+  skipped: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
+  running: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 5.5V10l3 2' }]],
+  fix: [['path', { d: 'M4 10.5l4 4 8-9' }]],
+  play: [['path', { d: 'M6.5 4.5l9 5.5-9 5.5z' }]],
+  replay: [['path', { d: 'M16 10a6 6 0 1 1-2-4.5' }], ['path', { d: 'M14.5 2.5v3.5H11' }]],
+};
+/** Icon for each step state, verdict and finding severity; a word always goes beside it. */
+const KINDS = {
+  passed: 'pass', failed: 'fail', skipped: 'skipped', active: 'running',
+  PASS: 'pass', PASS_WITH_WARNINGS: 'warn', FAIL: 'fail', WARN: 'warn', INFO: 'info',
+};
+
 const reducedMotion = () => Boolean(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+/** Phone width, where the result card folds its explanation under Why it fails. */
+const narrow = () => Boolean(globalThis.matchMedia?.('(max-width: 600px)').matches);
 
 let mounts = 0;
 
@@ -63,25 +85,31 @@ export async function mountReplay(el, options = {}) {
     showResult: () => player?.finish(),
   };
 
+  // The live region shows only while loading and on errors; otherwise it would repeat
+  // the selected card, so it stays for screen readers alone.
   const status = h('p', { class: 'pw-status', role: 'status', 'aria-live': 'polite' });
+  const say = (text, visible = false) => {
+    status.className = visible ? 'pw-status' : 'pw-status pw-sr';
+    status.textContent = text;
+  };
   const picker = h('div', { class: 'pw-picker' });
   const view = h('div', { class: 'pw-run', id: `${uid}-run` });
   el.classList.add('pw-replay');
   el.replaceChildren(
-    h('p', { class: 'pw-disclaimer', role: 'note' }, DISCLAIMER),
+    h('p', { class: 'pw-disclaimer', role: 'note' }, icon('warn', 16), h('span', {}, DISCLAIMER)),
     picker, status, view);
 
-  status.textContent = 'Loading recorded runs…';
+  say('Loading recorded runs…', true);
   let manifest;
   try {
     manifest = await getJson(new URL('manifest.json', base));
   } catch (e) {
-    status.textContent = `Could not load the recorded runs (${e.message}).`;
+    say(`Could not load the recorded runs (${e.message}).`, true);
     return api;
   }
   const runs = manifest.runs || [];
   if (!runs.length) {
-    status.textContent = 'This bundle has no recorded runs.';
+    say('This bundle has no recorded runs.', true);
     return api;
   }
 
@@ -112,9 +140,7 @@ export async function mountReplay(el, options = {}) {
       h('span', { class: 'pw-choice-title' }, run.title),
       payer,
       h('span', { class: 'pw-choice-line' },
-        run.verdict && h('span', { class: `pw-badge ${run.verdict}` },
-          h('span', { 'aria-hidden': 'true' }, `${ICONS[run.verdict === 'FAIL' ? 'FAIL' : 'PASS']} `),
-          VERDICT_LABELS[run.verdict] || run.verdict),
+        run.verdict && badge(run.verdict, VERDICT_LABELS[run.verdict] || run.verdict),
         ' ', teaser));
   });
   picker.replaceChildren(h('fieldset', {},
@@ -128,20 +154,20 @@ export async function mountReplay(el, options = {}) {
     const token = ++current;
     player?.stop();
     player = null;
-    status.textContent = `Loading ${run.title}…`;
+    say(`Loading ${run.title}…`);
     let report;
     try {
       report = await load(run);
     } catch (e) {
       if (token !== current) return;
-      status.textContent = `Could not load ${run.title} (${e.message}).`;
+      say(`Could not load ${run.title} (${e.message}).`, true);
       view.replaceChildren();
       return;
     }
     if (token !== current) return;
-    player = createPlayer(run, report, hx, status);
+    player = createPlayer(run, report, hx, say);
     view.replaceChildren(...player.nodes);
-    status.textContent = `Showing ${run.title}. Press Run to replay it.`;
+    say(`Showing ${run.title}. Press Run to replay it.`);
     if (options.autoplay) player.play();
   }
   api.select = select;
@@ -177,7 +203,7 @@ export function stopIndex(report) {
   return i < 0 ? steps.length - 1 : i;
 }
 
-function createPlayer(run, report, hx, status) {
+function createPlayer(run, report, hx, say) {
   const steps = report.steps || [];
   const last = stopIndex(report);
   const durations = stepDurations(steps.slice(0, last + 1));
@@ -200,7 +226,7 @@ function createPlayer(run, report, hx, status) {
     finish();
     runButton.focus?.();
   });
-  setButton('Run', '▶');
+  setButton('Run', 'play');
 
   const meta = [
     report.payer && report.payer.displayName,
@@ -210,16 +236,18 @@ function createPlayer(run, report, hx, status) {
     report.workbenchVersion && `workbench ${report.workbenchVersion}`,
   ].filter(Boolean).join(' · ');
 
-  function setButton(label, icon) {
-    runButton.replaceChildren(`${label} `, h('span', { 'aria-hidden': 'true' }, icon));
+  function setButton(label, kind) {
+    runButton.replaceChildren(label, icon(kind, 16));
   }
 
+  // Steps after the break keep their recorded status: Run diagnostics still ran, so it
+  // shows passed or failed. Only the skipped ones are muted.
   function setState(i, state) {
     const item = items[i];
     item.className = `pw-step ${state}${i > last ? ' pw-after' : ''}`;
-    const tag = item.tag;
-    tag.className = `pw-status-tag ${state}`;
-    tag.replaceChildren(h('span', { class: 'pw-icon', 'aria-hidden': 'true' }, ICONS[state] || ''), ` ${STATE_LABELS[state] || state}`);
+    item.mark.replaceChildren(icon(KINDS[state] || 'info', 18));
+    item.tag.className = `pw-status-tag ${state}`;
+    item.tag.textContent = STATE_LABELS[state] || state;
     show(item, true);
   }
 
@@ -251,9 +279,9 @@ function createPlayer(run, report, hx, status) {
       finish();
       return finished;
     }
-    setButton('Run', '▶');
+    setButton('Run', 'play');
     show(skipButton, true);
-    status.textContent = `Replaying ${run.title}…`;
+    say(`Replaying ${run.title}…`);
     advance();
     return finished;
   }
@@ -266,9 +294,9 @@ function createPlayer(run, report, hx, status) {
     result.replaceChildren(renderResult(report, hx));
     findings.replaceChildren(h(hx(1), {}, 'Other findings'), ...renderFindings(report.findings || [], hx));
     show(findings, true);
-    setButton('Replay', '↻');
+    setButton('Replay', 'replay');
     show(skipButton, false);
-    status.textContent = `${run.title}: ${resultLine(report)}`;
+    say(`${run.title}: ${resultLine(report)}`);
     done?.();
     done = null;
   }
@@ -281,11 +309,13 @@ function createPlayer(run, report, hx, status) {
   }
 
   const nodes = [
-    h(hx(0), { class: 'pw-title' }, run.title),
-    h('p', { class: 'pw-meta' }, meta),
-    h('div', { class: 'pw-controls' }, runButton, skipButton, hint),
+    h('div', { class: 'pw-runhead' },
+      h('div', { class: 'pw-runhead-text' },
+        h(hx(0), { class: 'pw-title' }, run.title),
+        h('p', { class: 'pw-meta' }, meta)),
+      h('div', { class: 'pw-controls' }, runButton, skipButton, hint)),
     result,
-    h('section', { class: 'pw-section' },
+    h('section', { class: 'pw-section pw-timeline' },
       h(hx(1), {}, 'Step timeline'),
       list),
     findings,
@@ -307,11 +337,13 @@ function renderStep(step, hx, latency) {
   const extra = Object.fromEntries(Object.entries(details).filter(([k]) => k !== 'status' && k !== 'exchanges'));
   const hasExtra = Object.keys(extra).length > 0;
   const tag = h('span', { class: 'pw-status-tag' });
+  const mark = h('span', { class: 'pw-step-mark' });
   const item = h('li', { class: 'pw-step' },
+    mark,
     h('div', { class: 'pw-step-head' },
       h(hx(2), {}, step.title || step.stepId),
-      tag,
-      step.status !== 'skipped' && h('span', { class: 'pw-latency' }, formatMs(step.elapsedMs || 0))),
+      tag),
+    step.status !== 'skipped' && h('span', { class: 'pw-latency' }, formatMs(step.elapsedMs || 0)),
     step.summary && h('p', { class: 'pw-summary' }, step.summary),
     latency && renderLatency(latency),
     (exchanges.length || lines.length || hasExtra) && h('details', { class: 'pw-step-details' },
@@ -322,6 +354,7 @@ function renderStep(step, hx, latency) {
         hasExtra && [h('p', { class: 'pw-label' }, 'Step details'), h('pre', { tabindex: '0' }, JSON.stringify(extra, null, 2))],
         h('p', { class: 'pw-muted' }, 'Secrets, tokens and signatures were redacted before this run was recorded.'))));
   item.tag = tag;
+  item.mark = mark;
   return item;
 }
 
@@ -377,10 +410,14 @@ function renderLatency({ ms, warnMs, failMs, severity }) {
   return h('div', { class: 'pw-bar' },
     h('span', { class: 'pw-bar-track', 'aria-hidden': 'true' }, fill, mark(warnMs, 'warn'), mark(failMs, 'fail')),
     h('p', { class: `pw-bar-label ${severity}` },
-      h('span', { class: 'pw-icon', 'aria-hidden': 'true' }, ICONS[severity]),
-      ` ${ms.toLocaleString('en-US')} ms recorded, ${over} (warn ${seconds(warnMs)}, fail ${seconds(failMs)})`));
+      icon(KINDS[severity], 14),
+      `${ms.toLocaleString('en-US')} ms recorded, ${over} (warn ${seconds(warnMs)}, fail ${seconds(failMs)})`));
 }
 
+/**
+ * The answer first: a band with the verdict and the failing check, then the Fix, then why
+ * it fails (open on desktop, folded on phones so the Fix stays in the first screen).
+ */
 function renderResult(report, hx) {
   const findings = report.findings || [];
   const verdict = report.verdict || {};
@@ -388,27 +425,37 @@ function renderResult(report, hx) {
   if (fails.length) {
     const [first, ...more] = fails;
     return h('section', { class: 'pw-result FAIL' },
-      h('p', { class: 'pw-result-kicker' }, h('span', { class: 'pw-icon', 'aria-hidden': 'true' }, ICONS.FAIL),
-        verdict.brokeAt ? ` Onboarding would fail at ${verdict.brokeAt}` : ' Onboarding would fail'),
-      h(hx(1), { class: 'pw-result-title' }, first.title),
-      first.explanation && h('p', {}, first.explanation),
-      first.suggestedFix && h('p', { class: 'pw-fix' }, h('strong', {}, 'Fix: '), first.suggestedFix),
-      h('code', {}, first.checkId),
-      first.evidence && evidence(first),
-      more.length > 0 && h('details', { class: 'pw-more' },
-        h('summary', {}, `+${more.length} more failing check${more.length === 1 ? '' : 's'}`),
-        h('div', {}, more.map(f => renderFinding(f, hx)))));
+      h('div', { class: 'pw-result-band' },
+        h('p', { class: 'pw-result-kicker' }, icon('fail', 14),
+          verdict.brokeAt ? `Onboarding would fail at ${verdict.brokeAt}` : 'Onboarding would fail'),
+        h(hx(1), { class: 'pw-result-title' }, first.title)),
+      h('div', { class: 'pw-result-body' },
+        first.suggestedFix && renderFix(first.suggestedFix),
+        first.explanation && h('details', { class: 'pw-why', open: !narrow() },
+          h('summary', {}, 'Why it fails'),
+          h('p', {}, first.explanation)),
+        h('code', {}, first.checkId),
+        first.evidence && evidence(first),
+        more.length > 0 && h('details', { class: 'pw-more' },
+          h('summary', {}, `+${more.length} more failing check${more.length === 1 ? '' : 's'}`),
+          h('div', {}, more.map(f => renderFinding(f, hx))))));
   }
   const count = sev => findings.filter(f => f.severity === sev).length;
   const verified = (report.steps || []).filter(s => s.status === 'passed').map(s => s.title || s.stepId);
   const warns = count('WARN');
-  return h('section', { class: `pw-result ${verdict.status || 'PASS'}` },
-    h('p', { class: 'pw-result-kicker' }, h('span', { class: 'pw-icon', 'aria-hidden': 'true' }, ICONS.PASS),
-      ` ${VERDICT_LABELS[verdict.status] || 'Pass'}`),
-    h(hx(1), { class: 'pw-result-title' }, 'Onboarding would succeed'),
-    h('p', {}, `Verified against ${report.payer?.displayName || 'the synthetic payer'}: ${verified.join(', ')}. `,
-      `${count('PASS')} check${count('PASS') === 1 ? '' : 's'} passed`,
-      warns ? `, with ${warns} warning${warns === 1 ? '' : 's'} below.` : '.'));
+  const status = verdict.status || 'PASS';
+  return h('section', { class: `pw-result ${status}` },
+    h('div', { class: 'pw-result-band' },
+      h('p', { class: 'pw-result-kicker' }, icon(KINDS[status] || 'pass', 14), VERDICT_LABELS[status] || 'Pass'),
+      h(hx(1), { class: 'pw-result-title' }, 'Onboarding would succeed')),
+    h('div', { class: 'pw-result-body' },
+      h('p', {}, `Verified against ${report.payer?.displayName || 'the synthetic payer'}: ${verified.join(', ')}. `,
+        `${count('PASS')} check${count('PASS') === 1 ? '' : 's'} passed`,
+        warns ? `, with ${warns} warning${warns === 1 ? '' : 's'} below.` : '.')));
+}
+
+function renderFix(text) {
+  return h('div', { class: 'pw-fix' }, icon('fix', 18), h('p', {}, h('strong', {}, 'Fix'), ' ', text));
 }
 
 function renderFindings(findings, hx) {
@@ -418,8 +465,7 @@ function renderFindings(findings, hx) {
   if (passed.length) {
     // Passing checks collapse to one line so the answer stays in view.
     out.push(h('details', { class: 'pw-passed' },
-      h('summary', {}, h('span', { class: 'pw-icon', 'aria-hidden': 'true' }, ICONS.PASS),
-        ` ${passed.length} check${passed.length === 1 ? '' : 's'} passed`),
+      h('summary', {}, icon('pass', 16), `${passed.length} check${passed.length === 1 ? '' : 's'} passed`),
       h('ul', {}, passed.map(f => h('li', {},
         h('span', {}, f.title), ' ', h('code', {}, f.checkId),
         f.explanation && h('span', { class: 'pw-muted' }, ` ${f.explanation}`))))));
@@ -432,14 +478,14 @@ function renderFinding(f, hx) {
   const more = f.explanation || f.suggestedFix || f.evidence;
   return h('article', { class: `pw-finding ${f.severity}` },
     h('div', { class: 'pw-finding-head' },
-      h('span', { class: `pw-badge ${f.severity}` }, h('span', { 'aria-hidden': 'true' }, `${ICONS[f.severity]} `), f.severity),
+      badge(f.severity, SEVERITY_LABELS[f.severity] || f.severity),
       h(hx(2), {}, f.title),
       h('code', {}, f.checkId)),
     more && h('details', {},
       h('summary', {}, 'Why it matters'),
       h('div', {},
+        f.suggestedFix && renderFix(f.suggestedFix),
         f.explanation && h('p', {}, f.explanation),
-        f.suggestedFix && h('p', { class: 'pw-fix' }, h('strong', {}, 'Fix: '), f.suggestedFix),
         f.evidence && [h('p', { class: 'pw-label' }, 'Evidence'), h('pre', { tabindex: '0' }, f.evidence)])));
 }
 
@@ -470,6 +516,26 @@ function h(tag, attrs, ...children) {
   };
   children.forEach(add);
   return el;
+}
+
+/** A decorative status icon (inline SVG, aria-hidden); the word beside it carries the meaning. */
+function icon(kind, size) {
+  const svg = document.createElementNS(SVG, 'svg');
+  const attrs = { class: `pw-icon ${kind}`, width: size, height: size, viewBox: '0 0 20 20', fill: 'none',
+    stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    'aria-hidden': 'true', focusable: 'false' };
+  for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
+  for (const [tag, shape] of ICONS[kind] || ICONS.info) {
+    const part = document.createElementNS(SVG, tag);
+    for (const [k, v] of Object.entries(shape)) part.setAttribute(k, v);
+    svg.append(part);
+  }
+  return svg;
+}
+
+/** A status chip: icon plus word, so colour is never the only signal. */
+function badge(severity, word) {
+  return h('span', { class: `pw-badge ${severity}` }, icon(KINDS[severity] || 'info', 12), word);
 }
 
 function show(el, on) {

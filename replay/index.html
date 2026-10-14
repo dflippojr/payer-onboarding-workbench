@@ -6,9 +6,63 @@
   <title>Payer onboarding workbench: recorded runs</title>
   <link rel="stylesheet" href="replay.css">
   <style>
-    body { margin: 0; padding: 1rem; font-family: system-ui, sans-serif; }
-    main { max-width: 60rem; margin: 0 auto; }
-    @media (prefers-color-scheme: dark) { body { background: #16191d; color: #e6e9ed; } }
+    /* The workbench app's tokens (workbench-app/.../static/styles.css), so the standalone
+       page looks like the app. A host site supplies its own instead. */
+    :root {
+      --paper: #f6f3eb;
+      --panel: #fbfaf6;
+      --ink: #24362e;
+      --muted: #54604f;
+      --line: #d9ded1;
+      --accent: #375d46;
+      --on-accent: #f6f3eb;
+      --green: #375d46;
+      --fail: #9a3b2b;
+      --bad-bg: #f7e6e1;
+      --warn: #7a5a24;
+      --warn-bg: #f6ecd8;
+      --info: #2f5873;
+      --info-bg: #e3edf3;
+      --pass-bg: #e3eee5;
+      --code: #f0ede4;
+      --focus: #1f6feb;
+      --mono: Consolas, "SFMono-Regular", Menlo, monospace;
+      --serif: Georgia, "Times New Roman", serif;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #151b18;
+        --panel: #1c2420;
+        --ink: #e4e9e2;
+        --muted: #a4b0a2;
+        --line: #34413a;
+        --accent: #7fb894;
+        --on-accent: #10160f;
+        --green: #8fcfa3;
+        --fail: #f0907d;
+        --bad-bg: #3a2420;
+        --warn: #e3c07c;
+        --warn-bg: #372d1b;
+        --info: #8fc1e3;
+        --info-bg: #1d2e3a;
+        --pass-bg: #1d3226;
+        --code: #121815;
+        --focus: #79b8ff;
+      }
+    }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 60rem; margin: 0 auto; padding: 32px 24px 48px; }
+    h1 { font: 400 30px/1.2 var(--serif); margin: 0 0 16px; }
+    @media (max-width: 600px) {
+      main { padding: 20px 16px 32px; }
+      h1 { font-size: 24px; }
+    }
   </style>
 </head>
 <body>
