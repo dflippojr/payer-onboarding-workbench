@@ -311,6 +311,72 @@ class CustomEndpointTest {
         assertEquals("PASS", RunVerdict.of(run).status(), run.findings().toString());
     }
 
+    @Test
+    void smartJwtAccessTokenIsNotMistakenForTheClientAssertion(CapturedOutput output) throws Exception {
+        // Most real SMART servers issue a JWT access token; the hook call then carries it as Bearer.
+        long now = System.currentTimeMillis() / 1000;
+        String accessToken = URL.encodeToString("{\"alg\":\"RS256\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8))
+                + "." + URL.encodeToString(("{\"iss\":\"https://auth.payer.example\",\"sub\":\"some-user\","
+                + "\"aud\":\"https://api.payer.example\",\"exp\":" + (now + 3600) + ",\"iat\":" + now + "}")
+                .getBytes(StandardCharsets.UTF_8)) + ".c2lnbmF0dXJl";
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        AtomicReference<String> authorization = new AtomicReference<>("not called");
+        server.createContext("/ok/oauth/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, "{\"access_token\":\"" + accessToken + "\",\"token_type\":\"Bearer\",\"expires_in\":300}");
+        });
+        server.createContext("/ok/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""");
+            } else {
+                exchange.getRequestBody().readAllBytes();
+                authorization.set(String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")));
+                respond(exchange, """
+                        {"cards":[{"summary":"s","indicator":"info","source":{"label":"l"}}]}""");
+            }
+        });
+        server.start();
+        String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/ok";
+        String body = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", Map.of(
+                "baseUrl", base, "authType", "OAUTH2_PRIVATE_KEY_JWT", "clientId", "my-client",
+                "tokenEndpoint", base + "/oauth/token", "keyId", "k1", "igVersion", igVersion,
+                "credential", PemKeys.toPem("PRIVATE KEY", rsa().getPrivate().getEncoded()))));
+
+        HttpResponse<String> posted = send("POST", "/api/runs", body);
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        assertEquals("Bearer " + accessToken, authorization.get(), "the hook call carried the JWT access token");
+        var run = mapper.readTree(posted.body());
+        run.path("steps").forEach(step -> assertTrue(step.path("ok").asBoolean(), "SMART step passes: " + step));
+        var claims = run.path("steps").get(2).path("details").path("clientAssertionClaims");
+        assertEquals("my-client", claims.path("iss").asText(), claims.toString());
+        assertEquals("my-client", claims.path("sub").asText(), claims.toString());
+        var finding = java.util.stream.StreamSupport.stream(run.path("findings").spliterator(), false)
+                .filter(f -> f.path("checkId").asText().equals("auth.client-assertion")).findFirst().orElseThrow();
+        assertEquals("PASS", finding.path("severity").asText(), finding.toString());
+        String runId = run.path("runId").asText();
+        List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body()));
+        for (String format : List.of("md", "html", "json")) {
+            surfaces.add(send("GET", "/api/runs/" + runId + "/report?format=" + format, null).body());
+        }
+        surfaces.add(output.getAll());
+        for (String surface : surfaces) {
+            assertFalse(surface.contains("auth.payer.example"), "access-token claims leaked");
+            assertFalse(surface.contains("some-user"), "access-token claims leaked");
+            assertFalse(surface.contains(accessToken.split("\\.")[1]), "access token leaked");
+        }
+    }
+
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, String body) throws java.io.IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
     private static Map<String, Object> statuses(OnboardingRun run) {
         Map<String, Object> statuses = new java.util.LinkedHashMap<>();
         run.steps().forEach(step -> statuses.put(step.stepId(), RunVerdict.stepStatus(step)));

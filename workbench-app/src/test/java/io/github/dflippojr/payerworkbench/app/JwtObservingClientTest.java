@@ -18,7 +18,8 @@ class JwtObservingClientTest {
     void observesOnlyBearerRequestsAndDelegatesSyncAndAsyncWithoutChangingRequests() throws Exception {
         HttpClient delegate = mock(HttpClient.class);
         List<String> observed = new ArrayList<>();
-        JwtObservingClient client = new JwtObservingClient(delegate, observed::add);
+        List<String> assertions = new ArrayList<>();
+        JwtObservingClient client = new JwtObservingClient(delegate, assertions::add, observed::add);
         HttpRequest bearer = request("Bearer header.payload.signature");
         HttpRequest basic = request("Basic synthetic");
         HttpRequest publicRequest = HttpRequest.newBuilder(URI.create("https://example.test")).build();
@@ -36,6 +37,7 @@ class JwtObservingClientTest {
         client.send(basic, handler);
         client.send(publicRequest, handler);
         assertEquals(List.of("header.payload.signature", "header.payload.signature", "header.payload.signature"), observed);
+        assertEquals(List.of(), assertions, "a Bearer header is never reported as a client assertion");
         verify(delegate).send(basic, handler);
         verify(delegate).send(publicRequest, handler);
     }
@@ -45,7 +47,7 @@ class JwtObservingClientTest {
         HttpClient delegate = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
                 .followRedirects(HttpClient.Redirect.NEVER).version(HttpClient.Version.HTTP_1_1).build();
         try (delegate) {
-            JwtObservingClient client = new JwtObservingClient(delegate, ignored -> { });
+            JwtObservingClient client = new JwtObservingClient(delegate, ignored -> { }, ignored -> { });
             assertEquals(Optional.of(Duration.ofSeconds(3)), client.connectTimeout());
             assertEquals(delegate.cookieHandler(), client.cookieHandler());
             assertEquals(delegate.followRedirects(), client.followRedirects());
@@ -62,7 +64,8 @@ class JwtObservingClientTest {
     void observesAssertionFormWithoutChangingTheRequest() throws Exception {
         HttpClient delegate = mock(HttpClient.class);
         List<String> observed = new ArrayList<>();
-        JwtObservingClient client = new JwtObservingClient(delegate, observed::add);
+        List<String> bearers = new ArrayList<>();
+        JwtObservingClient client = new JwtObservingClient(delegate, observed::add, bearers::add);
         HttpRequest form = HttpRequest.newBuilder(URI.create("https://example.test/token"))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .POST(HttpRequest.BodyPublishers.ofString("grant_type=client_credentials&client_assertion=header.payload.signature&scope=read"))
@@ -70,6 +73,7 @@ class JwtObservingClientTest {
         var handler = HttpResponse.BodyHandlers.ofString();
         client.send(form, handler);
         assertEquals(List.of("header.payload.signature"), observed);
+        assertEquals(List.of(), bearers);
         verify(delegate).send(form, handler);
         java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
         form.bodyPublisher().orElseThrow().subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {

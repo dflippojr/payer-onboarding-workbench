@@ -13,23 +13,28 @@ import java.util.function.Consumer;
  * Observes only the non-secret claims of the JWT the SDK actually sends.
  * The SDK listener masks Authorization and drops token request bodies, so this
  * transport decorator reads the claims before delegation; it never retains the token.
+ * A token request's {@code client_assertion} and a {@code Bearer} header go to separate
+ * callbacks: once a SMART token endpoint issues a JWT access token, the Bearer header
+ * on the hook call is that access token, not the client's own assertion.
  * Request construction, authentication, sending and retries belong to the SDK.
  */
 final class JwtObservingClient extends ForwardingHttpClient {
-    private final Consumer<String> observe;
+    private final Consumer<String> assertion;
+    private final Consumer<String> bearer;
 
-    JwtObservingClient(HttpClient delegate, Consumer<String> observe) {
+    JwtObservingClient(HttpClient delegate, Consumer<String> assertion, Consumer<String> bearer) {
         super(delegate);
-        this.observe = observe;
+        this.assertion = assertion;
+        this.bearer = bearer;
     }
 
     @Override
     protected HttpRequest prepare(HttpRequest request) {
         if (request.headers().firstValue("Content-Type").orElse("").startsWith("application/x-www-form-urlencoded")) {
-            request.bodyPublisher().ifPresent(publisher -> publisher.subscribe(new AssertionObserver(observe)));
+            request.bodyPublisher().ifPresent(publisher -> publisher.subscribe(new AssertionObserver(assertion)));
         }
         request.headers().firstValue("Authorization").filter(v -> v.startsWith("Bearer "))
-                .ifPresent(v -> observe.accept(v.substring(7)));
+                .ifPresent(v -> bearer.accept(v.substring(7)));
         return request;
     }
 
