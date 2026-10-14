@@ -85,6 +85,33 @@ test('inject a fault, then reset it @reset', async ({ page }, info) => {
   await shot(page, info, 'reset');
 });
 
+test('running state while a run is in flight @running', async ({ page }, info) => {
+  await choose(page);
+  await runOnboarding(page);
+  await openDrawer(page, 'Payer faults');
+  await page.getByRole('checkbox', { name: 'Payer is slow' }).check();
+  // Hold the POST while the page is checked, then send it without the slow fault so the drive stays quick.
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/runs', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await held;
+    await route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), faults: [] }) });
+  });
+  await page.getByRole('button', { name: 'Run onboarding' }).click();
+  await expect(page.locator('.results')).toHaveAttribute('aria-busy', 'true');
+  await expect(page.locator('#verdict-word')).toHaveText('Running');
+  await expect(page.locator('#run-meta')).toContainText('about 11 s');
+  await expect(page.locator('#running-steps .step.pending')).toHaveCount(6);
+  await expect(page.locator('#steps-card')).toBeHidden();
+  await shot(page, info, 'running');
+  release();
+  await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
+  await expect(page.locator('.results')).not.toHaveAttribute('aria-busy');
+  await expect(page.locator('#steps > li').first()).toBeVisible();
+  await page.unroute('**/api/runs');
+});
+
 // Not a feature: a deliberate failure used by cleanup.test.mjs to prove cleanup after a failed drive.
 test('deliberate drive failure @selftest-fail', async ({ page }) => {
   await ready(page);

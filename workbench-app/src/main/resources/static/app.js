@@ -417,6 +417,7 @@
     const faults = request.faults.map(id => (FAULTS[id] || [id])[0]);
     lastRunId = null;
     currentRun = null;
+    renderCompareOptions();
     document.querySelector('.results').setAttribute('aria-busy', 'true');
     $('verdict').className = 'verdict running';
     $('verdict-icon').replaceChildren(statusIcon('running', 32));
@@ -536,11 +537,10 @@
     return String(id).slice(0, 8);
   }
 
-  /** "17:03:54" in the browser's time zone, or the raw value if it is not a date. */
+  /** "17:03:54 UTC", to the second, or the raw value if it is not a date. */
   function clockTime(iso) {
     const date = new Date(iso);
-    return Number.isNaN(date.getTime()) ? String(iso)
-      : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+    return Number.isNaN(date.getTime()) ? String(iso) : `${date.toISOString().slice(11, 19)} UTC`;
   }
 
   function updateReportLink() {

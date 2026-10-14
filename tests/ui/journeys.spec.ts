@@ -168,7 +168,10 @@ test('running state shows the pending steps and hides the previous run', async (
   await expect(page.locator('#steps-card')).toBeHidden();
   await expect(page.locator('#findings-card')).toBeHidden();
   await expect(page.getByRole('link', { name: 'Download report' })).toBeHidden();
-  await expect(page.locator('#running-note')).toHaveText(/^The previous run \(\d\d:\d\d:\d\d, Pass\) is still in Recent runs\.$/);
+  await expect(page.locator('#running-note')).toHaveText(/^The previous run \(\d\d:\d\d:\d\d UTC, Pass\) is still in Recent runs\.$/);
+  await expect(page.getByLabel('Compare with')).toBeDisabled();
+  await expect(page.getByLabel('Compare with')).toHaveValue('');
+  await expect(page.getByLabel('Compare with').locator('option')).toHaveText(['Show a run first']);
   await expect(page.getByLabel('Recent runs')).toBeDisabled();
   await expect(page.getByLabel('Recent runs')).toHaveValue(previous.runId);
   // The bar is indeterminate, and static under reduced motion.
