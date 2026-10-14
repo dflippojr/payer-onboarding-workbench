@@ -71,6 +71,20 @@ class HookFailureChecksTest {
     }
 
     @Test
+    void requestWithoutCredentialsIsNamedAsSuch() {
+        var run = Fixtures.healthy();
+        run.hooks = List.of(Fixtures.orderSign(new HttpExchange("POST", Fixtures.ORDER_SIGN_URL, 401,
+                Duration.ofMillis(20), Map.of("Content-Type", List.of("application/json")), null,
+                Map.of("WWW-Authenticate", List.of("Bearer error=\"invalid_token\"")), "{}", null)));
+        var finding = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run.build()), Severity.FAIL);
+        assertTrue(finding.title().startsWith("Hook request without credentials rejected"), finding.title());
+        assertTrue(finding.explanation().contains("carried no credentials"), finding.explanation());
+        assertTrue(finding.explanation().contains("Bearer authentication"), finding.explanation());
+        assertFalse(finding.explanation().contains("access token"), finding.explanation());
+        assertTrue(finding.suggestedFix().contains("other than NONE"), finding.suggestedFix());
+    }
+
+    @Test
     void clientJwtAudienceTakesPrecedence() {
         var run = run(401, Map.of(), "{}");
         run.hooks = List.of(Fixtures.orderSign(run.hooks.getFirst().exchange(), Fixtures.ORDER_SIGN_URL + "/"));

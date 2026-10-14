@@ -258,9 +258,63 @@ class CustomEndpointTest {
     void noAuthEndpointIsAcceptedAndReported() throws Exception {
         NorthwindPayer payer = northwind("s");
         OnboardingRun run = runner.run(custom(payer.baseUrl(), AuthType.NONE, null, null, null));
-        // Northwind wants a token, so the hook fails, but the run itself is accepted and reported.
-        assertTrue(run.steps().get(0).ok());
-        assertFalse(run.steps().stream().allMatch(s -> s.ok()));
+        // Northwind wants a token, so the hook call is rejected; Authenticate has nothing to do and passes.
+        assertEquals(Map.of(OnboardingRunner.RESOLVE, "passed", OnboardingRunner.DISCOVERY, "passed",
+                OnboardingRunner.AUTHENTICATE, "passed", OnboardingRunner.HOOK_REQUEST, "failed",
+                OnboardingRunner.PARSE_RESPONSE, "skipped", OnboardingRunner.DIAGNOSTICS, "failed"), statuses(run));
+        RunVerdict verdict = RunVerdict.of(run);
+        assertEquals("FAIL", verdict.status());
+        assertEquals(OnboardingRunner.HOOK_REQUEST, verdict.brokeAt());
+        var rejected = run.findings().stream().filter(f -> f.checkId().equals("auth.hook-rejected")).toList();
+        assertEquals(1, rejected.size(), run.findings().toString());
+        assertTrue(rejected.getFirst().explanation().contains("carried no credentials"), rejected.toString());
+    }
+
+    @Test
+    void healthyNoAuthEndpointPasses() throws Exception {
+        // A CDS Hooks server that serves discovery and one hook without asking for credentials.
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        AtomicReference<String> authorization = new AtomicReference<>("not called");
+        server.createContext("/ok/cds-services", exchange -> {
+            String body;
+            if (exchange.getRequestMethod().equals("GET") && exchange.getRequestURI().getPath().equals("/ok/cds-services")) {
+                body = """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""";
+            } else if (exchange.getRequestMethod().equals("POST")
+                    && exchange.getRequestURI().getPath().equals("/ok/cds-services/crd-order-sign")) {
+                exchange.getRequestBody().readAllBytes();
+                authorization.set(String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")));
+                body = """
+                        {"cards":[{"summary":"s","indicator":"info","source":{"label":"l"}}]}""";
+            } else {
+                exchange.sendResponseHeaders(404, -1);
+                exchange.close();
+                return;
+            }
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/ok",
+                AuthType.NONE, null, null, null));
+
+        assertEquals("null", authorization.get(), "the hook call carries no Authorization header");
+        assertTrue(run.steps().stream().allMatch(s -> s.ok()), "every step passes: " + run.steps());
+        assertEquals("No authentication configured; the hook call is sent without credentials",
+                run.steps().get(2).summary());
+        assertEquals("NONE", run.steps().get(2).details().get("authType"));
+        assertEquals("PASS", RunVerdict.of(run).status(), run.findings().toString());
+    }
+
+    private static Map<String, Object> statuses(OnboardingRun run) {
+        Map<String, Object> statuses = new java.util.LinkedHashMap<>();
+        run.steps().forEach(step -> statuses.put(step.stepId(), RunVerdict.stepStatus(step)));
+        return statuses;
     }
 
     @Test
