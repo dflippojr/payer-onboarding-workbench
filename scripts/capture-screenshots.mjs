@@ -211,7 +211,7 @@ async function runInUi(page, base, payerId, fault, expectedCheckId) {
   await page.eval(`document.querySelector('input[name="fault"][value="${fault}"]').click()`);
   await page.eval(`document.getElementById('run-button').click()`);
   await page.waitFor(`document.getElementById('run-status').textContent.startsWith('Done')`, `the ${fault} run`);
-  const failing = await page.eval(`[...document.querySelectorAll('#findings article.finding.FAIL code')].map(c => c.textContent)`);
+  const failing = await page.eval(`[...document.querySelectorAll('#verdict-check .check-id, #findings article.finding.FAIL .check-id')].map(c => c.textContent)`);
   if (!failing.includes(expectedCheckId)) {
     throw new Error(`${payerId} with ${fault}: expected FAIL ${expectedCheckId}, got ${failing.join(', ') || 'no FAIL'}`);
   }
@@ -257,13 +257,13 @@ async function main() {
     const failing = await cdp.newPage({ width: 1280, height: 900 });
     await runInUi(failing, base, 'northwind-synthetic', 'expired-token-401', 'auth.clock-skew');
     await failing.eval(`document.querySelector('#steps li.step.failed details').open = true,
-      document.querySelector('#findings article.finding.FAIL details').open = true`);
+      document.querySelector('#verdict-check details').open = true`);
     await failing.fullPageShot('failing-run.png');
 
     // The Download report control, in dark mode, under Fabrikam's wrong-audience run.
     const dark = await cdp.newPage({ width: 1256, height: 908, dark: true });
     await runInUi(dark, base, 'fabrikam-synthetic', 'wrong-audience-reject', 'auth.jwt-audience');
-    await dark.shot('report-download.png', { height: 908, scrollY: await dark.top('section[aria-labelledby="steps-heading"]', 72) });
+    await dark.shot('report-download.png', { height: 908, scrollY: await dark.top('#results', 72) });
 
     // That run's HTML report: the header, then the findings.
     const reportUrl = (await dark.eval(`document.getElementById('report-link').href`)).replace(/format=\w+/, 'format=html');

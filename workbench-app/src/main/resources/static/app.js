@@ -227,12 +227,7 @@
         lastRunId = null;
         currentRun = null;
         clearComparison();
-        $('report-actions').hidden = true;
-        $('report-link').removeAttribute('href');
-        $('steps').replaceChildren();
-        $('findings').replaceChildren();
-        $('empty-state').hidden = false;
-        $('run-meta').textContent = 'Choose another recent run or run onboarding.';
+        showEmpty('Choose another recent run or run onboarding.');
         await refreshHistory();
         if (ticket !== retrieval) return;
         $('history-status').textContent = 'This run is no longer available. It may have been evicted or the server restarted.';
@@ -384,10 +379,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       });
-      renderRun(result, p);
+      renderRun(result, p, request);
       const fails = result.findings.filter(f => f.severity === 'FAIL').length;
       $('run-status').textContent = fails ? `Done: ${fails} failing check${fails === 1 ? '' : 's'}.` : 'Done: no failures.';
-      $('steps-heading').focus();
+      $('results-heading').focus();
       await refreshHistory();
     } catch (e) {
       $('run-status').textContent = `Run failed: ${e.message}`;
@@ -398,19 +393,84 @@
     }
   }
 
-  function renderRun(result, payer) {
+  /** Back to the empty results state: the six steps a run walks, and no verdict, steps or findings. */
+  function showEmpty(message) {
+    lastRunId = null;
+    currentRun = null;
+    $('verdict').className = 'verdict';
+    $('verdict-icon').replaceChildren();
+    $('verdict-word').hidden = true;
+    $('results-heading').textContent = 'Results';
+    $('run-meta').textContent = message;
+    $('verdict-check').hidden = true;
+    $('verdict-check').replaceChildren();
+    $('report-actions').hidden = true;
+    $('report-link').removeAttribute('href');
+    $('empty-state').hidden = false;
+    $('steps-card').hidden = true;
+    $('steps').replaceChildren();
+    $('findings-card').hidden = true;
+    $('findings').replaceChildren();
+    $('finding-counts').replaceChildren();
+  }
+
+  /**
+   * The verdict comes first: pass or fail, where the run broke, the first failing check with its Fix and
+   * evidence, and the report download. The request (sample and faults) is known only for a run started here.
+   */
+  function renderRun(result, payer, request) {
     const failed = brokeAt(result);
-    $('run-meta').textContent = `${payer.displayName} · ${result.environment} · run ${result.runId}` +
-      (failed ? ` · broke at: ${stepTitle(failed)}` : ' · every step passed');
-    $('steps').replaceChildren(...result.steps.map(renderStep));
-    renderFindings(result.findings);
+    const verdict = verdictOf(result);
+    const fails = result.findings.filter(f => f.severity === 'FAIL');
+    const warns = result.findings.filter(f => f.severity === 'WARN').length;
+    const kind = { FAIL: 'fail', PASS_WITH_WARNINGS: 'warn', PASS: 'pass' }[verdict];
+    $('verdict').className = `verdict ${kind}`;
+    $('verdict-icon').replaceChildren(statusIcon(kind, 32));
+    $('verdict-word').hidden = false;
+    if (verdict === 'FAIL') {
+      $('verdict-word').textContent = failed ? `Fail · broke at ${stepTitle(failed)}` : 'Fail';
+      $('results-heading').textContent = fails.length
+        ? `Not ready: ${plural(fails.length, 'failing check')}` : `Not ready: ${stepTitle(failed)} failed`;
+    } else {
+      $('verdict-word').textContent = verdict === 'PASS' ? 'Pass' : 'Pass with warnings';
+      $('results-heading').textContent = warns ? `Every step passed, with ${plural(warns, 'warning')}` : 'Every step passed';
+    }
+    const sample = request && samples.find(s => s.id === request.sampleId);
+    const faults = request ? request.faults.map(id => (FAULTS[id] || [id])[0]) : [];
+    $('run-meta').textContent = [payer.displayName, result.environment, sample && sample.title,
+      faults.length > 0 && `${faults.length === 1 ? 'fault' : 'faults'}: ${faults.join(', ')}`,
+      `run ${shortId(result.runId)}`].filter(Boolean).join(' · ');
+    $('run-meta').setAttribute('title', `run ${result.runId}`);
+    $('verdict-check').replaceChildren(...(fails.length ? renderVerdictCheck(fails[0]) : []));
+    $('verdict-check').hidden = !fails.length;
     $('empty-state').hidden = true;
+    renderSteps(result.steps);
+    renderFindings(result.findings, fails[0]);
     lastRunId = result.runId;
     currentRun = result;
     clearComparison();
     renderCompareOptions();
     updateReportLink();
     $('report-actions').hidden = false;
+  }
+
+  /** The first failing check in the verdict card: its plain-language explanation, the Fix and the evidence. */
+  function renderVerdictCheck(f) {
+    return [
+      h('div', { class: 'check-head' }, statusChip(f.severity), h('h3', {}, f.title), h('code', { class: 'check-id' }, f.checkId)),
+      f.explanation && h('p', {}, f.explanation),
+      f.suggestedFix && h('div', { class: 'fix' }, statusIcon('pass', 20),
+        h('p', {}, h('strong', {}, 'Fix'), f.suggestedFix)),
+      f.evidence && h('details', { class: 'quiet' }, h('summary', {}, 'Evidence (redacted)'), h('pre', {}, f.evidence)),
+    ];
+  }
+
+  function plural(n, word) {
+    return `${n} ${word}${n === 1 ? '' : 's'}`;
+  }
+
+  function shortId(id) {
+    return String(id).slice(0, 8);
   }
 
   function updateReportLink() {
@@ -421,55 +481,113 @@
     link.setAttribute('download', `onboarding-report-${lastRunId}.${format}`);
   }
 
+  /** A compact timeline. Consecutive skipped steps fold into one row that names the cause. */
+  function renderSteps(steps) {
+    const rows = [];
+    const counts = { passed: 0, failed: 0, skipped: 0 };
+    let cause = null;
+    for (let i = 0; i < steps.length; i++) {
+      const status = stepStatus(steps[i]);
+      counts[status] = (counts[status] || 0) + 1;
+      if (status !== 'skipped') {
+        if (status === 'failed') cause = steps[i].stepId;
+        rows.push(renderStep(steps[i]));
+        continue;
+      }
+      const skipped = [steps[i]];
+      while (i + 1 < steps.length && stepStatus(steps[i + 1]) === 'skipped') {
+        skipped.push(steps[++i]);
+        counts.skipped++;
+      }
+      rows.push(renderSkipped(skipped, cause));
+    }
+    $('steps').replaceChildren(...rows);
+    $('step-counts').textContent = Object.entries(counts).filter(([, n]) => n).map(([word, n]) => `${n} ${word}`).join(' · ');
+    $('steps-card').hidden = false;
+  }
+
   function renderStep(step) {
     const status = stepStatus(step);
     const extra = Object.fromEntries(Object.entries(step.details).filter(([k]) => k !== 'status' && k !== 'exchanges'));
+    const exchanges = step.details.exchanges || [];
     return h('li', { class: `step ${status}` },
+      statusIcon((STATUS[status] || STATUS.pending)[0], 20),
       h('div', { class: 'step-head' },
-        h('h3', {}, STEP_TITLES[step.stepId] || step.stepId),
+        h('h3', {}, stepTitle(step.stepId)),
         statusChip(status),
-        status !== 'skipped' && h('span', { class: 'latency' }, formatMs(durationMs(step.elapsed)))),
+        h('span', { class: 'latency' }, formatMs(durationMs(step.elapsed)))),
       h('p', {}, step.summary),
-      (step.details.exchanges || []).map(renderExchange),
-      Object.keys(extra).length > 0 && h('details', {},
-        h('summary', {}, 'Step details'),
-        h('div', {}, h('pre', {}, JSON.stringify(extra, null, 2)))));
+      (exchanges.length > 0 || Object.keys(extra).length > 0) && h('div', { class: 'more' },
+        exchanges.map(renderExchange),
+        Object.keys(extra).length > 0 && h('details', { class: 'quiet' },
+          h('summary', {}, 'Step details'),
+          h('pre', {}, JSON.stringify(extra, null, 2)))));
   }
 
+  /** One row for consecutive skipped steps: "Authenticate and Parse response did not run because Discovery failed." */
+  function renderSkipped(steps, cause) {
+    const names = steps.map(s => stepTitle(s.stepId));
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+    return h('li', { class: 'step skipped' },
+      statusIcon('skipped', 20),
+      h('div', { class: 'step-head' },
+        h('h3', {}, steps.length === 1 ? `${names[0]} skipped` : `${steps.length} steps skipped`),
+        statusChip('skipped')),
+      h('p', {}, `${list} did not run${cause ? ` because ${stepTitle(cause)} failed` : ''}.`));
+  }
+
+  /** One line (method, URL, status chip, latency) that opens into the request and response side by side. */
   function renderExchange(x) {
-    const status = x.status ? `HTTP ${x.status}` : 'no response';
-    return h('details', {},
-      h('summary', {}, `${x.method} ${x.url} → ${status} · ${formatMs(x.latencyMs)}`),
-      h('div', {},
-        h('p', { class: 'label' }, 'Request headers'), h('pre', {}, headers(x.requestHeaders)),
-        x.requestBody && [h('p', { class: 'label' }, 'Request body'), h('pre', {}, pretty(x.requestBody))],
-        x.transportError && [h('p', { class: 'label' }, 'Transport error'), h('pre', {}, x.transportError)],
-        x.status ? [
-          h('p', { class: 'label' }, 'Response headers'), h('pre', {}, headers(x.responseHeaders)),
-          h('p', { class: 'label' }, 'Response body'), h('pre', {}, x.responseBody ? pretty(x.responseBody) : '(empty)'),
-        ] : null,
+    const kind = !x.status || x.status >= 400 ? 'FAIL' : 'PASS';
+    return h('details', { class: 'exchange' },
+      h('summary', {},
+        h('span', { class: 'method' }, x.method),
+        h('span', { class: 'url' }, x.url),
+        statusChip(kind, x.status ? String(x.status) : 'No response'),
+        h('span', { class: 'latency' }, formatMs(x.latencyMs))),
+      h('div', { class: 'exchange-body' },
+        h('div', { class: 'exchange-grid' },
+          h('div', {},
+            h('p', { class: 'label' }, 'Request headers'), h('pre', {}, headers(x.requestHeaders)),
+            h('p', { class: 'label' }, 'Request body'),
+            x.requestBody ? h('pre', {}, pretty(x.requestBody)) : h('p', { class: 'muted small' }, 'None')),
+          h('div', {},
+            x.transportError && [h('p', { class: 'label' }, 'Transport error'), h('pre', {}, x.transportError)],
+            x.status ? [
+              h('p', { class: 'label' }, 'Response headers'), h('pre', {}, headers(x.responseHeaders)),
+              h('p', { class: 'label' }, 'Response body'), h('pre', {}, x.responseBody ? pretty(x.responseBody) : '(empty)'),
+            ] : null)),
         h('p', { class: 'muted small' }, 'Secrets, tokens and signatures are redacted before they reach this page.')));
   }
 
-  function renderFindings(findings) {
+  /**
+   * Findings grouped by severity with counts. The check already shown in the verdict is a one-line
+   * reference, and passing checks stay collapsed so failures stay in view.
+   */
+  function renderFindings(findings, shown) {
+    $('finding-counts').replaceChildren(...SEVERITIES.map(sev =>
+      statusChip(sev, `${findings.filter(f => f.severity === sev).length} ${sev.toLowerCase()}`)));
+    $('findings-card').hidden = false;
     if (!findings.length) {
-      $('findings').replaceChildren(h('p', { class: 'muted small' }, 'No findings.'));
+      $('findings').replaceChildren(h('p', { class: 'group muted small' }, 'No findings.'));
       return;
     }
+    const card = f => (f === shown
+      ? h('p', { class: 'finding-ref' }, statusChip(f.severity), h('span', {}, f.title), h('code', { class: 'check-id' }, f.checkId),
+        h('a', { href: '#results-heading' }, 'Shown in the verdict above'))
+      : h('article', { class: `finding ${f.severity}` },
+        h('div', { class: 'check-head' }, statusChip(f.severity), h('h3', {}, f.title), h('code', { class: 'check-id' }, f.checkId)),
+        f.explanation && h('p', {}, f.explanation),
+        f.suggestedFix && h('p', { class: 'fix' }, h('strong', {}, 'Fix: '), f.suggestedFix),
+        f.evidence && h('details', { class: 'quiet' }, h('summary', {}, 'Evidence (redacted)'), h('pre', {}, f.evidence))));
     $('findings').replaceChildren(...SEVERITIES.map(sev => {
       const group = findings.filter(f => f.severity === sev);
       if (!group.length) return null;
-      const cards = group.map(f => h('article', { class: `finding card ${f.severity}` },
-        h('div', { class: 'finding-head' }, statusChip(f.severity), h('h4', {}, f.title)),
-        h('code', {}, f.checkId),
-        f.explanation && h('p', {}, f.explanation),
-        f.evidence && h('details', {}, h('summary', {}, 'Evidence'), h('div', {}, h('pre', {}, f.evidence))),
-        f.suggestedFix && h('p', { class: 'fix' }, h('strong', {}, 'Fix: '), f.suggestedFix)));
-      const heading = h('h3', {}, statusChip(sev), `${group.length} finding${group.length === 1 ? '' : 's'}`);
-      // Passing checks are collapsed so failures stay in view.
-      return sev === 'PASS'
-        ? h('section', { class: 'sev-group' }, h('details', {}, h('summary', {}, heading), h('div', {}, cards)))
-        : h('section', { class: 'sev-group' }, heading, cards);
+      if (sev !== 'PASS') return h('section', { class: `group ${sev}` }, group.map(card));
+      return h('section', { class: 'group PASS' }, h('details', { class: 'quiet' },
+        h('summary', {}, `${plural(group.length, 'check')} passed`),
+        h('ul', { class: 'passed-checks' }, group.map(f =>
+          h('li', {}, statusChip('PASS'), h('span', {}, f.title), h('code', { class: 'check-id' }, f.checkId))))));
     }).filter(Boolean));
   }
 
