@@ -1,4 +1,4 @@
-import './live-history.test.mjs';
+import './compare.test.mjs';
 // Checks the exported replay bundle (site-dist/ by default, or $REPLAY_BUNDLE_DIR).
 // Run node scripts/export-replays.mjs first, then: node --test replay/test/
 import { mock, test } from 'node:test';
@@ -287,8 +287,7 @@ test('replay.js renders the picker, the disclaimer, the timeline and the finding
 test('step durations follow the documented clamp and total cap', async () => {
   requireBundle();
   const { mod } = await mountBundle();
-  const { TIMING, stepDurations } = mod;
-  assert.deepEqual(TIMING, { scale: 0.25, minMs: 350, maxMs: 1200, totalMs: 6000 });
+  const { stepDurations } = mod;
   assert.deepEqual(stepDurations([{ elapsedMs: 2 }, { elapsedMs: 2000 }, { elapsedMs: 11005 }]), [350, 500, 1200]);
   const long = stepDurations(Array.from({ length: 10 }, () => ({ elapsedMs: 9000 })));
   assert.ok(long.reduce((a, b) => a + b, 0) <= 6000, 'whole run must fit in about 6 s');

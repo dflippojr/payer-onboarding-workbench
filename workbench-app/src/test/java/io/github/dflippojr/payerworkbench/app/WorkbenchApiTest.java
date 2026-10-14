@@ -189,6 +189,7 @@ class WorkbenchApiTest {
         assertEquals(200, index.statusCode());
         assertTrue(index.body().contains("Synthetic payers only; passing here does not prove real-payer interoperability."));
         assertEquals(200, get("/app.js").statusCode());
+        assertEquals(200, get("/compare.js").statusCode());
         assertEquals(200, get("/styles.css").statusCode());
     }
 
