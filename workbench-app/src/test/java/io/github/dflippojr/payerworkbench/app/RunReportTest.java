@@ -129,6 +129,66 @@ class RunReportTest {
     }
 
     @Test
+    void htmlLeadsWithTheVerdictIconWordAndBrokeAt() {
+        String html = ReportRenderer.html(report(leakyRun()));
+        int verdict = html.indexOf("<h2 id=\"verdict-h\">Verdict: Fail</h2>");
+        assertTrue(verdict > 0, "verdict word missing");
+        assertTrue(html.lastIndexOf("<svg", verdict) > html.indexOf("class=\"vband fail\""), "verdict icon missing");
+        assertTrue(html.contains("Broke at <strong>Authenticate</strong>"), "broke-at missing");
+        assertTrue(verdict < html.indexOf("<dl class=\"facts\">"), "verdict comes after the facts");
+        assertTrue(html.contains("<span class=\"chip fail\">1 fail</span>"));
+        String passing = ReportRenderer.html(report(runWith("NONE", hookStep(true,
+                exchange("POST", "https://payer.example/cds-services/crd", 200, Map.of(), "{}", "{}")), List.of())));
+        assertTrue(passing.contains("<h2 id=\"verdict-h\">Verdict: Pass</h2>"));
+        assertFalse(passing.contains("Broke at"));
+    }
+
+    @Test
+    void htmlTimesAreUtcToTheSecondWithTheFullValueKept() {
+        String html = ReportRenderer.html(report(leakyRun()));
+        assertTrue(html.contains("<time datetime=\"2026-10-01T12:30:00Z\">2026-10-01 12:30:00 UTC</time>"), html);
+        assertTrue(html.contains("<time datetime=\"2026-10-01T12:00:00Z\">2026-10-01 12:00:00 UTC</time>"));
+        assertEquals("<time datetime=\"2026-10-01T12:00:00.123456789Z\">2026-10-01 12:00:00 UTC</time>",
+                ReportRenderer.utc("2026-10-01T12:00:00.123456789Z"));
+        assertEquals("—", ReportRenderer.utc(null));
+        assertEquals("not a time", ReportRenderer.utc("not a time"));
+        assertTrue(ReportRenderer.json(report(leakyRun())).contains("\"2026-10-01T12:30:00Z\""), "JSON keeps ISO");
+    }
+
+    @Test
+    void htmlFailingCallPutsCurlBeforeTheRequestAndResponseSideBySide() {
+        String html = ReportRenderer.html(report(leakyRun()));
+        int curl = html.indexOf("Reproduce with curl");
+        int two = html.indexOf("<div class=\"two\">");
+        assertTrue(curl > html.indexOf("Failing call") && curl < two, "curl is not first");
+        assertTrue(two < html.indexOf("Request headers") && html.indexOf("Request body") < html.indexOf("Response headers"));
+        assertTrue(html.contains("<span class=\"chip fail\">HTTP 401</span><span class=\"ms\">7 ms</span>"));
+    }
+
+    @Test
+    void htmlDarkModeIsScreenOnlyAndPrintKeepsHeadingsWithTheirBlock() {
+        String html = ReportRenderer.html(report(leakyRun()));
+        assertTrue(html.contains("@media screen and (prefers-color-scheme:dark)"));
+        assertFalse(html.contains("@media (prefers-color-scheme"), "dark mode would reach print");
+        String print = html.substring(html.indexOf("@media print"));
+        assertTrue(print.contains("h2,h3,.label,.fhead,.call-line{break-after:avoid}"));
+        assertTrue(print.contains("pre,.finding,.curl{break-inside:auto}"));
+        assertFalse(html.contains("border-left"), "no card relies on a coloured left border");
+    }
+
+    @Test
+    void everyHtmlStatusHasAWordBesideItsIcon() {
+        String html = ReportRenderer.html(report(leakyRun()));
+        for (String chip : List.of("<span class=\"chip pass\">passed</span>", "<span class=\"chip fail\">failed</span>",
+                "<span class=\"chip skip\">skipped</span>")) {
+            assertTrue(html.contains(chip), chip);
+        }
+        for (String word : List.of("Fail", "Warn", "Pass")) {
+            assertTrue(html.contains("aria-hidden=\"true\">") && html.contains("</svg>" + word + "</span><h3>"), word);
+        }
+    }
+
+    @Test
     void everyHtmlHeadingIsClosedOnItsOwnLine() {
         String html = ReportRenderer.html(report(leakyRun()));
         for (String line : html.split("\n")) {
@@ -211,7 +271,7 @@ class RunReportTest {
         assertEquals("FAIL", report.verdict().status());
         assertEquals(null, report.verdict().brokeAt());
         assertEquals("HTTP 200", FailingCall.of(report).orElseThrow().status());
-        assertTrue(ReportRenderer.html(report).contains("<section class=\"failing-call\">"));
+        assertTrue(ReportRenderer.html(report).contains("<section class=\"failing-call\""));
     }
 
     @Test
