@@ -456,6 +456,11 @@ public class OnboardingRunner {
         private Outcome authenticate(Map<String, Object> details) {
             details.put("authType", record.authType().name());
             invokeHook();
+            if (record.authType() == AuthType.NONE) {
+                // Nothing to obtain or sign. The hook-request step reports the payer's
+                // answer, so a payer that does want credentials fails there.
+                return Outcome.pass("No authentication configured; the hook call is sent without credentials");
+            }
             if (record.authType() == AuthType.CDS_HOOKS_JWT) {
                 details.put("jwtHeader", jwtHeader);
                 details.put("jwtClaims", jwtPayload);

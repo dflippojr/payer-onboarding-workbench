@@ -43,14 +43,22 @@ public final class HookRejectedCheck implements DiagnosticCheck {
             String reason = value(header, body, "error_description");
             String scope = value(header, body, "scope");
             String scheme = header.isBlank() ? "unspecified" : header.strip().split("\\s+", 2)[0];
+            // A run with authType NONE sends no Authorization header; say so rather than blame a token.
+            boolean unauthenticated = hook.clientJwt() == null
+                    && Support.header(exchange.requestHeaders(), "Authorization").isEmpty();
             String credential = hook.clientJwt() == null ? "access token" : "CDS Hooks client JWT";
+            String rejected = unauthenticated
+                    ? "The hook request carried no credentials, and the payer asks for " + scheme + " authentication."
+                    : "The payer rejected the " + credential + " using " + scheme + " authentication.";
             findings.add(new Finding(CHECK_ID, Severity.FAIL,
-                    "Hook credential rejected by " + hook.serviceId() + " (HTTP " + exchange.status() + ")",
-                    "The payer rejected the " + credential + " using " + scheme + " authentication. Reason: "
+                    (unauthenticated ? "Hook request without credentials rejected by " : "Hook credential rejected by ")
+                            + hook.serviceId() + " (HTTP " + exchange.status() + ")",
+                    rejected + " Reason: "
                             + (reason.isBlank() ? (error.isBlank() ? "payer supplied no reason" : error) : reason)
                             + (scope.isBlank() ? "" : ". Required scope: " + scope) + ".",
                     Support.describe(exchange) + "\nWWW-Authenticate: " + (header.isBlank() ? "(missing)" : header),
-                    fix(error, scope)));
+                    unauthenticated ? "Configure the authentication this payer requires (an authType other than "
+                            + "NONE, with its client id and credential) and run again." : fix(error, scope)));
         }
         return findings;
     }
