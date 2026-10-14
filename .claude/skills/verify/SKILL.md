@@ -50,6 +50,7 @@ The doctor never prints variable values or interface addresses. If doctor fails,
 | `report` | `GET /api/runs/{id}/report` (Download report) | failed run, reopen from Recent runs, download HTML | report contains the run ID, FAIL and the synthetic disclaimer, `report.rendered` audit; copy saved under `reports/` |
 | `reset` | `/` form | check a fault and fill igVersion, then Reset faults and settings, then run | fault and setting cleared, next run is "Done: no failures." |
 | `running` | `/` results while `POST /api/runs` is in flight | healthy run, then Payer is slow on; the POST is held (and sent without the fault) while the page is checked | Running band names the payer and the slow-fault note, six pending steps, `aria-busy` on the results, previous steps hidden; after release the new verdict replaces it |
+| `compare` | `/` Changes since run section (Compare with) | healthy run, then the Discovery-down run, then pick the healthy run in Compare with | Verdict tile Pass → Fail Worse, `discovery.reachable` Newly failing in the Checks that changed table, the one-sided group collapsed, `run.read` audit for the compared run; Stop comparing hides it and focuses Compare with |
 
 When you change something outside this map, add a row and a tagged test in `drive/main-path.spec.ts`. Keep larger journeys in `tests/ui` (see the contract's "Journeys" section). The `selftest-fail` tag is not a feature. It fails on purpose so that `cleanup.test.mjs` can exercise cleanup.
 

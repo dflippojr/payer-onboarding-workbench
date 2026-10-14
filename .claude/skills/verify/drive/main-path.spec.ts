@@ -112,6 +112,24 @@ test('running state while a run is in flight @running', async ({ page }, info) =
   await page.unroute('**/api/runs');
 });
 
+test('compare a failing run with a healthy one, then stop comparing @compare', async ({ page }, info) => {
+  await choose(page);
+  const healthy = await runOnboarding(page);
+  await failingRun(page);
+  const compare = page.getByLabel('Compare with');
+  await compare.selectOption(healthy.runId);
+  const comparison = page.getByRole('region', { name: 'Changes since run ' + healthy.runId.slice(0, 8) });
+  await expect(comparison.locator('.tile dd').first()).toHaveText('Pass → Fail Worse');
+  await expect(comparison.getByRole('row', { name: /discovery\.reachable/ })).toContainText('Newly failing');
+  await expect(comparison.locator('details.one-sided')).not.toHaveAttribute('open', '');
+  await auditEvent('run.read', healthy.runId);
+  await comparison.scrollIntoViewIfNeeded();
+  await shot(page, info, 'compare');
+  await page.getByRole('button', { name: 'Stop comparing' }).click();
+  await expect(comparison).toBeHidden();
+  await expect(compare).toBeFocused();
+});
+
 // Not a feature: a deliberate failure used by cleanup.test.mjs to prove cleanup after a failed drive.
 test('deliberate drive failure @selftest-fail', async ({ page }) => {
   await ready(page);
