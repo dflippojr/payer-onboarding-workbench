@@ -78,6 +78,9 @@
     skipped: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
     pending: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '2.5 2.5' }]],
     running: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 5.5V10l3 2' }]],
+    worse: [['path', { d: 'M10 3v14M4 11l6 6 6-6' }]],
+    better: [['path', { d: 'M10 17V3M4 9l6-6 6 6' }]],
+    unchanged: [['path', { d: 'M4 7.5h12M4 12.5h12' }]],
   };
   /** Chip kind and word for each step status and finding severity. */
   const STATUS = {
@@ -140,6 +143,7 @@
     $('report-format').addEventListener('change', updateReportLink);
     $('recent-runs').addEventListener('change', reopenRun);
     $('compare-runs').addEventListener('change', compareRun);
+    $('stop-comparing').addEventListener('click', stopComparing);
     await refreshHistory();
   }
 
@@ -187,7 +191,7 @@
     try {
       const baseline = await api(`api/runs/${encodeURIComponent(id)}`);
       if (ticket !== comparing) return;
-      renderComparison(baseline, compareRuns(baseline, shown));
+      renderComparison(baseline, shown, compareRuns(baseline, shown));
       $('history-status').textContent = 'Comparison shown.';
     } catch (e) {
       if (ticket !== comparing) return;
@@ -202,6 +206,13 @@
     }
   }
 
+  /** Stop comparing: clears the comparison and returns focus to Compare with, where another run can be picked. */
+  function stopComparing() {
+    clearComparison();
+    $('history-status').textContent = 'Comparison closed.';
+    $('compare-runs').focus();
+  }
+
   /** Hides the comparison and invalidates any comparison fetch still in flight. */
   function clearComparison() {
     ++comparing;
@@ -212,6 +223,7 @@
     $('compare-runs').value = '';
     $('comparison').hidden = true;
     $('comparison-body').replaceChildren();
+    $('comparison-note').textContent = '';
   }
 
   async function reopenRun() {
@@ -742,38 +754,103 @@
     };
   }
 
-  function renderComparison(baseline, diff) {
-    const arrow = (b, a) => h('span', { class: 'transition' }, `${b} → ${a}`);
+  /** When a run started, from its Recent runs entry or its first step, or null when neither has an ISO time. */
+  function startedAt(run) {
+    const summary = history.find(r => r.runId === run.runId);
+    const at = (summary && summary.startedAt) || (run.steps[0] && run.steps[0].startedAt);
+    return typeof at === 'string' && !Number.isNaN(Date.parse(at)) ? at : null;
+  }
+
+  /** "17:03:54 UTC (Pass)", or "39f7fc25 (Pass)" when the run has no start time. */
+  function runLabel(run) {
+    const at = startedAt(run);
+    return `${at ? clockTime(at) : shortId(run.runId)} (${VERDICT_WORDS[verdictOf(run)]})`;
+  }
+
+  function verdictChip(verdict) {
+    const kind = { FAIL: 'fail', PASS_WITH_WARNINGS: 'warn', PASS: 'pass' }[verdict] || 'info';
+    return h('span', { class: `chip ${kind}` }, statusIcon(kind, 12), VERDICT_WORDS[verdict] || verdict);
+  }
+
+  /** A direction word with an arrow icon: Worse, Better or Unchanged, or a more specific word. */
+  function changeWord(change, word) {
+    return h('span', { class: `dir ${change}` }, statusIcon(change, 14),
+      word || { worse: 'Worse', better: 'Better', unchanged: 'Unchanged' }[change]);
+  }
+
+  const arrow = () => h('span', { class: 'arrow' }, ' → ');
+
+  /** The check's plain title with its id under it, for the comparison tables. */
+  const checkCell = c => h('td', {}, c.title, ' ', h('span', { class: 'check-id' }, c.checkId));
+
+  /**
+   * The comparison leads with two tiles (verdict and broke at), then the steps that changed on one line,
+   * a table of checks that changed severity with the unchanged checks named under it, and the checks
+   * that only one run reported, collapsed with a sentence saying why they are not counted.
+   */
+  function renderComparison(baseline, shown, diff) {
     const brokeLabel = id => (id ? stepTitle(id) : 'every step passed');
-    const run = id => `run ${String(id).slice(0, 8)}`;
-    const oneSided = c => h('span', { class: 'transition' },
-      c.after ? `only in ${run(diff.after)}: ${c.after}` : `only in ${run(diff.before)}: ${c.before}`);
-    const group = (title, items, change = c => arrow(c.before, c.after)) => [
-      h('h4', {}, `${title} (${items.length})`),
-      items.length
-        ? h('ul', { class: 'changes' }, items.map(c => h('li', {},
-          h('code', {}, c.checkId), ' ', c.title, ' ', change(c))))
-        : h('p', { class: 'muted small' }, 'None.'),
-    ];
     const { before: brokeBefore, after: brokeAfter } = diff.brokeAt;
-    $('comparison-heading').textContent = `Changes since run ${String(baseline.runId).slice(0, 8)}`;
+    const later = startedAt(baseline) && startedAt(shown) && Date.parse(startedAt(baseline)) > Date.parse(startedAt(shown));
+    const other = later ? 'Later run' : 'Earlier run';
+    $('comparison-heading').textContent = `Changes since run ${shortId(baseline.runId)}`;
+    $('comparison-note').textContent =
+      `${other} ${runLabel(baseline)} compared with the run on screen, ${runLabel(shown)}`;
+
+    // Steps with the same change share one item: "Authenticate, Parse response passed → skipped".
+    const stepChanges = new Map();
+    for (const s of diff.steps) {
+      const key = `${s.before}>${s.after}`;
+      if (!stepChanges.has(key)) stepChanges.set(key, { ...s, names: [] });
+      stepChanges.get(key).names.push(stepTitle(s.stepId));
+    }
+    const stepChip = status => (status ? statusChip(status) : statusChip('pending', 'Not run'));
+
+    const changed = [...diff.worse.map(c => [c, 'worse', c.after === 'FAIL' ? 'Newly failing' : 'Worse']),
+      ...diff.better.map(c => [c, 'better', c.before === 'FAIL' ? 'Fixed' : 'Better'])];
+    const none = [!diff.worse.length && 'Newly failing or worse: none.', !diff.better.length && 'Fixed or better: none.'];
+    const unchanged = diff.unchanged.length
+      ? `Unchanged: ${plural(diff.unchanged.length, 'check')} (${diff.unchanged.map(c => c.title).join(', ')}).`
+      : 'Unchanged: none.';
+
     $('comparison-body').replaceChildren(
-      h('dl', { class: 'compare-summary' },
-        h('dt', {}, 'Verdict'),
-        h('dd', {}, arrow(diff.verdict.before, diff.verdict.after), ' ', h('strong', {}, diff.verdict.change)),
-        h('dt', {}, 'Broke at'),
-        h('dd', {}, brokeBefore === brokeAfter
-          ? `${brokeLabel(brokeAfter)} (unchanged)`
-          : arrow(brokeLabel(brokeBefore), brokeLabel(brokeAfter)))),
-      h('h4', {}, 'Steps that changed'),
-      diff.steps.length
-        ? h('ul', { class: 'changes' }, diff.steps.map(s =>
-          h('li', {}, `${stepTitle(s.stepId)}: `, arrow(s.before || 'not run', s.after || 'not run'))))
-        : h('p', { class: 'muted small' }, 'No step changed status.'),
-      ...group('Newly failing or worse', diff.worse),
-      ...group('Fixed or better', diff.better),
-      ...group('Only in one run', diff.oneSided, oneSided),
-      h('p', { class: 'muted small' }, `Unchanged: ${diff.unchanged.length} check${diff.unchanged.length === 1 ? '' : 's'}.`));
+      h('dl', { class: 'tiles' },
+        h('div', { class: 'tile' },
+          h('dt', {}, 'Verdict'),
+          h('dd', {}, verdictChip(diff.verdict.before), arrow(), verdictChip(diff.verdict.after), ' ',
+            changeWord(diff.verdict.change))),
+        h('div', { class: 'tile' },
+          h('dt', {}, 'Broke at'),
+          h('dd', {}, brokeBefore === brokeAfter
+            ? [brokeLabel(brokeAfter), ' ', changeWord('unchanged')]
+            : [brokeLabel(brokeBefore), arrow(), brokeLabel(brokeAfter)]))),
+      h('div', { class: 'blk' },
+        h('h3', {}, 'Steps that changed'),
+        stepChanges.size
+          ? h('ul', { class: 'step-changes' }, [...stepChanges.values()].map(s =>
+            h('li', {}, h('span', {}, s.names.join(', ')), ' ',
+              h('span', { class: 'transition' }, stepChip(s.before), arrow(), stepChip(s.after)))))
+          : h('p', { class: 'muted small' }, 'No step changed status.')),
+      h('div', { class: 'blk' },
+        h('h3', {}, 'Checks that changed'),
+        changed.length
+          ? h('div', { class: 'scroll' }, h('table', { class: 'tbl' },
+            h('thead', {}, h('tr', {}, ['Check', other, 'This run', 'Change'].map(t => h('th', { scope: 'col' }, t)))),
+            h('tbody', {}, changed.map(([c, change, word]) => h('tr', {},
+              checkCell(c), h('td', {}, statusChip(c.before)), h('td', {}, statusChip(c.after)),
+              h('td', {}, changeWord(change, word)))))))
+          : h('p', { class: 'muted small' }, 'No check changed result.'),
+        h('p', { class: 'muted small' }, [...none.filter(Boolean), unchanged].join(' '))),
+      ...(diff.oneSided.length ? [h('div', { class: 'blk' },
+        h('details', { class: 'quiet one-sided' },
+          h('summary', {}, `Only in one run · ${plural(diff.oneSided.length, 'check')}`),
+          h('p', { class: 'why' }, 'These checks ran in only one of the two runs, usually because a step was skipped. '
+            + 'They are not counted as better or worse.'),
+          h('div', { class: 'scroll' }, h('table', { class: 'tbl' },
+            h('thead', {}, h('tr', {}, ['Check', 'Reported by', 'Result'].map(t => h('th', { scope: 'col' }, t)))),
+            h('tbody', {}, diff.oneSided.map(c => h('tr', {},
+              checkCell(c), h('td', {}, c.after ? 'This run only' : `${other} only`),
+              h('td', {}, statusChip(c.after || c.before)))))))))] : []));
     $('comparison').hidden = false;
   }
 
