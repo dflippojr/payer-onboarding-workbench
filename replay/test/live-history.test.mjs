@@ -193,7 +193,7 @@ test('SMART custom auth shows token endpoint and key id and submits the required
 });
 
 test('custom endpoint form and picker remain hidden when feature is disabled', async () => {
-  assert.match(html, /<fieldset id="custom-endpoint" hidden>/);
+  assert.match(html, /<fieldset id="custom-endpoint"[^>]* hidden>/);
   const ui = await load([]);
   assert.equal(ui.$('custom-endpoint').hidden, true);
   assert.ok(ui.$('run-form').querySelectorAll('input[name="payerId"]').every(r => r.value !== '__custom__'));

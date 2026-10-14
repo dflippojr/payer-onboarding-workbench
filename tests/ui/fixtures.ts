@@ -116,6 +116,12 @@ export async function reopen(page: Page, id: string) {
   await expect(page.locator('#history-status')).toHaveText('Run reopened.');
   await expect(page.locator('#run-meta')).toContainText(id);
 }
+/** Opens a setup drawer (Payer faults or Connection overrides) if it is closed. */
+export async function openDrawer(page: Page, name: 'Payer faults' | 'Connection overrides') {
+  const drawer = page.locator('details.drawer').filter({ has: page.locator('summary', { hasText: name }) });
+  if (!await drawer.evaluate(element => (element as HTMLDetailsElement).open)) await drawer.locator('summary').click();
+  await expect(drawer).toHaveAttribute('open', '');
+}
 export async function auditEvent(action: string, id: string, metadata: Record<string, unknown> = {}) {
   await expect.poll(async () => {
     const text = await readFile('.ui-test/app.log', 'utf8');

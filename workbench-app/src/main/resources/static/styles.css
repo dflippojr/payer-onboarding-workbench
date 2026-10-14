@@ -46,8 +46,8 @@
 * { box-sizing: border-box; }
 body {
   margin: 0 auto;
-  max-width: 1040px;
-  padding: 20px 16px 40px;
+  max-width: 1360px;
+  padding: 20px 24px 40px;
   background: var(--paper);
   color: var(--ink);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -57,27 +57,52 @@ body {
 .skip:focus { left: 16px; top: 8px; background: var(--panel); padding: 6px 10px; z-index: 1; }
 
 .kicker { font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
-h1 { font: 30px/1.2 var(--serif); letter-spacing: -.5px; margin: 0 0 12px; }
+h1 { font: 28px/1.2 var(--serif); letter-spacing: -.5px; margin: 0; }
 h2 { font: 22px var(--serif); margin: 0 0 8px; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
-.banner {
-  border: 1px solid var(--warn); background: var(--warn-bg); color: var(--ink);
-  border-radius: 8px; padding: 10px 14px; margin: 0 0 18px; font-size: 14px;
+/* Header: the title on the left, a compact synthetic-data note beside it. */
+.top {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 24px;
+  padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--line);
 }
-.banner strong { color: var(--warn); display: block; }
+.banner {
+  display: flex; gap: 8px; align-items: flex-start; max-width: 600px; margin: 0;
+  border: 1px solid var(--warn); background: var(--warn-bg); color: var(--ink);
+  border-radius: 6px; padding: 8px 12px; font-size: 13px; line-height: 1.45;
+}
+.banner .icon { color: var(--warn); margin-top: 1px; }
+
+/* Workspace: setup in a 380 px column beside the results on desktop, stacked below that. */
+.cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (min-width: 960px) {
+  .cols { grid-template-columns: 380px minmax(0, 1fr); }
+}
+.results { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.results > p { margin: 0; }
+.results > p:empty { display: none; }
 
 .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 18px; margin-bottom: 18px; }
+.setup.panel { padding: 0 16px 16px; margin: 0; }
 fieldset { border: 0; margin: 0 0 18px; padding: 0; min-width: 0; }
 legend { font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; padding: 0; }
+/* Setup sections: a ruled stack. The legend floats so it sits inside the section's padding. */
+fieldset.sec { margin: 0; padding: 12px 0; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+fieldset.sec[hidden] { display: none; }
+fieldset.sec > legend { float: left; width: 100%; margin: 4px 0 0; }
+.sec p { margin: 0; }
 
-.picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 12px; }
-.pick { display: block; position: relative; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 14px 14px 14px 42px; cursor: pointer; }
-.pick input { position: absolute; left: 14px; top: 18px; accent-color: var(--green); width: 16px; height: 16px; margin: 0; }
-.pick strong { display: block; font: 19px var(--serif); }
-.pick span { display: block; font-size: 13px; color: var(--muted); }
+.picker { display: flex; flex-direction: column; gap: 8px; }
+.pick {
+  display: flex; gap: 12px; align-items: flex-start; min-height: 56px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--paper); cursor: pointer;
+}
+.pick input { accent-color: var(--green); width: 18px; height: 18px; margin: 3px 0 0; flex: none; }
+.pick strong { display: block; font: 17px/1.3 var(--serif); }
+.pick .meta { display: block; font-size: 13px; color: var(--muted); }
 .pick:has(input:checked) { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
 .pick:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 2px; }
+.request { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px; }
 
 .row { display: flex; flex-wrap: wrap; gap: 12px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
@@ -89,14 +114,46 @@ input:not([type="radio"]):not([type="checkbox"]), select, textarea {
   padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
   background: var(--paper); color: var(--ink); min-width: 0; width: 100%; min-height: 44px;
 }
+select { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; padding: 9px 10px; }
 input:disabled { opacity: .55; }
 
-.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 16px; }
-.check { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; cursor: pointer; padding: 4px 0; min-height: 44px; }
-.check input { accent-color: var(--bad); margin-top: 4px; width: 16px; height: 16px; flex: none; }
-.check code { font: 12px var(--mono); color: var(--muted); display: block; }
+/* Drawers: native details whose summary says what is on while closed. */
+details.drawer { margin: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+details.drawer > summary {
+  display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 12px;
+  list-style: none; font-size: 14px; font-weight: 600;
+}
+details.drawer > summary::-webkit-details-marker { display: none; }
+details.drawer > summary::after {
+  content: ""; flex: none; width: 8px; height: 8px; margin: 0 4px 4px 0;
+  border: solid var(--muted); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+details.drawer[open] > summary::after { transform: rotate(-135deg); margin: 4px 4px 0 0; }
+.drawer-state { margin-left: auto; text-align: right; font-size: 13px; font-weight: 400; color: var(--muted); }
+.drawer-state.on { color: var(--bad); font-weight: 600; }
+details.drawer > .drawer-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+
+.checks { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; cursor: pointer; padding: 4px 0; min-height: 44px; }
+.check input { accent-color: var(--bad); margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.check b { font-weight: 600; }
+.check code { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.check .small { display: block; }
 
 .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.setup .actions { flex-direction: column; align-items: stretch; gap: 6px; padding-top: 16px; }
+.setup .actions .button { width: 100%; min-height: 48px; }
+.setup .actions .link { align-self: flex-start; }
+#run-status:empty { display: none; }
+
+/* Results empty state: the six steps a run walks. */
+.empty[hidden] { display: none; }
+.empty p { margin: 0 0 8px; }
+.pending-steps { list-style: none; margin: 0; padding: 0; }
+.pending-steps li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); color: var(--muted); }
+.pending-steps li:first-child { border-top: 0; }
+.pending-steps .icon { margin-top: 2px; }
+.pending-steps strong { display: block; color: var(--ink); font-weight: 600; }
 .button {
   font-family: inherit; font-size: 15px; font-weight: 600; border: 0; border-radius: 6px; padding: 10px 18px;
   background: var(--green); color: var(--on-green); cursor: pointer; min-height: 44px;
@@ -196,12 +253,13 @@ footer { margin-top: 10px; text-align: center; }
 /* Phones keep a 16 px gutter on every side of the page. */
 @media (max-width: 600px) {
   body { padding: 16px 16px 32px; }
+  .setup.panel { padding: 0 14px 14px; }
   .card-h, .card-body, .verdict { padding-left: 14px; padding-right: 14px; }
 }
 @media (max-width: 480px) {
   h1 { font-size: 24px; }
   .panel { padding: 14px; }
-  .checks, .grid, .picker { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
   .actions { gap: 8px 16px; }
   .button { width: 100%; }
 }

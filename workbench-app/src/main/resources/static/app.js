@@ -10,6 +10,16 @@
     'parse-response': 'Parse response',
     'diagnostics': 'Run diagnostics',
   };
+  /** One line per step for the results empty state. */
+  const STEP_HELP = {
+    'resolve-connection': 'Look up the stored connection for the payer and environment.',
+    'discovery': 'GET /cds-services and check the hook is served.',
+    'authenticate': 'Get a token or sign a client JWT, as the payer requires.',
+    'hook-request': 'POST the sample request to the hook.',
+    'parse-response': 'Read the cards and system actions.',
+    'diagnostics': 'Check everything above and explain each failure.',
+  };
+  const OVERRIDES = { baseUrlSuffix: 'Base URL suffix', igVersion: 'igVersion', clientId: 'Client id' };
   const FAULTS = {
     'slow-response': ['Payer is slow', 'Every response is held past the latency budget (about 11 s by default).'],
     'rate-limited-429': ['Payer rate limit', 'Hook calls get 429 with Retry-After: 30; back off before retrying.'],
@@ -105,6 +115,7 @@
   // ---- setup ----
 
   async function init() {
+    renderPendingSteps();
     try {
       [payers, samples] = await Promise.all([api('api/payers'), api('api/samples')]);
     } catch (e) {
@@ -116,6 +127,8 @@
     renderSamples();
     renderFaults(payers[0] ? payers[0].faults : Object.keys(FAULTS));
     updateConnectionHints();
+    Object.keys(OVERRIDES).forEach(id => $(id).addEventListener('input', updateDrawerStates));
+    updateDrawerStates();
     form.addEventListener('submit', run);
     $('reset-button').addEventListener('click', reset);
     $('sample').addEventListener('change', updateSampleNote);
@@ -218,6 +231,7 @@
         $('report-link').removeAttribute('href');
         $('steps').replaceChildren();
         $('findings').replaceChildren();
+        $('empty-state').hidden = false;
         $('run-meta').textContent = 'Choose another recent run or run onboarding.';
         await refreshHistory();
         if (ticket !== retrieval) return;
@@ -233,14 +247,12 @@
       const conn = p.connections[0] || {};
       return h('label', { class: 'pick' },
         h('input', { type: 'radio', name: 'payerId', value: p.payerId, checked: i === 0, onchange: updateConnectionHints }),
-        h('strong', {}, p.displayName),
-        h('span', {}, `CRD ${p.advertisedIgVersion} · ${authLabel(conn.authType)}`),
-        h('span', {}, p.payerId));
+        h('span', {}, h('strong', {}, p.displayName),
+          h('span', { class: 'meta' }, `CRD ${p.advertisedIgVersion} · ${authLabel(conn.authType)}`)));
     }).concat(customEnabled ? [h('label', { class: 'pick' },
       h('input', { type: 'radio', name: 'payerId', value: CUSTOM, onchange: updateConnectionHints }),
-      h('strong', {}, 'Your own endpoint'),
-      h('span', {}, 'A payer you supply, e.g. a local reference server'),
-      h('span', {}, 'custom-endpoint'))] : []));
+      h('span', {}, h('strong', {}, 'Your own endpoint'),
+        h('span', { class: 'meta' }, 'A payer you supply, e.g. a local reference server')))] : []));
   }
 
   function authLabel(type) {
@@ -248,7 +260,7 @@
   }
 
   function renderSamples() {
-    $('sample').replaceChildren(...samples.map(s => h('option', { value: s.id }, `${s.title} (${s.hook})`)));
+    $('sample').replaceChildren(...samples.map(s => h('option', { value: s.id }, s.title.includes(s.hook) ? s.title : `${s.title} (${s.hook})`)));
     updateSampleNote();
   }
 
@@ -261,9 +273,31 @@
     $('faults').replaceChildren(...ids.map(id => {
       const [label, help] = FAULTS[id] || [id, ''];
       return h('label', { class: 'check' },
-        h('input', { type: 'checkbox', name: 'fault', value: id }),
-        h('span', {}, label, h('code', {}, id), h('span', { class: 'muted small' }, help)));
+        h('input', { type: 'checkbox', name: 'fault', value: id, onchange: updateDrawerStates }),
+        h('span', {}, h('b', {}, label), ' ', h('code', {}, id), h('span', { class: 'muted small' }, help)));
     }));
+  }
+
+  /** Each drawer's summary says what is on, so a closed drawer still shows the run's setup. */
+  function updateDrawerStates() {
+    const faults = [...form.querySelectorAll('input[name="fault"]:checked')].map(c => (FAULTS[c.value] || [c.value])[0]);
+    const edited = Object.keys(OVERRIDES).filter(id => $(id).value.trim()).map(id => OVERRIDES[id]);
+    drawerState('faults-state', faults, 'None on', 'on');
+    drawerState('overrides-state', edited, 'Stored settings', 'changed');
+  }
+
+  function drawerState(id, names, none, verb) {
+    const state = $(id);
+    state.className = names.length ? 'drawer-state on' : 'drawer-state';
+    if (!names.length) state.textContent = none;
+    else if (names.length === 1) state.textContent = `1 ${verb}: ${names[0]}`;
+    else state.textContent = `${names.length} ${verb}: ${names[0]} and ${names.length - 1} more`;
+  }
+
+  /** Before the first run, the results list the six steps a run walks. */
+  function renderPendingSteps() {
+    $('pending-steps').replaceChildren(...Object.keys(STEP_TITLES).map(id => h('li', {},
+      statusIcon('pending', 20), h('span', {}, h('strong', {}, STEP_TITLES[id]), h('span', { class: 'muted' }, STEP_HELP[id])))));
   }
 
   function selectedPayer() {
@@ -301,6 +335,7 @@
   function reset() {
     form.querySelectorAll('input[name="fault"]').forEach(c => { c.checked = false; });
     ['baseUrlSuffix', 'igVersion', 'clientId', 'customCredential'].forEach(id => { $(id).value = ''; });
+    updateDrawerStates();
     $('run-status').textContent = 'Faults and settings reset.';
   }
 
@@ -369,6 +404,7 @@
       (failed ? ` · broke at: ${stepTitle(failed)}` : ' · every step passed');
     $('steps').replaceChildren(...result.steps.map(renderStep));
     renderFindings(result.findings);
+    $('empty-state').hidden = true;
     lastRunId = result.runId;
     currentRun = result;
     clearComparison();
