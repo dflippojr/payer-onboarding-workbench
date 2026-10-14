@@ -22,6 +22,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.SocketTimeoutException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -396,6 +399,41 @@ class OnboardingFlowTest {
 
         assertEquals("discovery", firstFailedStep(run));
         assertEquals(List.of("discovery.reachable"), failIds(run));
+    }
+
+    @Test
+    void suffixWithATrailingSlashStillBreaksDiscovery() {
+        OnboardingRun run = runner.run(edited(NORTHWIND_ID, new RunRequest.ConnectionOverrides("/r4/", null, null)));
+
+        assertEquals("discovery", firstFailedStep(run));
+        assertEquals(List.of("discovery.reachable"), failIds(run));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"@127.0.0.1:1", "@evil.example", ":1", "?x=1", "#x", "/r4?x", "/r4#x", "r4",
+            "/r4\\x", "/r 4", "/r4\n/x", "/%zz"})
+    void suffixThatLeavesThePathIsRefused(String suffix) {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> runner.run(edited(NORTHWIND_ID, new RunRequest.ConnectionOverrides(suffix, null, null))));
+        assertTrue(e.getMessage().startsWith("baseUrlSuffix may only add path segments"), e.getMessage());
+    }
+
+    @Test
+    void hostChangingSuffixNeverOpensAConnection() throws Exception {
+        try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            listener.setSoTimeout(500);
+            String suffix = "@127.0.0.1:" + listener.getLocalPort();
+            assertThrows(IllegalArgumentException.class,
+                    () -> runner.run(edited(NORTHWIND_ID, new RunRequest.ConnectionOverrides(suffix, null, null))));
+            assertThrows(SocketTimeoutException.class, listener::accept);
+        }
+    }
+
+    @Test
+    void suffixKeepsTheBaseUrlsOrigin() {
+        assertEquals("http://127.0.0.1:9/ok/r4", OnboardingRunner.withSuffix("http://127.0.0.1:9/ok", " /r4 "));
+        assertEquals("https://127.0.0.1:9/", OnboardingRunner.withSuffix("https://127.0.0.1:9", "/"));
+        assertThrows(IllegalArgumentException.class, () -> OnboardingRunner.withSuffix("https://127.0.0.1:9", "@10.0.0.5:22"));
     }
 
     @ParameterizedTest

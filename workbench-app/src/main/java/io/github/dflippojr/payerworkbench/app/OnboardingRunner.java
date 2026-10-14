@@ -160,6 +160,8 @@ public class OnboardingRunner {
         List<Fault> faults = request.faults().stream()
                 .map(id -> Fault.fromId(id).orElseThrow(() -> new IllegalArgumentException("Unknown fault: " + id)))
                 .toList();
+        checkSuffix(request, payers.store().findByPayerIdAndEnvironment(request.payerId(), request.environment())
+                .map(ConnectionRecord::baseUrl).orElse(null));
 
         String runId = UUID.randomUUID().toString();
         AuditContext audit = AuditContext.current();
@@ -226,6 +228,7 @@ public class OnboardingRunner {
         EndpointGuard guard = new EndpointGuard();
         InMemoryCredentials credentials = new InMemoryCredentials();
         ConnectionRecord custom = customRecord(request, guard, credentials);
+        checkSuffix(request, custom.baseUrl());
 
         String runId = UUID.randomUUID().toString();
         AuditContext audit = AuditContext.current();
@@ -266,6 +269,54 @@ public class OnboardingRunner {
             if (audit != null) { audit.reasonCode = "destination_rejected"; }
             throw e;
         }
+    }
+
+    private static final String SUFFIX_RULE = "baseUrlSuffix may only add path segments to the base URL: "
+            + "it must start with / and can't contain @, ?, #, \\, whitespace or control characters";
+
+    /**
+     * Refuses a {@code baseUrlSuffix} that would send the run anywhere but a path under the base URL,
+     * before anything is sent or recorded. With no stored base URL only the suffix itself is checked;
+     * the run then fails at resolve as before.
+     */
+    private static void checkSuffix(RunRequest request, String baseUrl) {
+        String suffix = request.connection().baseUrlSuffix();
+        if (!isSet(suffix)) { return; }
+        try { withSuffix(baseUrl == null ? "https://localhost" : baseUrl, suffix); }
+        catch (IllegalArgumentException e) {
+            AuditContext audit = AuditContext.current();
+            if (audit != null) { audit.reasonCode = "invalid_connection_edit"; }
+            throw e;
+        }
+    }
+
+    /**
+     * {@code baseUrl} with {@code suffix} appended, as long as the result keeps the base URL's scheme,
+     * host and port and gains no user info, query or fragment.
+     *
+     * @throws IllegalArgumentException otherwise
+     */
+    static String withSuffix(String baseUrl, String suffix) {
+        String trimmed = suffix.trim();
+        if (!trimmed.startsWith("/") || trimmed.chars().anyMatch(c -> c == '@' || c == '?' || c == '#' || c == '\\'
+                || Character.isWhitespace(c) || Character.isISOControl(c))) {
+            throw new IllegalArgumentException(SUFFIX_RULE);
+        }
+        String combined = baseUrl + trimmed;
+        java.net.URI before;
+        java.net.URI after;
+        try {
+            before = new java.net.URI(baseUrl);
+            after = new java.net.URI(combined);
+        } catch (java.net.URISyntaxException e) {
+            throw new IllegalArgumentException(SUFFIX_RULE);
+        }
+        if (after.getHost() == null || !after.getHost().equalsIgnoreCase(String.valueOf(before.getHost()))
+                || !after.getScheme().equalsIgnoreCase(before.getScheme()) || after.getPort() != before.getPort()
+                || after.getRawUserInfo() != null || after.getRawQuery() != null || after.getRawFragment() != null) {
+            throw new IllegalArgumentException(SUFFIX_RULE);
+        }
+        return combined;
     }
 
     private static final String CUSTOM_CREDENTIAL_REF = "custom-endpoint-credential";
@@ -390,7 +441,7 @@ public class OnboardingRunner {
             Map<String, String> applied = new LinkedHashMap<>();
             ConnectionRecord.Builder builder = copy(stored.get());
             if (isSet(edits.baseUrlSuffix())) {
-                String baseUrl = stored.get().baseUrl() + edits.baseUrlSuffix().trim();
+                String baseUrl = withSuffix(stored.get().baseUrl(), edits.baseUrlSuffix());
                 builder.baseUrl(baseUrl);
                 applied.put("baseUrl", baseUrl);
             }
