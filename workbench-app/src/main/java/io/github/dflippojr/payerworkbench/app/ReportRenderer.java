@@ -224,7 +224,7 @@ public final class ReportRenderer {
         h.append("</table>\n");
         FailingCall.of(r).ifPresent(call -> htmlFailingCall(h, call));
 
-        h.append("<h2>Step timeline\n<ol class=\"timeline\">\n");
+        h.append("<h2>Step timeline</h2>\n<ol class=\"timeline\">\n");
         for (RunReport.Step step : r.steps()) {
             h.append("<li class=\"step ").append(esc(step.status())).append("\">\n<div class=\"step-head\"><strong>")
                     .append(esc(step.title())).append("</strong> <span class=\"status ").append(esc(step.status()))

@@ -128,6 +128,18 @@ class RunReportTest {
         assertTrue(html.contains("&lt;b&gt;"), "markup in a finding must be escaped");
     }
 
+    @Test
+    void everyHtmlHeadingIsClosedOnItsOwnLine() {
+        String html = ReportRenderer.html(report(leakyRun()));
+        for (String line : html.split("\n")) {
+            for (int level = 1; level <= 4; level++) {
+                if (line.contains("<h" + level)) {
+                    assertTrue(line.contains("</h" + level + ">"), "unclosed heading: " + line);
+                }
+            }
+        }
+    }
+
     @ParameterizedTest
     @EnumSource(value = ReportRenderer.Format.class, names = {"MD", "HTML"})
     void failingCallSitsBetweenTheVerdictTableAndTheTimeline(ReportRenderer.Format format) {
