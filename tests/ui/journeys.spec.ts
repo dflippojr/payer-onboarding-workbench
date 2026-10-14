@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { test, expect, ready, runOnboarding, reopen, audit, auditEvent } from './fixtures';
+import { test, expect, ready, runOnboarding, reopen, audit, auditEvent, openDrawer } from './fixtures';
 
 for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
   test('J01/J05/J06 healthy ' + payer + ', reload, history and reports', async ({ page }) => {
@@ -14,6 +14,7 @@ for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
     await audit('run.completed', result.runId, payer + '-synthetic');
     await reopen(page, result.runId);
     await auditEvent('run.read', result.runId);
+    await openDrawer(page, 'Connection overrides');
     await page.locator('#clientId').fill('synthetic-unsent');
     await page.getByLabel('Sample request').selectOption('order-sign-home-oxygen');
     let posts = 0;
@@ -42,7 +43,10 @@ for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
 test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page }) => {
   await ready(page);
   await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  await expect(page.locator('#faults-state')).toHaveText('None on');
+  await openDrawer(page, 'Payer faults');
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
+  await expect(page.locator('#faults-state')).toHaveText('1 on: Discovery is down');
   const failed = await runOnboarding(page);
   await expect(page.locator('#run-meta')).toContainText('broke at: Discovery');
   await expect(page.locator('.finding.FAIL')).toContainText('discovery.reachable');
@@ -64,12 +68,18 @@ test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page
   const evidence = page.locator('.finding.FAIL summary').first();
   await evidence.press('Enter');
   await expect(page.locator('.finding.FAIL details[open]').first()).toBeVisible();
+  await openDrawer(page, 'Payer faults');
+  await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
+  await openDrawer(page, 'Connection overrides');
   await page.locator('#baseUrlSuffix').fill('/r4');
   await page.locator('#igVersion').fill('2.0.1');
   await page.locator('#clientId').fill('synthetic-edit');
+  await expect(page.locator('#overrides-state')).toHaveText('3 changed: Base URL suffix and 2 more');
   await page.getByRole('button', { name: 'Reset faults and settings' }).click();
   for (const id of ['baseUrlSuffix', 'igVersion', 'clientId']) await expect(page.locator('#' + id)).toHaveValue('');
   await expect(page.locator('input[name="fault"]:checked')).toHaveCount(0);
+  await expect(page.locator('#faults-state')).toHaveText('None on');
+  await expect(page.locator('#overrides-state')).toHaveText('Stored settings');
   await runOnboarding(page);
   await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
 });
@@ -79,6 +89,7 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   await expect(page.getByLabel('Compare with')).toBeDisabled();
   await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
   const healthy = await runOnboarding(page);
+  await openDrawer(page, 'Payer faults');
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
   const failed = await runOnboarding(page);
   const compare = page.getByLabel('Compare with');
@@ -119,6 +130,7 @@ test('live resize preserves open disclosure, unsent settings, selection and focu
   await runOnboarding(page);
   const summary = page.getByText('Step details', { exact: true }).first();
   await summary.click();
+  await openDrawer(page, 'Connection overrides');
   await page.locator('#clientId').fill('synthetic-resize');
   await page.getByLabel('Sample request').selectOption('order-sign-home-oxygen');
   await page.locator('#clientId').focus();
@@ -150,9 +162,22 @@ test('J07 keyboard reaches form and submits with results focus', async ({ page, 
   await expect(page.locator('input[value="northwind-synthetic"]')).toBeFocused();
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('input[value="fabrikam-synthetic"]')).toBeChecked();
+  // Faults sit in a closed native drawer: Enter on its summary opens it and Tab reaches the first fault.
+  const faults = page.locator('#faults-drawer');
+  await faults.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  await expect(faults).toHaveAttribute('open', '');
+  await page.keyboard.press('Tab');
+  await expect(page.locator('#faults input[name="fault"]').first()).toBeFocused();
   await page.getByRole('checkbox', { name: 'Discovery is down' }).focus();
   await page.keyboard.press('Space');
   await expect(page.getByRole('checkbox', { name: 'Discovery is down' })).toBeChecked();
+  await expect(page.locator('#faults-state')).toHaveText('1 on: Discovery is down');
+  // Space on the summary closes it again; the summary still says what is on.
+  await faults.locator('summary').focus();
+  await page.keyboard.press('Space');
+  await expect(faults).not.toHaveAttribute('open', '');
+  await expect(page.locator('#faults-state')).toHaveText('1 on: Discovery is down');
   await page.getByRole('button', { name: 'Reset faults and settings' }).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('input[name="fault"]:checked')).toHaveCount(0);
@@ -170,6 +195,7 @@ test('J07 keyboard reaches form and submits with results focus', async ({ page, 
 test('J08 connection edit belongs to one retained run and has matching audit metadata', async ({ page }) => {
   await ready(page);
   await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  await openDrawer(page, 'Connection overrides');
   await page.locator('#igVersion').fill('2.0.1');
   const edited = await runOnboarding(page);
   expect(edited.steps[0].details.edited).toEqual({ igVersion: '2.0.1' });
@@ -195,6 +221,7 @@ test('synthetic banner and incomplete coverage fault explain the supported scena
   await expect(page.getByRole('note')).toContainText('All three synthetic payers run inside this app with generated credentials');
   await expect(page.getByRole('note')).toContainText('no real payer, patient or PHI is involved');
   await expect(page.getByRole('note')).toContainText('passing here does not prove real-payer interoperability');
+  await openDrawer(page, 'Payer faults');
   const fault = page.getByRole('checkbox', { name: 'Incomplete coverage information' });
   const label = page.locator('.check').filter({ has: fault });
   await expect(label).toContainText('Order-sign responses omit the coverage assertion ID and use an invalid covered value.');

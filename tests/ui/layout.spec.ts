@@ -1,4 +1,4 @@
-import { test, expect, ready, runOnboarding } from './fixtures';
+import { test, expect, ready, runOnboarding, openDrawer } from './fixtures';
 
 for (const state of ['initial', 'results']) {
   test('primary page ' + state + ' has no horizontal overflow at required breakpoints', async ({ page }) => {
@@ -22,6 +22,8 @@ test('editable fields and complete touch targets stay usable through phone reflo
   await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
   await runOnboarding(page);
   await page.getByText('Step details', { exact: true }).first().click();
+  await openDrawer(page, 'Payer faults');
+  await openDrawer(page, 'Connection overrides');
   await page.locator('#clientId').fill('synthetic-resize');
   await page.locator('#clientId').focus();
 
@@ -73,4 +75,26 @@ test('editable fields and complete touch targets stay usable through phone reflo
   }
   await page.getByRole('button', { name: 'Reset faults and settings' }).click();
   await expect(page.locator('#clientId')).toHaveValue('');
+});
+
+test('workspace puts setup beside the results on desktop, with Run in the first screen', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await ready(page);
+  const setup = page.getByRole('form', { name: 'Run setup' });
+  const results = page.getByRole('heading', { name: 'Steps', exact: true });
+  const [left, right] = [await setup.boundingBox(), await results.boundingBox()];
+  expect(Math.round(left!.width)).toBe(380);
+  expect(right!.x).toBeGreaterThan(left!.x + left!.width);
+  await expect(page.locator('details.drawer[open]')).toHaveCount(0);
+  await expect(page.locator('#faults-state')).toHaveText('None on');
+  await expect(page.locator('#overrides-state')).toHaveText('Stored settings');
+  await expect(page.getByRole('button', { name: 'Run onboarding' })).toBeInViewport({ ratio: 1 });
+  await expect(page.locator('#pending-steps li')).toHaveCount(6);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(390);
+  const [stackedSetup, stackedResults] = [await setup.boundingBox(), await results.boundingBox()];
+  expect(stackedResults!.y).toBeGreaterThan(stackedSetup!.y + stackedSetup!.height);
+  expect(stackedSetup!.x).toBe(16);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

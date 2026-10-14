@@ -1,7 +1,7 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ready, runOnboarding, reopen, auditEvent } from '../../../../tests/ui/fixtures';
+import { ready, runOnboarding, reopen, auditEvent, openDrawer } from '../../../../tests/ui/fixtures';
 
 // One test per feature in the SKILL.md feature map; the tag is the feature name drive.mjs greps for.
 const evidence = process.env.VERIFY_EVIDENCE!;
@@ -25,6 +25,7 @@ async function choose(page: Page) {
 
 async function failingRun(page: Page) {
   await choose(page);
+  await openDrawer(page, 'Payer faults');
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
   const result = await runOnboarding(page);
   await expect(page.locator('#run-meta')).toContainText('broke at: Discovery');
@@ -71,7 +72,9 @@ test('diagnostic report for the failed run @report', async ({ page }, info) => {
 
 test('inject a fault, then reset it @reset', async ({ page }, info) => {
   await choose(page);
+  await openDrawer(page, 'Payer faults');
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
+  await openDrawer(page, 'Connection overrides');
   await page.locator('#igVersion').fill('2.0.1');
   await page.getByRole('button', { name: 'Reset faults and settings' }).click();
   await expect(page.locator('input[name="fault"]:checked')).toHaveCount(0);
