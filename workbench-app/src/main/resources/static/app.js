@@ -828,7 +828,8 @@
         h('h3', {}, 'Steps that changed'),
         stepChanges.size
           ? h('ul', { class: 'step-changes' }, [...stepChanges.values()].map(s =>
-            h('li', {}, h('span', {}, s.names.join(', ')), ' ', stepChip(s.before), arrow(), stepChip(s.after))))
+            h('li', {}, h('span', {}, s.names.join(', ')), ' ',
+              h('span', { class: 'transition' }, stepChip(s.before), arrow(), stepChip(s.after)))))
           : h('p', { class: 'muted small' }, 'No step changed status.')),
       h('div', { class: 'blk' },
         h('h3', {}, 'Checks that changed'),

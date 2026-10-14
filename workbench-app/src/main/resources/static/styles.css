@@ -186,6 +186,7 @@ a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration:
 .blk > h3 + p { margin-top: 0; }
 .step-changes { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
 .step-changes li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.step-changes .transition { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .scroll { overflow-x: auto; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .tbl th { font: 700 11px var(--mono); letter-spacing: .8px; text-transform: uppercase; color: var(--muted); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
@@ -193,6 +194,8 @@ a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration:
 .tbl th:first-child, .tbl td:first-child { padding-left: 0; }
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl .check-id { display: block; }
+.tbl .dir { overflow-wrap: normal; }
+.one-sided > .scroll { padding: 0; }
 .one-sided .why { font-size: 14px; color: var(--muted); margin: 0 0 10px; max-width: 72ch; }
 
 /* Results (POW design 3): the verdict card first, then a compact step timeline, then findings grouped with counts. */
@@ -341,6 +344,7 @@ footer { margin-top: 10px; text-align: center; }
   body { padding: 16px 16px 32px; }
   .setup.panel { padding: 0 14px 14px; }
   .card-h, .card-body, .verdict, .verdict-body, .step, .group, .tiles, .blk { padding-left: 14px; padding-right: 14px; }
+  .tbl th, .tbl td { padding-left: 6px; padding-right: 6px; }
 }
 @media (max-width: 480px) {
   h1 { font-size: 24px; }
