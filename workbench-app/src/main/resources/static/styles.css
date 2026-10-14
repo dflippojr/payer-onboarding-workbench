@@ -166,7 +166,7 @@ pre {
 .chip.fail { color: var(--bad); background: var(--bad-bg); }
 .chip.warn { color: var(--warn); background: var(--warn-bg); }
 .chip.info { color: var(--info); background: var(--info-bg); }
-.chip.skip, .chip.pending { color: var(--muted); background: transparent; }
+.chip.skipped, .chip.pending { color: var(--muted); background: transparent; }
 
 /* A card: a bordered panel with an optional header row; no coloured left border. */
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }

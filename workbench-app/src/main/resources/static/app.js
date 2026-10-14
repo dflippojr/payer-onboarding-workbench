@@ -62,16 +62,16 @@
     fail: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M7 7l6 6M13 7l-6 6' }]],
     warn: [['path', { d: 'M10 2.5l8 14.5H2z' }], ['path', { d: 'M10 8v4M10 14.5v.5' }]],
     info: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 9v5M10 6v.5' }]],
-    skip: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
+    skipped: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
     pending: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '2.5 2.5' }]],
   };
   /** Chip kind and word for each step status and finding severity. */
   const STATUS = {
-    passed: ['pass', 'Passed'], failed: ['fail', 'Failed'], skipped: ['skip', 'Skipped'], pending: ['pending', 'Pending'],
+    passed: ['pass', 'Passed'], failed: ['fail', 'Failed'], skipped: ['skipped', 'Skipped'], pending: ['pending', 'Pending'],
     PASS: ['pass', 'Pass'], FAIL: ['fail', 'Fail'], WARN: ['warn', 'Warn'], INFO: ['info', 'Info'],
   };
 
-  /** A decorative inline SVG status icon (pass, fail, warn, info, skip or pending); the word beside it carries the meaning. */
+  /** A decorative inline SVG status icon (pass, fail, warn, info, skipped or pending); the word beside it carries the meaning. */
   function statusIcon(kind, size = 14) {
     const svg = document.createElementNS(SVG, 'svg');
     const attrs = { class: `icon ${kind}`, width: size, height: size, viewBox: '0 0 20 20', fill: 'none',
