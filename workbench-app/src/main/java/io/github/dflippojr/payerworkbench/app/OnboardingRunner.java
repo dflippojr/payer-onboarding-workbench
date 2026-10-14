@@ -343,7 +343,8 @@ public class OnboardingRunner {
             this.recorder = new ExchangeRecorder(runId);
             this.credentials = credentials;
             this.custom = custom;
-            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(http, runId), this::observeJwt),
+            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(http, runId),
+                    this::observeAssertion, this::observeBearer),
                     credentials, null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
             this.runId = runId;
             this.request = request;
@@ -525,14 +526,18 @@ public class OnboardingRunner {
                     text(error, "error"), text(error, "error_description"));
         }
 
-        private void observeJwt(String jwt) {
-            if (record == null) {
-                return;
-            }
+        /** Only the token request's client_assertion is the SMART client's own JWT. */
+        private void observeAssertion(String jwt) {
             String[] parts = jwt.split("\\.");
-            if (parts.length == 3 && record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+            if (record != null && parts.length == 3 && record.authType() == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
                 clientAssertion = claimsOf(parts[0], parts[1]);
-            } else if (parts.length == 3 && record.authType() == AuthType.CDS_HOOKS_JWT) {
+            }
+        }
+
+        /** For SMART the Bearer value is the payer's access token, so only CDS Hooks JWT reads it. */
+        private void observeBearer(String jwt) {
+            String[] parts = jwt.split("\\.");
+            if (record != null && parts.length == 3 && record.authType() == AuthType.CDS_HOOKS_JWT) {
                 jwtHeader = decode(parts[0]);
                 jwtPayload = decode(parts[1]);
                 clientJwt = claimsOf(parts[0], parts[1]);
