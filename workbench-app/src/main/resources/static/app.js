@@ -163,8 +163,18 @@
     renderCompareOptions();
   }
 
+  /** "17:03:55 · Northwind · SANDBOX · Fail": short enough for a Recent runs or Compare with option at 390 px. */
   function historyLabel(r) {
-    return `${r.payerId} | ${r.environment} | ${r.startedAt || 'No steps'} | ${r.verdict}`;
+    const at = typeof r.startedAt === 'string' && !Number.isNaN(Date.parse(r.startedAt))
+      ? new Date(r.startedAt).toISOString().slice(11, 19) : `run ${shortId(r.runId)}`;
+    return [at, payerShortName(r.payerId), r.environment, VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
+  }
+
+  /** "Northwind" for "Northwind Health (synthetic)"; the payer id when the payer list has no such payer. */
+  function payerShortName(payerId) {
+    if (payerId === 'custom-endpoint') return 'Custom endpoint';
+    const payer = payers.find(p => p.payerId === payerId);
+    return payer ? payer.displayName.split(/\s+/)[0] : payerId;
   }
 
   /** Offers every retained run except the one on screen; enabled only while a run is shown. */
