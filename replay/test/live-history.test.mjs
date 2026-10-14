@@ -85,7 +85,7 @@ const errorResponse = status => ({ ok: false, status, json: async () => ({ detai
 test('reopens older run with findings and report, preserves settings, and survives page refresh without POST', async () => {
   for (let refresh = 0; refresh < 2; refresh++) {
     const ui = await load([summary('newer'), summary('older')]);
-    assert.match(ui.$('recent-runs').textContent, /12:00:00 · Synthetic · SANDBOX · Pass with warnings/);
+    assert.match(ui.$('recent-runs').textContent, /12:00:00 · Synthetic · SANDBOX · Warnings/);
     ui.$('environment').value = 'STAGING';
     ui.$('clientId').value = 'edited-client';
     ui.$('baseUrlSuffix').value = '/edited';
@@ -102,7 +102,7 @@ test('reopens older run with findings and report, preserves settings, and surviv
   }
 });
 
-test('run labels fall back to the short run id, the payer id and Custom endpoint', async () => {
+test('run labels fall back to the short run id and the payer id, and name custom runs Custom', async () => {
   const ui = await load([
     { ...summary('nosteps'), startedAt: null, verdict: 'FAIL' },
     { ...summary('unknown'), payerId: 'retired-payer', verdict: 'PASS' },
@@ -111,7 +111,7 @@ test('run labels fall back to the short run id, the payer id and Custom endpoint
   assert.deepEqual(ui.$('recent-runs').children.slice(1).map(o => o.textContent), [
     'run nosteps · Synthetic · SANDBOX · Fail',
     '12:00:00 · retired-payer · SANDBOX · Pass',
-    '12:00:00 · Custom endpoint · STAGING · Pass with warnings',
+    '12:00:00 · Custom · STAGING · Warnings',
   ]);
 });
 

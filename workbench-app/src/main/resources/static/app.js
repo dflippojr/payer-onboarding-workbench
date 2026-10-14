@@ -36,6 +36,8 @@
   const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
   const VERDICTS = ['FAIL', 'PASS_WITH_WARNINGS', 'PASS'];
   const VERDICT_WORDS = { FAIL: 'Fail', PASS_WITH_WARNINGS: 'Pass with warnings', PASS: 'Pass' };
+  // Run labels in Recent runs and Compare with must fit a 390 px select, so warnings get one word there.
+  const LABEL_VERDICT_WORDS = { ...VERDICT_WORDS, PASS_WITH_WARNINGS: 'Warnings' };
 
   const $ = id => document.getElementById(id);
   const form = $('run-form');
@@ -167,12 +169,12 @@
   function historyLabel(r) {
     const at = typeof r.startedAt === 'string' && !Number.isNaN(Date.parse(r.startedAt))
       ? new Date(r.startedAt).toISOString().slice(11, 19) : `run ${shortId(r.runId)}`;
-    return [at, payerShortName(r.payerId), r.environment, VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
+    return [at, payerShortName(r.payerId), r.environment, LABEL_VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
   }
 
-  /** "Northwind" for "Northwind Health (synthetic)"; the payer id when the payer list has no such payer. */
+  /** "Northwind" for "Northwind Health (synthetic)", "Custom" for a custom endpoint, else the payer id. */
   function payerShortName(payerId) {
-    if (payerId === 'custom-endpoint') return 'Custom endpoint';
+    if (payerId === 'custom-endpoint') return 'Custom';
     const payer = payers.find(p => p.payerId === payerId);
     return payer ? payer.displayName.split(/\s+/)[0] : payerId;
   }

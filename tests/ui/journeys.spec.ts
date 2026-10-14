@@ -127,16 +127,18 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   const viewport = page.viewportSize()!;
   await page.setViewportSize({ width: 390, height: 844 });
   for (const select of [recent, compare]) {
-    // Every run label, in the select's own font, fits inside the select with room for its arrow.
+    // Every run label fits in the select's own font beside its arrow, and so do the widest a synthetic payer can
+    // produce: only SANDBOX has a stored connection, so STAGING and PRODUCTION runs always fail.
     const room = await select.evaluate((el: HTMLSelectElement) => {
       const style = getComputedStyle(el);
       const context = document.createElement('canvas').getContext('2d')!;
       context.font = style.font;
       const inner = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-      const labels = [...el.options].filter(o => o.value).map(o => context.measureText(o.text).width);
+      const labels = [...el.options].filter(o => o.value).map(o => o.text)
+        .concat('00:00:00 · Northwind · SANDBOX · Warnings', '00:00:00 · Northwind · PRODUCTION · Fail').map(text => context.measureText(text).width);
       return inner - Math.max(...labels);
     });
-    expect(room).toBeGreaterThan(24);
+    expect(room).toBeGreaterThan(20);
   }
   await page.setViewportSize(viewport);
   await compare.focus();
