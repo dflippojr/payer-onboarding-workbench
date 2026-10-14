@@ -56,6 +56,41 @@
     return el;
   }
 
+  const SVG = 'http://www.w3.org/2000/svg';
+  const ICONS = {
+    pass: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M6.5 10.2l2.3 2.3 4.7-4.9' }]],
+    fail: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M7 7l6 6M13 7l-6 6' }]],
+    warn: [['path', { d: 'M10 2.5l8 14.5H2z' }], ['path', { d: 'M10 8v4M10 14.5v.5' }]],
+    info: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 9v5M10 6v.5' }]],
+    skipped: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
+    pending: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '2.5 2.5' }]],
+  };
+  /** Chip kind and word for each step status and finding severity. */
+  const STATUS = {
+    passed: ['pass', 'Passed'], failed: ['fail', 'Failed'], skipped: ['skipped', 'Skipped'], pending: ['pending', 'Pending'],
+    PASS: ['pass', 'Pass'], FAIL: ['fail', 'Fail'], WARN: ['warn', 'Warn'], INFO: ['info', 'Info'],
+  };
+
+  /** A decorative inline SVG status icon (pass, fail, warn, info, skipped or pending); the word beside it carries the meaning. */
+  function statusIcon(kind, size = 14) {
+    const svg = document.createElementNS(SVG, 'svg');
+    const attrs = { class: `icon ${kind}`, width: size, height: size, viewBox: '0 0 20 20', fill: 'none',
+      stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' };
+    for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
+    for (const [tag, shape] of ICONS[kind] || ICONS.info) {
+      const el = document.createElementNS(SVG, tag);
+      for (const [k, v] of Object.entries(shape)) el.setAttribute(k, v);
+      svg.append(el);
+    }
+    return svg;
+  }
+
+  /** A status chip: icon plus word, so colour is never the only signal. */
+  function statusChip(status, word) {
+    const [kind, label] = STATUS[status] || ['info', status];
+    return h('span', { class: `chip ${kind}` }, statusIcon(kind, 12), word || label);
+  }
+
   async function api(path, options) {
     const res = await fetch(path, options);
     const body = await res.json().catch(() => null);
@@ -356,7 +391,7 @@
     return h('li', { class: `step ${status}` },
       h('div', { class: 'step-head' },
         h('h3', {}, STEP_TITLES[step.stepId] || step.stepId),
-        h('span', { class: `status ${status}` }, status),
+        statusChip(status),
         status !== 'skipped' && h('span', { class: 'latency' }, formatMs(durationMs(step.elapsed)))),
       h('p', {}, step.summary),
       (step.details.exchanges || []).map(renderExchange),
@@ -388,13 +423,13 @@
     $('findings').replaceChildren(...SEVERITIES.map(sev => {
       const group = findings.filter(f => f.severity === sev);
       if (!group.length) return null;
-      const cards = group.map(f => h('article', { class: `finding ${f.severity}` },
-        h('h4', {}, f.title),
+      const cards = group.map(f => h('article', { class: `finding card ${f.severity}` },
+        h('div', { class: 'finding-head' }, statusChip(f.severity), h('h4', {}, f.title)),
         h('code', {}, f.checkId),
         f.explanation && h('p', {}, f.explanation),
         f.evidence && h('details', {}, h('summary', {}, 'Evidence'), h('div', {}, h('pre', {}, f.evidence))),
         f.suggestedFix && h('p', { class: 'fix' }, h('strong', {}, 'Fix: '), f.suggestedFix)));
-      const heading = h('h3', {}, h('span', { class: `sev ${sev}` }, sev), `${group.length} finding${group.length === 1 ? '' : 's'}`);
+      const heading = h('h3', {}, statusChip(sev), `${group.length} finding${group.length === 1 ? '' : 's'}`);
       // Passing checks are collapsed so failures stay in view.
       return sev === 'PASS'
         ? h('section', { class: 'sev-group' }, h('details', {}, h('summary', {}, heading), h('div', {}, cards)))
