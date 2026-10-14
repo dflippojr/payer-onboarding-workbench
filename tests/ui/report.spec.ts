@@ -47,7 +47,7 @@ test('the report leads with the verdict icon, word and where the run broke', asy
   await expect(verdict.getByRole('heading', { name: 'Verdict: Fail' })).toBeVisible();
   await expect(verdict.locator('svg[aria-hidden="true"]').first()).toBeVisible();
   await expect(verdict.getByText('Broke at Discovery', { exact: true })).toBeVisible();
-  await expect(verdict.getByText('1 fail')).toBeVisible();
+  await expect(verdict.getByText('1 fail', { exact: true })).toBeVisible();
   // The verdict comes before the facts about the run.
   expect((await box(verdict)).y).toBeLessThan((await box(page.getByText('Payer', { exact: true }))).y);
 });
