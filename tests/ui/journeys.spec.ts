@@ -127,15 +127,17 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   const viewport = page.viewportSize()!;
   await page.setViewportSize({ width: 390, height: 844 });
   for (const select of [recent, compare]) {
-    // Every run label fits in the select's own font beside its arrow, and so do the widest a synthetic payer can
-    // produce: only SANDBOX has a stored connection, so STAGING and PRODUCTION runs always fail.
+    // Every run label fits beside the select's arrow, and so do the widest a synthetic payer can produce: only
+    // SANDBOX has a stored connection, so STAGING and PRODUCTION runs always fail. Text is measured in Arial, whose
+    // metrics Liberation Sans shares on Linux and which is close to the SF Pro and Roboto phones show for system-ui;
+    // the runners' own system-ui fallback, DejaVu Sans, is far wider than any phone font.
     const room = await select.evaluate((el: HTMLSelectElement) => {
       const style = getComputedStyle(el);
       const context = document.createElement('canvas').getContext('2d')!;
-      context.font = style.font;
+      context.font = `${style.fontSize} Arial, "Liberation Sans"`;
       const inner = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const labels = [...el.options].filter(o => o.value).map(o => o.text)
-        .concat('00:00:00 · Northwind · SANDBOX · Warnings', '00:00:00 · Northwind · PRODUCTION · Fail').map(text => context.measureText(text).width);
+        .concat('00:00:00 · Northwind · SANDBOX · Warn', '00:00:00 · Northwind · PRODUCTION · Fail').map(text => context.measureText(text).width);
       return inner - Math.max(...labels);
     });
     expect(room).toBeGreaterThan(20);

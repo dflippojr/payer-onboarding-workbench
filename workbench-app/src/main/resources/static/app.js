@@ -36,8 +36,8 @@
   const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
   const VERDICTS = ['FAIL', 'PASS_WITH_WARNINGS', 'PASS'];
   const VERDICT_WORDS = { FAIL: 'Fail', PASS_WITH_WARNINGS: 'Pass with warnings', PASS: 'Pass' };
-  // Run labels in Recent runs and Compare with must fit a 390 px select, so warnings get one word there.
-  const LABEL_VERDICT_WORDS = { ...VERDICT_WORDS, PASS_WITH_WARNINGS: 'Warnings' };
+  // Run labels in Recent runs and Compare with must fit a 390 px select, so warnings get the findings chips' word there.
+  const LABEL_VERDICT_WORDS = { ...VERDICT_WORDS, PASS_WITH_WARNINGS: 'Warn' };
 
   const $ = id => document.getElementById(id);
   const form = $('run-form');
