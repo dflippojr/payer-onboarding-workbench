@@ -15,6 +15,7 @@
   --info-bg: #e3edf3;
   --pass: #375d46;
   --pass-bg: #e3eee5;
+  --code: #f0ede4;
   --focus: #1f6feb;
   --mono: Consolas, "SFMono-Regular", Menlo, monospace;
   --serif: Georgia, "Times New Roman", serif;
@@ -37,6 +38,7 @@
     --info-bg: #1d2e3a;
     --pass: #8fcfa3;
     --pass-bg: #1d3226;
+    --code: #121815;
     --focus: #79b8ff;
   }
 }
@@ -132,10 +134,6 @@ a.button { display: inline-flex; align-items: center; gap: 6px; text-decoration:
 .step.skipped { opacity: .65; border-left-style: dashed; }
 .step-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .step-head h3 { font-size: 16px; margin: 0; }
-.status { font: 600 11px var(--mono); letter-spacing: .5px; text-transform: uppercase; padding: 1px 8px; border-radius: 20px; }
-.status.passed { color: var(--pass); background: var(--pass-bg); }
-.status.failed { color: var(--bad); background: var(--bad-bg); }
-.status.skipped { color: var(--muted); border: 1px solid var(--line); }
 .latency { font: 12px var(--mono); color: var(--muted); }
 .step p { margin: 4px 0; overflow-wrap: anywhere; }
 
@@ -143,7 +141,7 @@ details { border: 1px solid var(--line); border-radius: 6px; background: var(--p
 summary { cursor: pointer; padding: 10px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; min-height: 44px; }
 details > div { padding: 0 10px 10px; }
 pre {
-  font: 12px/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  font: 12px/1.45 var(--mono); background: var(--code); border: 1px solid var(--line); border-radius: 4px;
   padding: 8px; margin: 4px 0 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto;
 }
 .label { font: 600 11px var(--mono); letter-spacing: .5px; text-transform: uppercase; color: var(--muted); margin: 8px 0 0; }
@@ -151,27 +149,58 @@ pre {
 .sev-group { margin-bottom: 14px; }
 .sev-group h3 { font-size: 15px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
 .sev-group summary h3 { display: inline-flex; margin: 0; }
-.sev { font: 600 11px var(--mono); padding: 1px 8px; border-radius: 20px; }
-.sev.FAIL { color: var(--bad); background: var(--bad-bg); }
-.sev.WARN { color: var(--warn); background: var(--warn-bg); }
-.sev.INFO { color: var(--info); background: var(--info-bg); }
-.sev.PASS { color: var(--pass); background: var(--pass-bg); }
-.finding { border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px; background: var(--paper); padding: 10px 12px; margin-bottom: 8px; }
-.finding.FAIL { border-left-color: var(--bad); }
-.finding.WARN { border-left-color: var(--warn); }
-.finding.INFO { border-left-color: var(--info); }
-.finding.PASS { border-left-color: var(--pass); }
-.finding h4 { margin: 0 0 2px; font-size: 15px; }
+.finding { padding: 10px 12px; margin-bottom: 8px; }
+.finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-bottom: 2px; }
+.finding h4 { margin: 0; font-size: 15px; }
 .finding code { font: 12px var(--mono); color: var(--muted); }
 .finding p { margin: 6px 0; overflow-wrap: anywhere; }
 .fix { border-top: 1px dashed var(--line); padding-top: 6px; }
 
+/* Shared patterns (POW design 1). Status is always an icon plus a word; colour is never the only signal. */
+.icon { flex: none; vertical-align: middle; }
+.chip {
+  display: inline-flex; align-items: center; gap: 4px; font: 700 11px/1.6 var(--mono); letter-spacing: .5px;
+  text-transform: uppercase; padding: 0 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap;
+}
+.chip.pass { color: var(--pass); background: var(--pass-bg); }
+.chip.fail { color: var(--bad); background: var(--bad-bg); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.info { color: var(--info); background: var(--info-bg); }
+.chip.skip, .chip.pending { color: var(--muted); background: transparent; }
+
+/* A card: a bordered panel with an optional header row; no coloured left border. */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.card-h {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+.card-h h2, .card-h h3 { margin: 0; }
+.card-body { padding: 16px 18px; }
+
+/* The verdict band heads a result: a large icon, the verdict word, a heading and one line of context. */
+.verdict { display: flex; gap: 14px; align-items: flex-start; padding: 16px 18px; background: var(--panel); }
+.verdict.pass { background: var(--pass-bg); }
+.verdict.fail { background: var(--bad-bg); }
+.verdict.warn { background: var(--warn-bg); }
+.verdict-icon { margin-top: 2px; }
+.verdict.pass .verdict-icon, .verdict.pass .verdict-word { color: var(--pass); }
+.verdict.fail .verdict-icon, .verdict.fail .verdict-word { color: var(--bad); }
+.verdict.warn .verdict-icon, .verdict.warn .verdict-word { color: var(--warn); }
+.verdict-text { flex: 1; min-width: 0; }
+.verdict-word { font: 700 12px var(--mono); letter-spacing: 1px; text-transform: uppercase; margin: 0; }
+.verdict-text h2 { margin: 0; }
+.verdict-meta { font-size: 13px; color: var(--muted); margin: 4px 0 0; overflow-wrap: anywhere; }
+
 footer { margin-top: 10px; text-align: center; }
 
+/* Phones keep a 16 px gutter on every side of the page. */
+@media (max-width: 600px) {
+  body { padding: 16px 16px 32px; }
+  .card-h, .card-body, .verdict { padding-left: 14px; padding-right: 14px; }
+}
 @media (max-width: 480px) {
-  body { padding: 12px 10px 28px; }
   h1 { font-size: 24px; }
-  .panel { padding: 14px 12px; }
+  .panel { padding: 14px; }
   .checks, .grid, .picker { grid-template-columns: 1fr; }
   .actions { gap: 8px 16px; }
   .button { width: 100%; }

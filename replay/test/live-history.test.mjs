@@ -67,7 +67,8 @@ async function load(history, override = () => undefined, customEnabled = false) 
     };
     return { ok: true, status: 200, json: async () => data[path] || runFixture(path.split('/').at(-1)) };
   };
-  const context = { document: { getElementById: $, createElement: tag => new Element(tag) }, Node: Element, fetch };
+  const context = { document: { getElementById: $, createElement: tag => new Element(tag),
+    createElementNS: (ns, tag) => new Element(tag) }, Node: Element, fetch };
   runInNewContext(app, context);
   await settle();
   $('sample').value = 'synthetic-sample';
