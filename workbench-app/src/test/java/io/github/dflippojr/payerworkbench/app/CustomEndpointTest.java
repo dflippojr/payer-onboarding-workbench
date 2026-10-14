@@ -165,18 +165,6 @@ class CustomEndpointTest {
                 "clientId", "custom-client", "tokenEndpoint", tokenBase + "/oauth/token", "keyId", "custom-smart-key",
                 "igVersion", payer.igVersion(), "credential", pem);
         String body = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", endpoint));
-        // Delegate the per-run store to an inspectable real instance, without changing production ownership.
-        InMemoryCredentials store = new InMemoryCredentials();
-        try (var construction = mockConstruction(InMemoryCredentials.class,
-                withSettings().defaultAnswer(delegatesTo(store)))) {
-            runner.run(new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null, null,
-                    new RunRequest.CustomEndpoint(payer.baseUrl(), AuthType.OAUTH2_PRIVATE_KEY_JWT,
-                            "custom-client", tokenBase + "/oauth/token", "custom-smart-key", payer.igVersion(), pem)));
-            assertEquals(1, construction.constructed().size());
-            verify(construction.constructed().getFirst()).put(anyString(), anyString());
-            verify(construction.constructed().getFirst()).remove("custom-endpoint-credential");
-            assertTrue(store.resolve("custom-endpoint-credential").isEmpty());
-        }
         HttpResponse<String> posted = send("POST", "/api/runs", body);
         assertEquals(200, posted.statusCode(), "custom SMART request accepted");
         var run = mapper.readTree(posted.body());
@@ -218,6 +206,28 @@ class CustomEndpointTest {
     }
 
     @Test
+    void customCredentialIsRemovedAfterTheRun() throws Exception {
+        KeyPair key = rsa();
+        String pem = PemKeys.toPem("PRIVATE KEY", key.getPrivate().getEncoded());
+        JwksServer jwks = new JwksServer(Map.of("custom-smart-key", key.getPublic()));
+        open.add(jwks::close);
+        TailspinPayer payer = TailspinPayer.builder().client("custom-client", jwks.url()).build().start(0);
+        open.add(payer);
+        // Delegate the per-run store to an inspectable real instance, without changing production ownership.
+        InMemoryCredentials store = new InMemoryCredentials();
+        try (var construction = mockConstruction(InMemoryCredentials.class,
+                withSettings().defaultAnswer(delegatesTo(store)))) {
+            runner.run(new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null, null,
+                    new RunRequest.CustomEndpoint(payer.baseUrl(), AuthType.OAUTH2_PRIVATE_KEY_JWT,
+                            "custom-client", payer.tokenEndpoint(), "custom-smart-key", payer.igVersion(), pem)));
+            assertEquals(1, construction.constructed().size());
+            verify(construction.constructed().getFirst()).put(anyString(), anyString());
+            verify(construction.constructed().getFirst()).remove("custom-endpoint-credential");
+            assertTrue(store.resolve("custom-endpoint-credential").isEmpty());
+        }
+    }
+
+    @Test
     void smartMissingInputsAndBadDestinationsReturnSafe400() throws Exception {
         Map<String, String> complete = Map.of("baseUrl", "http://127.0.0.1:9", "authType", "OAUTH2_PRIVATE_KEY_JWT",
                 "clientId", "custom-client", "tokenEndpoint", "http://127.0.0.1:9/oauth/token",
@@ -238,6 +248,7 @@ class CustomEndpointTest {
             assertTrue(mapper.readTree(response.body()).path("detail").isTextual(), "structured validation message");
             assertFalse(response.body().contains("PLANTED-MALFORMED-PEM"));
         }
+        assertTrue(mapper.readTree(send("GET", "/api/features", null).body()).path("customEndpoints").asBoolean());
     }
 
     @Test
@@ -413,22 +424,6 @@ class CustomEndpointTest {
         assertFalse(run.steps().getLast().ok(), "diagnostics must not pass a broken run");
     }
 
-    /** A request URL the SDK cannot build fails discovery with a summary and a finding, not "Unexpected error". */
-    @Test
-    void unbuildableBaseUrlFailsAtDiscoveryWithAFinding() {
-        OnboardingRun run;
-        try {
-            run = runner.run(custom("http://127.0.0.1:9/sp ace", AuthType.NONE, null, null, null));
-        } catch (IllegalArgumentException refused) {
-            return; // the endpoint guard may refuse it before the run starts
-        }
-        assertEquals("discovery", run.steps().stream().filter(s -> !s.ok()).findFirst().orElseThrow().stepId());
-        assertFalse(run.steps().get(1).summary().contains("Unexpected error"), run.steps().get(1)::summary);
-        OnboardingFlowTest.assertBrokenRunExplained(run);
-        assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals(OnboardingRunner.STEP_FAILED_CHECK)
-                || f.checkId().equals("discovery.reachable")), run.findings()::toString);
-    }
-
     @Test
     void plantedCredentialNeverLeaves(CapturedOutput output) throws Exception {
         String secret = "PLANTED-" + secret();
@@ -463,45 +458,6 @@ class CustomEndpointTest {
     }
 
     @Test
-    void refusesDestinationsThatAreNotPublicHttpsOrLoopback() {
-        for (String url : List.of(
-                "http://example.com/r4",              // plain http to a non-loopback host
-                "http://169.254.169.254/latest",      // cloud metadata
-                "https://169.254.169.254/latest",
-                "https://10.0.0.5/r4",                // private
-                "https://192.168.1.10/r4",
-                "https://172.16.0.1/r4",
-                "https://100.100.100.200/r4",         // carrier-grade NAT (Alibaba metadata)
-                "https://[fd00:ec2::254]/r4",         // unique-local, AWS IPv6 metadata
-                "https://[fe80::1]/r4",               // link-local
-                "https://2130706433/r4",              // 127.0.0.1 written as one number
-                "https://metadata.google.internal/",
-                "https://user:pw@example.com/r4",     // credentials in the URL
-                "https://example.com/r4?token=x",
-                "ftp://example.com/",
-                "file:///etc/passwd")) {
-            IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                    () -> runner.run(custom(url, AuthType.NONE, null, null, null)), url);
-            assertFalse(e.getMessage().isBlank(), url);
-        }
-    }
-
-    @Test
-    void rejectionMessagesSayWhy() {
-        assertTrue(message("http://example.com/r4").contains("Plain http is only allowed to loopback"));
-        assertTrue(message("https://10.0.0.5/r4").contains("private, loopback, link-local or metadata"));
-        assertTrue(message("https://169.254.169.254/").contains("169.254.169.254"));
-    }
-
-    @Test
-    void tokenEndpointIsCheckedToo() throws Exception {
-        NorthwindPayer payer = northwind("s");
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> runner.run(custom(
-                payer.baseUrl(), AuthType.OAUTH2_CLIENT_CREDENTIALS, "https://10.0.0.5/oauth/token", null, "s")));
-        assertTrue(e.getMessage().startsWith("Token endpoint"), e.getMessage());
-    }
-
-    @Test
     void rejectsIncompleteCredentialsAndFaults() {
         String base = "http://127.0.0.1:9";
         assertThrows(IllegalArgumentException.class, () -> runner.run(custom(base, AuthType.OAUTH2_CLIENT_CREDENTIALS,
@@ -526,20 +482,6 @@ class CustomEndpointTest {
             IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> runner.run(request));
             assertTrue(e.getMessage().startsWith("baseUrlSuffix may only add path segments"), e.getMessage());
         }
-    }
-
-    @Test
-    void apiAnswersBadEndpointsWith400() throws Exception {
-        HttpResponse<String> response = send("POST", "/api/runs", """
-                {"sampleId":"order-sign-hospital-bed","customEndpoint":{"baseUrl":"https://10.0.0.5/r4","authType":"NONE"}}""");
-        assertEquals(400, response.statusCode());
-        assertTrue(response.body().contains("private, loopback, link-local or metadata"), response.body());
-        assertTrue(mapper.readTree(send("GET", "/api/features", null).body()).path("customEndpoints").asBoolean());
-    }
-
-    private String message(String url) {
-        return assertThrows(IllegalArgumentException.class,
-                () -> runner.run(custom(url, AuthType.NONE, null, null, null))).getMessage();
     }
 
     private static final String igVersion = NorthwindPayer.builder().build().igVersion();

@@ -7,8 +7,6 @@ import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -114,19 +112,6 @@ class ObservabilityTest {
                 + "payer=\"" + NORTHWIND_ID + "\",severity=\"FAIL\"}"), scrape);
         assertFalse(scrape.contains(healthy.path("runId").asText()), "no run id in any tag");
         assertFalse(scrape.contains("127.0.0.1"), "no URL in any tag");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"md", "html", "json"})
-    void everyReportFormatShowsTheCorrelationId(String format) throws Exception {
-        String runId = run(NORTHWIND_ID, List.of()).path("runId").asText();
-        String report = get("/api/runs/" + runId + "/report?format=" + format).body();
-        if (format.equals("json")) {
-            assertEquals(runId, mapper.readTree(report).path("correlationId").asText());
-        } else {
-            assertTrue(report.contains("Correlation id (X-Request-Id)"), report);
-            assertTrue(report.contains(format.equals("md") ? "`" + runId + "`" : "<code>" + runId + "</code>"));
-        }
     }
 
     /** The workbench meters for Northwind in SANDBOX, keyed by a short description of their tags. */

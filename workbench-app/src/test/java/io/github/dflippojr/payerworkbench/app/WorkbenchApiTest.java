@@ -172,13 +172,12 @@ class WorkbenchApiTest {
     @Test
     void suffixThatChangesTheHostIsRefusedAndNoRunIsStored() throws Exception {
         int before = mapper.readTree(get("/api/runs").body()).size();
-        for (String suffix : List.of("@127.0.0.1:1", "@evil.example", ":1", "?x=1", "#x", "/r4?x")) {
-            HttpResponse<String> response = post("/api/runs", mapper.writeValueAsString(java.util.Map.of(
-                    "payerId", "northwind-synthetic", "sampleId", "order-sign-hospital-bed",
-                    "connection", java.util.Map.of("baseUrlSuffix", suffix))));
-            assertEquals(400, response.statusCode(), suffix);
-            assertTrue(response.body().contains("baseUrlSuffix may only add path segments"), response.body());
-        }
+        // One suffix proves the 400 mapping; OnboardingFlowTest::suffixThatLeavesThePathIsRefused has the full table.
+        HttpResponse<String> response = post("/api/runs", mapper.writeValueAsString(java.util.Map.of(
+                "payerId", "northwind-synthetic", "sampleId", "order-sign-hospital-bed",
+                "connection", java.util.Map.of("baseUrlSuffix", "@evil.example"))));
+        assertEquals(400, response.statusCode());
+        assertTrue(response.body().contains("baseUrlSuffix may only add path segments"), response.body());
         assertEquals(before, mapper.readTree(get("/api/runs").body()).size());
         assertEquals(404, get("/api/runs/no-such-run").statusCode());
     }
