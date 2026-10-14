@@ -369,17 +369,17 @@
       };
     }
     const button = $('run-button');
-    const label = [...button.childNodes];
     const previous = lastRender;
     button.disabled = true;
-    button.replaceChildren('Running…');
+    $('run-label').textContent = 'Running…';
+    $('run-arrow').hidden = true;
     ++retrieval;
     clearComparison();
     $('recent-runs').disabled = true;
     $('compare-runs').disabled = true;
     // The button and the results say it visibly; the status line still tells screen readers.
     $('run-status').textContent = 'Running…';
-    $('run-status').classList.add('visually-hidden');
+    $('run-status').className = 'muted small visually-hidden';
     showRunning(p, request);
     try {
       const result = await api('api/runs', {
@@ -398,8 +398,9 @@
       else showEmpty('Nothing run yet.');
       $('run-status').textContent = `Run failed: ${e.message}`;
     } finally {
-      $('run-status').classList.remove('visually-hidden');
-      button.replaceChildren(...label);
+      $('run-status').className = 'muted small';
+      $('run-label').textContent = 'Run onboarding';
+      $('run-arrow').hidden = false;
       button.disabled = false;
       $('recent-runs').disabled = false;
       renderCompareOptions();
@@ -418,7 +419,7 @@
     lastRunId = null;
     currentRun = null;
     renderCompareOptions();
-    document.querySelector('.results').setAttribute('aria-busy', 'true');
+    $('results-area').setAttribute('aria-busy', 'true');
     $('verdict').className = 'verdict running';
     $('verdict-icon').replaceChildren(statusIcon('running', 32));
     $('verdict-word').hidden = false;
@@ -445,7 +446,7 @@
 
   /** Leaves the running state; renderRun and showEmpty call it before drawing theirs. */
   function endRunning() {
-    document.querySelector('.results').removeAttribute('aria-busy');
+    $('results-area').removeAttribute('aria-busy');
     $('run-track').hidden = true;
     $('running-steps').hidden = true;
     $('running-steps').replaceChildren();

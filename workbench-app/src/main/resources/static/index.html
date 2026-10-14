@@ -107,13 +107,13 @@
       </fieldset>
 
       <div class="actions">
-        <button type="submit" class="button" id="run-button">Run onboarding <span aria-hidden="true">→</span></button>
+        <button type="submit" class="button" id="run-button"><span id="run-label">Run onboarding</span> <span id="run-arrow" aria-hidden="true">→</span></button>
         <button type="button" class="link" id="reset-button">Reset faults and settings</button>
         <span id="run-status" class="muted small" role="status" aria-live="polite"></span>
       </div>
     </form>
 
-    <div class="results">
+    <div class="results" id="results-area">
       <div class="row history">
         <label class="field grow">Recent runs
           <select id="recent-runs" aria-describedby="history-status">
