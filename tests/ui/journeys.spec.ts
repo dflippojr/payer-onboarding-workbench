@@ -135,6 +135,68 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   await expect(comparison).toBeHidden();
 });
 
+test('running state shows the pending steps and hides the previous run', async ({ page }) => {
+  await ready(page);
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  const previous = await runOnboarding(page);
+  await openDrawer(page, 'Payer faults');
+  await page.getByRole('checkbox', { name: 'Payer is slow' }).check();
+  // Hold the POST so the running state can be inspected, then send it without the slow fault so the
+  // test does not wait about 11 s per call. The page built its running copy from the form as submitted.
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/runs', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await held;
+    await route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), faults: [] }) });
+  });
+  const response = page.waitForResponse(r => r.url().endsWith('/api/runs') && r.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run onboarding' }).click();
+  const results = page.locator('.results');
+  await expect(results).toHaveAttribute('aria-busy', 'true');
+  await expect(page.getByRole('button', { name: 'Running…' })).toBeDisabled();
+  await expect(page.locator('#verdict-word')).toHaveText('Running');
+  await expect(page.locator('#results-heading')).toHaveText('Onboarding Northwind Health (synthetic)');
+  await expect(page.locator('#run-meta')).toContainText('SANDBOX · ');
+  await expect(page.locator('#run-meta')).toContainText('fault on: Payer is slow. The slow-response fault holds each response for about 11 s');
+  const pending = page.locator('#running-steps .step.pending');
+  await expect(pending.locator('h3')).toHaveText(
+    ['Resolve connection', 'Discovery', 'Authenticate', 'Send sample hook request', 'Parse response', 'Run diagnostics']);
+  await expect(pending.locator('.latency')).toHaveText(Array(6).fill('waiting'));
+  await expect(page.getByRole('list', { name: 'Steps waiting for the run' })).toBeVisible();
+  // The previous run is no longer shown as the current result.
+  await expect(page.locator('#steps-card')).toBeHidden();
+  await expect(page.locator('#findings-card')).toBeHidden();
+  await expect(page.getByRole('link', { name: 'Download report' })).toBeHidden();
+  await expect(page.locator('#running-note')).toHaveText(/^The previous run \(\d\d:\d\d:\d\d UTC, Pass\) is still in Recent runs\.$/);
+  await expect(page.getByLabel('Compare with')).toBeDisabled();
+  await expect(page.getByLabel('Compare with')).toHaveValue('');
+  await expect(page.getByLabel('Compare with').locator('option')).toHaveText(['Show a run first']);
+  await expect(page.getByLabel('Recent runs')).toBeDisabled();
+  await expect(page.getByLabel('Recent runs')).toHaveValue(previous.runId);
+  // The bar is indeterminate, and static under reduced motion.
+  const bar = page.locator('#run-track > span');
+  await expect(bar).toBeVisible();
+  expect(await bar.evaluate(el => getComputedStyle(el).animationName)).toBe('track');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  expect(await bar.evaluate(el => getComputedStyle(el).animationName)).toBe('none');
+  await page.emulateMedia({ reducedMotion: null });
+  release();
+  const result = await (await response).json();
+  await page.unroute('**/api/runs');
+  await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
+  await expect(results).not.toHaveAttribute('aria-busy');
+  await expect(page.locator('#running-steps')).toBeHidden();
+  await expect(page.locator('#run-track')).toBeHidden();
+  await expect(page.locator('#running-note')).toBeHidden();
+  await expect(page.locator('#steps > li').first()).toBeVisible();
+  await expect(page.locator('#verdict-word')).toHaveText('Pass');
+  await expect(page.locator('#run-meta')).toContainText('run ' + result.runId.slice(0, 8));
+  await expect(page.locator('#results-heading')).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Run onboarding' })).toBeEnabled();
+  await expect(page.getByLabel('Recent runs')).toHaveValue(result.runId);
+});
+
 test('J04 unavailable environment produces retained diagnostic run', async ({ page }) => {
   await ready(page);
   await page.getByRole('combobox', { name: 'Environment', exact: true }).selectOption('STAGING');
