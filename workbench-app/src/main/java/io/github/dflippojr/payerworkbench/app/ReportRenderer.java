@@ -516,8 +516,8 @@ public final class ReportRenderer {
             @media print{body{font-size:11pt}main{max-width:none;padding:0;gap:18px}
             *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
             .two{grid-template-columns:1fr}
-            h2,h3,.label,.fhead,.call-line{break-after:avoid}
-            .verdict,.facts div,.step,.fix,.disclaimer{break-inside:avoid}
+            h2,h3,.label,.fhead,.call-line,.curl .muted{break-after:avoid}
+            .verdict,.facts div,.step,.fix,.disclaimer,.curl pre,footer{break-inside:avoid}
             pre,.finding,.curl{break-inside:auto}}
             """;
 }

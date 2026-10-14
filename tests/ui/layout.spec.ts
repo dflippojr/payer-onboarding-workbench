@@ -98,3 +98,18 @@ test('workspace puts setup beside the results on desktop, with Run in the first 
   expect(stackedSetup!.x).toBe(16);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test('a drawer keeps its name on one line when the fault that is on has a long name', async ({ page }) => {
+  await ready(page);
+  await openDrawer(page, 'Payer faults');
+  await page.getByRole('checkbox', { name: 'Payer expects another audience' }).check();
+  await expect(page.locator('#faults-state')).toHaveText('1 on: Payer expects another audience');
+  for (const width of [320, 390, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(width);
+    const name = page.locator('#faults-drawer > summary > span').first();
+    const [height, fontSize] = await name.evaluate(element => [element.getBoundingClientRect().height, parseFloat(getComputedStyle(element).fontSize)]);
+    expect(height, `Payer faults on one line at ${width}`).toBeLessThan(fontSize * 2);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+});

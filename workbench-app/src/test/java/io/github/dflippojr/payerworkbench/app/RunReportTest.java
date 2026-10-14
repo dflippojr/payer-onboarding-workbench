@@ -171,7 +171,9 @@ class RunReportTest {
         assertTrue(html.contains("@media screen and (prefers-color-scheme:dark)"));
         assertFalse(html.contains("@media (prefers-color-scheme"), "dark mode would reach print");
         String print = html.substring(html.indexOf("@media print"));
-        assertTrue(print.contains("h2,h3,.label,.fhead,.call-line{break-after:avoid}"));
+        assertTrue(print.contains("h2,h3,.label,.fhead,.call-line,.curl .muted{break-after:avoid}"));
+        // The short curl command stays with its note, and the footer never leaves a line or two on a page of its own.
+        assertTrue(print.contains(".curl pre,footer{break-inside:avoid}"));
         assertTrue(print.contains("pre,.finding,.curl{break-inside:auto}"));
         assertFalse(html.contains("border-left"), "no card relies on a coloured left border");
     }

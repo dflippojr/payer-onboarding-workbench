@@ -255,7 +255,7 @@ async function main() {
     log('==> Capturing');
     // The onboarding flow: a failing Northwind run, the hook exchange and the first FAIL's evidence expanded.
     const failing = await cdp.newPage({ width: 1280, height: 900 });
-    await runInUi(failing, base, 'northwind-synthetic', 'expired-token-401', 'auth.clock-skew');
+    await runInUi(failing, base, 'northwind-synthetic', 'expired-token-401', 'auth.hook-rejected');
     await failing.eval(`document.querySelector('#steps li.step.failed details').open = true,
       document.querySelector('#verdict-check details').open = true`);
     await failing.fullPageShot('failing-run.png');
@@ -263,7 +263,7 @@ async function main() {
     // The Download report control, in dark mode, under Fabrikam's wrong-audience run.
     const dark = await cdp.newPage({ width: 1256, height: 908, dark: true });
     await runInUi(dark, base, 'fabrikam-synthetic', 'wrong-audience-reject', 'auth.jwt-audience');
-    await dark.shot('report-download.png', { height: 908, scrollY: await dark.top('#results', 72) });
+    await dark.shot('report-download.png', { height: 908, scrollY: await dark.top('#results-area', 16) });
 
     // That run's HTML report: the header, then the findings.
     const reportUrl = (await dark.eval(`document.getElementById('report-link').href`)).replace(/format=\w+/, 'format=html');
