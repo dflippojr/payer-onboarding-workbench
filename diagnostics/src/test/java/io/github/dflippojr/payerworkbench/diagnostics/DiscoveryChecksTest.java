@@ -94,6 +94,24 @@ class DiscoveryChecksTest {
             assertTrue(f.title().contains("order-dispatch"));
             assertTrue(f.suggestedFix().contains("order-dispatch"));
         }
+
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"order sign", "a/b", "..", "a?b", "a#b", "a%20b", ""})
+        void serviceIdThatCannotBeAUrlSegmentFails(String id) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + id + "\",\"prefetch\":{}}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.title().contains("not URL-safe"), f.title());
+            assertTrue(f.evidence().contains("unusable id: '" + id + "'"), f.evidence());
+        }
+
+        @Test
+        void onlyTheServiceTheClientWouldCallNeedsAUsableId() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"ok-1\"},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"bad id\"},{\"hook\":\"patient-view\",\"id\":\"x y\"}]}");
+            assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+        }
     }
 
     @Nested
