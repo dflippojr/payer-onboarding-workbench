@@ -307,19 +307,57 @@ test('compare select is enabled once a run is shown and renders the changes sect
   await pick(ui, 'baseline');
   assert.equal(ui.$('comparison').hidden, false);
   assert.equal(ui.$('comparison-heading').textContent, 'Changes since run baseline');
+  assert.equal(ui.$('comparison-note').textContent,
+    'Earlier run 12:00:00 UTC (Pass) compared with the run on screen, 12:00:00 UTC (Fail)');
   const text = ui.$('comparison-body').textContent;
-  assert.match(text, /Verdict.*PASS → FAIL.*worse/);
-  assert.match(text, /Broke at.*every step passed → Discovery/);
-  assert.match(text, /Discovery: passed → failed/);
-  assert.match(text, /Newly failing or worse \(1\)discovery\.reachable.*PASS → FAIL/);
-  assert.match(text, /Fixed or better \(0\)None\./);
-  assert.match(text, /Only in one run \(2\)new\.check new\.check title only in run shown: WARNold\.check old\.check title only in run baseline: INFO/);
-  assert.match(text, /Unchanged: 0 checks\./);
+  assert.match(text, /^VerdictPass → Fail WorseBroke atevery step passed → Discovery/);
+  assert.match(text, /Steps that changedDiscovery, Run diagnostics Passed → Failed/);
+  assert.match(text, /Authenticate, Send sample hook request, Parse response Passed → Skipped/);
+  assert.match(text, /Checks that changedCheckEarlier runThis runChangediscovery\.reachable title discovery\.reachablePassFailNewly failing/);
+  assert.match(text, /Fixed or better: none\. Unchanged: none\./);
+  assert.match(text, /Only in one run · 2 checksThese checks ran in only one of the two runs, usually because a step was skipped\./);
+  assert.match(text, /new\.check title new\.checkThis run onlyWarnold\.check title old\.checkEarlier run onlyInfo$/);
+  // The one-sided group starts collapsed.
+  const oneSided = ui.$('comparison-body').descendants().find(e => e.tag === 'details');
+  assert.equal(oneSided.attributes.open, undefined);
   assert.equal(ui.$('history-status').textContent, 'Comparison shown.');
   assert.ok(ui.requests.every(r => r.method === 'GET'));
   await choose(ui, 'baseline');
   assert.equal(ui.$('comparison').hidden, true);
   assert.deepEqual(ui.$('compare-runs').children.map(o => o.attributes.value), ['', 'shown', 'other']);
+});
+
+test('Stop comparing clears the comparison, says so and returns focus to Compare with', async () => {
+  const ui = await load(compareHistory, compareRoutes());
+  await choose(ui, 'shown');
+  await pick(ui, 'baseline');
+  assert.equal(ui.$('comparison').hidden, false);
+  await ui.$('stop-comparing').dispatch('click');
+  assert.equal(ui.$('comparison').hidden, true);
+  assert.equal(ui.$('comparison-body').textContent, '');
+  assert.equal(ui.$('compare-runs').value, '');
+  assert.equal(ui.$('compare-runs').focused, true);
+  assert.equal(ui.$('history-status').textContent, 'Comparison closed.');
+});
+
+test('comparison names unchanged checks and labels a later baseline run', async () => {
+  const history = [{ ...summary('shown'), startedAt: '2026-10-01T12:00:00Z' },
+    { ...summary('baseline'), startedAt: '2026-10-01T12:05:30.5Z' }];
+  const ui = await load(history, path => {
+    if (path === 'api/runs/shown') return ok(flow('shown', { 'a.pass': 'PASS', 'b.warn': 'WARN', 'c.fail': 'FAIL' }, 'hook-request'));
+    if (path === 'api/runs/baseline') return ok(flow('baseline', { 'a.pass': 'PASS', 'b.warn': 'WARN', 'c.fail': 'WARN' }, 'hook-request'));
+    return undefined;
+  });
+  await choose(ui, 'shown');
+  await pick(ui, 'baseline');
+  assert.equal(ui.$('comparison-note').textContent,
+    'Later run 12:05:30 UTC (Fail) compared with the run on screen, 12:00:00 UTC (Fail)');
+  const text = ui.$('comparison-body').textContent;
+  assert.match(text, /^VerdictFail → Fail UnchangedBroke atSend sample hook request Unchanged/);
+  assert.match(text, /No step changed status\./);
+  assert.match(text, /CheckLater runThis runChangec\.fail title c\.failWarnFailNewly failing/);
+  assert.match(text, /Fixed or better: none\. Unchanged: 2 checks \(b\.warn title, a\.pass title\)\.$/);
+  assert.ok(!/Only in one run/.test(text));
 });
 
 test('evicted comparison run refreshes history, clears the comparison and says so', async () => {

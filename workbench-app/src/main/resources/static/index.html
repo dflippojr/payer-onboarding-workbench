@@ -129,8 +129,14 @@
       <p id="history-status" class="muted small" role="status" aria-live="polite"></p>
 
       <section id="comparison" class="card comparison" aria-labelledby="comparison-heading" hidden>
-        <div class="card-h"><h2 id="comparison-heading">Changes since run</h2></div>
-        <div class="card-body" id="comparison-body"></div>
+        <div class="card-h">
+          <div>
+            <h2 id="comparison-heading">Changes since run</h2>
+            <p class="muted small" id="comparison-note"></p>
+          </div>
+          <button type="button" class="button ghost" id="stop-comparing">Stop comparing</button>
+        </div>
+        <div id="comparison-body"></div>
       </section>
 
       <section class="card verdict-card" id="results" aria-labelledby="results-heading">
