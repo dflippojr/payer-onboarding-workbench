@@ -471,6 +471,18 @@ class CustomEndpointTest {
     }
 
     @Test
+    void suffixCannotAddAQueryOrFragment() {
+        String base = "http://127.0.0.1:9/ok";
+        for (String suffix : List.of("?x=1#", "#", "/r4?x", "@127.0.0.1:1")) {
+            RunRequest request = new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null,
+                    new RunRequest.ConnectionOverrides(suffix, null, null),
+                    new RunRequest.CustomEndpoint(base, AuthType.NONE, null, null, null, null, null));
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> runner.run(request));
+            assertTrue(e.getMessage().startsWith("baseUrlSuffix may only add path segments"), e.getMessage());
+        }
+    }
+
+    @Test
     void apiAnswersBadEndpointsWith400() throws Exception {
         HttpResponse<String> response = send("POST", "/api/runs", """
                 {"sampleId":"order-sign-hospital-bed","customEndpoint":{"baseUrl":"https://10.0.0.5/r4","authType":"NONE"}}""");

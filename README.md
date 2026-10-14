@@ -96,7 +96,7 @@ The UI has a payer picker, a "Break it" panel of payer faults, connection settin
 | `GET /api/payers` | The synthetic payers, their stored connections (redacted), editable settings and fault ids. |
 | `GET /api/features` | What this deployment allows (`customEndpoints`). |
 | `GET /api/samples` | Sample request metadata. |
-| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). With custom endpoints enabled, `customEndpoint` replaces `payerId` (see below). |
+| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). `baseUrlSuffix` can only add path segments, such as `/r4` or `/`: a suffix that doesn't start with `/` or contains `@`, `?`, `#`, a backslash, whitespace or a control character is refused with 400 and nothing is sent. With custom endpoints enabled, `customEndpoint` replaces `payerId` (see below). |
 | `GET /api/runs` | Newest-saved-first summaries of retained runs: identifiers, first-step timestamp (null without steps), verdict and severity counts only. |
 | `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
 | `GET /api/runs/{id}/report?format=md\|html\|json` | A shareable diagnostic report of a recent run (default `html`). `400` for another format, `404` for an unknown run. |

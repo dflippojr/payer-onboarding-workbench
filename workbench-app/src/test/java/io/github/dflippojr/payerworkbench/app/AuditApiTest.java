@@ -67,6 +67,7 @@ class AuditApiTest {
         List<String> bodies = List.of("{", "{}", "{\"payerId\":\"" + SECRET + "\",\"sampleId\":\"" + SAMPLE + "\"}",
                 "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SECRET + "\"}",
                 "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"faults\":[\"" + SECRET + "\"]}",
+                "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"connection\":{\"baseUrlSuffix\":\"@" + SECRET + "\"}}",
                 "{\"sampleId\":\"" + SAMPLE + "\",\"customEndpoint\":{\"baseUrl\":\"http://169.254.169.254/\"}}",
                 "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"environment\":\"" + SECRET + "\"}");
         for (String body : bodies) { assertEquals(400, post(body).statusCode()); }
@@ -75,7 +76,7 @@ class AuditApiTest {
         List<JsonNode> ends = action(events, "run.completed");
         assertEquals(bodies.size(), starts.size()); assertEquals(bodies.size(), ends.size());
         assertEquals(List.of("invalid_body", "missing_input", "unknown_payer", "unknown_sample", "unknown_fault",
-                "destination_rejected", "invalid_body"), ends.stream().map(e -> e.path("metadata").path("reasonCode").asText()).toList());
+                "invalid_connection_edit", "destination_rejected", "invalid_body"), ends.stream().map(e -> e.path("metadata").path("reasonCode").asText()).toList());
         for (JsonNode end : ends) {
             assertEquals(1, starts.stream().filter(e -> e.path("requestId").equals(end.path("requestId"))).count());
             assertTrue(end.path("runId").isNull()); assertEquals("rejected", end.path("outcome").asText());
@@ -94,8 +95,8 @@ class AuditApiTest {
             assertEquals(200, response.statusCode());
             String run = mapper.readTree(response.body()).path("runId").asText();
             post(mapper.writeValueAsString(Map.of("payerId", "northwind-synthetic", "sampleId", SAMPLE,
-                    "connection", Map.of("clientId", SECRET, "igVersion", "Patient/" + SECRET,
-                            "baseUrlSuffix", "/?patient=" + SECRET + "\naudit forged"))));
+                    "connection", Map.of("clientId", SECRET, "igVersion", "Patient/" + SECRET + "\naudit forged",
+                            "baseUrlSuffix", "/patient/" + SECRET))));
             List<JsonNode> events = events(output, 2);
             List<JsonNode> credentials = action(events, "credential.resolved").stream()
                     .filter(e -> e.path("runId").asText().equals(run)).toList();
