@@ -292,6 +292,27 @@ pre {
 .verdict-text h2 { margin: 0; }
 .verdict-meta { font-size: 13px; color: var(--muted); margin: 4px 0 0; overflow-wrap: anywhere; }
 
+/* Running (POW design 4): an info band with an indeterminate bar, then the six steps as pending rows. */
+.verdict.running { background: var(--info-bg); }
+.verdict.running .verdict-icon, .verdict.running .verdict-word { color: var(--info); }
+.verdict-body[hidden] { display: none; }
+.track { position: relative; height: 6px; margin: 12px 0 0; border-radius: 999px; background: var(--line); overflow: hidden; }
+.track > span {
+  position: absolute; top: 0; bottom: 0; left: 30%; width: 30%; border-radius: 999px; background: var(--info);
+  animation: track 1.6s ease-in-out infinite;
+}
+@keyframes track { from { left: -30%; } to { left: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .track > span { animation: none; }
+}
+.running-steps { border-top: 1px solid var(--line); }
+.step.pending { align-items: center; color: var(--muted); }
+.step.pending > .icon { grid-row: auto; margin-top: 0; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
 footer { margin-top: 10px; text-align: center; }
 
 /* Phones keep a 16 px gutter on every side of the page. */

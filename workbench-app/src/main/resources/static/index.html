@@ -140,9 +140,11 @@
             <p class="verdict-word" id="verdict-word" hidden></p>
             <h2 id="results-heading" tabindex="-1">Results</h2>
             <p class="verdict-meta" id="run-meta">Nothing run yet.</p>
+            <div class="track" id="run-track" aria-hidden="true" hidden><span></span></div>
           </div>
         </div>
-        <div class="verdict-body">
+        <ol id="running-steps" class="timeline running-steps" aria-label="Steps waiting for the run" hidden></ol>
+        <div class="verdict-body" id="verdict-body">
           <div id="empty-state" class="empty">
             <p>Each run walks these six steps against the payer you picked, then explains anything that failed and how to fix it.</p>
             <ol id="pending-steps" class="pending-steps"></ol>
@@ -174,6 +176,7 @@
         <div class="card-h"><h2 id="findings-heading">Findings</h2><span id="finding-counts" class="counts"></span></div>
         <div id="findings"></div>
       </section>
+      <p id="running-note" class="muted small"></p>
     </div>
   </main>
 

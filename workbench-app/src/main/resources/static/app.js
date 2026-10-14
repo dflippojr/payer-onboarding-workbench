@@ -35,6 +35,7 @@
   };
   const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
   const VERDICTS = ['FAIL', 'PASS_WITH_WARNINGS', 'PASS'];
+  const VERDICT_WORDS = { FAIL: 'Fail', PASS_WITH_WARNINGS: 'Pass with warnings', PASS: 'Pass' };
 
   const $ = id => document.getElementById(id);
   const form = $('run-form');
@@ -46,6 +47,8 @@
   let comparing = 0;
   let history = [];
   let currentRun = null;
+  /** The arguments of the last renderRun, so a run that errors can put the previous result back. */
+  let lastRender = null;
   const CUSTOM = '__custom__';
 
   /** Builds an element; children may be strings, nodes, arrays or null. */
@@ -74,6 +77,7 @@
     info: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 9v5M10 6v.5' }]],
     skipped: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
     pending: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '2.5 2.5' }]],
+    running: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 5.5V10l3 2' }]],
   };
   /** Chip kind and word for each step status and finding severity. */
   const STATUS = {
@@ -365,14 +369,18 @@
       };
     }
     const button = $('run-button');
+    const label = [...button.childNodes];
+    const previous = lastRender;
     button.disabled = true;
+    button.replaceChildren('Running…');
     ++retrieval;
     clearComparison();
     $('recent-runs').disabled = true;
     $('compare-runs').disabled = true;
-    $('run-status').textContent = request.faults.includes('slow-response')
-      ? 'Running… the slow-response fault takes several seconds.'
-      : 'Running…';
+    // The button and the results say it visibly; the status line still tells screen readers.
+    $('run-status').textContent = 'Running…';
+    $('run-status').classList.add('visually-hidden');
+    showRunning(p, request);
     try {
       const result = await api('api/runs', {
         method: 'POST',
@@ -385,16 +393,69 @@
       $('results-heading').focus();
       await refreshHistory();
     } catch (e) {
+      // No new result: put the run that was on screen back, rather than leave the pending steps.
+      if (previous) renderRun(...previous);
+      else showEmpty('Nothing run yet.');
       $('run-status').textContent = `Run failed: ${e.message}`;
     } finally {
+      $('run-status').classList.remove('visually-hidden');
+      button.replaceChildren(...label);
       button.disabled = false;
       $('recent-runs').disabled = false;
       renderCompareOptions();
     }
   }
 
+  /**
+   * While a run is in flight the results say what is running and list the six steps as pending, and the
+   * previous run's verdict, steps and findings are hidden so they are not read as the new result. The API
+   * returns every step when the run ends, so the steps are not ticked off one by one.
+   */
+  function showRunning(payer, request) {
+    const before = currentRun && history.find(r => r.runId === currentRun.runId);
+    const sample = samples.find(s => s.id === request.sampleId);
+    const faults = request.faults.map(id => (FAULTS[id] || [id])[0]);
+    lastRunId = null;
+    currentRun = null;
+    document.querySelector('.results').setAttribute('aria-busy', 'true');
+    $('verdict').className = 'verdict running';
+    $('verdict-icon').replaceChildren(statusIcon('running', 32));
+    $('verdict-word').hidden = false;
+    $('verdict-word').textContent = 'Running';
+    $('results-heading').textContent = `Onboarding ${payer.displayName}`;
+    const context = [request.environment, sample && sample.title,
+      faults.length > 0 && `${faults.length === 1 ? 'fault' : 'faults'} on: ${faults.join(', ')}`].filter(Boolean).join(' · ');
+    $('run-meta').textContent = `${context}. ${request.faults.includes('slow-response')
+      ? 'The slow-response fault holds each response for about 11 s; the steps appear when the run finishes.'
+      : 'The steps appear when the run finishes.'}`;
+    $('run-meta').removeAttribute('title');
+    $('run-track').hidden = false;
+    $('verdict-body').hidden = true;
+    $('running-steps').replaceChildren(...Object.keys(STEP_TITLES).map(id => h('li', { class: 'step pending' },
+      statusIcon('pending', 20),
+      h('div', { class: 'step-head' }, h('h3', {}, STEP_TITLES[id]), h('span', { class: 'latency' }, 'waiting')))));
+    $('running-steps').hidden = false;
+    $('steps-card').hidden = true;
+    $('findings-card').hidden = true;
+    $('running-note').textContent = before
+      ? `The previous run (${before.startedAt ? clockTime(before.startedAt) : `run ${shortId(before.runId)}`}, ${VERDICT_WORDS[before.verdict] || before.verdict}) is still in Recent runs.`
+      : '';
+  }
+
+  /** Leaves the running state; renderRun and showEmpty call it before drawing theirs. */
+  function endRunning() {
+    document.querySelector('.results').removeAttribute('aria-busy');
+    $('run-track').hidden = true;
+    $('running-steps').hidden = true;
+    $('running-steps').replaceChildren();
+    $('running-note').textContent = '';
+    $('verdict-body').hidden = false;
+  }
+
   /** Back to the empty results state: the six steps a run walks, and no verdict, steps or findings. */
   function showEmpty(message) {
+    endRunning();
+    lastRender = null;
     lastRunId = null;
     currentRun = null;
     $('verdict').className = 'verdict';
@@ -424,6 +485,8 @@
     const fails = result.findings.filter(f => f.severity === 'FAIL');
     const warns = result.findings.filter(f => f.severity === 'WARN').length;
     const kind = { FAIL: 'fail', PASS_WITH_WARNINGS: 'warn', PASS: 'pass' }[verdict];
+    endRunning();
+    lastRender = [result, payer, request];
     $('verdict').className = `verdict ${kind}`;
     $('verdict-icon').replaceChildren(statusIcon(kind, 32));
     $('verdict-word').hidden = false;
@@ -432,7 +495,7 @@
       $('results-heading').textContent = fails.length
         ? `Not ready: ${plural(fails.length, 'failing check')}` : `Not ready: ${stepTitle(failed)} failed`;
     } else {
-      $('verdict-word').textContent = verdict === 'PASS' ? 'Pass' : 'Pass with warnings';
+      $('verdict-word').textContent = VERDICT_WORDS[verdict];
       $('results-heading').textContent = warns ? `Every step passed, with ${plural(warns, 'warning')}` : 'Every step passed';
     }
     const sample = request && samples.find(s => s.id === request.sampleId);
@@ -471,6 +534,13 @@
 
   function shortId(id) {
     return String(id).slice(0, 8);
+  }
+
+  /** "17:03:54" in the browser's time zone, or the raw value if it is not a date. */
+  function clockTime(iso) {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? String(iso)
+      : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
   }
 
   function updateReportLink() {
