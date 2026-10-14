@@ -81,7 +81,7 @@ test('workspace puts setup beside the results on desktop, with Run in the first 
   await page.setViewportSize({ width: 1440, height: 900 });
   await ready(page);
   const setup = page.getByRole('form', { name: 'Run setup' });
-  const results = page.getByRole('heading', { name: 'Steps', exact: true });
+  const results = page.locator('#results-heading');
   const [left, right] = [await setup.boundingBox(), await results.boundingBox()];
   expect(Math.round(left!.width)).toBe(380);
   expect(right!.x).toBeGreaterThan(left!.x + left!.width);

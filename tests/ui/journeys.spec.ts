@@ -11,6 +11,11 @@ for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
     const result = await runOnboarding(page);
     await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
     await expect(page.locator('#steps .failed')).toHaveCount(0);
+    await expect(page.locator('#verdict-word')).toHaveText(/^Pass/);
+    await expect(page.locator('#results-heading')).toHaveText(/^Every step passed/);
+    await expect(page.locator('#verdict-check')).toBeHidden();
+    // Passing checks stay collapsed.
+    await expect(page.locator('#findings .group.PASS details')).not.toHaveAttribute('open', '');
     await audit('run.completed', result.runId, payer + '-synthetic');
     await reopen(page, result.runId);
     await auditEvent('run.read', result.runId);
@@ -48,9 +53,15 @@ test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
   await expect(page.locator('#faults-state')).toHaveText('1 on: Discovery is down');
   const failed = await runOnboarding(page);
-  await expect(page.locator('#run-meta')).toContainText('broke at: Discovery');
-  await expect(page.locator('.finding.FAIL')).toContainText('discovery.reachable');
-  await expect(page.locator('.finding.FAIL .fix').first()).toBeVisible();
+  // Verdict first: what broke, the failing check, its Fix and the report download, before the timeline.
+  await expect(page.locator('#verdict-word')).toHaveText('Fail · broke at Discovery');
+  await expect(page.locator('#results-heading')).toHaveText('Not ready: 1 failing check');
+  await expect(page.locator('#run-meta')).toContainText('fault: Discovery is down');
+  await expect(page.locator('#verdict-check')).toContainText('discovery.reachable');
+  await expect(page.locator('#verdict-check .fix')).toBeVisible();
+  await expect(page.locator('#results').getByRole('link', { name: 'Download report' })).toBeVisible();
+  await expect(page.locator('#findings .finding-ref')).toContainText('discovery.reachable');
+  await expect(page.locator('#findings .finding-ref')).toContainText('Shown in the verdict above');
   await audit('run.completed', failed.runId, 'northwind-synthetic');
   await reopen(page, failed.runId);
   for (const format of ['html', 'md', 'json']) {
@@ -64,10 +75,24 @@ test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page
     await auditEvent('report.rendered', failed.runId, { reportFormat: format });
   }
   await expect(page.locator('#steps .step.failed h3')).toHaveText(['Discovery', 'Run diagnostics']);
-  await expect(page.locator('#steps .step.skipped')).toHaveCount(3);
-  const evidence = page.locator('.finding.FAIL summary').first();
+  // The three skipped steps fold into one row that names the cause.
+  await expect(page.locator('#steps .step.skipped')).toHaveCount(1);
+  await expect(page.locator('#steps .step.skipped')).toContainText(
+    'Authenticate, Send sample hook request and Parse response did not run because Discovery failed.');
+  await expect(page.locator('#step-counts')).toHaveText('1 passed · 2 failed · 3 skipped');
+  // An exchange is one line that opens into the request and response side by side.
+  const exchange = page.locator('#steps .step.failed details.exchange').first();
+  await expect(exchange.locator('summary')).toContainText('GET');
+  await expect(exchange.locator('summary .chip')).toHaveText('500');
+  await exchange.locator('summary').press('Enter');
+  await expect(exchange.locator('.exchange-grid')).toContainText('Request headers');
+  await expect(exchange.locator('.exchange-grid')).toContainText('Response body');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const [request, response] = await exchange.locator('.exchange-grid > div').all();
+  expect(Math.round((await request.boundingBox())!.y)).toBe(Math.round((await response.boundingBox())!.y));
+  const evidence = page.locator('#verdict-check summary').first();
   await evidence.press('Enter');
-  await expect(page.locator('.finding.FAIL details[open]').first()).toBeVisible();
+  await expect(page.locator('#verdict-check details[open]').first()).toBeVisible();
   await openDrawer(page, 'Payer faults');
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
   await openDrawer(page, 'Connection overrides');
@@ -114,7 +139,7 @@ test('J04 unavailable environment produces retained diagnostic run', async ({ pa
   await ready(page);
   await page.getByRole('combobox', { name: 'Environment', exact: true }).selectOption('STAGING');
   const result = await runOnboarding(page);
-  await expect(page.locator('#run-meta')).toContainText('broke at: Resolve connection');
+  await expect(page.locator('#verdict-word')).toHaveText('Fail · broke at Resolve connection');
   await audit('run.completed', result.runId, 'northwind-synthetic', 'STAGING');
   await reopen(page, result.runId);
   await expect(page.locator('#run-meta')).toContainText('STAGING');
@@ -184,12 +209,12 @@ test('J07 keyboard reaches form and submits with results focus', async ({ page, 
   await page.getByRole('button', { name: 'Run onboarding' }).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('#run-status')).toContainText('Done:');
-  await expect(page.getByRole('heading', { name: 'Steps', exact: true })).toBeFocused();
+  await expect(page.locator('#results-heading')).toBeFocused();
   // Exercise link activation/focus independently of the browser's native traversal preference.
   await page.getByRole('link', { name: 'Skip to results' }).focus();
   await expect(page.getByRole('link', { name: 'Skip to results' })).toBeInViewport();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('heading', { name: 'Steps', exact: true })).toBeFocused();
+  await expect(page.locator('#results-heading')).toBeFocused();
 });
 
 test('J08 connection edit belongs to one retained run and has matching audit metadata', async ({ page }) => {
@@ -236,5 +261,5 @@ test('synthetic banner and incomplete coverage fault explain the supported scena
   await expect(fault).toBeChecked();
   await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
   await runOnboarding(page);
-  await expect(page.locator('.finding.FAIL').filter({ hasText: 'response.coverage-information' })).toHaveCount(1);
+  await expect(page.locator('#verdict-check, #findings .finding.FAIL').filter({ hasText: 'response.coverage-information' })).toHaveCount(1);
 });

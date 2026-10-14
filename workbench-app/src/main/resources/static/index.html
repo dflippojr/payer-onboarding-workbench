@@ -10,7 +10,7 @@
   <script src="app.js" defer></script>
 </head>
 <body>
-  <a class="skip" href="#steps-heading">Skip to results</a>
+  <a class="skip" href="#results-heading">Skip to results</a>
   <header class="top">
     <div>
       <p class="kicker">Payer onboarding workbench</p>
@@ -128,38 +128,51 @@
       </div>
       <p id="history-status" class="muted small" role="status" aria-live="polite"></p>
 
-      <section class="card" aria-labelledby="steps-heading">
-        <div class="card-h">
-          <h2 id="steps-heading" tabindex="-1">Steps</h2>
-          <span id="run-meta" class="muted small">Nothing run yet.</span>
+      <section id="comparison" class="card comparison" aria-labelledby="comparison-heading" hidden>
+        <div class="card-h"><h2 id="comparison-heading">Changes since run</h2></div>
+        <div class="card-body" id="comparison-body"></div>
+      </section>
+
+      <section class="card verdict-card" id="results" aria-labelledby="results-heading">
+        <div class="verdict" id="verdict">
+          <span id="verdict-icon" class="verdict-icon"></span>
+          <div class="verdict-text">
+            <p class="verdict-word" id="verdict-word" hidden></p>
+            <h2 id="results-heading" tabindex="-1">Results</h2>
+            <p class="verdict-meta" id="run-meta">Nothing run yet.</p>
+          </div>
         </div>
-        <div class="card-body">
+        <div class="verdict-body">
           <div id="empty-state" class="empty">
             <p>Each run walks these six steps against the payer you picked, then explains anything that failed and how to fix it.</p>
             <ol id="pending-steps" class="pending-steps"></ol>
           </div>
-          <div class="actions report-actions" id="report-actions" hidden>
-            <label class="field">Report format
+          <div id="verdict-check" class="verdict-check" hidden></div>
+          <div class="report-actions" id="report-actions" hidden>
+            <label class="field inline">Report format
               <select id="report-format">
                 <option value="html">HTML (prints cleanly)</option>
                 <option value="md">Markdown</option>
                 <option value="json">JSON</option>
               </select>
             </label>
-            <a class="button" id="report-link" href="#" download>Download report <span aria-hidden="true">↓</span></a>
+            <a class="button ghost" id="report-link" href="#" download>Download report <span aria-hidden="true">↓</span></a>
             <span class="muted small">Redacted, with the synthetic-data disclaimer.</span>
           </div>
-          <section id="comparison" class="comparison" aria-labelledby="comparison-heading" hidden>
-            <h3 id="comparison-heading">Changes since run</h3>
-            <div id="comparison-body"></div>
-          </section>
-          <ol id="steps" class="timeline"></ol>
         </div>
       </section>
 
-      <section class="card" aria-labelledby="findings-heading">
-        <div class="card-h"><h2 id="findings-heading">Findings</h2></div>
-        <div class="card-body" id="findings"><p class="muted small">Findings appear after a run.</p></div>
+      <section class="card" id="steps-card" aria-labelledby="steps-heading" hidden>
+        <div class="card-h">
+          <h2 id="steps-heading">Steps</h2>
+          <span id="step-counts" class="num"></span>
+        </div>
+        <ol id="steps" class="timeline"></ol>
+      </section>
+
+      <section class="card" id="findings-card" aria-labelledby="findings-heading" hidden>
+        <div class="card-h"><h2 id="findings-heading">Findings</h2><span id="finding-counts" class="counts"></span></div>
+        <div id="findings"></div>
       </section>
     </div>
   </main>

@@ -28,7 +28,7 @@ async function failingRun(page: Page) {
   await openDrawer(page, 'Payer faults');
   await page.getByRole('checkbox', { name: 'Discovery is down' }).check();
   const result = await runOnboarding(page);
-  await expect(page.locator('#run-meta')).toContainText('broke at: Discovery');
+  await expect(page.locator('#verdict-word')).toHaveText('Fail · broke at Discovery');
   return result;
 }
 
@@ -44,8 +44,9 @@ test('healthy discovery and sample request @healthy', async ({ page }, info) => 
 
 test('failure explanation for an injected fault @failure', async ({ page }, info) => {
   const result = await failingRun(page);
-  const finding = page.locator('.finding.FAIL').filter({ hasText: 'discovery.reachable' }).first();
-  await expect(finding).toBeVisible();
+  // The verdict card names the first failing check with its Fix and evidence.
+  const finding = page.locator('#verdict-check');
+  await expect(finding).toContainText('discovery.reachable');
   await expect(finding.locator('.fix')).toBeVisible();
   await finding.locator('summary').first().click();
   await expect(finding.locator('details[open]').first()).toBeVisible();
