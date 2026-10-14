@@ -36,6 +36,8 @@
   const SEVERITIES = ['FAIL', 'WARN', 'INFO', 'PASS'];
   const VERDICTS = ['FAIL', 'PASS_WITH_WARNINGS', 'PASS'];
   const VERDICT_WORDS = { FAIL: 'Fail', PASS_WITH_WARNINGS: 'Pass with warnings', PASS: 'Pass' };
+  // Run labels in Recent runs and Compare with must fit a 390 px select, so warnings get the findings chips' word there.
+  const LABEL_VERDICT_WORDS = { ...VERDICT_WORDS, PASS_WITH_WARNINGS: 'Warn' };
 
   const $ = id => document.getElementById(id);
   const form = $('run-form');
@@ -163,8 +165,18 @@
     renderCompareOptions();
   }
 
+  /** "17:03:55 · Northwind · SANDBOX · Fail": short enough for a Recent runs or Compare with option at 390 px. */
   function historyLabel(r) {
-    return `${r.payerId} | ${r.environment} | ${r.startedAt || 'No steps'} | ${r.verdict}`;
+    const at = typeof r.startedAt === 'string' && !Number.isNaN(Date.parse(r.startedAt))
+      ? new Date(r.startedAt).toISOString().slice(11, 19) : `run ${shortId(r.runId)}`;
+    return [at, payerShortName(r.payerId), r.environment, LABEL_VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
+  }
+
+  /** "Northwind" for "Northwind Health (synthetic)", "Custom" for a custom endpoint, else the payer id. */
+  function payerShortName(payerId) {
+    if (payerId === 'custom-endpoint') return 'Custom';
+    const payer = payers.find(p => p.payerId === payerId);
+    return payer ? payer.displayName.split(/\s+/)[0] : payerId;
   }
 
   /** Offers every retained run except the one on screen; enabled only while a run is shown. */

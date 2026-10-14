@@ -120,6 +120,29 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   const compare = page.getByLabel('Compare with');
   await expect(compare).toBeEnabled();
   await expect(compare.locator('option[value="' + failed.runId + '"]')).toHaveCount(0);
+  // Run labels: UTC time · payer short name · environment · verdict word, whole in both selects at 390 px.
+  const recent = page.getByLabel('Recent runs');
+  await expect(recent.locator('option[value="' + failed.runId + '"]')).toHaveText(/^\d\d:\d\d:\d\d · Northwind · SANDBOX · Fail$/);
+  await expect(compare.locator('option[value="' + healthy.runId + '"]')).toHaveText(/^\d\d:\d\d:\d\d · Northwind · SANDBOX · Pass$/);
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const select of [recent, compare]) {
+    // Every run label fits beside the select's arrow, and so do the widest a synthetic payer can produce: only
+    // SANDBOX has a stored connection, so STAGING and PRODUCTION runs always fail. Text is measured in Arial, whose
+    // metrics Liberation Sans shares on Linux and which is close to the SF Pro and Roboto phones show for system-ui;
+    // the runners' own system-ui fallback, DejaVu Sans, is far wider than any phone font.
+    const room = await select.evaluate((el: HTMLSelectElement) => {
+      const style = getComputedStyle(el);
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.font = `${style.fontSize} Arial, "Liberation Sans"`;
+      const inner = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const labels = [...el.options].filter(o => o.value).map(o => o.text)
+        .concat('00:00:00 · Northwind · SANDBOX · Warn', '00:00:00 · Northwind · PRODUCTION · Fail').map(text => context.measureText(text).width);
+      return inner - Math.max(...labels);
+    });
+    expect(room).toBeGreaterThan(20);
+  }
+  await page.setViewportSize(viewport);
   await compare.focus();
   await compare.selectOption(healthy.runId);
   await expect(page.locator('#history-status')).toHaveText('Comparison shown.');
