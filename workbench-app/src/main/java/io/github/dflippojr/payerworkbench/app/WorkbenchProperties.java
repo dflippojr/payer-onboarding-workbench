@@ -16,8 +16,10 @@ import java.time.Duration;
  * @param maxRuns           how many runs {@code GET /api/runs/{id}} remembers
  * @param customEndpoints   {@code workbench.custom-endpoints.*}
  * @param audit             {@code workbench.audit.*}: the optional durable audit journal
- * @param maxResponseBytes  the most of any one payer response body the workbench reads and keeps
- *                          (default 4 MiB); a longer body fails the call with a finding naming the limit
+ * @param maxResponseBytes  the most of any one payer response body the workbench reads (default 4 MiB);
+ *                          a longer body fails the call with a finding naming the limit
+ * @param maxStoredRunBytes the most the remembered runs may take together, measured as JSON
+ *                          (default 32 MiB); past it the oldest are forgotten even under {@code maxRuns}
  */
 @ConfigurationProperties("workbench")
 public record WorkbenchProperties(
@@ -28,10 +30,14 @@ public record WorkbenchProperties(
         Integer maxRuns,
         CustomEndpoints customEndpoints,
         Audit audit,
-        Long maxResponseBytes
+        Long maxResponseBytes,
+        Long maxStoredRunBytes
 ) {
     /** Default {@link #maxResponseBytes()}: 4 MiB. */
     public static final long DEFAULT_MAX_RESPONSE_BYTES = 4L * 1024 * 1024;
+
+    /** Default {@link #maxStoredRunBytes()}: 32 MiB. */
+    public static final long DEFAULT_MAX_STORED_RUN_BYTES = 32L * 1024 * 1024;
 
     /**
      * @param enabled whether {@code POST /api/runs} accepts a {@code customEndpoint}; off by default
@@ -63,18 +69,25 @@ public record WorkbenchProperties(
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
+                               Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit,
+                               Long maxResponseBytes) {
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit,
+                maxResponseBytes, null);
+    }
+
+    public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit, null, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null, null, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null, null, null);
     }
 
     @ConstructorBinding
@@ -89,6 +102,10 @@ public record WorkbenchProperties(
         maxResponseBytes = maxResponseBytes == null ? DEFAULT_MAX_RESPONSE_BYTES : maxResponseBytes;
         if (maxResponseBytes <= 0 || maxResponseBytes > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("workbench.max-response-bytes must be between 1 and " + Integer.MAX_VALUE);
+        }
+        maxStoredRunBytes = maxStoredRunBytes == null ? DEFAULT_MAX_STORED_RUN_BYTES : maxStoredRunBytes;
+        if (maxStoredRunBytes <= 0) {
+            throw new IllegalArgumentException("workbench.max-stored-run-bytes must be positive");
         }
     }
 }

@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.app;
 
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.Finding;
+import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
@@ -112,6 +113,53 @@ class RunStoreTest {
             for (var result : executor.invokeAll(tasks)) result.get();
         }
         assertEquals(2, store.list().size());
+    }
+
+    @Test
+    void maxRunsRunsWithBodiesNearTheResponseLimitStayWithinTheByteBudget() {
+        // #162: 200 runs x a 4 MiB body used to exhaust a 512 MiB heap. Each run now keeps a 64 Ki prefix.
+        var properties = new WorkbenchProperties(null, null, null, null, null);
+        var bounded = new RunStore(properties);
+        String nearLimit = "{\"cards\":[],\"padding\":\"" + "a".repeat(properties.maxResponseBytes().intValue() - 30) + "\"}";
+        ExchangeView kept = ExchangeView.of(new HttpExchange("POST", "http://127.0.0.1/hook", 200, Duration.ZERO,
+                Map.of(), "{}", Map.of(), nearLimit, null));
+        assertTrue(kept.responseBody().length() < ExchangeView.BODY_LIMIT_CHARS + 100, "kept " + kept.responseBody().length());
+        assertTrue(kept.responseBody().endsWith(" of " + nearLimit.length() + " characters]"));
+        for (int i = 0; i < properties.maxRuns(); i++) {
+            bounded.save(new OnboardingRun("near-limit-" + i, "synthetic-payer", Environment.SANDBOX,
+                    List.of(new StepResult("hook-request", Instant.EPOCH, Duration.ZERO, false, "too large",
+                            Map.of("exchanges", List.of(kept)))), List.of()));
+        }
+        assertEquals(properties.maxRuns(), bounded.list().size());
+        assertTrue(bounded.storedBytes() < properties.maxRuns() * (ExchangeView.BODY_LIMIT_CHARS + 1024L),
+                "stored " + bounded.storedBytes());
+        assertTrue(bounded.storedBytes() <= properties.maxStoredRunBytes());
+    }
+
+    @Test
+    void keptPrefixCutThroughAMaskIsMaskedWhole() {
+        String head = "{\"padding\":\"" + "a".repeat(ExchangeView.BODY_LIMIT_CHARS - 35) + "\",\"access_token\":\"";
+        String kept = ExchangeView.kept(head + "[REDACTED]\"}" + "b".repeat(100));
+        assertTrue(kept.startsWith(head + "[REDACTED]\"\n[kept the first " + ExchangeView.BODY_LIMIT_CHARS + " of "), kept.substring(head.length()));
+        assertEquals("short", ExchangeView.kept("short"));
+    }
+
+    @Test
+    void byteBudgetForgetsTheOldestRunsFirstAndKeepsTheNewest() {
+        var bounded = new RunStore(new WorkbenchProperties(null, null, null, null, 200, null, null, null, 100_000L));
+        // A run can be large for reasons other than a body, such as thousands of cards.
+        for (int i = 0; i < 5; i++) {
+            bounded.save(new OnboardingRun("big-" + i, "synthetic-payer", Environment.SANDBOX,
+                    List.of(new StepResult("parse-response", Instant.EPOCH, Duration.ZERO, true, "parsed",
+                            Map.of("cards", List.of("c".repeat(40_000))))), List.of()));
+        }
+        assertEquals(List.of("big-4", "big-3"), bounded.list().stream().map(RunSummary::runId).toList());
+        assertTrue(bounded.storedBytes() <= 100_000L, "stored " + bounded.storedBytes());
+        bounded.save(new OnboardingRun("huge", "synthetic-payer", Environment.SANDBOX,
+                List.of(new StepResult("parse-response", Instant.EPOCH, Duration.ZERO, true, "c".repeat(200_000),
+                        Map.of())), List.of()));
+        assertEquals(List.of("huge"), bounded.list().stream().map(RunSummary::runId).toList());
+        assertTrue(bounded.find("huge").isPresent());
     }
 
     private static OnboardingRun parityRun(String id, List<StepResult> steps, Severity... severities) {

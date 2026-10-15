@@ -68,6 +68,9 @@ class CustomEndpointTest {
     @Autowired
     OnboardingRunner runner;
 
+    @Autowired
+    RunStore runs;
+
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newHttpClient();
     private final List<AutoCloseable> open = new ArrayList<>();
@@ -414,7 +417,8 @@ class CustomEndpointTest {
     @Test
     void oversizedHookBodyIsCutAtTheLimitAndNamed() throws Exception {
         long limit = WorkbenchProperties.DEFAULT_MAX_RESPONSE_BYTES;
-        String note = "[truncated at " + limit + " bytes]";
+        long recordedLength = limit + 1 + "[truncated at 4194304 bytes]".length();
+        String note = "\n[kept the first " + ExchangeView.BODY_LIMIT_CHARS + " of " + recordedLength + " characters]";
         // 64 MiB, streamed in chunks so the test payer never holds it in memory either.
         String base = startEchoServer(200, null);
 
@@ -433,8 +437,10 @@ class CustomEndpointTest {
             assertEquals(200, exchange.path("status").asInt(), exchange.toString().substring(0, 300));
             String recorded = exchange.path("responseBody").asText();
             assertTrue(recorded.startsWith("{\"cards\":[],\"padding\":\"aaaa"), recorded.substring(0, 40));
-            assertTrue(recorded.endsWith("\n" + note), recorded.substring(recorded.length() - 60));
-            assertEquals(limit + 1 + note.length(), recorded.length());
+            // The run keeps a prefix of what was read, so max-runs such runs stay small (#162).
+            assertTrue(recorded.endsWith(note), recorded.substring(recorded.length() - 60));
+            assertEquals(ExchangeView.BODY_LIMIT_CHARS + note.length(), recorded.length());
+            assertTrue(RunStore.sizeOf(runs.find(run.path("runId").asText()).orElseThrow()) < 2 * ExchangeView.BODY_LIMIT_CHARS);
             assertTrue(exchange.path("transportError").asText().contains("exceeded the 4 MiB limit"),
                     exchange.path("transportError").asText());
             var finding = java.util.stream.StreamSupport.stream(run.path("findings").spliterator(), false)
