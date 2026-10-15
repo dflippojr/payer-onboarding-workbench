@@ -132,6 +132,65 @@ class RedactorTest {
         assertEquals(Map.of(), Redactor.redactHeaders(null));
     }
 
+    @Test
+    void masksAllLetterBasicCredentialThatDecodesToUserPass() {
+        // base64 of the synthetic pair "user:pass": all letters, so it used to pass as prose.
+        assertEquals("{\"headers\":{\"authorization\":\"Basic [REDACTED]\"}}",
+                Redactor.redact("{\"headers\":{\"authorization\":\"Basic dXNlcjpwYXNz\"}}"));
+        assertEquals("Authorization: Basic [REDACTED]\\nnext line", Redactor.redact("Authorization: Basic YWJjOmRl\\nnext line"));
+    }
+
+    @Test
+    void masksCredentialThroughToTheNextSeparator() {
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abc123:SECRETPART"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abc:def/ghi"));
+        assertEquals("Bearer [REDACTED], next", Redactor.redact("Bearer abc:def, next"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abcdefghijklmno:"));
+    }
+
+    @Test
+    void keepsShortWordsAfterTheSchemeOnlyWhenTheyEndThere() {
+        for (String prose : List.of("Missing bearer token", "Missing bearer token.", "Basic authentication is required",
+                "(no bearer token)", "Bearer abcdefghijklmno is missing", "\"Missing bearer token\"",
+                "Bearer realm=\"synthetic-payer\"", "Basic realm=\"synthetic-payer\", charset=\"UTF-8\"")) {
+            assertEquals(prose, Redactor.redact(prose));
+        }
+    }
+
+    @Test
+    void masksNonStringJsonSecretValues() {
+        assertEquals("{\"access_token\":\"[REDACTED]\"}", Redactor.redact("{\"access_token\":123456789}"));
+        assertEquals("{\"client_secret\": \"[REDACTED]\", \"expires_in\": 300}",
+                Redactor.redact("{\"client_secret\": 12345, \"expires_in\": 300}"));
+        assertEquals("{\"password\":\"[REDACTED]\",\"active\":true}", Redactor.redact("{\"password\":false,\"active\":true}"));
+        assertEquals("{\"api_key\":null}", Redactor.redact("{\"api_key\":null}"));
+    }
+
+    @Test
+    void masksPrivateKeyAndEveryReportSecretField() {
+        assertEquals("{\"private_key\":\"[REDACTED]\"}", Redactor.redact("{\"private_key\":\"MIIEvSyntheticOnly123\"}"));
+        for (String key : List.of("privateKey", "secret", "clientSecret", "client-secret", "client_assertion",
+                "assertion", "ACCESS_TOKEN")) {
+            assertEquals("{\"" + key + "\":\"[REDACTED]\"}", Redactor.redact("{\"" + key + "\":\"synthetic-value\"}"), key);
+            assertTrue(Redactor.isSecretField(key), key);
+        }
+        assertFalse(Redactor.isSecretField("token_type"));
+        assertEquals("private_key=[REDACTED]", Redactor.redact("private_key=synthetic"));
+    }
+
+    @Test
+    void masksSecretsInJsonEmbeddedInAJsonString() {
+        String in = "{\"debug\":\"{\\\"access_token\\\":123456789}\\n{\\\"private_key\\\":\\\"MIIEvSynthetic\\\"}\"}";
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"}\\n{\\\"private_key\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact(in));
+    }
+
+    @Test
+    void leavesOrdinaryJsonFieldsAlone() {
+        String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
+        assertEquals(text, Redactor.redact(text));
+    }
+
     private static String randomToken() {
         byte[] bytes = new byte[32];
         RANDOM.nextBytes(bytes);
