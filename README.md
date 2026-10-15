@@ -124,7 +124,7 @@ Off by default. The workbench otherwise only talks to its own synthetic payers; 
 ./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--workbench.custom-endpoints.enabled=true
 ```
 
-The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Faults and connection edits don't apply.
+The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Connection edits (`baseUrlSuffix`, `igVersion`, `clientId`) apply to the supplied endpoint for this run only, overriding its values; blank edits keep the supplied values. The suffix uses the same path-only validation as synthetic runs and cannot add user info, a query or a fragment. Payer faults only apply to synthetic payers: the UI hides them for custom runs, and the API rejects custom requests with faults.
 
 ```sh
 # The HL7 CRD reference server, started locally in Docker (not run in CI):

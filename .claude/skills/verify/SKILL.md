@@ -52,6 +52,8 @@ The doctor never prints variable values or interface addresses. If doctor fails,
 | `running` | `/` results while `POST /api/runs` is in flight | healthy run, then Payer is slow on; the POST is held (and sent without the fault) while the page is checked | Running band names the payer and the slow-fault note, six pending steps, `aria-busy` on the results, previous steps hidden; after release the new verdict replaces it |
 | `compare` | `/` Changes since run section (Compare with) | healthy run, then the Discovery-down run, then pick the healthy run in Compare with | Verdict tile Pass → Fail Worse, `discovery.reachable` Newly failing in the Checks that changed table, the one-sided group collapsed, `run.read` audit for the compared run; Stop comparing hides it and focuses Compare with |
 
+| `custom` | `/` custom endpoint form | browser-only feature flag, select a synthetic fault then Your own endpoint, fill connection edits, submit to the still-disabled disposable backend, switch back | faults hidden only for custom selection, correct endpoint hints, edits present and faults absent in the POST, real API rejects with 400; synthetic fault selection restored on return |
+
 When you change something outside this map, add a row and a tagged test in `drive/main-path.spec.ts`. Keep larger journeys in `tests/ui` (see the contract's "Journeys" section). The `selftest-fail` tag is not a feature. It fails on purpose so that `cleanup.test.mjs` can exercise cleanup.
 
 ## 4. Evidence
