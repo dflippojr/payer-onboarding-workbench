@@ -186,6 +186,12 @@ class RedactorTest {
     }
 
     @Test
+    void masksSecretStringCutOffByTheEndOfTheText() {
+        assertEquals("{\"cards\":[],\"access_token\":\"[REDACTED]\"",
+                Redactor.redact("{\"cards\":[],\"access_token\":\"synthetic-cut-tok"));
+    }
+
+    @Test
     void leavesOrdinaryJsonFieldsAlone() {
         String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
         assertEquals(text, Redactor.redact(text));

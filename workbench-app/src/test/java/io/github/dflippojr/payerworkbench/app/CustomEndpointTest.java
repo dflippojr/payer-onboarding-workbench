@@ -380,6 +380,118 @@ class CustomEndpointTest {
         }
     }
 
+    @Test
+    void payerEchoedCredentialsAreMaskedOnEverySurface() throws Exception {
+        // A debug server that echoes credentials into a 401 body: a Basic pair that is all letters in
+        // base64 ("user:pass"), a colon-split bearer token, numeric secrets and a private_key field.
+        String base = startEchoServer(401, """
+                {"error":"unauthorized","access_token":918273645,"echo":{"private_key":"MIIEvSyntheticOnly123"},\
+                "debug":"Authorization: Basic dXNlcjpwYXNz\\nBearer abc123:SECRETPART\\n{\\"client_secret\\":918273646}"}""");
+        String body = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint",
+                Map.of("baseUrl", base, "authType", "NONE", "igVersion", igVersion)));
+
+        HttpResponse<String> posted = send("POST", "/api/runs", body);
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        var run = mapper.readTree(posted.body());
+        assertEquals("Hook call to crd-order-sign returned HTTP 401", run.path("steps").get(3).path("summary").asText());
+        String recorded = run.path("steps").get(3).path("details").path("exchanges").get(0).path("responseBody").asText();
+        assertTrue(recorded.contains("Basic [REDACTED]") && recorded.contains("\"access_token\":\"[REDACTED]\""), recorded);
+        String runId = run.path("runId").asText();
+        List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body()));
+        for (String format : List.of("md", "html", "json")) {
+            HttpResponse<String> report = send("GET", "/api/runs/" + runId + "/report?format=" + format, null);
+            assertEquals(200, report.statusCode());
+            surfaces.add(report.body());
+        }
+        for (String surface : surfaces) {
+            for (String secret : List.of("dXNlcjpwYXNz", "SECRETPART", "918273645", "918273646", "MIIEvSyntheticOnly123")) {
+                assertFalse(surface.contains(secret), secret + " leaked");
+            }
+        }
+    }
+
+    @Test
+    void oversizedHookBodyIsCutAtTheLimitAndNamed() throws Exception {
+        long limit = WorkbenchProperties.DEFAULT_MAX_RESPONSE_BYTES;
+        String note = "[truncated at " + limit + " bytes]";
+        // 64 MiB, streamed in chunks so the test payer never holds it in memory either.
+        String base = startEchoServer(200, null);
+
+        for (int i = 0; i < 3; i++) {
+            HttpResponse<String> posted = send("POST", "/api/runs", mapper.writeValueAsString(Map.of("sampleId", SAMPLE,
+                    "customEndpoint", Map.of("baseUrl", base, "authType", "NONE", "igVersion", igVersion))));
+
+            assertEquals(200, posted.statusCode());
+            assertTrue(posted.body().length() < 2 * limit, "POST response is " + posted.body().length() + " chars");
+            var run = mapper.readTree(posted.body());
+            var hook = run.path("steps").get(3);
+            assertFalse(hook.path("ok").asBoolean());
+            assertEquals("Hook call to crd-order-sign got HTTP 200, but the response exceeded the 4 MiB limit, "
+                    + "so the workbench stopped reading it", hook.path("summary").asText());
+            var exchange = hook.path("details").path("exchanges").get(0);
+            assertEquals(200, exchange.path("status").asInt(), exchange.toString().substring(0, 300));
+            String recorded = exchange.path("responseBody").asText();
+            assertTrue(recorded.startsWith("{\"cards\":[],\"padding\":\"aaaa"), recorded.substring(0, 40));
+            assertTrue(recorded.endsWith("\n" + note), recorded.substring(recorded.length() - 60));
+            assertEquals(limit + 1 + note.length(), recorded.length());
+            assertTrue(exchange.path("transportError").asText().contains("exceeded the 4 MiB limit"),
+                    exchange.path("transportError").asText());
+            var finding = java.util.stream.StreamSupport.stream(run.path("findings").spliterator(), false)
+                    .filter(f -> f.path("checkId").asText().equals(OnboardingRunner.RESPONSE_TOO_LARGE_CHECK))
+                    .findFirst().orElseThrow();
+            assertEquals("FAIL", finding.path("severity").asText());
+            assertTrue(finding.path("title").asText().contains("4 MiB"), finding.toString());
+            assertFalse(posted.body().contains("OutOfMemoryError"));
+            assertFalse(posted.body().contains("got no response"));
+        }
+        OnboardingRun healthy = runner.run(new RunRequest(SyntheticPayers.FABRIKAM_ID, Environment.SANDBOX, SAMPLE,
+                List.of(), null, null));
+        assertTrue(healthy.steps().stream().allMatch(s -> s.ok()), "every step passes: " + healthy.steps());
+        assertTrue(healthy.findings().stream().noneMatch(f -> f.severity() == io.github.dflippojr.payerworkbench.core.Severity.FAIL),
+                healthy.findings()::toString);
+    }
+
+    /**
+     * A no-auth CDS Hooks server whose hook call answers {@code status} with {@code hookBody}, or
+     * with a 64 MiB body when {@code hookBody} is null. Returns its base URL.
+     */
+    private String startEchoServer(int status, String hookBody) throws java.io.IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/echo/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""");
+                return;
+            }
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            if (hookBody != null) {
+                byte[] bytes = hookBody.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(status, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+                return;
+            }
+            byte[] chunk = "a".repeat(64 * 1024).getBytes(StandardCharsets.US_ASCII);
+            exchange.sendResponseHeaders(status, 0);
+            try (var out = exchange.getResponseBody()) {
+                out.write("{\"cards\":[],\"padding\":\"".getBytes(StandardCharsets.US_ASCII));
+                for (int i = 0; i < 1024; i++) {
+                    out.write(chunk);
+                }
+                out.write("\"}".getBytes(StandardCharsets.US_ASCII));
+            } catch (java.io.IOException e) {
+                // The workbench stopped reading at its limit and closed the connection.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        return "http://127.0.0.1:" + server.getAddress().getPort() + "/echo";
+    }
+
     private static void respond(com.sun.net.httpserver.HttpExchange exchange, String body) throws java.io.IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");

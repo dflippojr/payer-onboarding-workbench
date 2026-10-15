@@ -16,6 +16,8 @@ import java.time.Duration;
  * @param maxRuns           how many runs {@code GET /api/runs/{id}} remembers
  * @param customEndpoints   {@code workbench.custom-endpoints.*}
  * @param audit             {@code workbench.audit.*}: the optional durable audit journal
+ * @param maxResponseBytes  the most of any one payer response body the workbench reads and keeps
+ *                          (default 4 MiB); a longer body fails the call with a finding naming the limit
  */
 @ConfigurationProperties("workbench")
 public record WorkbenchProperties(
@@ -25,8 +27,12 @@ public record WorkbenchProperties(
         Duration requestTimeout,
         Integer maxRuns,
         CustomEndpoints customEndpoints,
-        Audit audit
+        Audit audit,
+        Long maxResponseBytes
 ) {
+    /** Default {@link #maxResponseBytes()}: 4 MiB. */
+    public static final long DEFAULT_MAX_RESPONSE_BYTES = 4L * 1024 * 1024;
+
     /**
      * @param enabled whether {@code POST /api/runs} accepts a {@code customEndpoint}; off by default
      *                because an enabled copy forwards requests to hosts the caller names
@@ -57,13 +63,18 @@ public record WorkbenchProperties(
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
+                               Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit) {
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit, null);
+    }
+
+    public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null, null);
     }
 
     @ConstructorBinding
@@ -75,5 +86,9 @@ public record WorkbenchProperties(
         latencyFail = latencyFail == null ? Duration.ofSeconds(10) : latencyFail;
         requestTimeout = requestTimeout == null ? Duration.ofSeconds(15) : requestTimeout;
         maxRuns = maxRuns == null ? 200 : maxRuns;
+        maxResponseBytes = maxResponseBytes == null ? DEFAULT_MAX_RESPONSE_BYTES : maxResponseBytes;
+        if (maxResponseBytes <= 0 || maxResponseBytes > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("workbench.max-response-bytes must be between 1 and " + Integer.MAX_VALUE);
+        }
     }
 }

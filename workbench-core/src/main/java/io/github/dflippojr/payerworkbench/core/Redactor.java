@@ -40,18 +40,24 @@ public final class Redactor {
             "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----(?!\\s*" + Pattern.quote(MASK) + ").*", Pattern.DOTALL);
 
     /**
+     * Where a word starts: a word boundary, or right after a JSON escape such as {@code \n}, which
+     * leaves a letter in front of the word in text quoted inside a JSON string.
+     */
+    private static final String WORD_START = "(?:\\b|(?<=\\\\[nrtbf]))";
+
+    /**
      * A scheme, its token68 part (group 2) and anything else up to the next whitespace, quote,
      * comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked whole.
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
-            "(?i)\\b(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
+            "(?i)" + WORD_START + "(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
                     + "([A-Za-z0-9\\-._~+/]+=*)([^\\s\"',;\\\\]*)");
 
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
 
     private static final Pattern JWT = Pattern.compile(
-            "\\b(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
+            WORD_START + "(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
 
     /**
      * JSON field names whose values are always masked, lower case without {@code _} and {@code -}
@@ -66,11 +72,12 @@ public final class Redactor {
 
     /**
      * A JSON field and its string or scalar value; group 1 is the name, checked with
-     * {@link #isSecretField(String)}. Possessive quantifiers: a plain alternation recurses per
+     * {@link #isSecretField(String)}. A string cut off by the end of the text (a body truncated at
+     * the size limit) counts too. Possessive quantifiers: a plain alternation recurses per
      * character and overflows on long values.
      */
     private static final Pattern JSON_FIELD = Pattern.compile(
-            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+\"|" + JSON_SCALAR + ")");
+            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\z)|" + JSON_SCALAR + ")");
 
     /** The same inside JSON that is itself embedded in a JSON string ({@code {\"key\": \"value\"}}). */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
@@ -80,7 +87,7 @@ public final class Redactor {
             "client_secret|access_token|refresh_token|id_token|password|api_key|apikey|private_key";
 
     private static final Pattern FORM_SECRET = Pattern.compile(
-            "(?i)\\b(" + FORM_SECRET_KEYS + ")=[^&\\s\"]*");
+            "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=[^&\\s\"\\\\]*");
 
     private static final Set<String> SENSITIVE_HEADERS = Set.of(
             "authorization", "proxy-authorization", "cookie", "set-cookie",

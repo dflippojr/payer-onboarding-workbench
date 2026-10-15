@@ -30,6 +30,9 @@ function isUserPass(token) {
 /** Redactor keeps one short all-letter word after the scheme as prose, unless it is a Basic user:pass. */
 const isAuthProse = m => /^[A-Za-z]{1,15}[.)]*$/.test(m[2] + m[3]) && !(/^basic$/i.test(m[1]) && isUserPass(m[2]));
 
+/** A word boundary, or right after a JSON escape such as \n inside a JSON string, as in Redactor. */
+const WORD_START = String.raw`(?:\b|(?<=\\[nrtbf]))`;
+
 /** A JSON value Redactor masks for a secret field: a string, or a number, true or false. */
 const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
@@ -45,18 +48,18 @@ const TEXT_CHECKS = [
   // The credential runs to the next whitespace, quote, comma, semicolon or backslash, as in Redactor.
   {
     name: 'Bearer/Basic credential',
-    re: /\b(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])([A-Za-z0-9\-._~+/]+=*)([^\s"',;\\]*)/gi,
+    re: new RegExp(String.raw`${WORD_START}(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])([A-Za-z0-9\-._~+/]+=*)([^\s"',;\\]*)`, 'gi'),
     ok: isAuthProse,
   },
   // Redactor keeps a JWT's header and claims and masks the signature.
-  { name: 'signed JWT', re: /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+/g },
+  { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
   {
     name: 'JSON secret field',
     re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
     ok: m => !isSecretField(m[1]) || m[2] === MASK || m[2] === '',
   },
-  { name: 'form secret', re: new RegExp(`\\b(${FORM_SECRET_KEYS})=([^&\\s"\\\\]*)`, 'gi'), ok: m => m[2] === MASK || m[2] === '' },
+  { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"\\]*)`, 'gi'), ok: m => m[2] === MASK || m[2] === '' },
 ];
 
 /** Returns one {check, match} per suspected leak in `text`. */

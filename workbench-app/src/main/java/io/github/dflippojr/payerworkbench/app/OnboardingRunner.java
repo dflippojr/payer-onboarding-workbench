@@ -50,6 +50,7 @@ import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -87,6 +88,8 @@ public class OnboardingRunner {
     public static final String CONNECTION_RECORD_CHECK = "connection.record";
     /** A step failed and no other check explains it. */
     public static final String STEP_FAILED_CHECK = "run.step-failed";
+    /** A payer response ran past {@code workbench.max-response-bytes}, so the workbench stopped reading it. */
+    public static final String RESPONSE_TOO_LARGE_CHECK = "run.response-too-large";
     static final List<String> STEP_ORDER = List.of(RESOLVE, DISCOVERY, AUTHENTICATE, HOOK_REQUEST, PARSE_RESPONSE);
     /** MDC keys set for the length of a run. */
     static final String MDC_RUN_ID = "runId";
@@ -397,7 +400,8 @@ public class OnboardingRunner {
             this.recorder = new ExchangeRecorder(runId);
             this.credentials = credentials;
             this.custom = custom;
-            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(http, runId),
+            HttpClient limited = new ResponseLimitClient(http, properties.maxResponseBytes());
+            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(limited, runId),
                     this::observeAssertion, this::observeBearer),
                     credentials, null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
             this.runId = runId;
@@ -631,6 +635,11 @@ public class OnboardingRunner {
         }
 
         private Outcome callFailed(String what, PayerCallException failure) {
+            ResponseTooLargeException tooLarge = ResponseTooLargeException.in(failure);
+            if (tooLarge != null) {
+                return Outcome.fail(what + " got HTTP " + tooLarge.statusCode() + ", but the response exceeded the "
+                        + ResponseTooLargeException.describe(tooLarge.limit()) + " limit, so the workbench stopped reading it");
+            }
             return Outcome.fail(failure.statusCode().isPresent()
                     ? what + " returned HTTP " + failure.statusCode().getAsInt()
                     : what + " got no response: " + failure.getMessage());
@@ -722,7 +731,25 @@ public class OnboardingRunner {
                         "Add a ConnectionRecord for this payer and environment (base URL, auth type, client id "
                                 + "and a credential reference), or pick an environment that has one."));
             }
+            recorder.events().stream()
+                    .filter(e -> ResponseTooLargeException.in(e.error()) != null)
+                    .findFirst()
+                    .ifPresent(e -> findings.add(responseTooLarge(e, ResponseTooLargeException.in(e.error()))));
             return findings;
+        }
+
+        private Finding responseTooLarge(PayerExchange exchange, ResponseTooLargeException tooLarge) {
+            String limit = ResponseTooLargeException.describe(tooLarge.limit());
+            return new Finding(RESPONSE_TOO_LARGE_CHECK, Severity.FAIL, "Response larger than the " + limit + " limit",
+                    "The payer answered the " + exchange.phase().name().toLowerCase(Locale.ROOT)
+                            + " call, but its body ran past " + limit + " (workbench.max-response-bytes), so the "
+                            + "workbench stopped reading it and kept only the first " + limit + ". A CDS Hooks "
+                            + "client would also have to read and parse the whole body before it could show a card.",
+                    exchange.method() + " " + exchange.uri() + "\nstatus: " + tooLarge.statusCode()
+                            + "\nbytes received before stopping: " + tooLarge.bytesRead()
+                            + "\nlimit: " + tooLarge.limit() + " bytes",
+                    "Return a smaller response: drop padding, debug output or large embedded resources. If the "
+                            + "size is expected, start the workbench with a larger workbench.max-response-bytes.");
         }
 
         /**
