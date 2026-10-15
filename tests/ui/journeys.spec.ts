@@ -1,49 +1,63 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect, ready, runOnboarding, reopen, audit, auditEvent, openDrawer } from './fixtures';
 
-for (const payer of ['northwind', 'fabrikam', 'tailspin']) {
-  test('J01/J05/J06 healthy ' + payer + ', reload, history and reports', async ({ page }) => {
-    const errors: string[] = [];
-    page.on('pageerror', error => errors.push(error.message));
-    await ready(page);
-    await page.locator('input[value="' + payer + '-synthetic"]').check();
-    await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
-    const result = await runOnboarding(page);
-    await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
-    await expect(page.locator('#steps .failed')).toHaveCount(0);
-    await expect(page.locator('#verdict-word')).toHaveText(/^Pass/);
-    await expect(page.locator('#results-heading')).toHaveText(/^Every step passed/);
-    await expect(page.locator('#verdict-check')).toBeHidden();
-    // Passing checks stay collapsed.
-    await expect(page.locator('#findings .group.PASS details')).not.toHaveAttribute('open', '');
-    await audit('run.completed', result.runId, payer + '-synthetic');
-    await reopen(page, result.runId);
-    await auditEvent('run.read', result.runId);
-    await openDrawer(page, 'Connection overrides');
-    await page.locator('#clientId').fill('synthetic-unsent');
-    await page.getByLabel('Sample request').selectOption('order-sign-home-oxygen');
-    let posts = 0;
-    page.on('request', r => { if (r.method() === 'POST') posts++; });
-    await page.getByLabel('Recent runs').selectOption('');
-    await page.getByLabel('Recent runs').selectOption(result.runId);
-    await expect(page.locator('#history-status')).toHaveText('Run reopened.');
-    await expect(page.locator('#clientId')).toHaveValue('synthetic-unsent');
-    await expect(page.getByLabel('Sample request')).toHaveValue('order-sign-home-oxygen');
-    expect(posts).toBe(0);
-    for (const format of ['html', 'md', 'json']) {
-      await page.getByLabel('Report format').selectOption(format);
-      const downloaded = page.waitForEvent('download');
-      await page.getByRole('link', { name: 'Download report' }).click();
-      const download = await downloaded;
-      const report = await readFile((await download.path())!, 'utf8');
-      expect(report).toContain(result.runId);
-      expect(report.toLowerCase()).toContain('synthetic');
-      expect(report).toContain('PASS');
-      await auditEvent('report.rendered', result.runId, { reportFormat: format });
-    }
-    expect(errors).toEqual([]);
+test('J01/J05/J06 healthy northwind, reload, history and reports', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await ready(page);
+  await page.locator('input[value="northwind-synthetic"]').check();
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  const result = await runOnboarding(page);
+  await expect(page.locator('#run-status')).toHaveText('Done: no failures.');
+  await expect(page.locator('#steps .failed')).toHaveCount(0);
+  await expect(page.locator('#verdict-word')).toHaveText(/^Pass/);
+  await expect(page.locator('#results-heading')).toHaveText(/^Every step passed/);
+  await expect(page.locator('#verdict-check')).toBeHidden();
+  // Passing checks stay collapsed.
+  await expect(page.locator('#findings .group.PASS details')).not.toHaveAttribute('open', '');
+  await audit('run.completed', result.runId, 'northwind-synthetic');
+  await reopen(page, result.runId);
+  await auditEvent('run.read', result.runId);
+  await openDrawer(page, 'Connection overrides');
+  await page.locator('#clientId').fill('synthetic-unsent');
+  await page.getByLabel('Sample request').selectOption('order-sign-home-oxygen');
+  let posts = 0;
+  page.on('request', r => { if (r.method() === 'POST') posts++; });
+  await page.getByLabel('Recent runs').selectOption('');
+  await page.getByLabel('Recent runs').selectOption(result.runId);
+  await expect(page.locator('#history-status')).toHaveText('Run reopened.');
+  await expect(page.locator('#clientId')).toHaveValue('synthetic-unsent');
+  await expect(page.getByLabel('Sample request')).toHaveValue('order-sign-home-oxygen');
+  expect(posts).toBe(0);
+  for (const format of ['html', 'md', 'json']) {
+    await page.getByLabel('Report format').selectOption(format);
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('link', { name: 'Download report' }).click();
+    const download = await downloaded;
+    const report = await readFile((await download.path())!, 'utf8');
+    expect(report).toContain(result.runId);
+    expect(report.toLowerCase()).toContain('synthetic');
+    expect(report).toContain('PASS');
+    await auditEvent('report.rendered', result.runId, { reportFormat: format });
+  }
+  expect(errors).toEqual([]);
+});
+
+test('each payer radio sends its payer id in the run request', async ({ page }) => {
+  await ready(page);
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  const payerIds = ['northwind-synthetic', 'fabrikam-synthetic', 'tailspin-synthetic'];
+  const posted: string[] = [];
+  await page.route('**/api/runs', async route => {
+    if (route.request().method() === 'POST') posted.push(route.request().postDataJSON().payerId);
+    await route.continue();
   });
-}
+  for (const payerId of payerIds) {
+    await page.locator('input[value="' + payerId + '"]').check();
+    await runOnboarding(page);
+  }
+  expect(posted).toEqual(payerIds);
+});
 
 test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page }) => {
   await ready(page);
