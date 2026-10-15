@@ -158,7 +158,15 @@ public final class Redactor {
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
         return PROSE_WORD.matcher(word).matches()
-                && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(m.group(2).replaceFirst("\\.+$", "")));
+                && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(withoutTrailingPeriods(m.group(2))));
+    }
+
+    private static String withoutTrailingPeriods(String token) {
+        int end = token.length();
+        while (end > 0 && token.charAt(end - 1) == '.') {
+            end--;
+        }
+        return token.substring(0, end);
     }
 
     /**
