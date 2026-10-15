@@ -192,6 +192,46 @@ class RedactorTest {
     }
 
     @Test
+    void masksBasicUserPassAtTheEndOfASentence() {
+        assertEquals("Received Authorization: Basic [REDACTED]",
+                Redactor.redact("Received Authorization: Basic dXNlcjpwYXNz."));
+        assertEquals("Basic [REDACTED]", Redactor.redact("Basic dXNlcjpwYXNz..."));
+        assertEquals("Basic authentication is required.", Redactor.redact("Basic authentication is required."));
+    }
+
+    @Test
+    void masksFormSecretsThroughABackslash() {
+        assertEquals("client_secret=[REDACTED]&x=1", Redactor.redact("client_secret=abc\\xyzTAIL&x=1"));
+        // A form body quoted in JSON: \\ is an escaped backslash in the value, \" and \n end it.
+        assertEquals("{\"body\":\"password=[REDACTED]\\nnext\"}", Redactor.redact("{\"body\":\"password=pa\\\\ssTAIL\\nnext\"}"));
+        assertEquals("{\"body\":\"api_key=[REDACTED]\"}", Redactor.redact("{\"body\":\"api_key=k\\\\\\\\TAIL\"}"));
+    }
+
+    @Test
+    void masksEmbeddedJsonSecretCutOffOrHoldingAnEscapedQuote() {
+        assertEquals("{\"result\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"",
+                Redactor.redact("{\"result\":\"{\\\"access_token\\\":\\\"SECRETPARTIAL"));
+        assertEquals("{\"result\":\"{\\\"password\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"result\":\"{\\\"password\\\":\\\"pa\\\\\\\"ssTAIL\\\"}\"}"));
+        assertEquals("{\"result\":\"{\\\"password\\\":\\\"[REDACTED]\\\",\\\"user\\\":\\\"u\\\"}\"}",
+                Redactor.redact("{\"result\":\"{\\\"password\\\":\\\"pa\\\\\\\\\\\",\\\"user\\\":\\\"u\\\"}\"}"));
+    }
+
+    @Test
+    void masksSecretFieldsHoldingAnObjectOrArray() {
+        assertEquals("{\"private_key\":\"[REDACTED]\",\"kid\":\"k1\"}",
+                Redactor.redact("{\"private_key\":{\"kty\":\"RSA\",\"d\":\"PRIVATED\",\"n\":\"a}]\\\"b\"},\"kid\":\"k1\"}"));
+        assertEquals("{\"access_token\": \"[REDACTED]\"}", Redactor.redact("{\"access_token\": [\"ARRSECRET\", [1]]}"));
+        assertEquals("{\"secret\":\"[REDACTED]\"", Redactor.redact("{\"secret\":{\"d\":\"CUTOFF"));
+        assertEquals("{\"result\":\"{\\\"private_key\\\":\\\"[REDACTED]\\\",\\\"kid\\\":\\\"k1\\\"}\"}",
+                Redactor.redact("{\"result\":\"{\\\"private_key\\\":{\\\"d\\\":\\\"PRIV}D\\\"},\\\"kid\\\":\\\"k1\\\"}\"}"));
+        assertEquals("{\"result\":\"{\\\"private_key\\\":\\\"[REDACTED]\\\"\"}",
+                Redactor.redact("{\"result\":\"{\\\"private_key\\\":{\\\"d\\\":\\\"PRIVD\"}"));
+        String ordinary = "{\"cards\":[{\"summary\":\"s\"}],\"token\":{\"type\":\"Bearer\"}}";
+        assertEquals(ordinary, Redactor.redact(ordinary));
+    }
+
+    @Test
     void leavesOrdinaryJsonFieldsAlone() {
         String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
         assertEquals(text, Redactor.redact(text));

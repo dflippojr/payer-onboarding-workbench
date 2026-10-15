@@ -31,7 +31,13 @@
     {"id": "form-id-token", "rule": "FORM_SECRET", "input": "id_token=FAKE-form-idtoken-0018", "secrets": ["FAKE-form-idtoken-0018"]},
     {"id": "form-password", "rule": "FORM_SECRET", "input": "user=fake&password=FAKE-form-password-0019", "secrets": ["FAKE-form-password-0019"]},
     {"id": "form-api-key", "rule": "FORM_SECRET", "input": "api_key=FAKE-form-apikey-0020", "secrets": ["FAKE-form-apikey-0020"]},
-    {"id": "form-apikey", "rule": "FORM_SECRET", "input": "apikey=FAKE-form-apikey2-0021", "secrets": ["FAKE-form-apikey2-0021"]}
+    {"id": "form-apikey", "rule": "FORM_SECRET", "input": "apikey=FAKE-form-apikey2-0021", "secrets": ["FAKE-form-apikey2-0021"]},
+    {"id": "basic-user-pass-sentence-end", "rule": "AUTH_SCHEME", "input": "Received Authorization: Basic dXNlcjpwYXNz.", "secrets": ["dXNlcjpwYXNz"]},
+    {"id": "form-backslash", "rule": "FORM_SECRET", "input": "client_secret=FAKE\\x-form-0038&x=1", "secrets": ["x-form-0038"]},
+    {"id": "json-in-json-cut-off", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"result\":\"{\\\"access_token\\\":\\\"FAKE-embedded-cut-0039", "secrets": ["FAKE-embedded-cut-0039"]},
+    {"id": "json-in-json-escaped-quote", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"result\":\"{\\\"password\\\":\\\"pa\\\\\\\"FAKE-embedded-0040\\\"}\"}", "secrets": ["FAKE-embedded-0040"]},
+    {"id": "json-object-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"private_key\":{\"kty\":\"RSA\",\"d\":\"FAKE-jwk-d-0041\"}}", "secrets": ["FAKE-jwk-d-0041"]},
+    {"id": "json-array-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"access_token\":[\"FAKE-array-token-0042\"]}", "secrets": ["FAKE-array-token-0042"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
@@ -43,7 +49,9 @@
     {"id": "basic-realm", "rule": "AUTH_SCHEME", "input": "Basic realm=\"synthetic-payer\""},
     {"id": "field-name-in-prose", "rule": "JSON_SECRET", "input": "the client_secret is required and the password must be set"},
     {"id": "form-no-secrets", "rule": "FORM_SECRET", "input": "grant_type=client_credentials&scope=system%2F*.read"},
-    {"id": "plain-json", "rule": "JSON_SECRET", "input": "{\"resourceType\":\"Patient\",\"id\":\"example\"}"}
+    {"id": "plain-json", "rule": "JSON_SECRET", "input": "{\"resourceType\":\"Patient\",\"id\":\"example\"}"},
+    {"id": "prose-basic-sentence-end", "rule": "PROSE_WORD", "input": "The payer only accepts HTTP Basic auth."},
+    {"id": "json-ordinary-structures", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"token\":{\"type\":\"Bearer\"},\"cards\":[{\"summary\":\"s\"}]}"}
   ],
   "headers": [
     {"name": "Authorization", "value": "Bearer FAKE-header-bearer-0022", "secrets": ["FAKE-header-bearer-0022"]},

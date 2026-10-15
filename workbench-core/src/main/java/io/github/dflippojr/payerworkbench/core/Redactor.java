@@ -23,8 +23,8 @@ import java.util.regex.Pattern;
  * stay readable because their claims are useful for diagnosis), PEM blocks, and
  * the values of well-known secret fields such as {@code client_secret},
  * {@code access_token} and {@code private_key} in form and query bodies and in
- * JSON (string, number and boolean values, also in JSON embedded in a JSON
- * string; see {@link #isSecretField(String)}). It is a safety net, not a
+ * JSON (any value, including an object such as a private JWK, also in JSON
+ * embedded in a JSON string; see {@link #isSecretField(String)}). It is a safety net, not a
  * guarantee: callers should still avoid passing secrets around in the first place.
  */
 public final class Redactor {
@@ -79,15 +79,40 @@ public final class Redactor {
     private static final Pattern JSON_FIELD = Pattern.compile(
             "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\z)|" + JSON_SCALAR + ")");
 
-    /** The same inside JSON that is itself embedded in a JSON string ({@code {\"key\": \"value\"}}). */
+    /** A literal backslash, as a regex. */
+    private static final String BACKSLASH = "\\\\";
+
+    /** Any character but a quote or backslash, as a regex. */
+    private static final String PLAIN = "[^\"\\\\]";
+
+    /**
+     * The same inside JSON that is itself embedded in a JSON string ({@code {\"key\": \"value\"}}),
+     * where the inner string's own escapes are escaped again: an inner {@code \\} is four backslashes
+     * and an inner {@code \"} three and a quote. A string cut off by the end of the text counts too.
+     */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
-            "\\\\\"([A-Za-z_-]{1,64})\\\\\"(\\s*:\\s*)(?:\\\\\"(?:[^\"\\\\]++|\\\\[^\"])*+\\\\\"|" + JSON_SCALAR + ")");
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"(?:" + PLAIN + "++"
+                    + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
+                    + "|" + BACKSLASH + PLAIN + ")*+(?:" + BACKSLASH + "\"|\\z)|" + JSON_SCALAR + ")");
+
+    /** A JSON field whose value is an object or array; group 1 is the name. */
+    private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"([A-Za-z_-]{1,64})\"\\s*:\\s*(?=[{\\[])");
+
+    /** The same inside JSON embedded in a JSON string. */
+    private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"\\s*:\\s*(?=[{\\[])");
 
     private static final String FORM_SECRET_KEYS =
             "client_secret|access_token|refresh_token|id_token|password|api_key|apikey|private_key";
 
+    /**
+     * A form secret runs to the next {@code &}, whitespace or quote, or to a backslash that starts a
+     * JSON escape ({@code \n}, {@code \"}) in a form body quoted inside JSON. Any other backslash,
+     * an escaped one ({@code \\}) included, is part of the value.
+     */
     private static final Pattern FORM_SECRET = Pattern.compile(
-            "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=[^&\\s\"\\\\]*");
+            "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=(?:[^&\\s\"\\\\]++|" + BACKSLASH.repeat(2) + "|"
+                    + BACKSLASH + "(?![nrtbf\"]))*+");
 
     private static final Set<String> SENSITIVE_HEADERS = Set.of(
             "authorization", "proxy-authorization", "cookie", "set-cookie",
@@ -112,6 +137,8 @@ public final class Redactor {
                 ? m.group()
                 : m.group(1) + " " + MASK));
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
+        out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
+        out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
         out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretField(m.group(1))
                 ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + MASK + "\""
                 : m.group()));
@@ -125,12 +152,68 @@ public final class Redactor {
     /**
      * Whether a scheme match is prose ("Missing bearer token", "Basic authentication is required")
      * rather than a credential: one short all-letter word, and for {@code Basic} not the base64 of a
-     * {@code user:pass} pair (RFC 7617), which can be all letters too ({@code dXNlcjpwYXNz}).
+     * {@code user:pass} pair (RFC 7617), which can be all letters too ({@code dXNlcjpwYXNz}), even
+     * with the period that ends a sentence after it.
      */
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
         return PROSE_WORD.matcher(word).matches()
-                && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(m.group(2)));
+                && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(m.group(2).replaceFirst("\\.+$", "")));
+    }
+
+    /**
+     * Replaces the object or array value of every secret-named field that {@code fields} finds with a
+     * masked string, through its matching close bracket or, in a body cut off at the size limit, to
+     * the end of the text.
+     */
+    private static String maskStructures(String text, Pattern fields, boolean embedded) {
+        Matcher m = fields.matcher(text);
+        StringBuilder out = null;
+        int copied = 0;
+        int from = 0;
+        while (from < text.length() && m.find(from)) {
+            from = m.end();
+            if (isSecretField(m.group(1))) {
+                String quote = embedded ? "\\\"" : "\"";
+                out = out == null ? new StringBuilder(text.length()) : out;
+                out.append(text, copied, m.end()).append(quote).append(MASK).append(quote);
+                copied = endOfStructure(text, m.end(), embedded);
+                from = copied;
+            }
+        }
+        return out == null ? text : out.append(text, copied, text.length()).toString();
+    }
+
+    /**
+     * Where the JSON object or array starting at {@code start} ends; brackets inside strings don't
+     * count. In embedded JSON every character may carry one more escape ({@code \"} is a quote of
+     * the inner JSON), and an unescaped quote ends the outer string and with it the inner JSON.
+     */
+    private static int endOfStructure(String text, int start, boolean embedded) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        int i = start;
+        while (i < text.length()) {
+            char c = text.charAt(i++);
+            if (embedded && c == '"') {
+                return i - 1;
+            }
+            if (embedded && c == '\\' && i < text.length()) {
+                c = text.charAt(i++);
+            }
+            if (inString) {
+                inString = escaped || c != '"';
+                escaped = !escaped && c == '\\';
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '{' || c == '[') {
+                depth++;
+            } else if ((c == '}' || c == ']') && --depth == 0) {
+                return i;
+            }
+        }
+        return text.length();
     }
 
     private static boolean isUserPass(String token) {
