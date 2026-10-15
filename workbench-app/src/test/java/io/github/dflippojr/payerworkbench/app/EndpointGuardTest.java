@@ -1,6 +1,8 @@
 package io.github.dflippojr.payerworkbench.app;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -37,6 +39,33 @@ class EndpointGuardTest {
     void publicHttpsIsApproved() {
         URI uri = guard(Map.of("payer.example.com", "93.184.216.34")).approve("Base URL", "https://payer.example.com/r4");
         assertEquals("payer.example.com", uri.getHost());
+    }
+
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource(delimiter = '|', textBlock = """
+            Base URL       | http://example.com/r4                | Plain http is only allowed to loopback
+            Base URL       | http://169.254.169.254/latest        | Plain http is only allowed to loopback
+            Base URL       | https://169.254.169.254/latest       | private, loopback, link-local or metadata
+            Base URL       | https://10.0.0.5/r4                  | private, loopback, link-local or metadata
+            Base URL       | https://192.168.1.10/r4              | private, loopback, link-local or metadata
+            Base URL       | https://172.16.0.1/r4                | private, loopback, link-local or metadata
+            Base URL       | https://100.100.100.200/r4           | private, loopback, link-local or metadata
+            Base URL       | https://[fd00:ec2::254]/r4           | private, loopback, link-local or metadata
+            Base URL       | https://[fe80::1]/r4                 | private, loopback, link-local or metadata
+            Base URL       | https://2130706433/r4                | host 2130706433 resolves to 127.0.0.1
+            Base URL       | https://metadata.google.internal/    | a cloud metadata address
+            Base URL       | https://user:pw@example.com/r4       | must not contain user info
+            Base URL       | https://example.com/r4?token=x       | must not contain user info
+            Base URL       | ftp://example.com/                   | must start with https://
+            Base URL       | file:///etc/passwd                   | must start with https://
+            Base URL       | http://127.0.0.1:9/sp ace            | Base URL is not a valid URL
+            Token endpoint | https://10.0.0.5/oauth/token         | Token endpoint host 10.0.0.5 resolves to
+            """)
+    void destinationsThatAreNotPublicHttpsOrLoopbackAreRefusedWithAReason(String label, String url, String fragment) {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> guard(Map.of()).approve(label, url), url);
+        assertTrue(e.getMessage().startsWith(label), e.getMessage());
+        assertTrue(e.getMessage().contains(fragment), e.getMessage());
     }
 
     @Test

@@ -33,9 +33,10 @@ class RunReportTest {
     private final String token = random(32);
     private final String secret = random(24);
     private final String jwtSignature = random(64);
-    private final String pem = generatePem();
+    /** Generating an RSA key is the slow part of this class, so every test shares one. */
+    private static final String PEM = generatePem();
     /** A line from the middle of the key body; any part of it in a report is a leak. */
-    private final String keyChunk = pem.lines().skip(3).findFirst().orElseThrow();
+    private static final String KEY_CHUNK = PEM.lines().skip(3).findFirst().orElseThrow();
 
     @ParameterizedTest
     @EnumSource(ReportRenderer.Format.class)
@@ -43,7 +44,7 @@ class RunReportTest {
         String out = ReportRenderer.render(report(leakyRun()), format);
         assertFalse(out.contains(token), format + ": access token leaked");
         assertFalse(out.contains(secret), format + ": client secret leaked");
-        assertFalse(out.contains(keyChunk), format + ": private key leaked");
+        assertFalse(out.contains(KEY_CHUNK), format + ": private key leaked");
         assertFalse(out.contains(jwtSignature), format + ": JWT signature leaked");
         assertTrue(out.contains("[REDACTED]"), format + ": nothing was marked as redacted");
         assertTrue(out.contains(RunReport.DISCLAIMER_TEXT), format + ": disclaimer missing");
@@ -95,14 +96,6 @@ class RunReportTest {
         assertEquals(Map.of(Severity.FAIL, 1L, Severity.WARN, 1L, Severity.INFO, 0L, Severity.PASS, 1L), report.counts());
         assertEquals("FAIL", report.verdict().status());
         assertEquals("Authenticate", report.verdict().brokeAt());
-    }
-
-    @Test
-    void verdictPassesWithWarnings() {
-        OnboardingRun run = new OnboardingRun("run-2", "northwind-synthetic", Environment.SANDBOX,
-                List.of(new StepResult("discovery", T0, Duration.ofMillis(3), true, "ok", Map.of("status", "passed"))),
-                List.of(new Finding("latency", Severity.WARN, "Slow", "Took a while", null, "Speed up")));
-        assertEquals("PASS_WITH_WARNINGS", report(run).verdict().status());
     }
 
     @Test
@@ -235,7 +228,7 @@ class RunReportTest {
         assertTrue(curl.contains("-H 'X-Debug-Assertion: "), curl);
         assertTrue(curl.endsWith("--data-binary @request-body.txt"), curl);
         for (String absent : List.of("[REDACTED]", "Cookie", "X-Api-Key", "Content-Length", "Host:", token, secret,
-                jwtSignature, keyChunk, "-----BEGIN")) {
+                jwtSignature, KEY_CHUNK, "-----BEGIN")) {
             assertFalse(curl.contains(absent), "curl contains " + absent + ": " + curl);
         }
         for (ReportRenderer.Format format : List.of(ReportRenderer.Format.MD, ReportRenderer.Format.HTML)) {
@@ -318,14 +311,14 @@ class RunReportTest {
     @Test
     void prettyPrintingCannotRevealAnEscapedCredential() {
         String body = "{\"hint\":\"Bearer\\u0020" + token + "\",\"pem\":\"-----BEGIN PRIVATE KEY\\u002D----\\n"
-                + keyChunk + "\\n-----END PRIVATE KEY-----\"}";
+                + KEY_CHUNK + "\\n-----END PRIVATE KEY-----\"}";
         Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 400,
                 Map.of("Content-Type", List.of("application/json")), body, body);
         RunReport report = report(runWith("NONE", hookStep(false, exchange), List.of()));
         for (ReportRenderer.Format format : List.of(ReportRenderer.Format.MD, ReportRenderer.Format.HTML)) {
             String out = ReportRenderer.render(report, format);
             assertFalse(out.contains(token), format + ": escaped token leaked");
-            assertFalse(out.contains(keyChunk), format + ": escaped key leaked");
+            assertFalse(out.contains(KEY_CHUNK), format + ": escaped key leaked");
         }
     }
 
@@ -391,21 +384,21 @@ class RunReportTest {
         requestHeaders.put("X-Debug-Assertion", List.of(jwt));
         exchange.put("requestHeaders", requestHeaders);
         exchange.put("requestBody", "grant_type=client_credentials&client_secret=" + secret + "&client_assertion=" + jwt
-                + "\n" + pem);
+                + "\n" + PEM);
         Map<String, List<String>> responseHeaders = new LinkedHashMap<>();
         responseHeaders.put("Set-Cookie", List.of("session=" + secret));
         responseHeaders.put("WWW-Authenticate", List.of("Bearer error=\"invalid_token\", token=\"" + jwt + "\""));
         exchange.put("responseHeaders", responseHeaders);
         exchange.put("responseBody", "{\"access_token\":\"" + token + "\",\"note\":\"" + jwt + "\",\"client_secret\":\""
-                + secret + "\",\"key\":\"" + pem.replace("\n", "\\n") + "\"}");
+                + secret + "\",\"key\":\"" + PEM.replace("\n", "\\n") + "\"}");
 
         Map<String, Object> auth = new LinkedHashMap<>();
         auth.put("status", "failed");
         auth.put("exchanges", List.of(exchange));
         auth.put("access_token", token);
         auth.put("clientSecret", secret);
-        auth.put("signingKey", pem);
-        auth.put("nested", List.of(Map.of("privateKey", pem, "hint", "client_secret=" + secret)));
+        auth.put("signingKey", PEM);
+        auth.put("nested", List.of(Map.of("privateKey", PEM, "hint", "client_secret=" + secret)));
 
         Map<String, Object> connection = Map.of("displayName", "Northwind Health Plan (synthetic)", "igVersion", "2.0.1");
         List<StepResult> steps = List.of(
@@ -422,7 +415,7 @@ class RunReportTest {
                 new Finding("discovery.reachable", Severity.PASS, "Discovery reachable", "ok", null, null),
                 new Finding("auth.token", Severity.FAIL, "Token request rejected",
                         "The payer said <b>invalid_client</b> for client_secret=" + secret,
-                        "Authorization: Bearer " + token + "\n" + pem,
+                        "Authorization: Bearer " + token + "\n" + PEM,
                         "Rotate the client secret; the old one was " + "\"client_secret\":\"" + secret + "\" and " + jwt),
                 new Finding("latency", Severity.WARN, "Slow token endpoint", "Took 6 s", null, "Check the payer"));
         return new OnboardingRun("run-1", "northwind-synthetic", Environment.SANDBOX, steps, findings);

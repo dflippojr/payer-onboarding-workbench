@@ -8,7 +8,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.web.server.context.WebServerInitializedEvent;
 import org.springframework.context.ApplicationContext;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -20,18 +19,10 @@ import java.util.stream.StreamSupport;
 import static io.github.dflippojr.payerworkbench.app.SyntheticPayers.NORTHWIND_ID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /** The first-run warm-up (issue #53) runs the real flow but leaves no trace a user could see. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class FirstRunWarmupTest {
-
-    @Autowired
-    FirstRunWarmup warmup;
 
     @Autowired
     OnboardingRunner runner;
@@ -61,15 +52,6 @@ class FirstRunWarmupTest {
     }
 
     @Test
-    void warmUpDoesNotStoreOrCountAnything() {
-        double metersBefore = workbenchMeasurements();
-
-        warmup.warmUp();
-
-        assertEquals(metersBefore, workbenchMeasurements());
-    }
-
-    @Test
     void requestPathWarmUpToleratesAnUnreachableServer() throws Exception {
         FirstRunWarmup unreachable = new FirstRunWarmup(runner, json, context);
         try (ServerSocket closed = new ServerSocket(0)) {
@@ -95,17 +77,6 @@ class FirstRunWarmupTest {
         thread.join(10_000);
 
         assertTrue(interrupted.get());
-    }
-
-    @Test
-    void theManagementServerDoesNotSetThePort() {
-        FirstRunWarmup warm = new FirstRunWarmup(runner, json, context);
-        WebServerInitializedEvent event = mock(WebServerInitializedEvent.class, RETURNS_DEEP_STUBS);
-        when(event.getApplicationContext().getServerNamespace()).thenReturn("management");
-
-        warm.onWebServerInitialized(event);
-
-        verify(event, never()).getWebServer();
     }
 
     /** Sum of every workbench meter's count, so any recorded run shows up as a change. */

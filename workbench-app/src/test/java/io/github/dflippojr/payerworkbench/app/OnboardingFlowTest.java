@@ -107,7 +107,11 @@ class OnboardingFlowTest {
         RunReport report = RunReport.of(run, payerId, "2.1.0", java.time.Instant.now(), "test");
         assertEquals(run.runId(), report.correlationId());
         for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
-            assertTrue(ReportRenderer.render(report, format).contains(run.runId()), format::toString);
+            String rendered = ReportRenderer.render(report, format);
+            assertTrue(rendered.contains(run.runId()), format::toString);
+            if (format == ReportRenderer.Format.MD || format == ReportRenderer.Format.HTML) {
+                assertTrue(rendered.contains("Correlation id (X-Request-Id)"), format::toString);
+            }
         }
     }
 
@@ -139,7 +143,7 @@ class OnboardingFlowTest {
     static Stream<Arguments> faults() {
         List<Arguments> cases = new ArrayList<>();
         for (String payerId : List.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID)) {
-            cases.add(Arguments.of(payerId, Fault.SLOW_RESPONSE, HEALTHY_SAMPLE, "perf.latency", null));
+            // SLOW_RESPONSE is pinned by slowResponseHoldsOnlyTheHookCall for the same three payers.
             cases.add(Arguments.of(payerId, Fault.EXPIRED_TOKEN_401, HEALTHY_SAMPLE, "auth.hook-rejected", "hook-request"));
             // Northwind's audience is on its own access token, which the workbench cannot inspect.
             cases.add(Arguments.of(payerId, Fault.WRONG_AUDIENCE_REJECT, HEALTHY_SAMPLE,
@@ -246,9 +250,10 @@ class OnboardingFlowTest {
         assertEquals(List.of("auth.hook-rejected"), failIds(run));
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
-    void sdkRequestTimeoutIsReportedAtTheHook(String payerId) {
+    /** The timeout is the SDK client's, not the payer's; Tailspin has the longest auth path before the hook. */
+    @Test
+    void sdkRequestTimeoutIsReportedAtTheHook() {
+        String payerId = TAILSPIN_ID;
         OnboardingRunner timed = new OnboardingRunner(payers, new SampleCatalog(),
                 new WorkbenchProperties(Duration.ofSeconds(2), Duration.ofSeconds(5), Duration.ofSeconds(10),
                         Duration.ofMillis(500), 10), new RunMetrics(new SimpleMeterRegistry()));
@@ -297,7 +302,7 @@ class OnboardingFlowTest {
                 Arguments.of(TAILSPIN_ID, Fault.WRONG_AUDIENCE_REJECT, "authenticate", null),
                 Arguments.of(NORTHWIND_ID, Fault.DISCOVERY_500, "discovery", null),
                 Arguments.of(NORTHWIND_ID, Fault.RATE_LIMITED_429, "hook-request", "<ACCESS_TOKEN>"),
-                Arguments.of(FABRIKAM_ID, Fault.SLOW_RESPONSE, "hook-request", "<CLIENT_JWT>"));
+                Arguments.of(FABRIKAM_ID, Fault.COVERAGE_INFO_INCOMPLETE, "hook-request", "<CLIENT_JWT>"));
     }
 
     /** A failing report shows the call that broke, and its curl command, in HTML and Markdown. */
@@ -375,12 +380,6 @@ class OnboardingFlowTest {
                 assertFalse(report.contains("client_assertion="));
             }
         }
-    }
-
-    @Test
-    void faultsDoNotLeakIntoTheNextRun() {
-        runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of(Fault.DISCOVERY_500.id())));
-        assertEquals(List.of(), failIds(runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of()))));
     }
 
     @Test

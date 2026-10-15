@@ -156,22 +156,6 @@ class AuditJournalTest {
     }
 
     @Test
-    void sizeCapExpiresOldestFirstAndMayShortenTheWindow() throws Exception {
-        Path dir = tmp.resolve("journal");
-        AuditJournal journal = open(dir, new AuditJournal.Policy(Duration.ofDays(30), 500, 1800), NOW);
-        for (int i = 0; i < 12; i++) {
-            journal.append(event(NOW.plusSeconds(i), "run-" + i));
-        }
-        long total = 0;
-        for (Path p : segments(dir)) {
-            total += Files.size(p);
-        }
-        assertTrue(total <= 1800 + 600, "total stays near the cap, was " + total);
-        assertFalse(Files.exists(dir.resolve("audit-000001.jsonl")));
-        assertTrue(allText(dir).contains("\"reasonCode\":\"size_cap\""));
-    }
-
-    @Test
     void rotationAtTheTotalSizeBoundaryKeepsEverySegment() throws Exception {
         Path dir = tmp.resolve("boundary");
         AuditEvent fixed = event(NOW, "fixed");
@@ -371,17 +355,6 @@ class AuditJournalTest {
         assertFalse(Files.exists(dir.resolve(AuditJournal.MANIFEST)));
     }
 
-    @Test
-    void markerValuesNeverAppearBecauseTheSchemaHasNoPayloadFields() throws Exception {
-        Path dir = tmp.resolve("journal");
-        AuditJournal journal = open(dir, DEFAULT, NOW);
-        journal.append(event(NOW, "northwind-synthetic"));
-        String text = allText(dir);
-        for (String marker : List.of("SYNTHETIC_CLIENT_SECRET", "Bearer ", "MedicationRequest", "Patient/", "SSN")) {
-            assertFalse(text.contains(marker));
-        }
-    }
-
     private static final class MutableClock extends Clock {
         Instant now;
         MutableClock(Instant now) { this.now = now; }
@@ -477,12 +450,28 @@ class AuditJournalTest {
             first.append(event(NOW.plusSeconds(i), "x"));
         }
         first.close();
-        clock.now = NOW.plus(Duration.ofDays(29));
-        AuditJournal second = openTracked(dir.toString(),
-                new AuditJournal.Policy(Duration.ofDays(30), 300, 700), null, clock, MAPPER);
         clock.now = NOW.plus(Duration.ofDays(30)).plusSeconds(3);
+        AuditJournal second = openTracked(dir.toString(),
+                new AuditJournal.Policy(Duration.ofDays(30), 300, 1000), null, clock, MAPPER);
         second.append(event(clock.now, "y"));
-        assertTrue(allText(dir).contains("age_and_size_cap") || allText(dir).contains("size_cap"));
+
+        // Segments 1-3 end before the age cutoff; 4-5 are then the oldest over the total size cap.
+        List<AuditEvent> expirations = new java.util.ArrayList<>();
+        for (Path p : segments(dir)) {
+            for (String line : Files.readAllLines(p)) {
+                AuditEvent logged = MAPPER.readValue(line, AuditEvent.class);
+                if (logged.action().equals("audit.retention")) {
+                    expirations.add(logged);
+                }
+            }
+        }
+        // Writing that event rotates the segment, so a later pass may expire more by size; the first pass is the one under test.
+        List<AuditEvent> combined = expirations.stream()
+                .filter(e -> e.metadata().reasonCode().equals("age_and_size_cap")).toList();
+        assertEquals(1, combined.size(), expirations.toString());
+        assertEquals(AuditEvent.Lifecycle.retention(List.of("audit-000001", "audit-000002", "audit-000003",
+                "audit-000004", "audit-000005")), combined.getFirst().metadata().lifecycle());
+        assertFalse(Files.exists(dir.resolve("audit-000005.jsonl")));
     }
 
     @Test

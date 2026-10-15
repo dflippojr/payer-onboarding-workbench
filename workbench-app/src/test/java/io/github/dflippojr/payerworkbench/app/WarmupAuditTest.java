@@ -28,7 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /** The first-run warm-up is the system actor; a caller cannot claim that, or suppress its own audit. */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+// A management server on its own port must not take over the warm-up's self-request.
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = "management.server.port=0")
 class WarmupAuditTest {
 
     static final List<AuditEvent> EVENTS = new CopyOnWriteArrayList<>();
