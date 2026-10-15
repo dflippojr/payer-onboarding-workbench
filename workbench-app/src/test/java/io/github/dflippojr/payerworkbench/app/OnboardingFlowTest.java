@@ -86,6 +86,25 @@ class OnboardingFlowTest {
         assertTrue(payers.payer(payerId).orElseThrow().baseUrl().startsWith("https://127.0.0.1:"));
     }
 
+    /**
+     * auth.clock-skew is reachable through the runner: it measures the client JWT
+     * Fabrikam signs and the client_assertion Tailspin sends against each payer's
+     * Date header. Northwind's client secret carries no JWT, so there is nothing to measure.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
+    void healthyRunMeasuresClockSkewFromTheClientJwt(String payerId) {
+        OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of()));
+
+        List<Finding> skew = run.findings().stream().filter(f -> f.checkId().equals("auth.clock-skew")).toList();
+        if (payerId.equals(NORTHWIND_ID)) {
+            assertEquals(List.of(), skew);
+            return;
+        }
+        assertEquals(List.of(Severity.PASS), skew.stream().map(Finding::severity).toList(), skew::toString);
+        assertTrue(skew.getFirst().evidence().contains("iat offset"), skew.getFirst()::evidence);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
     void everyPayerCallCarriesTheRunsCorrelationId(String payerId) {
