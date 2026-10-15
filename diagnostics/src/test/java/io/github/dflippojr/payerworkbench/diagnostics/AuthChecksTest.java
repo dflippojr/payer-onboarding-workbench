@@ -17,11 +17,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
+import io.github.dflippojr.payerworkbench.core.JwtClaims;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -228,6 +231,60 @@ class AuthChecksTest {
             var iat = NOW.plusSeconds(120);
             run.token = token(200, assertionBody(jwt(TOKEN_URL, iat, iat.plusSeconds(300))), Fixtures.TOKEN_OK_BODY, NOW);
             assertOnly(check.evaluate(run.build()), Severity.WARN);
+        }
+
+        @Test
+        void skewedHookClientJwtAcceptedWarns() {
+            var run = withoutRequestJwts();
+            run.hooks = List.of(clientJwtHook(200, Fixtures.resource("order-sign-healthy.json"), NOW.plusSeconds(300)));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertTrue(f.explanation().contains("300 seconds after"), f::explanation);
+        }
+
+        @Test
+        void skewedHookClientJwtRejectedFails() {
+            var run = withoutRequestJwts();
+            run.hooks = List.of(clientJwtHook(401, "{\"error\":\"invalid_token\"}", NOW.plusSeconds(300)));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("iat offset=300 s"), f::evidence);
+        }
+
+        @Test
+        void skewedClientAssertionRejectedFails() {
+            var run = withoutRequestJwts();
+            run.token = token(401, "grant_type=client_credentials", INVALID_CLIENT, NOW);
+            run.clientAssertion = claims(TOKEN_URL, NOW.plusSeconds(300));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().startsWith("POST " + TOKEN_URL), f::evidence);
+        }
+
+        @Test
+        void recordedClaimsWithinTolerancePass() {
+            var run = withoutRequestJwts();
+            run.clientAssertion = claims(TOKEN_URL, NOW.minusSeconds(20));
+            run.hooks = List.of(clientJwtHook(200, Fixtures.resource("order-sign-healthy.json"), NOW.plusSeconds(30)));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.PASS);
+            assertTrue(f.evidence().contains(TOKEN_URL + " (iat offset -20 s)"), f::evidence);
+            assertTrue(f.evidence().contains(ORDER_SIGN_URL + " (iat offset 30 s)"), f::evidence);
+        }
+
+        /** A healthy run whose recorded requests carry no readable JWT, as in the app. */
+        private Fixtures.Run withoutRequestJwts() {
+            var run = healthy();
+            run.token = token(200, "grant_type=client_credentials", Fixtures.TOKEN_OK_BODY, NOW);
+            return run;
+        }
+
+        private HookResponse clientJwtHook(int status, String body, Instant iat) {
+            var exchange = hook(status, body, 800);
+            assertTrue(Support.requestJwtClaims(exchange).isEmpty());
+            return new HookResponse("crd-order-sign", "order-sign", "sample-order-sign-1", exchange,
+                    claims(ORDER_SIGN_URL, iat));
+        }
+
+        private JwtClaims claims(String aud, Instant iat) {
+            return new JwtClaims(Fixtures.CLIENT_ID, List.of(aud), iat.plusSeconds(300), iat,
+                    UUID.randomUUID().toString(), "synthetic-kid", Fixtures.CLIENT_ID);
         }
 
         @Test
