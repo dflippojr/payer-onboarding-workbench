@@ -13,7 +13,7 @@ import java.util.List;
  * @param sampleId            the sample hook request to send (see {@code GET /api/samples})
  * @param faults              mock payer fault ids to switch on for this run only
  * @param slowResponseDelayMs the {@code slow-response} delay; defaults to {@code workbench.slow-response-delay}
- * @param connection          edits to the stored connection settings, for this run only
+ * @param connection          edits to the stored or custom connection settings, for this run only
  * @param customEndpoint      a payer endpoint to run against instead of a synthetic payer; when set,
  *                            {@code payerId} is ignored and replaced by {@value #CUSTOM_PAYER_ID}
  */
@@ -44,9 +44,9 @@ public record RunRequest(
 
     /**
      * Connection settings a user may change to reproduce a misconfiguration. Blank
-     * fields keep the stored value. There is deliberately no field for a secret.
+     * fields keep the stored or supplied value. There is deliberately no field for a secret.
      *
-     * @param baseUrlSuffix appended to the stored base URL, e.g. {@code /r4} or {@code /}
+     * @param baseUrlSuffix appended to the stored or supplied base URL, e.g. {@code /r4} or {@code /}
      * @param igVersion     replaces the CRD IG version the connection expects
      * @param clientId      replaces the client id (the JWT {@code iss}, or the OAuth2 client)
      */

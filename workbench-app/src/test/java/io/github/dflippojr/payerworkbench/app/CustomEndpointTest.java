@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -91,6 +92,34 @@ class CustomEndpointTest {
         assertEquals(RunRequest.CUSTOM_PAYER_ID, custom.payerId());
         assertEquals(checks(builtIn), checks(custom));
         assertTrue(custom.steps().stream().allMatch(s -> s.ok()), "every step passes: " + custom.steps());
+    }
+
+    @Test
+    void connectionEditsApplyToCustomEndpointsForOneRun() throws Exception {
+        String secret = secret();
+        NorthwindPayer payer = NorthwindPayer.builder().client("edited-client", secret).build().start(0);
+        open.add(payer);
+        var endpoint = new RunRequest.CustomEndpoint(payer.baseUrl(), AuthType.OAUTH2_CLIENT_CREDENTIALS,
+                "original-client", payer.tokenEndpoint(), null, "1.0.0", secret);
+        var edits = new RunRequest.ConnectionOverrides("/", payer.igVersion(), "edited-client");
+        var posted = send("POST", "/api/runs", mapper.writeValueAsString(
+                new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null, edits, endpoint)));
+        assertEquals(200, posted.statusCode());
+        var run = mapper.readTree(posted.body());
+        run.path("steps").forEach(step -> assertTrue(step.path("ok").asBoolean(), step.toString()));
+        var resolved = run.path("steps").get(0).path("details");
+        assertEquals(payer.baseUrl() + "/", resolved.path("connection").path("baseUrl").asText());
+        assertEquals(payer.igVersion(), resolved.path("connection").path("igVersion").asText());
+        assertEquals("edited-client", resolved.path("connection").path("clientId").asText());
+        assertEquals(mapper.valueToTree(Map.of("baseUrl", payer.baseUrl() + "/",
+                "igVersion", payer.igVersion(), "clientId", "edited-client")), resolved.path("edited"));
+
+        var unedited = runner.run(new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null, null, endpoint));
+        var original = mapper.valueToTree(unedited.steps().getFirst().details()).path("connection");
+        assertEquals(payer.baseUrl(), original.path("baseUrl").asText());
+        assertEquals("1.0.0", original.path("igVersion").asText());
+        assertEquals("original-client", original.path("clientId").asText());
+        assertEquals(Map.of(), unedited.steps().getFirst().details().get("edited"));
     }
 
     @Test
@@ -473,15 +502,28 @@ class CustomEndpointTest {
     }
 
     @Test
-    void suffixCannotAddAQueryOrFragment() {
-        String base = "http://127.0.0.1:9/ok";
-        for (String suffix : List.of("?x=1#", "#", "/r4?x", "@127.0.0.1:1")) {
+    void suffixCannotAddAQueryFragmentOrUserInfo() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        AtomicInteger calls = new AtomicInteger();
+        server.createContext("/", exchange -> {
+            calls.incrementAndGet();
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+        });
+        server.start();
+        String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/ok";
+        for (String suffix : List.of("?x=1#", "#", "/r4?x", "@127.0.0.1:1", "/user@host",
+                "/r4#fragment", "/bad\\path", "/two words", "/control\npath")) {
             RunRequest request = new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null,
                     new RunRequest.ConnectionOverrides(suffix, null, null),
                     new RunRequest.CustomEndpoint(base, AuthType.NONE, null, null, null, null, null));
-            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> runner.run(request));
-            assertTrue(e.getMessage().startsWith("baseUrlSuffix may only add path segments"), e.getMessage());
+            var response = send("POST", "/api/runs", mapper.writeValueAsString(request));
+            assertEquals(400, response.statusCode(), suffix);
+            assertTrue(mapper.readTree(response.body()).path("detail").asText()
+                    .startsWith("baseUrlSuffix may only add path segments"), response.body());
         }
+        assertEquals(0, calls.get(), "invalid edits are refused before any payer call");
     }
 
     private static final String igVersion = NorthwindPayer.builder().build().igVersion();

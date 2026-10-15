@@ -3,6 +3,8 @@ import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ready, runOnboarding, reopen, auditEvent, openDrawer } from '../../../../tests/ui/fixtures';
 
+import { customEndpointForm } from '../../../../tests/ui/custom-endpoint-form';
+
 // One test per feature in the SKILL.md feature map; the tag is the feature name drive.mjs greps for.
 const evidence = process.env.VERIFY_EVIDENCE!;
 const PAYER = 'northwind-synthetic';
@@ -128,6 +130,10 @@ test('compare a failing run with a healthy one, then stop comparing @compare', a
   await page.getByRole('button', { name: 'Stop comparing' }).click();
   await expect(comparison).toBeHidden();
   await expect(compare).toBeFocused();
+});
+
+test('custom form hides faults and retains connection edits @custom', async ({ page }, info) => {
+  await customEndpointForm(page, () => shot(page, info, 'custom'));
 });
 
 // Not a feature: a deliberate failure used by cleanup.test.mjs to prove cleanup after a failed drive.
