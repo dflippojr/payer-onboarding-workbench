@@ -56,7 +56,7 @@ public final class CoverageInformationCheck implements DiagnosticCheck {
 
     private static Finding finding(List<Result> results) {
         Severity severity = Severity.PASS;
-        List<String> evidence = new ArrayList<>();
+        CappedLines evidence = new CappedLines();
         for (Result result : results) {
             if (result.violations().isEmpty()) {
                 evidence.add(result.location() + ": conformant");
@@ -74,7 +74,7 @@ public final class CoverageInformationCheck implements DiagnosticCheck {
         return new Finding(CHECK_ID, severity, "Coverage information content: " + severity,
                 "The router validator checked each coverage-information extension against Da Vinci CRD 2.2.1. "
                         + "Errors fail the check; compatibility warnings, including the legacy identifier name, warn.",
-                String.join("\n", evidence), severity == Severity.PASS ? null
+                evidence.join("\n"), severity == Severity.PASS ? null
                         : "Ask the payer to correct the listed extension fields to match the CRD 2.2.1 profile.");
     }
 

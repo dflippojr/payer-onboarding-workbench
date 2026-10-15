@@ -6,7 +6,6 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -30,8 +29,8 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
 
     @Override
     public List<Finding> evaluate(RunObservations obs) {
-        List<String> inSystemActions = new ArrayList<>();
-        List<String> inSuggestions = new ArrayList<>();
+        CappedLines inSystemActions = new CappedLines();
+        CappedLines inSuggestions = new CappedLines();
         for (HookResponse hook : obs.hookResponses()) {
             if (!Support.isSuccess(hook.exchange().status())) {
                 continue;
@@ -67,15 +66,15 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
                             + "the clinician must accept, rather than as a systemAction the EHR applies "
                             + "automatically as CRD 2.x expects. The router's library reads both places, but EHRs "
                             + "and other clients that only read systemActions will miss it.",
-                    "found in suggestions: " + String.join(", ", inSuggestions)
-                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + String.join(", ", inSystemActions)),
+                    "found in suggestions: " + inSuggestions.join(", ")
+                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + inSystemActions.join(", ")),
                     "No change is needed for this library. If other clients will consume this payer, ask the payer "
                             + "to also send coverage information as an update systemAction on the order."));
         }
         if (!inSystemActions.isEmpty()) {
             return List.of(new Finding(CHECK_ID, Severity.PASS, "Coverage information delivered in systemActions",
                     "The payer returns coverage information as systemActions, the location CRD 2.x specifies.",
-                    "found in systemActions: " + String.join(", ", inSystemActions), null));
+                    "found in systemActions: " + inSystemActions.join(", "), null));
         }
         return List.of();
     }

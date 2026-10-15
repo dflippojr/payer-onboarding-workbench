@@ -20,6 +20,9 @@ import java.time.Duration;
  *                          a longer body fails the call with a finding naming the limit
  * @param maxStoredRunBytes the most the remembered runs may take together, measured as JSON
  *                          (default 32 MiB); past it the oldest are forgotten even under {@code maxRuns}
+ * @param maxResponseJsonValues the most JSON values (objects, arrays, strings, numbers, booleans and
+ *                          nulls) a payer response body may hold before the workbench refuses to parse
+ *                          it (default 100,000); 4 MiB of {@code {}} is 1.4 million objects
  */
 @ConfigurationProperties("workbench")
 public record WorkbenchProperties(
@@ -31,13 +34,17 @@ public record WorkbenchProperties(
         CustomEndpoints customEndpoints,
         Audit audit,
         Long maxResponseBytes,
-        Long maxStoredRunBytes
+        Long maxStoredRunBytes,
+        Integer maxResponseJsonValues
 ) {
     /** Default {@link #maxResponseBytes()}: 4 MiB. */
     public static final long DEFAULT_MAX_RESPONSE_BYTES = 4L * 1024 * 1024;
 
     /** Default {@link #maxStoredRunBytes()}: 32 MiB. */
     public static final long DEFAULT_MAX_STORED_RUN_BYTES = 32L * 1024 * 1024;
+
+    /** Default {@link #maxResponseJsonValues()}. */
+    public static final int DEFAULT_MAX_RESPONSE_JSON_VALUES = 100_000;
 
     /**
      * @param enabled whether {@code POST /api/runs} accepts a {@code customEndpoint}; off by default
@@ -70,24 +77,31 @@ public record WorkbenchProperties(
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit,
+                               Long maxResponseBytes, Long maxStoredRunBytes) {
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit,
+                maxResponseBytes, maxStoredRunBytes, null);
+    }
+
+    public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
+                               Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit,
                                Long maxResponseBytes) {
         this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit,
-                maxResponseBytes, null);
+                maxResponseBytes, null, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit, null, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit, null, null, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null, null, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, null, null, null, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
                                Duration requestTimeout, Integer maxRuns) {
-        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null, null, null);
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, null, null, null, null, null);
     }
 
     @ConstructorBinding
@@ -106,6 +120,10 @@ public record WorkbenchProperties(
         maxStoredRunBytes = maxStoredRunBytes == null ? DEFAULT_MAX_STORED_RUN_BYTES : maxStoredRunBytes;
         if (maxStoredRunBytes <= 0) {
             throw new IllegalArgumentException("workbench.max-stored-run-bytes must be positive");
+        }
+        maxResponseJsonValues = maxResponseJsonValues == null ? DEFAULT_MAX_RESPONSE_JSON_VALUES : maxResponseJsonValues;
+        if (maxResponseJsonValues <= 0) {
+            throw new IllegalArgumentException("workbench.max-response-json-values must be positive");
         }
     }
 }

@@ -6,6 +6,7 @@ import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
+import io.github.dflippojr.payerworkbench.core.StepResult;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
@@ -282,6 +283,39 @@ class CustomEndpointTest {
         var rejected = run.findings().stream().filter(f -> f.checkId().equals("auth.hook-rejected")).toList();
         assertEquals(1, rejected.size(), run.findings().toString());
         assertTrue(rejected.getFirst().explanation().contains("carried no credentials"), rejected.toString());
+    }
+
+    @Test
+    void longListsShowTheFirstEntriesAndCountTheRest() throws Exception {
+        // Under the JSON value limit, 150 services and 150 cards still make 100 views each (#162).
+        StringBuilder services = new StringBuilder("{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\"}");
+        for (int i = 1; i < 150; i++) {
+            services.append(",{\"hook\":\"patient-view\",\"id\":\"pv-").append(i).append("\"}");
+        }
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/long/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, exchange.getRequestMethod().equals("GET") ? services + "]}"
+                    : "{\"cards\":[" + "{},".repeat(149) + "{}]}");
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/long",
+                AuthType.NONE, null, null, null));
+
+        StepResult discovery = run.steps().get(1);
+        assertEquals("Found 150 services; order-sign is served by crd-order-sign", discovery.summary());
+        assertEquals(OnboardingRunner.MAX_VIEWS, ((List<?>) discovery.details().get("services")).size());
+        assertEquals(50, discovery.details().get("servicesNotShown"));
+        StepResult parse = run.steps().get(4);
+        assertEquals("Parsed 150 cards, but card 1 lacks summary, indicator, source.label; card 2 lacks summary, "
+                + "indicator, source.label; card 3 lacks summary, indicator, source.label; card 4 lacks summary, "
+                + "indicator, source.label; card 5 lacks summary, indicator, source.label; and 145 more cards lack "
+                + "fields", parse.summary());
+        assertEquals(OnboardingRunner.MAX_VIEWS, ((List<?>) parse.details().get("cards")).size());
+        assertEquals(50, parse.details().get("cardsNotShown"));
+        assertTrue(run.findings().stream().noneMatch(f -> f.checkId().equals(OnboardingRunner.TOO_MANY_CARDS_CHECK)));
     }
 
     @Test

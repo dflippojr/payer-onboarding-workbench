@@ -1,5 +1,9 @@
 package io.github.dflippojr.payerworkbench.app;
 
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+
 import java.io.IOException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -16,16 +20,52 @@ import java.util.concurrent.Flow;
  * so a payer that sends a huge discovery or hook body cannot fill the heap. The call then fails
  * with a {@link ResponseTooLargeException} that carries the status, headers and the body up to
  * the limit; nothing past the limit is buffered.
+ *
+ * <p>Bytes alone do not bound what parsing a body builds: 4 MiB of {@code {}} is 1.4 million objects.
+ * So a text body that arrived in full is also counted, as a stream of JSON tokens, and one holding
+ * more than {@code maxJsonValues} values ({@code workbench.max-response-json-values}) fails the same
+ * way before the SDK parses it.
  */
 final class ResponseLimitClient extends ForwardingHttpClient {
+    private static final JsonFactory JSON = new JsonFactory();
+
     private final long limit;
+    private final int maxJsonValues;
 
     ResponseLimitClient(HttpClient delegate, long limit) {
+        this(delegate, limit, WorkbenchProperties.DEFAULT_MAX_RESPONSE_JSON_VALUES);
+    }
+
+    ResponseLimitClient(HttpClient delegate, long limit, int maxJsonValues) {
         super(delegate);
         if (limit <= 0) {
             throw new IllegalArgumentException("workbench.max-response-bytes must be positive");
         }
+        if (maxJsonValues <= 0) {
+            throw new IllegalArgumentException("workbench.max-response-json-values must be positive");
+        }
         this.limit = limit;
+        this.maxJsonValues = maxJsonValues;
+    }
+
+    /**
+     * Whether {@code body} holds more than {@code max} JSON values. Counting stops at the first value
+     * past {@code max}, or where the text stops being JSON: the SDK rejects such a body anyway.
+     */
+    static boolean holdsMoreJsonValuesThan(String body, int max) {
+        int values = 0;
+        try (JsonParser parser = JSON.createParser(body)) {
+            for (JsonToken token = parser.nextToken(); token != null; token = parser.nextToken()) {
+                if (token.isScalarValue() || token.isStructStart()) {
+                    if (++values > max) {
+                        return true;
+                    }
+                }
+            }
+        } catch (IOException e) {
+            // Not JSON past this point; what was counted stands.
+        }
+        return false;
     }
 
     @Override
@@ -57,17 +97,19 @@ final class ResponseLimitClient extends ForwardingHttpClient {
     }
 
     private <T> HttpResponse.BodyHandler<T> limited(HttpResponse.BodyHandler<T> handler) {
-        return info -> new LimitedSubscriber<>(handler.apply(info), limit, info);
+        return info -> new LimitedSubscriber<>(handler.apply(info), limit, maxJsonValues, info);
     }
 
     /**
      * Passes bytes to the caller's subscriber until the limit. The batch that crosses it is cut at
      * the limit, the upstream subscription is cancelled and the caller's subscriber completes, so
-     * its body is the first {@code limit} bytes; {@link #getBody()} then fails with that body.
+     * its body is the first {@code limit} bytes; {@link #getBody()} then fails with that body. A
+     * text body that arrived in full fails there too when it holds more than {@code maxJsonValues}.
      */
     private static final class LimitedSubscriber<T> implements HttpResponse.BodySubscriber<T> {
         private final HttpResponse.BodySubscriber<T> delegate;
         private final long limit;
+        private final int maxJsonValues;
         private final HttpResponse.ResponseInfo info;
         private Flow.Subscription subscription;
         private long received;
@@ -75,9 +117,11 @@ final class ResponseLimitClient extends ForwardingHttpClient {
         /** Bytes received when the limit was crossed, or -1 while under it. */
         private volatile long cutAt = -1;
 
-        LimitedSubscriber(HttpResponse.BodySubscriber<T> delegate, long limit, HttpResponse.ResponseInfo info) {
+        LimitedSubscriber(HttpResponse.BodySubscriber<T> delegate, long limit, int maxJsonValues,
+                          HttpResponse.ResponseInfo info) {
             this.delegate = delegate;
             this.limit = limit;
+            this.maxJsonValues = maxJsonValues;
             this.info = info;
         }
 
@@ -85,9 +129,15 @@ final class ResponseLimitClient extends ForwardingHttpClient {
         public CompletionStage<T> getBody() {
             return delegate.getBody().thenCompose(body -> {
                 long cut = cutAt;
-                return cut < 0 ? CompletableFuture.completedFuture(body)
-                        : CompletableFuture.failedFuture(new ResponseTooLargeException(limit, cut, info.statusCode(),
-                                info.headers(), body instanceof String s ? s : null));
+                if (cut >= 0) {
+                    return CompletableFuture.failedFuture(new ResponseTooLargeException(limit, cut, info.statusCode(),
+                            info.headers(), body instanceof String s ? s : null));
+                }
+                if (body instanceof String s && holdsMoreJsonValuesThan(s, maxJsonValues)) {
+                    return CompletableFuture.failedFuture(ResponseTooLargeException.jsonValues(maxJsonValues, received,
+                            info.statusCode(), info.headers(), s));
+                }
+                return CompletableFuture.completedFuture(body);
             });
         }
 

@@ -106,6 +106,17 @@ class DiscoveryChecksTest {
         }
 
         @Test
+        void manyServicesListTheFirstAndCountTheRest() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\"},"
+                    + "{},".repeat(99_999) + "{}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+            assertTrue(f.evidence().startsWith("advertised services: crd-order-sign -> order-sign, (no id) -> (no hook)"),
+                    f::evidence);
+            assertTrue(f.evidence().endsWith(", and " + (100_001 - CappedLines.MAX) + " more"), f::evidence);
+        }
+
+        @Test
         void onlyTheServiceTheClientWouldCallNeedsAUsableId() {
             var run = healthy();
             run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"ok-1\"},"
