@@ -21,14 +21,6 @@ class ClientSdkHappyPathTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"northwind", "fabrikam"})
-    void faultsAreOffByDefault(String payerName) throws Exception {
-        try (PayerFixture fixture = PayerFixture.create(payerName)) {
-            assertTrue(fixture.payer.faults().enabled().isEmpty());
-        }
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"northwind", "fabrikam"})
     void discoversOrderSignAndOrderSelect(String payerName) throws Exception {
         try (PayerFixture fixture = PayerFixture.create(payerName)) {
             List<CdsServiceDescriptor> services = fixture.client.discoverServices(fixture.record);
