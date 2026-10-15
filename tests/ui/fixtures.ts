@@ -40,8 +40,11 @@ async function startInstance(): Promise<Handle> {
 
 // One disposable instance per Playwright worker (one worker per project with --workers=1).
 // Tests isolate themselves by their own run IDs; a test that needs an untouched instance sets freshInstance.
-export const test = base.extend<{ freshInstance: boolean; instanceLog: void }, { instance: Instance }>({
+// A test that deliberately provokes a failure (a routed 404, 503 or aborted request) lists the browser errors it
+// expects in expectedErrors; every other test keeps the strict default.
+export const test = base.extend<{ freshInstance: boolean; expectedErrors: RegExp[]; instanceLog: void }, { instance: Instance }>({
   freshInstance: [false, { option: true }],
+  expectedErrors: [[], { option: true }],
   instance: [async ({}, use) => {
     let handle: Handle | undefined;
     try {
@@ -77,13 +80,13 @@ export const test = base.extend<{ freshInstance: boolean; instanceLog: void }, {
   baseURL: async ({ instance, instanceLog }, use) => {
     await use(instance.baseURL);
   },
-  page: async ({ page }, use) => {
+  page: async ({ page, expectedErrors }, use) => {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     page.on('response', response => { if (response.status() >= 400) errors.push(response.status() + ' ' + response.url()); });
     await use(page);
-    expect(errors, 'unexpected browser/HTTP errors').toEqual([]);
+    expect(errors.filter(error => !expectedErrors.some(pattern => pattern.test(error))), 'unexpected browser/HTTP errors').toEqual([]);
   },
 });
 export { expect };

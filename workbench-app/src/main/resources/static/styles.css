@@ -107,6 +107,7 @@ fieldset.sec > legend { float: left; width: 100%; margin: 4px 0 0; }
 .row { display: flex; flex-wrap: wrap; gap: 12px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; min-width: 0; }
+.field[hidden] { display: none; }
 .field.grow { flex: 1 1 260px; }
 .hint { font: 400 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 input:not([type="radio"]):not([type="checkbox"]), select, textarea {

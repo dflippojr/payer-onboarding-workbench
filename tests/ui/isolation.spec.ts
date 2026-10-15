@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { test, expect } from './fixtures';
+import { test, expect, ready } from './fixtures';
 
 // Isolation is checked on an instance no earlier test in this worker has touched.
 test.use({ freshInstance: true });
@@ -23,4 +23,13 @@ test('disposable instance exposes only generated loopback synthetic payers', asy
   } });
   expect(rejected.status()).toBe(400);
   expect((await rejected.text()).toLowerCase()).toContain('disabled');
+});
+
+test('the custom endpoint form and picker stay hidden while the feature is off', async ({ page }) => {
+  await ready(page);
+  await expect(page.locator('#custom-endpoint')).toBeHidden();
+  await expect(page.getByRole('group', { name: 'Your payer endpoint' })).toHaveCount(0);
+  await expect(page.getByRole('radio')).toHaveCount(3);
+  await expect(page.getByRole('radio', { name: /Your own endpoint/ })).toHaveCount(0);
+  await expect(page.locator('input[name="payerId"][value="__custom__"]')).toHaveCount(0);
 });
