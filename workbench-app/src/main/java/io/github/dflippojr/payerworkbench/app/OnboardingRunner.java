@@ -628,10 +628,23 @@ public class OnboardingRunner {
             JsonNode json = Optional.ofNullable(readJson(event.responseBody())).orElseGet(mapper::createObjectNode);
             JsonNode error = callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN
                     ? readJson(e.responseBody()) : null;
+            String scope = text(json, "scope");
+            List<String> scopes = new ArrayList<>();
+            int notShown = 0;
+            // Walk the scope instead of splitting it: a 4 MiB "a a a ..." would make two million strings.
+            for (int start = 0; scope != null && start < scope.length(); ) {
+                int end = scope.indexOf(' ', start);
+                end = end < 0 ? scope.length() : end;
+                if (end > start && scopes.size() < TokenResponseMetadata.MAX_SCOPES) {
+                    scopes.add(TextLimit.cut(scope.substring(start, Math.min(end, start + TextLimit.MAX_CHARS + 1))));
+                } else if (end > start) {
+                    notShown++;
+                }
+                start = end + 1;
+            }
             return new TokenResponseMetadata(accepted, text(json, "token_type"),
                     json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
-                    json.hasNonNull("scope") ? List.of(json.get("scope").asText().split(" ")) : List.of(),
-                    text(error, "error"), text(error, "error_description"));
+                    scopes, notShown, text(error, "error"), text(error, "error_description"));
         }
 
         /** Only the token request's client_assertion is the SMART client's own JWT. */

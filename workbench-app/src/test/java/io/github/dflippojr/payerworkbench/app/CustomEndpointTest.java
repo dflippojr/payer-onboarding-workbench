@@ -7,6 +7,7 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
@@ -353,6 +354,45 @@ class CustomEndpointTest {
         runs.save(run);
         long size = RunStore.sizeOf(runs.find(run.runId()).orElseThrow());
         assertTrue(size < 256 * 1024, "the stored run is " + size + " bytes");
+
+        // The token step's strings too: a huge token_type, a scope of a million words, and a huge error.
+        String token = "{\"access_token\":\"t\",\"expires_in\":300,\"token_type\":\"Bearer" + "x".repeat(1_000_000)
+                + "\",\"scope\":\"system/*.read " + "a ".repeat(1_000_000) + "\"}";
+        String error = "{\"error\":\"" + "e".repeat(1_000_000) + "\",\"error_description\":\""
+                + "d".repeat(1_000_000) + "\"}";
+        server.createContext("/huge/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, token);
+        });
+        server.createContext("/huge/token-error", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] bytes = error.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(400, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/huge";
+        for (String endpoint : List.of(base + "/token", base + "/token-error")) {
+            OnboardingRun oauth = runner.run(custom(base, AuthType.OAUTH2_CLIENT_CREDENTIALS, endpoint, null, secret()));
+            StepResult auth = oauth.steps().get(2);
+            assertTrue(auth.summary().length() < 4 * io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS,
+                    () -> auth.summary().length() + " characters");
+            runs.save(oauth);
+            long oauthSize = RunStore.sizeOf(runs.find(oauth.runId()).orElseThrow());
+            // Discovery, token and hook exchanges keep a 64 Ki body each; uncut, this run was 8.5 MB.
+            assertTrue(oauthSize < 512 * 1024, endpoint + ": the stored run is " + oauthSize + " bytes");
+        }
+        OnboardingRun granted = runner.run(custom(base, AuthType.OAUTH2_CLIENT_CREDENTIALS, base + "/token", null,
+                secret()));
+        assertTrue(granted.steps().get(2).ok(), granted.steps().get(2).summary());
+        Map<?, ?> tokenView = (Map<?, ?>) granted.steps().get(2).details().get("token");
+        assertEquals("Bearer" + "x".repeat(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS - 6) + "…",
+                tokenView.get("tokenType"));
+        String evidence = granted.findings().stream().filter(f -> f.checkId().equals("auth.token")).findFirst()
+                .orElseThrow().evidence();
+        assertTrue(evidence.contains(", scope=system/*.read" + " a".repeat(TokenResponseMetadata.MAX_SCOPES - 1)
+                + " and " + (1_000_000 - TokenResponseMetadata.MAX_SCOPES + 1) + " more not shown"), evidence);
     }
 
     @Test

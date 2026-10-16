@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
 import java.io.File;
 import java.net.InetSocketAddress;
@@ -158,6 +159,57 @@ class SmallHeapRunTest {
 
         // Every permit came back, so a run sent alone still runs.
         assertEquals(200, post(url, customRun("near")).statusCode());
+        assertFalse(log().contains("OutOfMemoryError"), this::log);
+    }
+
+    @Test
+    void concurrentRunsWithAMillionScopeWordsStayInTheHeap() throws Exception {
+        // A token scope of about two million one-letter words just under 4 MiB. Split whole, it made two
+        // million strings per run, and 4 runs at once exhausted 512 MiB (#162 re-review 3).
+        String head = "{\"access_token\":\"t\",\"token_type\":\"Bearer\",\"expires_in\":300,\"scope\":\"";
+        long limit = WorkbenchProperties.DEFAULT_MAX_RESPONSE_BYTES;
+        int words = (int) ((limit - head.length() - "a\"}".length()) / 2);
+        String token = head + "a ".repeat(words) + "a\"}";
+        assertTrue(token.length() <= limit && token.length() > limit - 3, () -> token.length() + " bytes");
+        startPayer(Map.of("scope", "{\"cards\":[]}"));
+        payer.createContext("/scope/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] answer = token.getBytes(StandardCharsets.US_ASCII);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, answer.length);
+            exchange.getResponseBody().write(answer);
+            exchange.close();
+        });
+        String url = startApp();
+        Map<String, Object> request = Map.of("sampleId", "order-sign-hospital-bed", "customEndpoint",
+                Map.of("baseUrl", payerUrl + "/scope", "authType", "OAUTH2_CLIENT_CREDENTIALS",
+                        "clientId", "payer-workbench", "tokenEndpoint", payerUrl + "/scope/token",
+                        "credential", "synthetic-secret-" + System.nanoTime(),
+                        "igVersion", NorthwindPayer.builder().build().igVersion()));
+        int concurrent = 4;
+
+        for (int round = 0; round < 3; round++) {
+            ExecutorService pool = Executors.newFixedThreadPool(concurrent);
+            try {
+                List<Future<HttpResponse<String>>> sent = new ArrayList<>();
+                for (int i = 0; i < concurrent; i++) {
+                    sent.add(pool.submit(() -> post(url, request)));
+                }
+                for (Future<HttpResponse<String>> answer : sent) {
+                    HttpResponse<String> posted = answer.get(5, TimeUnit.MINUTES);
+                    assertEquals(200, posted.statusCode(), () -> posted.body() + "\n" + log());
+                    assertTrue(posted.body().length() < 256 * 1024,
+                            () -> "the run is " + posted.body().length() + " characters");
+                    JsonNode auth = step(mapper.readTree(posted.body()), OnboardingRunner.AUTHENTICATE);
+                    assertTrue(auth.path("summary").asText().startsWith("Got a Bearer access token"), auth::toString);
+                    String evidence = finding(mapper.readTree(posted.body()), "auth.token").path("evidence").asText();
+                    assertTrue(evidence.contains(" and " + (words + 1 - TokenResponseMetadata.MAX_SCOPES)
+                            + " more not shown"), evidence);
+                }
+            } finally {
+                pool.shutdownNow();
+            }
+        }
         assertFalse(log().contains("OutOfMemoryError"), this::log);
     }
 
