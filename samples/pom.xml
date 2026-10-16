@@ -14,6 +14,11 @@
   <name>samples</name>
   <description>Library of synthetic CDS Hooks request payloads.</description>
 
+  <properties>
+    <!-- JaCoCo LINE coverage floor (see the parent pom): measured 89.78% minus 1 point. Only ever raise it. -->
+    <jacoco.line.floor>0.887</jacoco.line.floor>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>
