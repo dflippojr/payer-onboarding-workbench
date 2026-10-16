@@ -29,6 +29,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
     private static final Pattern VERSION_KEY = Pattern.compile("(?i)ig[-_.]?version");
     private static final Pattern VERSIONED_CANONICAL = Pattern.compile(
             "hl7\\.org/fhir/us/davinci-crd/[^\"|\\s]*\\|([0-9][0-9A-Za-z.\\-]*)");
+    private static final Pattern SUFFIX = Pattern.compile("[-+]");
 
     @Override
     public String id() {
@@ -129,14 +130,34 @@ public final class IgVersionCheck implements DiagnosticCheck {
         return Optional.empty();
     }
 
+    /**
+     * Strips a leading {@code v} and trailing {@code .0} components of the numeric part,
+     * keeping the major and any pre-release or build suffix: {@code 2.0.0} and {@code 2.0}
+     * become {@code 2}, {@code 2.1.0-ballot} becomes {@code 2.1-ballot}.
+     */
     private static String normalize(String version) {
         String v = version.strip();
-        return v.startsWith("v") || v.startsWith("V") ? v.substring(1) : v;
+        if (v.startsWith("v") || v.startsWith("V")) {
+            v = v.substring(1);
+        }
+        int suffix = suffixStart(v);
+        String numeric = v.substring(0, suffix);
+        while (numeric.endsWith(".0")) {
+            numeric = numeric.substring(0, numeric.length() - 2);
+        }
+        return numeric + v.substring(suffix);
     }
 
     private static String major(String version) {
+        int end = suffixStart(version);
         int dot = version.indexOf('.');
-        return dot < 0 ? version : version.substring(0, dot);
+        return version.substring(0, dot < 0 ? end : Math.min(dot, end));
+    }
+
+    /** Where a pre-release ({@code -ballot}) or build ({@code +x}) suffix starts, or the length if none. */
+    private static int suffixStart(String version) {
+        Matcher m = SUFFIX.matcher(version);
+        return m.find() ? m.start() : version.length();
     }
 
     private record Observed(String version, String source) {

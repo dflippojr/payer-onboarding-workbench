@@ -3,7 +3,9 @@ package io.github.dflippojr.payerworkbench.diagnostics;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.dflippojr.payerworkbench.core.DiagnosticCheck;
 import io.github.dflippojr.payerworkbench.core.Finding;
+import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
+import io.github.dflippojr.payerworkbench.core.JwtClaims;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.time.Duration;
@@ -18,6 +20,11 @@ import java.util.regex.Pattern;
  * {@code auth.clock-skew}: a measured JWT issue-time difference beyond tolerance,
  * or an explicit payer error indicating a clock difference. Expiry alone does
  * not establish skew: the credential may simply be stale.
+ *
+ * <p>The JWT times come from the claims the caller recorded: a hook call's
+ * {@link HookResponse#clientJwt()} and the run's {@link RunObservations#clientAssertion()}
+ * on the token exchange. A JWT readable in the recorded request is the fallback,
+ * because {@code Redactor} masks a bearer JWT whole.
  */
 public final class ClockSkewCheck implements DiagnosticCheck {
 
@@ -43,8 +50,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
         List<String> verified = new ArrayList<>();
         for (HttpExchange exchange : obs.exchanges()) {
             Optional<Instant> serverNow = Support.serverDate(exchange);
-            List<JsonNode> jwts = Support.requestJwtClaims(exchange);
-            Measurement m = serverNow.map(now -> measure(jwts, now)).orElse(null);
+            Measurement m = serverNow.map(now -> measure(obs, exchange, now)).orElse(null);
             boolean rejected = exchange.status() == 400 || exchange.status() == 401 || exchange.status() == 403;
             boolean timeError = rejected && exchange.responseBody() != null
                     && TIME_ERROR.matcher(exchange.responseBody()).find();
@@ -79,8 +85,12 @@ public final class ClockSkewCheck implements DiagnosticCheck {
         return findings;
     }
 
-    private static Measurement measure(List<JsonNode> jwts, Instant serverNow) {
-        for (JsonNode claims : jwts) {
+    private static Measurement measure(RunObservations obs, HttpExchange exchange, Instant serverNow) {
+        JwtClaims recorded = recordedClaims(obs, exchange);
+        if (recorded != null && (recorded.iat() != null || recorded.exp() != null)) {
+            return new Measurement(recorded.iat(), recorded.exp(), serverNow);
+        }
+        for (JsonNode claims : Support.requestJwtClaims(exchange)) {
             JsonNode iat = claims.get("iat");
             JsonNode exp = claims.get("exp");
             if ((iat != null && iat.canConvertToLong()) || (exp != null && exp.canConvertToLong())) {
@@ -89,6 +99,20 @@ public final class ClockSkewCheck implements DiagnosticCheck {
                         exp != null && exp.canConvertToLong() ? Instant.ofEpochSecond(exp.asLong()) : null,
                         serverNow);
             }
+        }
+        return null;
+    }
+
+    /** The client JWT claims recorded for this exchange: a hook call's client JWT or the token request's assertion. */
+    private static JwtClaims recordedClaims(RunObservations obs, HttpExchange exchange) {
+        for (HookResponse hook : obs.hookResponses()) {
+            if (hook.clientJwt() != null && hook.exchange().equals(exchange)) {
+                return hook.clientJwt();
+            }
+        }
+        if (obs.clientAssertion() != null
+                && Support.tokenExchange(obs).filter(exchange::equals).isPresent()) {
+            return obs.clientAssertion();
         }
         return null;
     }
