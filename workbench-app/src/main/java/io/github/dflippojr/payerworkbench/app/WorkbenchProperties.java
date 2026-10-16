@@ -12,7 +12,7 @@ import java.time.Duration;
  *                          doesn't say; the default is past the 10 s latency budget, so it fails
  * @param latencyWarn       hook latency that is a WARN
  * @param latencyFail       hook latency that is a FAIL (CDS Hooks clients often give up around here)
- * @param requestTimeout    how long the workbench waits for any one HTTP response
+ * @param requestTimeout    how long the workbench waits for any one HTTP response, body included
  * @param maxRuns           how many runs {@code GET /api/runs/{id}} remembers
  * @param customEndpoints   {@code workbench.custom-endpoints.*}
  * @param audit             {@code workbench.audit.*}: the optional durable audit journal
@@ -23,6 +23,9 @@ import java.time.Duration;
  * @param maxResponseJsonValues the most JSON values (objects, arrays, strings, numbers, booleans and
  *                          nulls) a payer response body may hold before the workbench refuses to parse
  *                          it (default 100,000); 4 MiB of {@code {}} is 1.4 million objects
+ * @param maxConcurrentRuns how many custom-endpoint runs may be in flight at once (default 4); one more
+ *                          is refused with 503 rather than queued, because the per-run limits bound
+ *                          one run's memory and this bounds how many of them the heap holds together
  */
 @ConfigurationProperties("workbench")
 public record WorkbenchProperties(
@@ -35,8 +38,12 @@ public record WorkbenchProperties(
         Audit audit,
         Long maxResponseBytes,
         Long maxStoredRunBytes,
-        Integer maxResponseJsonValues
+        Integer maxResponseJsonValues,
+        Integer maxConcurrentRuns
 ) {
+    /** Default {@link #requestTimeout()}: 15 s. */
+    public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(15);
+
     /** Default {@link #maxResponseBytes()}: 4 MiB. */
     public static final long DEFAULT_MAX_RESPONSE_BYTES = 4L * 1024 * 1024;
 
@@ -45,6 +52,9 @@ public record WorkbenchProperties(
 
     /** Default {@link #maxResponseJsonValues()}. */
     public static final int DEFAULT_MAX_RESPONSE_JSON_VALUES = 100_000;
+
+    /** Default {@link #maxConcurrentRuns()}. */
+    public static final int DEFAULT_MAX_CONCURRENT_RUNS = 4;
 
     /**
      * @param enabled whether {@code POST /api/runs} accepts a {@code customEndpoint}; off by default
@@ -73,6 +83,13 @@ public record WorkbenchProperties(
             totalBytes = totalBytes == null ? 100L * 1024 * 1024 : totalBytes;
             journalDir = journalDir == null || journalDir.isBlank() ? null : journalDir;
         }
+    }
+
+    public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
+                               Duration requestTimeout, Integer maxRuns, CustomEndpoints customEndpoints, Audit audit,
+                               Long maxResponseBytes, Long maxStoredRunBytes, Integer maxResponseJsonValues) {
+        this(slowResponseDelay, latencyWarn, latencyFail, requestTimeout, maxRuns, customEndpoints, audit,
+                maxResponseBytes, maxStoredRunBytes, maxResponseJsonValues, null);
     }
 
     public WorkbenchProperties(Duration slowResponseDelay, Duration latencyWarn, Duration latencyFail,
@@ -111,7 +128,7 @@ public record WorkbenchProperties(
         slowResponseDelay = slowResponseDelay == null ? Duration.ofSeconds(11) : slowResponseDelay;
         latencyWarn = latencyWarn == null ? Duration.ofSeconds(5) : latencyWarn;
         latencyFail = latencyFail == null ? Duration.ofSeconds(10) : latencyFail;
-        requestTimeout = requestTimeout == null ? Duration.ofSeconds(15) : requestTimeout;
+        requestTimeout = requestTimeout == null ? DEFAULT_REQUEST_TIMEOUT : requestTimeout;
         maxRuns = maxRuns == null ? 200 : maxRuns;
         maxResponseBytes = maxResponseBytes == null ? DEFAULT_MAX_RESPONSE_BYTES : maxResponseBytes;
         if (maxResponseBytes <= 0 || maxResponseBytes > Integer.MAX_VALUE) {
@@ -124,6 +141,10 @@ public record WorkbenchProperties(
         maxResponseJsonValues = maxResponseJsonValues == null ? DEFAULT_MAX_RESPONSE_JSON_VALUES : maxResponseJsonValues;
         if (maxResponseJsonValues <= 0) {
             throw new IllegalArgumentException("workbench.max-response-json-values must be positive");
+        }
+        maxConcurrentRuns = maxConcurrentRuns == null ? DEFAULT_MAX_CONCURRENT_RUNS : maxConcurrentRuns;
+        if (maxConcurrentRuns <= 0) {
+            throw new IllegalArgumentException("workbench.max-concurrent-runs must be positive");
         }
     }
 }

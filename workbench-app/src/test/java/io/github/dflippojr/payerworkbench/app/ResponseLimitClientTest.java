@@ -11,8 +11,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -20,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** A loopback server sends bodies of known size; nothing leaves the machine. */
@@ -29,6 +34,8 @@ class ResponseLimitClientTest {
 
     private HttpServer server;
     private HttpClient http;
+    /** Released when the test ends, so a stalled response's handler thread stops waiting. */
+    private final CountDownLatch done = new CountDownLatch(1);
 
     @BeforeEach
     void start() throws IOException {
@@ -57,12 +64,28 @@ class ResponseLimitClientTest {
                 out.write(body);
             }
         });
+        server.createContext("/stall", exchange -> {
+            // Headers and the start of a body, then nothing: the JDK's request timeout has already stopped.
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, 0);
+            try (var out = exchange.getResponseBody()) {
+                out.write("{\"cards\":[".getBytes(StandardCharsets.US_ASCII));
+                out.flush();
+                done.await(60, TimeUnit.SECONDS);
+            } catch (IOException e) {
+                // The client gave up and closed the connection.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         server.start();
         http = HttpClient.newHttpClient();
     }
 
     @AfterEach
     void stop() {
+        done.countDown();
         http.close();
         server.stop(0);
     }
@@ -153,6 +176,30 @@ class ResponseLimitClientTest {
     }
 
     @Test
+    void aBodyThatStallsEndsAtTheRequestTimeout() throws Exception {
+        // The payer sends headers, then never finishes the body (#162 re-review): the call must end anyway.
+        HttpClient own = HttpClient.newHttpClient();
+        ResponseLimitClient client = new ResponseLimitClient(own, LIMIT * 1000, 5000, Duration.ofSeconds(1));
+
+        long start = System.nanoTime();
+        HttpTimeoutException e = assertThrows(HttpTimeoutException.class,
+                () -> client.send(stall(null), HttpResponse.BodyHandlers.ofString()));
+        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        assertTrue(elapsed >= 900 && elapsed < 5000, elapsed + " ms");
+        assertEquals("request timed out: the response did not arrive in full within 1000 ms", e.getMessage());
+
+        // The request's own timeout wins over the default.
+        start = System.nanoTime();
+        assertThrows(HttpTimeoutException.class,
+                () -> client.send(stall(Duration.ofMillis(300)), HttpResponse.BodyHandlers.ofString()));
+        elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        assertTrue(elapsed < 900, elapsed + " ms");
+
+        // Nothing is left running: closing the client waits for every exchange it still has.
+        assertTimeoutPreemptively(Duration.ofSeconds(10), own::close);
+    }
+
+    @Test
     void theSettingDefaultsToFourMibAndMustBePositive() {
         assertEquals(4L * 1024 * 1024, new WorkbenchProperties(null, null, null, null, null).maxResponseBytes());
         assertThrows(IllegalArgumentException.class,
@@ -160,7 +207,18 @@ class ResponseLimitClientTest {
         assertEquals(100_000, new WorkbenchProperties(null, null, null, null, null).maxResponseJsonValues());
         assertThrows(IllegalArgumentException.class,
                 () -> new WorkbenchProperties(null, null, null, null, null, null, null, null, null, 0));
-        assertThrows(IllegalArgumentException.class, () -> new ResponseLimitClient(http, 1, 0));
+        assertThrows(IllegalArgumentException.class, () -> new ResponseLimitClient(http, 1, 0, Duration.ofSeconds(1)));
+        assertThrows(IllegalArgumentException.class, () -> new ResponseLimitClient(http, 1, 1, Duration.ZERO));
+        assertEquals(WorkbenchProperties.DEFAULT_MAX_CONCURRENT_RUNS,
+                new WorkbenchProperties(null, null, null, null, null).maxConcurrentRuns());
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorkbenchProperties(null, null, null, null, null, null, null, null, null, null, 0));
+    }
+
+    private HttpRequest stall(Duration timeout) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/stall"));
+        return (timeout == null ? request : request.timeout(timeout)).build();
     }
 
     private HttpRequest cards(int count) {

@@ -1,11 +1,14 @@
 package io.github.dflippojr.payerworkbench.diagnostics;
 
+import io.github.dflippojr.payerworkbench.core.TextLimit;
+
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Evidence lines that stop growing after the first {@value #MAX}: the rest are only counted, so a
- * response with a million bad entries still makes a finding of a few lines.
+ * response with a million bad entries still makes a finding of a few lines. Each kept line is cut to
+ * {@link TextLimit#MAX_CHARS}, since it may quote what the payer sent.
  */
 final class CappedLines {
 
@@ -16,7 +19,7 @@ final class CappedLines {
 
     void add(String line) {
         if (kept.size() < MAX) {
-            kept.add(line);
+            kept.add(TextLimit.cut(line));
         } else {
             dropped++;
         }

@@ -172,4 +172,11 @@ public class WorkbenchApiController {
     ProblemDetail badRequest(IllegalArgumentException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+
+    /** Too many custom-endpoint runs in flight: 503 with a hint to retry, rather than queuing the run. */
+    @ExceptionHandler(RunsBusyException.class)
+    ResponseEntity<ProblemDetail> busy(RunsBusyException e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "5")
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage()));
+    }
 }

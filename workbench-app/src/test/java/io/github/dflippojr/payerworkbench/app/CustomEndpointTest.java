@@ -319,6 +319,63 @@ class CustomEndpointTest {
     }
 
     @Test
+    void longPayerStringsAreCutSoOneResponseMakesASmallRun() throws Exception {
+        // A few huge strings stay under both response limits, but must not make a run of megabytes (#162).
+        String keys = java.util.stream.IntStream.range(0, 50)
+                .mapToObj(i -> "\"key" + i + "-" + "k".repeat(10_000) + "\":\"Patient/{{context.patientId}}\"")
+                .collect(java.util.stream.Collectors.joining(","));
+        String services = "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\",\"prefetch\":{"
+                + keys + "}},{\"hook\":\"" + "h".repeat(500_000) + "\",\"id\":\"" + "i".repeat(500_000) + "\"}]}";
+        String card = "{\"summary\":\"" + "s".repeat(400_000) + "\",\"indicator\":\"" + "w".repeat(20_000)
+                + "\",\"source\":{\"label\":\"" + "l".repeat(20_000) + "\"}}";
+        String cards = "{\"cards\":[" + String.join(",", java.util.Collections.nCopies(8, card)) + "]}";
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/huge/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, exchange.getRequestMethod().equals("GET") ? services : cards);
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/huge",
+                AuthType.NONE, null, null, null));
+
+        String cut = "s".repeat(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS) + "\u2026";
+        List<?> views = (List<?>) run.steps().get(4).details().get("cards");
+        assertEquals(8, views.size());
+        assertEquals(cut, ((Map<?, ?>) views.getFirst()).get("summary"));
+        Map<?, ?> selected = (Map<?, ?>) ((List<?>) run.steps().get(1).details().get("services")).get(0);
+        assertEquals(OnboardingRunner.MAX_LIST_ENTRIES, ((List<?>) selected.get("prefetchKeys")).size());
+        assertEquals(30, selected.get("prefetchKeysNotShown"));
+        Map<?, ?> other = (Map<?, ?>) ((List<?>) run.steps().get(1).details().get("services")).get(1);
+        assertEquals(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS + 1, ((String) other.get("id")).length());
+        assertEquals(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS + 1, ((String) other.get("hook")).length());
+        runs.save(run);
+        long size = RunStore.sizeOf(runs.find(run.runId()).orElseThrow());
+        assertTrue(size < 256 * 1024, "the stored run is " + size + " bytes");
+    }
+
+    @Test
+    void aServiceIdTooLongForAUrlFailsDiscovery() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/long-id/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + "a".repeat(5000) + "\"}]}");
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/long-id",
+                AuthType.NONE, null, null, null));
+
+        StepResult discovery = run.steps().get(1);
+        assertFalse(discovery.ok());
+        assertEquals("The payer advertises a service id of 5000 characters for order-sign, longer than the 1024 "
+                + "the workbench puts in a URL", discovery.summary());
+        assertEquals("skipped", run.steps().get(2).details().get("status"));
+    }
+
+    @Test
     void healthyNoAuthEndpointPasses() throws Exception {
         // A CDS Hooks server that serves discovery and one hook without asking for credentials.
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

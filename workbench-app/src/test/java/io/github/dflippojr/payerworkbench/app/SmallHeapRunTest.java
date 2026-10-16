@@ -21,6 +21,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,6 +37,7 @@ import org.junit.jupiter.api.io.TempDir;
  * One payer response under {@code workbench.max-response-bytes} can still hold a million small JSON
  * values. This starts the app in its own JVM with a small heap, the way a reviewer exhausted 512 MiB
  * with 1.4 million empty cards in one run (#162), and checks the run is answered and stays small.
+ * A second test sends many near-limit runs at once, and a payer that never finishes its body.
  */
 class SmallHeapRunTest {
 
@@ -49,9 +54,12 @@ class SmallHeapRunTest {
     private final StringBuffer output = new StringBuffer();
     private HttpServer payer;
     private String payerUrl;
+    /** Released when the test ends, so a stalled response's handler thread stops waiting. */
+    private final CountDownLatch done = new CountDownLatch(1);
 
     @AfterEach
     void stop() throws Exception {
+        done.countDown();
         if (payer != null) {
             payer.stop(0);
         }
@@ -96,15 +104,89 @@ class SmallHeapRunTest {
         assertFalse(log().contains("OutOfMemoryError"), this::log);
     }
 
+    @Test
+    void concurrentNearLimitRunsAreBoundedAndAStalledBodyEnds() throws Exception {
+        // 999 cards just under 4 MiB, each summary holding a euro sign so Java keeps it as UTF-16: about
+        // 30 MiB of heap per run. A reviewer exhausted 512 MiB with 16 of these at once (#162 re-review).
+        String nearLimit = euroCards(999, WorkbenchProperties.DEFAULT_MAX_RESPONSE_BYTES);
+        startPayer(Map.of("near", nearLimit, "stall", ""));
+        String url = startApp("--workbench.request-timeout=3s");
+        int concurrent = 16;
+
+        ExecutorService pool = Executors.newFixedThreadPool(concurrent);
+        List<HttpResponse<String>> answers = new ArrayList<>();
+        try {
+            List<Future<HttpResponse<String>>> sent = new ArrayList<>();
+            for (int i = 0; i < concurrent; i++) {
+                sent.add(pool.submit(() -> post(url, customRun("near"))));
+            }
+            for (Future<HttpResponse<String>> answer : sent) {
+                answers.add(answer.get(5, TimeUnit.MINUTES));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        long ran = answers.stream().filter(a -> a.statusCode() == 200).count();
+        long busy = answers.stream().filter(a -> a.statusCode() == 503).count();
+        assertEquals(concurrent, ran + busy, () -> answers.stream().map(a -> a.statusCode() + " "
+                + a.body().substring(0, Math.min(300, a.body().length()))).toList() + "\n" + log());
+        assertTrue(ran >= 1 && busy >= 1, ran + " ran, " + busy + " refused");
+        for (HttpResponse<String> answer : answers) {
+            if (answer.statusCode() == 503) {
+                assertEquals("5", answer.headers().firstValue("Retry-After").orElse(null));
+                assertTrue(mapper.readTree(answer.body()).path("detail").asText()
+                        .contains("workbench.max-concurrent-runs"), answer::body);
+            } else {
+                JsonNode run = mapper.readTree(answer.body());
+                assertEquals("Parsed 999 cards, 0 system actions and 0 coverage-information entries",
+                        step(run, OnboardingRunner.PARSE_RESPONSE).path("summary").asText());
+                // Summaries are cut to 1 KiB each, so 100 card views stay far under the body's size.
+                assertTrue(answer.body().length() < 256 * 1024,
+                        () -> "the run is " + answer.body().length() + " characters");
+            }
+        }
+
+        // Headers, then a body that never ends: the run fails at the request timeout instead of hanging.
+        long start = System.nanoTime();
+        HttpResponse<String> stalled = post(url, customRun("stall"));
+        long seconds = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - start);
+        assertEquals(200, stalled.statusCode(), () -> stalled.body() + "\n" + log());
+        assertTrue(seconds < 20, seconds + " s");
+        JsonNode hook = step(mapper.readTree(stalled.body()), OnboardingRunner.HOOK_REQUEST);
+        assertEquals("failed", hook.path("details").path("status").asText(), hook::toString);
+        assertTrue(hook.path("summary").asText().contains("got no response"), hook::toString);
+
+        // Every permit came back, so a run sent alone still runs.
+        assertEquals(200, post(url, customRun("near")).statusCode());
+        assertFalse(log().contains("OutOfMemoryError"), this::log);
+    }
+
+    /** {@code count} cards with every field, each padded so the body is just under {@code limit} bytes. */
+    private static String euroCards(int count, long limit) {
+        String head = "{\"summary\":\"\u20ac";
+        String tail = "\",\"indicator\":\"info\",\"source\":{\"label\":\"Synthetic payer\"}}";
+        // The euro sign is one character but three bytes.
+        long fixed = "{\"cards\":[]}".length() + (count - 1) + (long) count * (head.length() + 2 + tail.length());
+        String card = head + "a".repeat((int) ((limit - fixed) / count)) + tail;
+        String body = "{\"cards\":[" + String.join(",", java.util.Collections.nCopies(count, card)) + "]}";
+        int bytes = body.getBytes(StandardCharsets.UTF_8).length;
+        assertTrue(bytes <= limit && bytes > limit - count, () -> bytes + " bytes");
+        return body;
+    }
+
+    private Map<String, Object> customRun(String path) {
+        return Map.of("sampleId", "order-sign-hospital-bed", "customEndpoint",
+                Map.of("baseUrl", payerUrl + "/" + path, "authType", "NONE",
+                        "igVersion", NorthwindPayer.builder().build().igVersion()));
+    }
+
     private static String emptyCards(int count) {
         return "{\"cards\":[" + "{},".repeat(count - 1) + "{}]}";
     }
 
     /** Runs the sample against the payer at {@code path}; the run must be answered and stay small. */
     private JsonNode run(String url, String path) throws Exception {
-        HttpResponse<String> posted = post(url, Map.of("sampleId", "order-sign-hospital-bed", "customEndpoint",
-                Map.of("baseUrl", payerUrl + "/" + path, "authType", "NONE",
-                        "igVersion", NorthwindPayer.builder().build().igVersion())));
+        HttpResponse<String> posted = post(url, customRun(path));
         assertEquals(200, posted.statusCode(), () -> posted.body() + "\n" + log());
         assertTrue(posted.body().length() < 256 * 1024, () -> "the run is " + posted.body().length() + " characters");
         return mapper.readTree(posted.body());
@@ -121,25 +203,51 @@ class SmallHeapRunTest {
                 .orElseThrow(() -> new AssertionError("no " + checkId + " finding in " + run.path("findings")));
     }
 
-    /** No-auth CDS Hooks payers under {@code /<path>} that advertise order-sign and answer each hook call with a body. */
+    /**
+     * No-auth CDS Hooks payers under {@code /<path>} that advertise order-sign and answer each hook call with a
+     * body, a second later so runs sent together overlap. The {@code stall} payer sends headers and the start
+     * of a body, then nothing more.
+     */
     private void startPayer(Map<String, String> hookBodies) throws Exception {
         payer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        payer.setExecutor(Executors.newCachedThreadPool());
         hookBodies.forEach((path, body) -> payer.createContext("/" + path + "/cds-services", exchange -> {
-            byte[] answer = (exchange.getRequestMethod().equals("GET")
+            boolean discovery = exchange.getRequestMethod().equals("GET");
+            byte[] answer = (discovery
                     ? "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\",\"prefetch\":{}}]}"
                     : body).getBytes(StandardCharsets.UTF_8);
             exchange.getRequestBody().readAllBytes();
             exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, answer.length);
-            exchange.getResponseBody().write(answer);
-            exchange.close();
+            try {
+                if (!discovery && path.equals("stall")) {
+                    exchange.sendResponseHeaders(200, 0);
+                    exchange.getResponseBody().write("{\"cards\":[".getBytes(StandardCharsets.US_ASCII));
+                    exchange.getResponseBody().flush();
+                    done.await(5, TimeUnit.MINUTES);
+                    return;
+                }
+                if (!discovery) {
+                    Thread.sleep(1000);
+                }
+                exchange.sendResponseHeaders(200, answer.length);
+                exchange.getResponseBody().write(answer);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (java.io.IOException e) {
+                // The workbench gave up on the response and closed the connection.
+            } finally {
+                exchange.close();
+            }
         }));
         payer.start();
         payerUrl = "http://127.0.0.1:" + payer.getAddress().getPort();
     }
 
-    /** Starts the app from the main classes on this test's class path, with {@link #HEAP}; returns its base URL. */
-    private String startApp() throws Exception {
+    /**
+     * Starts the app from the main classes on this test's class path, with {@link #HEAP} and any extra
+     * {@code settings}; returns its base URL.
+     */
+    private String startApp(String... settings) throws Exception {
         String classPath = Arrays.stream(System.getProperty("java.class.path").split(File.pathSeparator))
                 .filter(entry -> !entry.replace('\\', '/').endsWith("/test-classes"))
                 .reduce((a, b) -> a + File.pathSeparator + b).orElseThrow();
@@ -149,6 +257,7 @@ class SmallHeapRunTest {
                 "--spring.config.location=classpath:/application.properties", "--server.address=127.0.0.1",
                 "--server.port=0", "--workbench.custom-endpoints.enabled=true",
                 "--workbench.audit.journal-dir=" + data.resolve("audit")));
+        command.addAll(List.of(settings));
         // Read through a pipe, not a file: on Windows another test's child process can inherit an
         // open log file and keep the temp directory from being deleted.
         app = new ProcessBuilder(command).directory(data.toFile()).redirectErrorStream(true).start();

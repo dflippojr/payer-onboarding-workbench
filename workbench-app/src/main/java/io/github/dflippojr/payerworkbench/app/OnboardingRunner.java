@@ -24,6 +24,7 @@ import io.github.dflippojr.payerworkbench.core.RedactedConnection;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import io.github.dflippojr.payerworkbench.core.TextLimit;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticEngine;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticsConfig;
@@ -56,6 +57,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -104,6 +106,8 @@ public class OnboardingRunner {
     static final int MAX_VIEWS = 100;
     /** Cards with missing fields named in the parse step's summary; the rest are counted. */
     static final int MAX_PROBLEMS = 5;
+    /** Prefetch keys and {@code docNeeded} entries shown per service or coverage entry; the rest are counted. */
+    static final int MAX_LIST_ENTRIES = 20;
     static final List<String> STEP_ORDER = List.of(RESOLVE, DISCOVERY, AUTHENTICATE, HOOK_REQUEST, PARSE_RESPONSE);
     /** MDC keys set for the length of a run. */
     static final String MDC_RUN_ID = "runId";
@@ -117,6 +121,8 @@ public class OnboardingRunner {
     private final RunMetrics metrics;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    /** Custom-endpoint runs in flight; see {@link WorkbenchProperties#maxConcurrentRuns()}. */
+    private final Semaphore customRuns;
 
     public OnboardingRunner(SyntheticPayers payers, SampleCatalog samples, WorkbenchProperties properties,
                             RunMetrics metrics) {
@@ -124,6 +130,7 @@ public class OnboardingRunner {
         this.samples = samples;
         this.properties = properties;
         this.metrics = metrics;
+        this.customRuns = new Semaphore(properties.maxConcurrentRuns());
     }
 
     /**
@@ -232,6 +239,7 @@ public class OnboardingRunner {
      *
      * @throws IllegalArgumentException if custom endpoints are off, or the endpoint, sample or
      *                                  credential is not acceptable
+     * @throws RunsBusyException        if {@code workbench.max-concurrent-runs} custom runs are already in flight
      */
     private OnboardingRun runCustom(RunRequest request) {
         if (!properties.customEndpoints().enabled()) {
@@ -249,9 +257,14 @@ public class OnboardingRunner {
         InMemoryCredentials credentials = new InMemoryCredentials();
         ConnectionRecord custom = customRecord(request, guard, credentials);
         checkSuffix(request, custom.baseUrl());
+        AuditContext audit = AuditContext.current();
+        if (!customRuns.tryAcquire()) {
+            credentials.remove(CUSTOM_CREDENTIAL_REF);
+            if (audit != null) { audit.reasonCode = "runs_busy"; }
+            throw new RunsBusyException(properties.maxConcurrentRuns());
+        }
 
         String runId = UUID.randomUUID().toString();
-        AuditContext audit = AuditContext.current();
         if (audit != null) { audit.runId = runId; }
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
              MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId());
@@ -262,6 +275,7 @@ public class OnboardingRunner {
             return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom, true).run();
         } finally {
             credentials.remove(CUSTOM_CREDENTIAL_REF);
+            customRuns.release();
         }
     }
 
@@ -417,7 +431,7 @@ public class OnboardingRunner {
             this.credentials = credentials;
             this.custom = custom;
             HttpClient limited = new ResponseLimitClient(http, properties.maxResponseBytes(),
-                    properties.maxResponseJsonValues());
+                    properties.maxResponseJsonValues(), properties.requestTimeout());
             this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(limited, runId),
                     this::observeAssertion, this::observeBearer),
                     credentials, null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
@@ -516,9 +530,12 @@ public class OnboardingRunner {
             for (CdsServiceDescriptor service : services) {
                 if (listed.size() < MAX_VIEWS) {
                     Map<String, Object> view = new LinkedHashMap<>();
-                    view.put("id", service.id());
-                    view.put("hook", service.hook());
-                    view.put("prefetchKeys", service.prefetch().keySet().stream().sorted().toList());
+                    view.put("id", TextLimit.cut(service.id()));
+                    view.put("hook", TextLimit.cut(service.hook()));
+                    List<String> keys = service.prefetch().keySet().stream().sorted().limit(MAX_LIST_ENTRIES)
+                            .map(TextLimit::cut).toList();
+                    view.put("prefetchKeys", keys);
+                    putNotShown(view, "prefetchKeysNotShown", service.prefetch().size() - keys.size());
                     listed.add(view);
                 }
                 if (serviceId == null && sample.hook().equals(service.hook())) {
@@ -532,10 +549,14 @@ public class OnboardingRunner {
                 return Outcome.fail("The payer advertises no " + sample.hook() + " service, which sample "
                         + sample.id() + " needs");
             }
-            details.put("selectedService", serviceId);
+            details.put("selectedService", TextLimit.cut(serviceId));
             if (!DiscoveryServicesCheck.isUrlSafeServiceId(serviceId)) {
-                return Outcome.fail("The payer advertises service id '" + serviceId + "' for " + sample.hook()
-                        + ", which cannot be used in a URL; it must be URL-safe");
+                return Outcome.fail("The payer advertises service id '" + TextLimit.cut(serviceId) + "' for "
+                        + sample.hook() + ", which cannot be used in a URL; it must be URL-safe");
+            }
+            if (serviceId.length() > TextLimit.MAX_CHARS) {
+                return Outcome.fail("The payer advertises a service id of " + serviceId.length() + " characters for "
+                        + sample.hook() + ", longer than the " + TextLimit.MAX_CHARS + " the workbench puts in a URL");
             }
             return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
@@ -699,9 +720,9 @@ public class OnboardingRunner {
                 Card card = cards.get(i);
                 if (i < MAX_VIEWS) {
                     Map<String, Object> view = new LinkedHashMap<>();
-                    view.put("summary", card.summary());
-                    view.put("indicator", card.indicator());
-                    view.put("source", card.source() == null ? null : card.source().label());
+                    view.put("summary", TextLimit.cut(card.summary()));
+                    view.put("indicator", TextLimit.cut(card.indicator()));
+                    view.put("source", card.source() == null ? null : TextLimit.cut(card.source().label()));
                     cardViews.add(view);
                 }
                 if ((card.summary() == null || card.indicator() == null || card.source() == null
@@ -715,10 +736,15 @@ public class OnboardingRunner {
             List<Map<String, Object>> coverage = new ArrayList<>();
             for (CoverageInformation info : coverageInformation.subList(0, Math.min(MAX_VIEWS, coverageInformation.size()))) {
                 Map<String, Object> view = new LinkedHashMap<>();
-                view.put("resource", info.resourceReference());
-                view.put("covered", info.covered());
-                view.put("paNeeded", info.paNeeded());
-                view.put("docNeeded", info.docNeeded());
+                view.put("resource", TextLimit.cut(info.resourceReference()));
+                view.put("covered", TextLimit.cut(info.covered()));
+                view.put("paNeeded", TextLimit.cut(info.paNeeded()));
+                List<String> docNeeded = info.docNeeded() == null ? null : info.docNeeded().stream()
+                        .limit(MAX_LIST_ENTRIES).map(TextLimit::cut).toList();
+                view.put("docNeeded", docNeeded);
+                if (docNeeded != null) {
+                    putNotShown(view, "docNeededNotShown", info.docNeeded().size() - docNeeded.size());
+                }
                 coverage.add(view);
             }
             details.put("cards", cardViews);
