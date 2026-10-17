@@ -83,8 +83,9 @@ final class ConformanceMapping {
     private static final String MESSAGE_ID = "http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id";
     private static final String FILE = "http://hl7.org/fhir/StructureDefinition/operationoutcome-file";
     private static final String CONTEXT_WRONG = "Extension_EXTP_Context_Wrong";
-    /** {@code cards[0].suggestions[0].actions[0].resource/*DeviceRequest/x*}{@code /.extension[0]}. */
-    private static final Pattern IN_RESOURCE = Pattern.compile("^(.*?\\.resource)/\\*[^*]*\\*/(.*)$");
+    /** An action resource in a location: {@code ...actions[0].resource/*DeviceRequest/x*}{@code /.extension[0]}. */
+    private static final String RESOURCE_OPEN = ".resource/*";
+    private static final String RESOURCE_CLOSE = "*/";
     private static final Pattern URL_FILTER = Pattern.compile("\\[url='[^']*']");
     private static final Pattern STEP = Pattern.compile("^([A-Za-z]+)(?:\\[(\\d+)])?$");
     private static final Pattern OF_TYPE = Pattern.compile("^ofType\\(([A-Za-z]+)\\)$");
@@ -130,12 +131,13 @@ final class ConformanceMapping {
             return CoverageLocationCheck.CHECK_ID;
         }
         String location = URL_FILTER.matcher(issue.location()).replaceAll("").replaceFirst("^CDSHooksResponse\\.?", "");
-        Matcher inResource = IN_RESOURCE.matcher(location);
-        if (!inResource.matches()) {
+        int open = location.indexOf(RESOURCE_OPEN);
+        int close = open < 0 ? -1 : location.indexOf(RESOURCE_CLOSE, open + RESOURCE_OPEN.length());
+        if (close < 0) {
             return location.matches("^cards\\[\\d+]\\.source\\.topic(\\..*)?$") ? UNCLAIMED : ResponseSchemaCheck.CHECK_ID;
         }
-        JsonNode node = walk(body, inResource.group(1));
-        for (JsonNode step : steps(node, inResource.group(2))) {
+        JsonNode node = walk(body, location.substring(0, open + ".resource".length()));
+        for (JsonNode step : steps(node, location.substring(close + RESOURCE_CLOSE.length()))) {
             if (CoverageLocationCheck.COVERAGE_INFORMATION_URL.equals(step.path("url").asText())) {
                 return CoverageInformationCheck.CHECK_ID;
             }
