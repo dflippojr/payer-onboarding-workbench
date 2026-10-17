@@ -22,3 +22,6 @@ playwright-report/
 test-results/
 output/
 ui-build.log
+
+# CRD reference server logs and cached image (scripts/crd-reference-server.sh)
+.crd-ri/
