@@ -1,0 +1,29 @@
+{
+  "cards" : [ {
+    "uuid" : "259d8307-b31b-34db-bd43-5e8e3651cf4d",
+    "summary" : "Fabrikam: E0143 - Not a covered benefit under this plan",
+    "indicator" : "info",
+    "detail" : "Final requirements are returned when the order is signed.",
+    "source" : {
+      "label" : "Fabrikam Benefits (synthetic)",
+      "topic" : {
+        "system" : "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp",
+        "code" : "coverage",
+        "display" : "Coverage"
+      }
+    }
+  }, {
+    "uuid" : "566aacbf-8ad9-329d-a447-c3d7f68b9c0a",
+    "summary" : "Fabrikam: 97161 - Not a covered benefit under this plan",
+    "indicator" : "info",
+    "detail" : "Final requirements are returned when the order is signed.",
+    "source" : {
+      "label" : "Fabrikam Benefits (synthetic)",
+      "topic" : {
+        "system" : "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp",
+        "code" : "coverage",
+        "display" : "Coverage"
+      }
+    }
+  } ]
+}

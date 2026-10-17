@@ -8,6 +8,7 @@ import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertOnly
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.orderSign;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.resource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.dflippojr.payerworkbench.core.Finding;
@@ -131,6 +132,24 @@ class ResponseChecksTest {
         }
 
         @Test
+        void cardWithSuggestionsNeedsAValidSelectionBehavior() {
+            var run = healthy().hookBody("""
+                    {"cards":[
+                      {"summary":"a","indicator":"info","source":{"label":"P"},"suggestions":[{"label":"Save"}]},
+                      {"summary":"b","indicator":"info","source":{"label":"P"},"suggestions":[{"label":"Save"}],
+                       "selectionBehavior":"all"},
+                      {"summary":"c","indicator":"info","source":{"label":"P"},"suggestions":[{"label":"Save"}],
+                       "selectionBehavior":"at-most-one"},
+                      {"summary":"d","indicator":"info","source":{"label":"P"},"suggestions":[]}
+                    ]}""");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("cards[0].selectionBehavior is missing"), f::evidence);
+            assertTrue(f.evidence().contains("cards[1].selectionBehavior is \"all\""), f::evidence);
+            assertFalse(f.evidence().contains("cards[2]"), f::evidence);
+            assertFalse(f.evidence().contains("cards[3]"), f::evidence);
+        }
+
+        @Test
         void errorStatusFails() {
             var run = healthy();
             run.hooks = new ArrayList<>(List.of(orderSign(hook(500, "{\"error\":\"internal\"}", 300))));
@@ -170,6 +189,22 @@ class ResponseChecksTest {
             Finding f = assertOnly(check.evaluate(run.build()), Severity.INFO);
             assertTrue(f.evidence().contains("cards[0].suggestions[0].actions[0]"), f::evidence);
             assertTrue(f.explanation().contains("systemActions"));
+        }
+
+        @Test
+        void coverageOnAnElementInsideTheOrderFails() {
+            String ci = "{\"url\":\"" + CoverageLocationCheck.COVERAGE_INFORMATION_URL + "\",\"extension\":[]}";
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[{\"type\":\"update\",\"resource\":"
+                    + "{\"resourceType\":\"DeviceRequest\",\"codeCodeableConcept\":{\"coding\":[{\"extension\":[" + ci
+                    + "]}]}}},{\"type\":\"update\",\"resource\":{\"resourceType\":\"Coverage\",\"extension\":[" + ci
+                    + "]}},{\"type\":\"update\",\"resource\":{\"resourceType\":\"ServiceRequest\",\"extension\":[" + ci
+                    + ",{\"url\":\"http://example.org/wrapper\",\"extension\":[" + ci + "]}]}}]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("systemActions[0].resource.codeCodeableConcept.coding[0].extension[0]"),
+                    f::evidence);
+            assertTrue(f.evidence().contains("systemActions[1].resource.extension[0] (on a Coverage)"), f::evidence);
+            assertTrue(f.evidence().contains("systemActions[2].resource.extension[1].extension[0]"), f::evidence);
+            assertTrue(f.evidence().contains("found in systemActions: crd-order-sign: systemActions[2]"), f::evidence);
         }
 
         @Test

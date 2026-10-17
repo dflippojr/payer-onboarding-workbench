@@ -1,0 +1,74 @@
+{
+  "cards" : [ {
+    "uuid" : "6a5491bc-27f5-339c-9aac-bba2961ee9ae",
+    "summary" : "E0601: Coverage is conditional; clinical documentation needed",
+    "indicator" : "info",
+    "detail" : "See the coverage information recorded on DeviceRequest/devreq-cpap.",
+    "source" : {
+      "label" : "Tailspin Health Plan (synthetic)",
+      "topic" : {
+        "system" : "http://terminology.hl7.org/CodeSystem/cdshooks-card-type",
+        "code" : "coverage-info",
+        "display" : "Coverage Information"
+      }
+    }
+  } ],
+  "systemActions" : [ {
+    "type" : "update",
+    "description" : "Record Tailspin Health Plan (synthetic) coverage information on DeviceRequest/devreq-cpap",
+    "resource" : {
+      "resourceType" : "DeviceRequest",
+      "id" : "devreq-cpap",
+      "status" : "draft",
+      "intent" : "original-order",
+      "codeCodeableConcept" : {
+        "coding" : [ {
+          "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+          "code" : "E0601",
+          "display" : "Continuous positive airway pressure (CPAP) device"
+        } ],
+        "text" : "Continuous positive airway pressure (CPAP) device"
+      },
+      "subject" : {
+        "reference" : "Patient/pat-synthetic-001"
+      },
+      "encounter" : {
+        "reference" : "Encounter/enc-synthetic-001"
+      },
+      "authoredOn" : "2026-03-02",
+      "requester" : {
+        "reference" : "Practitioner/pract-synthetic-001"
+      },
+      "insurance" : [ {
+        "reference" : "Coverage/cov-synthetic-001"
+      } ],
+      "extension" : [ {
+        "url" : "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+        "extension" : [ {
+          "url" : "coverage",
+          "valueReference" : {
+            "reference" : "Coverage/cov-synthetic-001"
+          }
+        }, {
+          "url" : "covered",
+          "valueCode" : "conditional"
+        }, {
+          "url" : "pa-needed",
+          "valueCode" : "no-auth"
+        }, {
+          "url" : "info-needed",
+          "valueCode" : "detail-code"
+        }, {
+          "url" : "doc-needed",
+          "valueCode" : "clinical"
+        }, {
+          "url" : "date",
+          "valueDate" : "2026-03-02"
+        }, {
+          "url" : "coverage-assertion-id",
+          "valueString" : "TS-DeviceRequest-devreq-cpap-E0601"
+        } ]
+      } ]
+    }
+  } ]
+}

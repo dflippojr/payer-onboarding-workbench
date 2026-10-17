@@ -1,0 +1,30 @@
+{
+  "cards" : [ {
+    "uuid" : "259d8307-b31b-34db-bd43-5e8e3651cf4d",
+    "summary" : "E0143: Coverage is conditional; clinical documentation needed",
+    "indicator" : "info",
+    "detail" : "Preliminary guidance. Northwind Health (synthetic) returns the coverage determination at order-sign.",
+    "source" : {
+      "label" : "Northwind Health (synthetic)",
+      "topic" : {
+        "system" : "http://terminology.hl7.org/CodeSystem/cdshooks-card-type",
+        "code" : "coverage-info",
+        "display" : "Coverage Information"
+      }
+    }
+  }, {
+    "uuid" : "566aacbf-8ad9-329d-a447-c3d7f68b9c0a",
+    "summary" : "97161: Coverage is conditional; clinical documentation needed",
+    "indicator" : "info",
+    "detail" : "Preliminary guidance. Northwind Health (synthetic) returns the coverage determination at order-sign.",
+    "source" : {
+      "label" : "Northwind Health (synthetic)",
+      "topic" : {
+        "system" : "http://terminology.hl7.org/CodeSystem/cdshooks-card-type",
+        "code" : "coverage-info",
+        "display" : "Coverage Information"
+      }
+    }
+  } ],
+  "systemActions" : [ ]
+}
