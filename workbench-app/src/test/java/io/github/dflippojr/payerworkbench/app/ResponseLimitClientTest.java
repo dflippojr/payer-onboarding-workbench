@@ -14,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -200,10 +201,59 @@ class ResponseLimitClientTest {
     }
 
     @Test
+    void aCallThatFailsForAnotherReasonFailsWithItsCause() {
+        IllegalStateException runtime = new IllegalStateException("synthetic runtime failure");
+        assertSame(runtime, assertThrows(IllegalStateException.class,
+                () -> failingWith(runtime).send(request(1), HttpResponse.BodyHandlers.ofString())));
+        AssertionError error = new AssertionError("synthetic error");
+        assertSame(error, assertThrows(AssertionError.class,
+                () -> failingWith(error).send(request(1), HttpResponse.BodyHandlers.ofString())));
+        IOException io = new IOException("synthetic I/O failure");
+        assertSame(io, assertThrows(IOException.class,
+                () -> failingWith(io).send(request(1), HttpResponse.BodyHandlers.ofString())));
+        Exception checked = new Exception("synthetic checked failure");
+        IOException wrapped = assertThrows(IOException.class,
+                () -> failingWith(checked).send(request(1), HttpResponse.BodyHandlers.ofString()));
+        assertSame(checked, wrapped.getCause());
+        assertEquals("synthetic checked failure", wrapped.getMessage());
+    }
+
+    @Test
+    void anInterruptedCallIsCancelled() throws Exception {
+        HttpClient own = HttpClient.newHttpClient();
+        ResponseLimitClient client = new ResponseLimitClient(own, LIMIT, 5000, Duration.ofSeconds(30));
+
+        Thread.currentThread().interrupt();
+        assertThrows(InterruptedException.class, () -> client.send(stall(null), HttpResponse.BodyHandlers.ofString()));
+
+        assertFalse(Thread.interrupted(), "the interrupt was taken by the call");
+        assertTimeoutPreemptively(Duration.ofSeconds(10), own::close);
+    }
+
+    /** A client whose every call fails with {@code cause}. */
+    private ResponseLimitClient failingWith(Throwable cause) {
+        return new ResponseLimitClient(new ForwardingHttpClient(http) {
+            @Override
+            protected HttpRequest prepare(HttpRequest request) {
+                return request;
+            }
+
+            @Override
+            public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
+                                                                   HttpResponse.BodyHandler<T> handler) {
+                return CompletableFuture.failedFuture(cause);
+            }
+        }, LIMIT);
+    }
+
+    @Test
     void theSettingDefaultsToFourMibAndMustBePositive() {
         assertEquals(4L * 1024 * 1024, new WorkbenchProperties(null, null, null, null, null).maxResponseBytes());
         assertThrows(IllegalArgumentException.class,
                 () -> new WorkbenchProperties(null, null, null, null, null, null, null, 0L));
+        assertEquals(1000, new WorkbenchProperties(null, null, null, null, null, null, null, 1000L).maxResponseBytes());
+        assertThrows(IllegalArgumentException.class,
+                () -> new WorkbenchProperties(null, null, null, null, null, null, null, null, 0L));
         assertEquals(100_000, new WorkbenchProperties(null, null, null, null, null).maxResponseJsonValues());
         assertThrows(IllegalArgumentException.class,
                 () -> new WorkbenchProperties(null, null, null, null, null, null, null, null, null, 0));

@@ -38,6 +38,11 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -571,6 +576,60 @@ class CustomEndpointTest {
             for (String secret : List.of("dXNlcjpwYXNz", "SECRETPART", "918273645", "918273646", "MIIEvSyntheticOnly123")) {
                 assertFalse(surface.contains(secret), secret + " leaked");
             }
+        }
+    }
+
+    @Test
+    void aRunPastTheConcurrencyLimitIsRefusedWith503() throws Exception {
+        // Every permitted custom run waits in its hook call, so one more is refused instead of queued.
+        int limit = WorkbenchProperties.DEFAULT_MAX_CONCURRENT_RUNS;
+        CountDownLatch inHook = new CountDownLatch(limit);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService payerThreads = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(payerThreads);
+        open.add(payerThreads::shutdownNow);
+        open.add(() -> server.stop(0));
+        server.createContext("/held/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""");
+                return;
+            }
+            exchange.getRequestBody().readAllBytes();
+            inHook.countDown();
+            try {
+                release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            respond(exchange, "{\"cards\":[]}");
+        });
+        server.start();
+        String run = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", Map.of("baseUrl",
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/held", "authType", "NONE", "igVersion", igVersion)));
+        ExecutorService callers = Executors.newFixedThreadPool(limit);
+        try {
+            List<Future<HttpResponse<String>>> held = new ArrayList<>();
+            for (int i = 0; i < limit; i++) {
+                held.add(callers.submit(() -> send("POST", "/api/runs", run)));
+            }
+            assertTrue(inHook.await(30, TimeUnit.SECONDS), "every permitted run reached its hook call");
+
+            HttpResponse<String> refused = send("POST", "/api/runs", run);
+
+            assertEquals(503, refused.statusCode(), refused.body());
+            assertEquals("5", refused.headers().firstValue("Retry-After").orElse(null));
+            assertEquals(limit + " custom-endpoint runs are already in progress (workbench.max-concurrent-runs); "
+                    + "try again when one finishes", mapper.readTree(refused.body()).path("detail").asText());
+            release.countDown();
+            for (Future<HttpResponse<String>> answer : held) {
+                assertEquals(200, answer.get(30, TimeUnit.SECONDS).statusCode());
+            }
+            assertEquals(200, send("POST", "/api/runs", run).statusCode(), "the finished runs gave their permits back");
+        } finally {
+            release.countDown();
+            callers.shutdownNow();
         }
     }
 
