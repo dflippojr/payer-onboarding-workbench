@@ -13,11 +13,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Keys and tokens are generated at runtime; nothing secret-shaped is committed. */
 class RedactorTest {
 
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Test
     void bearerChallengeParametersSurviveRedaction() {
@@ -189,6 +191,57 @@ class RedactorTest {
     void masksSecretStringCutOffByTheEndOfTheText() {
         assertEquals("{\"cards\":[],\"access_token\":\"[REDACTED]\"",
                 Redactor.redact("{\"cards\":[],\"access_token\":\"synthetic-cut-tok"));
+    }
+
+    @Test
+    void masksSecretStringCutInsideAnEscape() {
+        // A lone backslash at the end, or before the line break that starts a note on a cut body.
+        assertEquals("{\"access_token\":\"[REDACTED]\"", Redactor.redact("{\"access_token\":\"FAKE-CREDENTIAL-1\\"));
+        assertEquals("{\"access_token\":\"[REDACTED]\"\n[note]",
+                Redactor.redact("{\"access_token\":\"FAKE-CREDENTIAL-1\\\n[note]"));
+        // Embedded JSON: one or three backslashes left, or an inner escape cut before the JSON was quoted.
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"",
+                Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\"));
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"\n[note]",
+                Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\\\\\\n[note]"));
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"\"}",
+                Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\\\\"}"));
+    }
+
+    /**
+     * A body cut at every position of a secret value full of escapes ({@code \\}, {@code \"},
+     * {@code \n} and a control character's six-character escape), raw or embedded in a JSON string,
+     * cut before or after it was quoted, with or without a note after the cut, keeps nothing of it.
+     */
+    @Test
+    void masksSecretCutAtEveryPositionOfAnEscapedValue() {
+        String secret = "FAKE\\CRED\"ENTIAL\nSYNTH\u0001ETIC\\";
+        String field = "{\"error\":\"invalid_client\",\"access_token\":";
+        String value = JSON.writeValueAsString(secret);
+        String masked = field + "\"" + Redactor.MASK + "\"";
+        for (int cut = 1; cut < value.length(); cut++) {
+            String raw = field + value.substring(0, cut);
+            assertCutMasked(raw, masked);
+            assertCutMasked(embedded(raw) + "\"}", embedded(masked) + "\"}");
+        }
+        String quoted = embedded(field + value);
+        for (int cut = embedded(field).length() + 2; cut < quoted.length(); cut++) {
+            assertCutMasked(quoted.substring(0, cut), embedded(masked));
+        }
+    }
+
+    /** {@code text} quoted as the value of a {@code debug} field, without the closing {@code "}}. */
+    private static String embedded(String text) {
+        String quoted = JSON.writeValueAsString(text);
+        return "{\"debug\":" + quoted.substring(0, quoted.length() - 1);
+    }
+
+    private static void assertCutMasked(String cut, String masked) {
+        for (String note : List.of("", "\n[not parsed: more than 100000 JSON values; kept the first 8192 characters]")) {
+            String out = Redactor.redact(cut + note);
+            // A note after a cut that is not inside an escape is masked along with the value.
+            assertTrue(out.equals(masked + note) || out.equals(masked), () -> cut + note + "\n became " + out);
+        }
     }
 
     @Test

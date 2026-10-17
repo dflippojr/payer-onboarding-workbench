@@ -546,6 +546,36 @@ class CustomEndpointTest {
     }
 
     @Test
+    void secretCutInsideAnEscapeByTheJsonValueLimitIsMaskedOnEverySurface() throws Exception {
+        // The kept 8 Ki prefix of a body with too many JSON values ends in the first half of an escaped
+        // backslash inside an echoed access token.
+        String start = "{\"access_token\":\"FAKE-CREDENTIAL-123456";
+        String hookBody = start + "x".repeat(ResponseTooLargeException.JSON_VALUES_PREFIX_CHARS - 1 - start.length())
+                + "\\\\\",\"cards\":[" + "{},".repeat(100_000) + "{}]}";
+        String base = startEchoServer(200, hookBody);
+
+        HttpResponse<String> posted = send("POST", "/api/runs", mapper.writeValueAsString(Map.of("sampleId", SAMPLE,
+                "customEndpoint", Map.of("baseUrl", base, "authType", "NONE", "igVersion", igVersion))));
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        var run = mapper.readTree(posted.body());
+        String recorded = run.path("steps").get(3).path("details").path("exchanges").get(0).path("responseBody").asText();
+        assertEquals("{\"access_token\":\"[REDACTED]\"\n[not parsed: more than "
+                + WorkbenchProperties.DEFAULT_MAX_RESPONSE_JSON_VALUES + " JSON values; kept the first "
+                + ResponseTooLargeException.JSON_VALUES_PREFIX_CHARS + " characters]", recorded);
+        String runId = run.path("runId").asText();
+        List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body()));
+        for (String format : List.of("md", "html", "json")) {
+            HttpResponse<String> report = send("GET", "/api/runs/" + runId + "/report?format=" + format, null);
+            assertEquals(200, report.statusCode());
+            surfaces.add(report.body());
+        }
+        for (String surface : surfaces) {
+            assertFalse(surface.contains("FAKE-CREDENTIAL"), "the access token leaked");
+        }
+    }
+
+    @Test
     void oversizedHookBodyIsCutAtTheLimitAndNamed() throws Exception {
         long limit = WorkbenchProperties.DEFAULT_MAX_RESPONSE_BYTES;
         long recordedLength = limit + 1 + "[truncated at 4194304 bytes]".length();

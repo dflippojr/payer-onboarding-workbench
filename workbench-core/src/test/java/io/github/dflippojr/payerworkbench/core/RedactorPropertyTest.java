@@ -21,9 +21,10 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Class-level check (#160): generates secrets of every shape {@link Redactor} promises to mask
- * (random tokens, Basic {@code user:pass}, colon-split bearers, numeric secrets, PEM private keys),
- * raw or URL-encoded, places them where a payer echoes credentials (headers, bodies, query strings),
- * with or without the whole text quoted inside a JSON string, and asserts that no piece of the
+ * (random tokens, Basic {@code user:pass}, colon-split bearers, numeric secrets, PEM private keys,
+ * values full of JSON escapes), raw or URL-encoded, places them where a payer echoes credentials
+ * (headers, bodies, query strings, bodies cut off at any position in a JSON value), with or without
+ * the whole text quoted inside a JSON string, and asserts that no piece of the
  * secret survives. {@code replay/test/leaks.test.mjs} runs the same generator against the leak
  * scanner. Everything is generated; nothing secret-shaped is committed.
  */
@@ -57,7 +58,7 @@ class RedactorPropertyTest {
     private static final List<String> PEM_LABELS = List.of(
             "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY");
 
-    enum Shape { TOKEN, BASIC_USER_PASS, COLON_BEARER, NUMERIC, PEM }
+    enum Shape { TOKEN, BASIC_USER_PASS, COLON_BEARER, NUMERIC, PEM, ESCAPED }
 
     enum Encoding { RAW, URL }
 
@@ -70,7 +71,10 @@ class RedactorPropertyTest {
         AUTH_TEXT,
         /** An httpbin-style echo: {@code {"headers":{"Authorization":"<scheme> <secret>"}}}. */
         HEADERS_ECHO,
-        /** A secret-named JSON field, also with a number value and in a body cut off after the value. */
+        /**
+         * A secret-named JSON field, also with a number value and in a body cut off at any position
+         * in the value, inside an escape too.
+         */
         JSON_FIELD,
         /** A secret key in a form body. */
         FORM_BODY,
@@ -91,7 +95,7 @@ class RedactorPropertyTest {
     }
 
     record Case(Secret secret, Slot slot, Encoding encoding, int variant, String before, String after,
-                boolean jsonWrap, Carrier carrier) {
+                boolean jsonWrap, Carrier carrier, int cut) {
 
         String placed() {
             return encoding == Encoding.URL ? URLEncoder.encode(secret.value(), StandardCharsets.UTF_8) : secret.value();
@@ -106,6 +110,9 @@ class RedactorPropertyTest {
         }
 
         String text() {
+            if (slot == Slot.JSON_FIELD && variant % 3 == 2) {
+                return cutJsonField();
+            }
             String text = switch (slot) {
                 case AUTH_TEXT -> before + scheme() + " " + placed() + after;
                 case HEADERS_ECHO -> "{\"headers\":{\"Host\":\"payer.example.test\",\"Authorization\":"
@@ -125,16 +132,45 @@ class RedactorPropertyTest {
             return secret.shape() == Shape.PEM ? List.of("private_key") : keys;
         }
 
-        /** A secret field after a harmless one; the body may continue, close, or be cut off after the value. */
+        /** A secret field after a harmless one; the body continues or closes after the value. */
         private String jsonField() {
-            String name = pick(secret.shape() == Shape.PEM ? PEM_KEYS : JSON_FIELDS);
-            boolean number = secret.shape() == Shape.NUMERIC && encoding == Encoding.RAW && variant % 2 == 1;
-            String value = number ? placed() : JSON.writeValueAsString(placed());
-            return switch (variant % 3) {
-                case 0 -> "{\"error\":\"invalid_client\",\"" + name + "\":" + value + ",\"error_description\":\"Client authentication failed\"}";
-                case 1 -> "{\"error\":\"invalid_client\",\"" + name + "\":" + value + "}";
-                default -> "{\"error\":\"invalid_client\",\"" + name + "\":" + (number ? value : value.substring(0, value.length() - 1));
-            };
+            return variant % 3 == 0
+                    ? jsonFieldStart() + jsonValue() + ",\"error_description\":\"Client authentication failed\"}"
+                    : jsonFieldStart() + jsonValue() + "}";
+        }
+
+        private String jsonFieldStart() {
+            return "{\"error\":\"invalid_client\",\"" + pick(secret.shape() == Shape.PEM ? PEM_KEYS : JSON_FIELDS) + "\":";
+        }
+
+        private boolean numberValue() {
+            return secret.shape() == Shape.NUMERIC && encoding == Encoding.RAW && variant % 2 == 1;
+        }
+
+        private String jsonValue() {
+            return numberValue() ? placed() : JSON.writeValueAsString(placed());
+        }
+
+        /**
+         * A body cut off at any position in the secret's value, inside an escape too, which keeps at
+         * least the value's opening quote or first digit. Quoted inside a JSON string, the cut comes
+         * before the JSON was quoted or after. The note the workbench appends to a cut body may follow.
+         */
+        private String cutJsonField() {
+            String field = jsonFieldStart();
+            String value = jsonValue();
+            String note = variant / 3 % 2 == 0 ? "" : "\n[not parsed: more JSON values than the limit]";
+            String inner = field + value.substring(0, 1 + cut % (value.length() - 1));
+            if (!jsonWrap) {
+                return inner + note;
+            }
+            if (variant / 6 % 2 == 0) {
+                return "{\"debug\":" + JSON.writeValueAsString(inner) + "}" + note;
+            }
+            String quoted = JSON.writeValueAsString(field + value);
+            int start = JSON.writeValueAsString(field).length() - 1 + (numberValue() ? 1 : 2);
+            int end = quoted.length() - 1;
+            return "{\"debug\":" + quoted.substring(0, start + cut % (end - start)) + note;
         }
 
         String redacted() {
@@ -182,20 +218,34 @@ class RedactorPropertyTest {
                         Arbitraries.of(BEFORE),
                         Arbitraries.of(AFTER),
                         Arbitraries.of(false, true),
-                        Arbitraries.of(Carrier.values()))
-                .as((slot, encoding, variant, before, after, jsonWrap, carrier) -> new Case(secret, slot,
-                        // Outside a secret-named key, a PEM block is found by its armor, which URL encoding removes.
-                        slot == Slot.PEM_TEXT ? Encoding.RAW : encoding, variant, before, after, jsonWrap, carrier)));
+                        Arbitraries.of(Carrier.values()),
+                        Arbitraries.integers().between(0, 1_000_000))
+                .as((slot, encoding, variant, before, after, jsonWrap, carrier, cut) -> new Case(secret, slot,
+                        // Outside a secret-named key, a PEM block is found by its armor, which URL encoding
+                        // removes; URL encoding would remove the escapes of an escaped value.
+                        slot == Slot.PEM_TEXT || secret.shape() == Shape.ESCAPED ? Encoding.RAW : encoding,
+                        variant, before, after, jsonWrap, carrier, cut)));
     }
 
     private static List<Slot> slotsFor(Shape shape) {
-        return shape == Shape.PEM
-                ? List.of(Slot.CREDENTIAL_HEADER, Slot.JSON_FIELD, Slot.FORM_BODY, Slot.QUERY_STRING, Slot.PEM_TEXT)
-                : Arrays.stream(Slot.values()).filter(s -> s != Slot.PEM_TEXT).toList();
+        return switch (shape) {
+            case PEM -> List.of(Slot.CREDENTIAL_HEADER, Slot.JSON_FIELD, Slot.FORM_BODY, Slot.QUERY_STRING, Slot.PEM_TEXT);
+            case ESCAPED -> List.of(Slot.JSON_FIELD);
+            default -> Arrays.stream(Slot.values()).filter(s -> s != Slot.PEM_TEXT).toList();
+        };
     }
 
     private static Arbitrary<Secret> secrets() {
-        return Arbitraries.oneOf(tokens(), basicUserPass(), colonBearers(), numbers(), pemBlocks());
+        return Arbitraries.oneOf(tokens(), basicUserPass(), colonBearers(), numbers(), pemBlocks(), escaped());
+    }
+
+    /**
+     * A value whose JSON string holds many escapes: {@code \\}, {@code \"}, {@code \n}, {@code \t}
+     * and the six-character escape of a control character.
+     */
+    private static Arbitrary<Secret> escaped() {
+        return Arbitraries.strings().withChars(TOKEN_CHARS + "\\\"\n\t\u0001").ofMinLength(PIECE).ofMaxLength(64)
+                .map(v -> new Secret(Shape.ESCAPED, v, List.of()));
     }
 
     /**

@@ -74,11 +74,13 @@ public final class Redactor {
     /**
      * A JSON field and its string or scalar value; group 1 is the name, checked with
      * {@link #isSecretField(String)}. A string cut off by the end of the text (a body truncated at
-     * the size limit) counts too. Possessive quantifiers: a plain alternation recurses per
-     * character and overflows on long values.
+     * the size limit) counts too, also when the cut leaves half an escape: a lone backslash at the
+     * end, or before the line break that starts a note appended to the cut body. Possessive
+     * quantifiers: a plain alternation recurses per character and overflows on long values.
      */
     private static final Pattern JSON_FIELD = Pattern.compile(
-            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\z)|" + JSON_SCALAR + ")");
+            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\\\?+(?=\\R|\\z))|"
+                    + JSON_SCALAR + ")");
 
     /** A literal backslash, as a regex. */
     private static final String BACKSLASH = "\\\\";
@@ -91,12 +93,14 @@ public final class Redactor {
      * where the inner string's own escapes are escaped again: an inner {@code \\} is four backslashes
      * and an inner {@code \"} three and a quote. A string cut off by the end of the text counts too,
      * and so does one cut off by the end of the outer string (an unescaped quote): embedded JSON that
-     * was truncated before it was quoted.
+     * was truncated before it was quoted. Either cut may leave up to three backslashes of an escape,
+     * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
             BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"(?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
-                    + "|" + BACKSLASH + PLAIN + ")*+(?:" + BACKSLASH + "\"|(?=\")|\\z)|" + JSON_SCALAR + ")");
+                    + "|" + BACKSLASH + PLAIN + ")*+(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
+                    + JSON_SCALAR + ")");
 
     /** A JSON field whose value is an object or array; group 1 is the name. */
     private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"([A-Za-z_-]{1,64})\"\\s*:\\s*(?=[{\\[])");

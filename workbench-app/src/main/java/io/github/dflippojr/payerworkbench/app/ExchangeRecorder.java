@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchangeListener;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
+import io.github.dflippojr.payerworkbench.core.Redactor;
 
 import java.net.http.HttpHeaders;
 import java.util.ArrayList;
@@ -47,11 +48,13 @@ final class ExchangeRecorder implements PayerExchangeListener {
     /**
      * The SDK saw no response for a body cut at the limit, so it recorded none: keep what arrived,
      * with a note. A token body is never kept, as the SDK keeps none, since a cut access token
-     * could slip past the redactor.
+     * could slip past the redactor. The kept prefix is redacted before the note is added, so a cut
+     * that ends inside a secret's value is masked as the end of the text, not as text the note follows.
      */
     private static String truncatedBody(PayerCallPhase phase, ResponseTooLargeException tooLarge) {
         String body = tooLarge.truncatedBody();
-        return phase == PayerCallPhase.TOKEN || body == null ? tooLarge.note() : body + "\n" + tooLarge.note();
+        return phase == PayerCallPhase.TOKEN || body == null ? tooLarge.note()
+                : Redactor.redact(body) + "\n" + tooLarge.note();
     }
 
     /** Every attempt, in the order they were made. */
