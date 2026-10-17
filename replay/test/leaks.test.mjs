@@ -6,6 +6,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks } from './leaks.mjs';
+import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
+
+const MASK = '[REDACTED]';
 
 const corpus = JSON.parse(readFileSync(
   fileURLToPath(new URL('../../workbench-core/src/test/resources/redaction-corpus.json', import.meta.url)), 'utf8'));
@@ -30,3 +33,69 @@ for (const e of corpus.harmlessHeaders) {
     assert.deepEqual(findJsonLeaks({ requestHeaders: { [e.name]: [e.value] } }), []);
   });
 }
+
+// What Redactor used to leave behind for each case above is a leak to the scanner, which stays
+// stricter than Redactor so it can catch the next such gap; what Redactor leaves now is not.
+const leakedOutputs = {
+  'Basic credential before a period': 'Received Authorization: Basic dXNlcjpwYXNz.',
+  'credential suffix after the mask': 'Bearer [REDACTED]:SECRETPART',
+  'form secret cut at a backslash': 'client_secret=[REDACTED]\\xyzTAIL&x=1',
+  'embedded secret cut at an escaped quote': '{"result":"{\\"password\\":\\"[REDACTED]\\"ssTAIL\\"}"}',
+  'secret object': '{"private_key":{"kty":"RSA","d":"PRIVATED"}}',
+  'secret array': '{"access_token":["ARRSECRET"]}',
+};
+for (const [name, text] of Object.entries(leakedOutputs)) {
+  test(`flags what Redactor used to leave: ${name}`, () => {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  });
+}
+test('flags a secret object or array in parsed JSON', () => {
+  assert.equal(findJsonLeaks({ responseBody: '{"private_key":{"d":"PRIVATED"}}' }).length, 1);
+  assert.equal(findJsonLeaks({ details: { accessToken: ['ARRSECRET'] } }).length, 1);
+});
+test('accepts what Redactor leaves now', () => {
+  for (const text of [
+    'Received Authorization: Basic [REDACTED]',
+    'client_secret=[REDACTED]&x=1',
+    '{"body":"password=[REDACTED]\\nnext"}',
+    '{"body":"grant_type=x&client_secret=[REDACTED]"}',
+    '{"result":"{\\"password\\":\\"[REDACTED]\\",\\"user\\":\\"u\\"}"}',
+    '{"result":"{\\"access_token\\":\\"[REDACTED]\\"',
+    '{"private_key":"[REDACTED]","kid":"k1"}',
+    '{"result":"{\\"private_key\\":\\"[REDACTED]\\",\\"kid\\":\\"k1\\"}"}',
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
+test('accepts a recorded header list of masked values', () => {
+  assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
+  assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);
+});
+
+// Class-level check (#160): generated secrets of every shape, placed in headers, bodies and query
+// strings (see secret-cases.mjs), must be flagged both unmasked and where a mask stops short of
+// their end. RedactorPropertyTest runs the same generator against Redactor. A failure names its
+// seed; LEAKS_SEED=<seed> reproduces it.
+const SEED = Number(process.env.LEAKS_SEED ?? Math.floor(Math.random() * 2 ** 32));
+const CASES = generateCases(SEED, 3000);
+const describeCase = c => `seed ${SEED}: ${c.slot} ${c.secret.shape} ${c.encoding}${c.jsonWrap ? ' in JSON' : ''} (${c.carrier})`;
+
+/** Flagged in the slot's own text, as in a report, and in the recorded exchange, as in the bundle. */
+const flagged = ({ text, record }) => (text === null || findTextLeaks(text).length > 0)
+  && findTextLeaks(JSON.stringify(record)).length + findJsonLeaks(record).length > 0;
+
+test('class-level check: flags every generated secret left unmasked', () => {
+  for (const c of CASES) {
+    const placement = build(c, placed(c));
+    assert.ok(flagged(placement), `${describeCase(c)} not flagged: ${placement.text ?? JSON.stringify(placement.record)}`);
+  }
+});
+test('class-level check: flags a mask that stops short of a generated secret', () => {
+  for (const c of CASES) {
+    const value = placed(c);
+    // Base64 lines without their armor can't be told from other text; Redactor masks PEM blocks whole.
+    if ((c.secret.shape === 'PEM' && c.encoding === 'RAW') || value.length <= PIECE) continue;
+    const placement = build(c, MASK + value.slice(1 + (c.cut % (value.length - PIECE))));
+    assert.ok(flagged(placement), `${describeCase(c)} not flagged: ${placement.text ?? JSON.stringify(placement.record)}`);
+  }
+});

@@ -60,11 +60,11 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             }
             Optional<JsonNode> json = Support.parseJson(exchange.responseBody());
             if (json.isEmpty() || !json.get().isObject()) {
-                findings.add(fail(label, List.of("response body is not a JSON object"), exchange));
+                findings.add(fail(label, "response body is not a JSON object", exchange));
                 continue;
             }
-            List<String> problems = new ArrayList<>();
-            List<String> warnings = new ArrayList<>();
+            CappedLines problems = new CappedLines();
+            CappedLines warnings = new CappedLines();
             JsonNode cards = json.get().get("cards");
             if (cards == null || !cards.isArray()) {
                 problems.add("missing required \"cards\" array (send [] when there is nothing to say)");
@@ -75,12 +75,12 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 }
             }
             if (!problems.isEmpty()) {
-                findings.add(fail(label, problems, exchange));
+                findings.add(fail(label, problems.join("\n"), exchange));
             } else if (!warnings.isEmpty()) {
                 findings.add(new Finding(CHECK_ID, Severity.WARN, "Cards from " + label + " bend the CDS Hooks rules",
                         "The response is usable, but some cards break CDS Hooks recommendations that EHRs rely on "
                                 + "when displaying them, so they may be truncated or shown oddly.",
-                        String.join("\n", warnings) + "\n" + Support.describe(exchange),
+                        warnings.join("\n") + "\n" + Support.describe(exchange),
                         "Ask the payer to fix the listed fields; the library will still parse the cards."));
             } else {
                 okCalls++;
@@ -95,7 +95,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         return findings;
     }
 
-    private static void validateCard(JsonNode card, String path, List<String> problems, List<String> warnings) {
+    private static void validateCard(JsonNode card, String path, CappedLines problems, CappedLines warnings) {
         if (!card.isObject()) {
             problems.add(path + " is not a JSON object");
             return;
@@ -120,12 +120,12 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         }
     }
 
-    private static Finding fail(String label, List<String> problems, HttpExchange exchange) {
+    private static Finding fail(String label, String problems, HttpExchange exchange) {
         return new Finding(CHECK_ID, Severity.FAIL, "Invalid CDS Hooks response from " + label,
                 "The response does not follow the CDS Hooks card format. Each card (a message the payer wants "
                         + "shown to the clinician) needs a summary, an indicator of info, warning or critical, "
                         + "and a source label naming the payer; EHRs may drop or refuse cards that lack them.",
-                String.join("\n", problems) + "\n" + Support.describe(exchange),
+                problems + "\n" + Support.describe(exchange),
                 "Send the payer the listed problems; until fixed, expect these cards to be dropped. If the payer "
                         + "uses another indicator word (e.g. \"hard-stop\"), ask them to map it to critical.");
     }

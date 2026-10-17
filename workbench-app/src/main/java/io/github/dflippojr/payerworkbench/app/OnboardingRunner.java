@@ -24,6 +24,7 @@ import io.github.dflippojr.payerworkbench.core.RedactedConnection;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import io.github.dflippojr.payerworkbench.core.TextLimit;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticEngine;
 import io.github.dflippojr.payerworkbench.diagnostics.DiagnosticsConfig;
@@ -50,11 +51,13 @@ import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -87,6 +90,24 @@ public class OnboardingRunner {
     public static final String CONNECTION_RECORD_CHECK = "connection.record";
     /** A step failed and no other check explains it. */
     public static final String STEP_FAILED_CHECK = "run.step-failed";
+    /**
+     * A payer response ran past {@code workbench.max-response-bytes}, so the workbench stopped reading it,
+     * or held more than {@code workbench.max-response-json-values}, so it was not parsed.
+     */
+    public static final String RESPONSE_TOO_LARGE_CHECK = "run.response-too-large";
+    /** A hook response held more than {@link #MAX_CARDS} cards, so the workbench did not read them one by one. */
+    public static final String TOO_MANY_CARDS_CHECK = "run.too-many-cards";
+    /**
+     * Cards a hook response may hold before the parse step fails without building a view of each.
+     * A byte limit alone does not bound the work: 4 MiB of empty objects is 1.4 million cards.
+     */
+    static final int MAX_CARDS = 1000;
+    /** Cards, coverage-information entries and discovered services shown in a step's details; the rest are counted. */
+    static final int MAX_VIEWS = 100;
+    /** Cards with missing fields named in the parse step's summary; the rest are counted. */
+    static final int MAX_PROBLEMS = 5;
+    /** Prefetch keys and {@code docNeeded} entries shown per service or coverage entry; the rest are counted. */
+    static final int MAX_LIST_ENTRIES = 20;
     static final List<String> STEP_ORDER = List.of(RESOLVE, DISCOVERY, AUTHENTICATE, HOOK_REQUEST, PARSE_RESPONSE);
     /** MDC keys set for the length of a run. */
     static final String MDC_RUN_ID = "runId";
@@ -100,6 +121,8 @@ public class OnboardingRunner {
     private final RunMetrics metrics;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();
+    /** Custom-endpoint runs in flight; see {@link WorkbenchProperties#maxConcurrentRuns()}. */
+    private final Semaphore customRuns;
 
     public OnboardingRunner(SyntheticPayers payers, SampleCatalog samples, WorkbenchProperties properties,
                             RunMetrics metrics) {
@@ -107,6 +130,7 @@ public class OnboardingRunner {
         this.samples = samples;
         this.properties = properties;
         this.metrics = metrics;
+        this.customRuns = new Semaphore(properties.maxConcurrentRuns());
     }
 
     /**
@@ -215,6 +239,7 @@ public class OnboardingRunner {
      *
      * @throws IllegalArgumentException if custom endpoints are off, or the endpoint, sample or
      *                                  credential is not acceptable
+     * @throws RunsBusyException        if {@code workbench.max-concurrent-runs} custom runs are already in flight
      */
     private OnboardingRun runCustom(RunRequest request) {
         if (!properties.customEndpoints().enabled()) {
@@ -232,9 +257,14 @@ public class OnboardingRunner {
         InMemoryCredentials credentials = new InMemoryCredentials();
         ConnectionRecord custom = customRecord(request, guard, credentials);
         checkSuffix(request, custom.baseUrl());
+        AuditContext audit = AuditContext.current();
+        if (!customRuns.tryAcquire()) {
+            credentials.remove(CUSTOM_CREDENTIAL_REF);
+            if (audit != null) { audit.reasonCode = "runs_busy"; }
+            throw new RunsBusyException(properties.maxConcurrentRuns());
+        }
 
         String runId = UUID.randomUUID().toString();
-        AuditContext audit = AuditContext.current();
         if (audit != null) { audit.runId = runId; }
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
              MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId());
@@ -245,6 +275,7 @@ public class OnboardingRunner {
             return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom, true).run();
         } finally {
             credentials.remove(CUSTOM_CREDENTIAL_REF);
+            customRuns.release();
         }
     }
 
@@ -390,6 +421,8 @@ public class OnboardingRunner {
         private Object jwtPayload;
         private JwtClaims clientJwt;
         private JwtClaims clientAssertion;
+        /** The hook response's card count when it passed {@link #MAX_CARDS}; otherwise 0. */
+        private int tooManyCards;
 
         Attempt(String runId, RunRequest request, SampleMetadata sample, HttpClient http,
                 InMemoryCredentials credentials, ConnectionRecord custom, boolean recordMetrics) {
@@ -397,7 +430,9 @@ public class OnboardingRunner {
             this.recorder = new ExchangeRecorder(runId);
             this.credentials = credentials;
             this.custom = custom;
-            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(http, runId),
+            HttpClient limited = new ResponseLimitClient(http, properties.maxResponseBytes(),
+                    properties.maxResponseJsonValues(), properties.requestTimeout());
+            this.client = new CdsHooksClient(new JwtObservingClient(new RequestIdClient(limited, runId),
                     this::observeAssertion, this::observeBearer),
                     credentials, null, properties.requestTimeout(), Duration.ofSeconds(5), recorder);
             this.runId = runId;
@@ -493,27 +528,37 @@ public class OnboardingRunner {
             }
             List<Map<String, Object>> listed = new ArrayList<>();
             for (CdsServiceDescriptor service : services) {
-                Map<String, Object> view = new LinkedHashMap<>();
-                view.put("id", service.id());
-                view.put("hook", service.hook());
-                view.put("prefetchKeys", service.prefetch().keySet().stream().sorted().toList());
-                listed.add(view);
+                if (listed.size() < MAX_VIEWS) {
+                    Map<String, Object> view = new LinkedHashMap<>();
+                    view.put("id", TextLimit.cut(service.id()));
+                    view.put("hook", TextLimit.cut(service.hook()));
+                    List<String> keys = service.prefetch().keySet().stream().sorted().limit(MAX_LIST_ENTRIES)
+                            .map(TextLimit::cut).toList();
+                    view.put("prefetchKeys", keys);
+                    putNotShown(view, "prefetchKeysNotShown", service.prefetch().size() - keys.size());
+                    listed.add(view);
+                }
                 if (serviceId == null && sample.hook().equals(service.hook())) {
                     serviceId = service.id();
                     prefetchKeys = service.prefetch().keySet();
                 }
             }
             details.put("services", listed);
+            putNotShown(details, "servicesNotShown", services.size() - listed.size());
             if (serviceId == null) {
                 return Outcome.fail("The payer advertises no " + sample.hook() + " service, which sample "
                         + sample.id() + " needs");
             }
-            details.put("selectedService", serviceId);
+            details.put("selectedService", TextLimit.cut(serviceId));
             if (!DiscoveryServicesCheck.isUrlSafeServiceId(serviceId)) {
-                return Outcome.fail("The payer advertises service id '" + serviceId + "' for " + sample.hook()
-                        + ", which cannot be used in a URL; it must be URL-safe");
+                return Outcome.fail("The payer advertises service id '" + TextLimit.cut(serviceId) + "' for "
+                        + sample.hook() + ", which cannot be used in a URL; it must be URL-safe");
             }
-            return Outcome.pass("Found " + listed.size() + " services; " + sample.hook() + " is served by " + serviceId);
+            if (serviceId.length() > TextLimit.MAX_CHARS) {
+                return Outcome.fail("The payer advertises a service id of " + serviceId.length() + " characters for "
+                        + sample.hook() + ", longer than the " + TextLimit.MAX_CHARS + " the workbench puts in a URL");
+            }
+            return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
 
         private Outcome authenticate(Map<String, Object> details) {
@@ -583,10 +628,23 @@ public class OnboardingRunner {
             JsonNode json = Optional.ofNullable(readJson(event.responseBody())).orElseGet(mapper::createObjectNode);
             JsonNode error = callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN
                     ? readJson(e.responseBody()) : null;
+            String scope = text(json, "scope");
+            List<String> scopes = new ArrayList<>();
+            int notShown = 0;
+            // Walk the scope instead of splitting it: a 4 MiB "a a a ..." would make two million strings.
+            for (int start = 0; scope != null && start < scope.length(); ) {
+                int end = scope.indexOf(' ', start);
+                end = end < 0 ? scope.length() : end;
+                if (end > start && scopes.size() < TokenResponseMetadata.MAX_SCOPES) {
+                    scopes.add(TextLimit.cut(scope.substring(start, Math.min(end, start + TextLimit.MAX_CHARS + 1))));
+                } else if (end > start) {
+                    notShown++;
+                }
+                start = end + 1;
+            }
             return new TokenResponseMetadata(accepted, text(json, "token_type"),
                     json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
-                    json.hasNonNull("scope") ? List.of(json.get("scope").asText().split(" ")) : List.of(),
-                    text(error, "error"), text(error, "error_description"));
+                    scopes, notShown, text(error, "error"), text(error, "error_description"));
         }
 
         /** Only the token request's client_assertion is the SMART client's own JWT. */
@@ -631,6 +689,15 @@ public class OnboardingRunner {
         }
 
         private Outcome callFailed(String what, PayerCallException failure) {
+            ResponseTooLargeException tooLarge = ResponseTooLargeException.in(failure);
+            if (tooLarge != null && tooLarge.measure() == ResponseTooLargeException.Measure.JSON_VALUES) {
+                return Outcome.fail(what + " got HTTP " + tooLarge.statusCode() + ", but the response holds more than "
+                        + tooLarge.describeLimit() + ", so the workbench did not parse it");
+            }
+            if (tooLarge != null) {
+                return Outcome.fail(what + " got HTTP " + tooLarge.statusCode() + ", but the response exceeded the "
+                        + tooLarge.describeLimit() + " limit, so the workbench stopped reading it");
+            }
             return Outcome.fail(failure.statusCode().isPresent()
                     ? what + " returned HTTP " + failure.statusCode().getAsInt()
                     : what + " got no response: " + failure.getMessage());
@@ -650,37 +717,59 @@ public class OnboardingRunner {
             }
             List<Card> cards = response.cards();
             List<SystemAction> actions = response.systemActions();
+            List<CoverageInformation> coverageInformation = response.coverageInformation();
+            // The SDK's parsed response is the largest thing a run holds, and no later step reads it.
+            response = null;
+            if (cards.size() > MAX_CARDS) {
+                tooManyCards = cards.size();
+                details.put("cardCount", cards.size());
+                return Outcome.fail("The hook response has " + cards.size() + " cards, more than the "
+                        + MAX_CARDS + " the workbench reads one by one");
+            }
             List<Map<String, Object>> cardViews = new ArrayList<>();
             List<String> problems = new ArrayList<>();
+            int lacking = 0;
             for (int i = 0; i < cards.size(); i++) {
                 Card card = cards.get(i);
-                Map<String, Object> view = new LinkedHashMap<>();
-                view.put("summary", card.summary());
-                view.put("indicator", card.indicator());
-                view.put("source", card.source() == null ? null : card.source().label());
-                cardViews.add(view);
-                if (card.summary() == null || card.indicator() == null || card.source() == null
-                        || card.source().label() == null) {
+                if (i < MAX_VIEWS) {
+                    Map<String, Object> view = new LinkedHashMap<>();
+                    view.put("summary", TextLimit.cut(card.summary()));
+                    view.put("indicator", TextLimit.cut(card.indicator()));
+                    view.put("source", card.source() == null ? null : TextLimit.cut(card.source().label()));
+                    cardViews.add(view);
+                }
+                if ((card.summary() == null || card.indicator() == null || card.source() == null
+                        || card.source().label() == null) && lacking++ < MAX_PROBLEMS) {
                     problems.add("card " + (i + 1) + " lacks " + missingCardFields(card));
                 }
             }
+            if (lacking > problems.size()) {
+                problems.add("and " + (lacking - problems.size()) + " more cards lack fields");
+            }
             List<Map<String, Object>> coverage = new ArrayList<>();
-            for (CoverageInformation info : response.coverageInformation()) {
+            for (CoverageInformation info : coverageInformation.subList(0, Math.min(MAX_VIEWS, coverageInformation.size()))) {
                 Map<String, Object> view = new LinkedHashMap<>();
-                view.put("resource", info.resourceReference());
-                view.put("covered", info.covered());
-                view.put("paNeeded", info.paNeeded());
-                view.put("docNeeded", info.docNeeded());
+                view.put("resource", TextLimit.cut(info.resourceReference()));
+                view.put("covered", TextLimit.cut(info.covered()));
+                view.put("paNeeded", TextLimit.cut(info.paNeeded()));
+                List<String> docNeeded = info.docNeeded() == null ? null : info.docNeeded().stream()
+                        .limit(MAX_LIST_ENTRIES).map(TextLimit::cut).toList();
+                view.put("docNeeded", docNeeded);
+                if (docNeeded != null) {
+                    putNotShown(view, "docNeededNotShown", info.docNeeded().size() - docNeeded.size());
+                }
                 coverage.add(view);
             }
             details.put("cards", cardViews);
+            putNotShown(details, "cardsNotShown", cards.size() - cardViews.size());
             details.put("systemActions", actions.size());
             details.put("coverageInformation", coverage);
+            putNotShown(details, "coverageInformationNotShown", coverageInformation.size() - coverage.size());
             if (!problems.isEmpty()) {
                 return Outcome.fail("Parsed " + cards.size() + " cards, but " + String.join("; ", problems));
             }
             return Outcome.pass("Parsed " + cards.size() + " cards, " + actions.size() + " system actions and "
-                    + coverage.size() + " coverage-information entries");
+                    + coverageInformation.size() + " coverage-information entries");
         }
 
         private List<Finding> diagnose() {
@@ -722,7 +811,46 @@ public class OnboardingRunner {
                         "Add a ConnectionRecord for this payer and environment (base URL, auth type, client id "
                                 + "and a credential reference), or pick an environment that has one."));
             }
+            recorder.events().stream()
+                    .filter(e -> ResponseTooLargeException.in(e.error()) != null)
+                    .findFirst()
+                    .ifPresent(e -> findings.add(responseTooLarge(e, ResponseTooLargeException.in(e.error()))));
+            if (tooManyCards > 0) {
+                findings.add(new Finding(TOO_MANY_CARDS_CHECK, Severity.FAIL, "Hook response holds " + tooManyCards + " cards",
+                        "The payer answered the hook call with " + tooManyCards + " cards. A CDS Hooks response "
+                                + "carries a few cards for the clinician to read, so past " + MAX_CARDS + " the "
+                                + "workbench stops instead of reading each card.",
+                        "service: " + serviceId + "\ncards: " + tooManyCards + "\nlimit: " + MAX_CARDS,
+                        "Ask the payer to return only the cards that matter for this order, or to merge "
+                                + "repeated cards into one."));
+            }
             return findings;
+        }
+
+        private Finding responseTooLarge(PayerExchange exchange, ResponseTooLargeException tooLarge) {
+            String limit = tooLarge.describeLimit();
+            String call = exchange.phase().name().toLowerCase(Locale.ROOT);
+            if (tooLarge.measure() == ResponseTooLargeException.Measure.JSON_VALUES) {
+                return new Finding(RESPONSE_TOO_LARGE_CHECK, Severity.FAIL, "Response holds more than " + limit,
+                        "The payer answered the " + call + " call with a body of more than " + limit + " ("
+                                + tooLarge.setting() + "), so the workbench did not parse it. Building that many "
+                                + "objects can exhaust a client's memory even when the body is small in bytes, "
+                                + "as with a long array of empty cards.",
+                        exchange.method() + " " + exchange.uri() + "\nstatus: " + tooLarge.statusCode()
+                                + "\nbytes: " + tooLarge.bytesRead() + "\nlimit: " + limit,
+                        "Return fewer entries: drop repeated cards, actions or services. If the size is expected, "
+                                + "start the workbench with a larger " + tooLarge.setting() + ".");
+            }
+            return new Finding(RESPONSE_TOO_LARGE_CHECK, Severity.FAIL, "Response larger than the " + limit + " limit",
+                    "The payer answered the " + call
+                            + " call, but its body ran past " + limit + " (workbench.max-response-bytes), so the "
+                            + "workbench stopped reading it and kept only the first " + limit + ". A CDS Hooks "
+                            + "client would also have to read and parse the whole body before it could show a card.",
+                    exchange.method() + " " + exchange.uri() + "\nstatus: " + tooLarge.statusCode()
+                            + "\nbytes received before stopping: " + tooLarge.bytesRead()
+                            + "\nlimit: " + tooLarge.limit() + " bytes",
+                    "Return a smaller response: drop padding, debug output or large embedded resources. If the "
+                            + "size is expected, start the workbench with a larger workbench.max-response-bytes.");
         }
 
         /**
@@ -794,6 +922,13 @@ public class OnboardingRunner {
 
         static Outcome fail(String summary) {
             return new Outcome(false, summary);
+        }
+    }
+
+    /** Records how many entries of a list were left out of a step's details, when any were. */
+    private static void putNotShown(Map<String, Object> details, String key, int count) {
+        if (count > 0) {
+            details.put(key, count);
         }
     }
 

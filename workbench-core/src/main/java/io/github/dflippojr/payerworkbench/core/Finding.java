@@ -6,7 +6,8 @@ import java.util.Objects;
  * One result from a {@link DiagnosticCheck}, written for a person reading the report.
  *
  * <p>{@code evidence} must never contain secret material; the constructor passes it
- * through {@link Redactor#redact(String)} as a safety net.
+ * through {@link Redactor#redact(String)} as a safety net. Each text field is then cut to
+ * {@link TextLimit#MAX_FINDING_CHARS}, since a check may quote what the payer sent.
  *
  * @param checkId the {@link DiagnosticCheck#id()} that produced this finding
  * @param severity how serious it is
@@ -27,6 +28,10 @@ public record Finding(
         Objects.requireNonNull(checkId, "checkId");
         Objects.requireNonNull(severity, "severity");
         Objects.requireNonNull(title, "title");
-        evidence = Redactor.redact(evidence);
+        // Redact before cutting, so a cut never leaves part of a secret the redactor no longer recognizes.
+        evidence = TextLimit.cut(Redactor.redact(evidence), TextLimit.MAX_FINDING_CHARS);
+        title = TextLimit.cut(title, TextLimit.MAX_FINDING_CHARS);
+        explanation = TextLimit.cut(explanation, TextLimit.MAX_FINDING_CHARS);
+        suggestedFix = TextLimit.cut(suggestedFix, TextLimit.MAX_FINDING_CHARS);
     }
 }

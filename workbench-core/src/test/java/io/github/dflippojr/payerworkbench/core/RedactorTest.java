@@ -13,11 +13,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Keys and tokens are generated at runtime; nothing secret-shaped is committed. */
 class RedactorTest {
 
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Test
     void bearerChallengeParametersSurviveRedaction() {
@@ -130,6 +132,162 @@ class RedactorTest {
         assertEquals(text, Redactor.redact(text));
         assertNull(Redactor.redact(null));
         assertEquals(Map.of(), Redactor.redactHeaders(null));
+    }
+
+    @Test
+    void masksAllLetterBasicCredentialThatDecodesToUserPass() {
+        // base64 of the synthetic pair "user:pass": all letters, so it used to pass as prose.
+        assertEquals("{\"headers\":{\"authorization\":\"Basic [REDACTED]\"}}",
+                Redactor.redact("{\"headers\":{\"authorization\":\"Basic dXNlcjpwYXNz\"}}"));
+        assertEquals("Authorization: Basic [REDACTED]\\nnext line", Redactor.redact("Authorization: Basic YWJjOmRl\\nnext line"));
+    }
+
+    @Test
+    void masksCredentialThroughToTheNextSeparator() {
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abc123:SECRETPART"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abc:def/ghi"));
+        assertEquals("Bearer [REDACTED], next", Redactor.redact("Bearer abc:def, next"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abcdefghijklmno:"));
+    }
+
+    @Test
+    void keepsShortWordsAfterTheSchemeOnlyWhenTheyEndThere() {
+        for (String prose : List.of("Missing bearer token", "Missing bearer token.", "Basic authentication is required",
+                "(no bearer token)", "Bearer abcdefghijklmno is missing", "\"Missing bearer token\"",
+                "Bearer realm=\"synthetic-payer\"", "Basic realm=\"synthetic-payer\", charset=\"UTF-8\"")) {
+            assertEquals(prose, Redactor.redact(prose));
+        }
+    }
+
+    @Test
+    void masksNonStringJsonSecretValues() {
+        assertEquals("{\"access_token\":\"[REDACTED]\"}", Redactor.redact("{\"access_token\":123456789}"));
+        assertEquals("{\"client_secret\": \"[REDACTED]\", \"expires_in\": 300}",
+                Redactor.redact("{\"client_secret\": 12345, \"expires_in\": 300}"));
+        assertEquals("{\"password\":\"[REDACTED]\",\"active\":true}", Redactor.redact("{\"password\":false,\"active\":true}"));
+        assertEquals("{\"api_key\":null}", Redactor.redact("{\"api_key\":null}"));
+    }
+
+    @Test
+    void masksPrivateKeyAndEveryReportSecretField() {
+        assertEquals("{\"private_key\":\"[REDACTED]\"}", Redactor.redact("{\"private_key\":\"MIIEvSyntheticOnly123\"}"));
+        for (String key : List.of("privateKey", "secret", "clientSecret", "client-secret", "client_assertion",
+                "assertion", "ACCESS_TOKEN")) {
+            assertEquals("{\"" + key + "\":\"[REDACTED]\"}", Redactor.redact("{\"" + key + "\":\"synthetic-value\"}"), key);
+            assertTrue(Redactor.isSecretField(key), key);
+        }
+        assertFalse(Redactor.isSecretField("token_type"));
+        assertEquals("private_key=[REDACTED]", Redactor.redact("private_key=synthetic"));
+    }
+
+    @Test
+    void masksSecretsInJsonEmbeddedInAJsonString() {
+        String in = "{\"debug\":\"{\\\"access_token\\\":123456789}\\n{\\\"private_key\\\":\\\"MIIEvSynthetic\\\"}\"}";
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"}\\n{\\\"private_key\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact(in));
+    }
+
+    @Test
+    void masksSecretStringCutOffByTheEndOfTheText() {
+        assertEquals("{\"cards\":[],\"access_token\":\"[REDACTED]\"",
+                Redactor.redact("{\"cards\":[],\"access_token\":\"synthetic-cut-tok"));
+    }
+
+    @Test
+    void masksSecretStringCutInsideAnEscape() {
+        // A lone backslash at the end, or before the line break that starts a note on a cut body.
+        assertEquals("{\"access_token\":\"[REDACTED]\"", Redactor.redact("{\"access_token\":\"FAKE-CREDENTIAL-1\\"));
+        assertEquals("{\"access_token\":\"[REDACTED]\"\n[note]",
+                Redactor.redact("{\"access_token\":\"FAKE-CREDENTIAL-1\\\n[note]"));
+        // Embedded JSON: one or three backslashes left, or an inner escape cut before the JSON was quoted.
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"",
+                Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\"));
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"\n[note]",
+                Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\\\\\\n[note]"));
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"\"}",
+                Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\\\\"}"));
+    }
+
+    /**
+     * A body cut at every position of a secret value full of escapes ({@code \\}, {@code \"},
+     * {@code \n} and a control character's six-character escape), raw or embedded in a JSON string,
+     * cut before or after it was quoted, with or without a note after the cut, keeps nothing of it.
+     */
+    @Test
+    void masksSecretCutAtEveryPositionOfAnEscapedValue() {
+        String secret = "FAKE\\CRED\"ENTIAL\nSYNTH\u0001ETIC\\";
+        String field = "{\"error\":\"invalid_client\",\"access_token\":";
+        String value = JSON.writeValueAsString(secret);
+        String masked = field + "\"" + Redactor.MASK + "\"";
+        for (int cut = 1; cut < value.length(); cut++) {
+            String raw = field + value.substring(0, cut);
+            assertCutMasked(raw, masked);
+            assertCutMasked(embedded(raw) + "\"}", embedded(masked) + "\"}");
+        }
+        String quoted = embedded(field + value);
+        for (int cut = embedded(field).length() + 2; cut < quoted.length(); cut++) {
+            assertCutMasked(quoted.substring(0, cut), embedded(masked));
+        }
+    }
+
+    /** {@code text} quoted as the value of a {@code debug} field, without the closing {@code "}}. */
+    private static String embedded(String text) {
+        String quoted = JSON.writeValueAsString(text);
+        return "{\"debug\":" + quoted.substring(0, quoted.length() - 1);
+    }
+
+    private static void assertCutMasked(String cut, String masked) {
+        for (String note : List.of("", "\n[not parsed: more than 100000 JSON values; kept the first 8192 characters]")) {
+            String out = Redactor.redact(cut + note);
+            // A note after a cut that is not inside an escape is masked along with the value.
+            assertTrue(out.equals(masked + note) || out.equals(masked), () -> cut + note + "\n became " + out);
+        }
+    }
+
+    @Test
+    void masksBasicUserPassAtTheEndOfASentence() {
+        assertEquals("Received Authorization: Basic [REDACTED]",
+                Redactor.redact("Received Authorization: Basic dXNlcjpwYXNz."));
+        assertEquals("Basic [REDACTED]", Redactor.redact("Basic dXNlcjpwYXNz..."));
+        assertEquals("Basic authentication is required.", Redactor.redact("Basic authentication is required."));
+    }
+
+    @Test
+    void masksFormSecretsThroughABackslash() {
+        assertEquals("client_secret=[REDACTED]&x=1", Redactor.redact("client_secret=abc\\xyzTAIL&x=1"));
+        // A form body quoted in JSON: \\ is an escaped backslash in the value, \" and \n end it.
+        assertEquals("{\"body\":\"password=[REDACTED]\\nnext\"}", Redactor.redact("{\"body\":\"password=pa\\\\ssTAIL\\nnext\"}"));
+        assertEquals("{\"body\":\"api_key=[REDACTED]\"}", Redactor.redact("{\"body\":\"api_key=k\\\\\\\\TAIL\"}"));
+    }
+
+    @Test
+    void masksEmbeddedJsonSecretCutOffOrHoldingAnEscapedQuote() {
+        assertEquals("{\"result\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"",
+                Redactor.redact("{\"result\":\"{\\\"access_token\\\":\\\"SECRETPARTIAL"));
+        assertEquals("{\"result\":\"{\\\"password\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"result\":\"{\\\"password\\\":\\\"pa\\\\\\\"ssTAIL\\\"}\"}"));
+        assertEquals("{\"result\":\"{\\\"password\\\":\\\"[REDACTED]\\\",\\\"user\\\":\\\"u\\\"}\"}",
+                Redactor.redact("{\"result\":\"{\\\"password\\\":\\\"pa\\\\\\\\\\\",\\\"user\\\":\\\"u\\\"}\"}"));
+    }
+
+    @Test
+    void masksSecretFieldsHoldingAnObjectOrArray() {
+        assertEquals("{\"private_key\":\"[REDACTED]\",\"kid\":\"k1\"}",
+                Redactor.redact("{\"private_key\":{\"kty\":\"RSA\",\"d\":\"PRIVATED\",\"n\":\"a}]\\\"b\"},\"kid\":\"k1\"}"));
+        assertEquals("{\"access_token\": \"[REDACTED]\"}", Redactor.redact("{\"access_token\": [\"ARRSECRET\", [1]]}"));
+        assertEquals("{\"secret\":\"[REDACTED]\"", Redactor.redact("{\"secret\":{\"d\":\"CUTOFF"));
+        assertEquals("{\"result\":\"{\\\"private_key\\\":\\\"[REDACTED]\\\",\\\"kid\\\":\\\"k1\\\"}\"}",
+                Redactor.redact("{\"result\":\"{\\\"private_key\\\":{\\\"d\\\":\\\"PRIV}D\\\"},\\\"kid\\\":\\\"k1\\\"}\"}"));
+        assertEquals("{\"result\":\"{\\\"private_key\\\":\\\"[REDACTED]\\\"\"}",
+                Redactor.redact("{\"result\":\"{\\\"private_key\\\":{\\\"d\\\":\\\"PRIVD\"}"));
+        String ordinary = "{\"cards\":[{\"summary\":\"s\"}],\"token\":{\"type\":\"Bearer\"}}";
+        assertEquals(ordinary, Redactor.redact(ordinary));
+    }
+
+    @Test
+    void leavesOrdinaryJsonFieldsAlone() {
+        String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
+        assertEquals(text, Redactor.redact(text));
     }
 
     private static String randomToken() {
