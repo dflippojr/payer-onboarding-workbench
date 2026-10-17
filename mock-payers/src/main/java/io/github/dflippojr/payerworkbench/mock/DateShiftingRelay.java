@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
  */
 final class DateShiftingRelay implements AutoCloseable {
 
-    private static final Pattern DATE = Pattern.compile("(?im)^Date:[ \\t]*([^\\r\\n]*?)[ \\t]*\\r?$");
+    private static final Pattern DATE = Pattern.compile("(?im)^Date:[ \\t]*+([^\\r\\n]*+)");
     private static final Pattern CONTENT_LENGTH = Pattern.compile("(?im)^Content-Length:[ \\t]*(\\d+)[ \\t]*\\r?$");
     /** IMF-fixdate (RFC 9110 §5.6.7), which always has a two-digit day. */
     private static final DateTimeFormatter HTTP_DATE =
@@ -42,7 +42,12 @@ final class DateShiftingRelay implements AutoCloseable {
     private final ServerSocket listener;
     private final int target;
     private final Duration offset;
-    private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    /** Platform threads: the relay's stream copies hold monitors, which would pin virtual threads. */
+    private final ExecutorService executor = Executors.newCachedThreadPool(task -> {
+        Thread thread = new Thread(task, "date-shifting-relay");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final Set<Socket> sockets = ConcurrentHashMap.newKeySet();
 
     /** Listens on {@code port} (0 for ephemeral) on loopback and relays to {@code target} on loopback. */
@@ -133,9 +138,11 @@ final class DateShiftingRelay implements AutoCloseable {
             return head;
         }
         try {
-            ZonedDateTime moved = ZonedDateTime.parse(date.group(1), DateTimeFormatter.RFC_1123_DATE_TIME)
+            String value = date.group(1).stripTrailing();
+            ZonedDateTime moved = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME)
                     .plus(offset).withZoneSameInstant(ZoneOffset.UTC);
-            return head.substring(0, date.start(1)) + HTTP_DATE.format(moved) + head.substring(date.end(1));
+            return head.substring(0, date.start(1)) + HTTP_DATE.format(moved)
+                    + head.substring(date.start(1) + value.length());
         } catch (DateTimeParseException e) {
             return head;
         }

@@ -202,6 +202,8 @@ class PayerBehaviourTest {
             assertEquals(badDate, relay.shift(badDate));
             assertEquals("HTTP/1.1 200 OK\r\nDate: Sat, 03 Oct 2026 01:00:00 GMT\r\n\r\n",
                     relay.shift("HTTP/1.1 200 OK\r\nDate: Sat, 3 Oct 2026 00:00:00 GMT\r\n\r\n"));
+            assertEquals("HTTP/1.1 200 OK\r\ndate:  Sat, 03 Oct 2026 01:00:00 GMT \r\n\r\n",
+                    relay.shift("HTTP/1.1 200 OK\r\ndate:  Sat, 03 Oct 2026 00:00:00 GMT \r\n\r\n"));
         }
     }
 
