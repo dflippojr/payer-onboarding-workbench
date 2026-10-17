@@ -3,7 +3,9 @@
 // and bash (Git Bash on Windows). Runs every run: step of .github/workflows/ci.yml in
 // the same order through bash, stops at the first failure, still runs the
 // if: always() steps (so the UI instance is stopped), then exits non-zero.
-// scripts/ci-local.test.mjs fails when this list drifts from ci.yml.
+// scripts/ci-local.test.mjs fails when this list drifts from ci.yml. The hl7-validator
+// steps also need curl and sha256sum, and the first run downloads about 3.5 GB of FHIR
+// packages into ~/.cache/hl7-validator.
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +32,10 @@ export const steps = [
   },
   { name: "Check the verify skill's doctor and cleanup", run: 'npm run test:verify' },
   { name: 'Check that npm run ci:local matches this workflow', run: 'node --test scripts/ci-local.test.mjs' },
+  // hl7-validator job
+  { name: 'Download the pinned HL7 validator and FHIR packages (no-op when cached)', run: 'bash scripts/hl7-validator.sh warm' },
+  { name: 'Install fhir-crd-router at the pinned commit', run: 'bash scripts/install-crd-router.sh' },
+  { name: 'Differential conformance test against the HL7 validator (offline)', run: 'bash scripts/hl7-validator.sh test' },
 ];
 
 const bash = command => {

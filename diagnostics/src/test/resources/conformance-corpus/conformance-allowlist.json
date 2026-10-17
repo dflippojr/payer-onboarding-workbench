@@ -1,0 +1,57 @@
+{
+  "_comment": "Known disagreements between the workbench's response checks and the official HL7 FHIR Validator (HL7ValidatorConformanceTest). At most 5 entries, each with one reason and one open issue; each item records the verdict pair it expects. An item that starts to agree fails the test until it is removed. Do not add an entry to make a new disagreement pass without a reason and an issue (README.md in this directory).",
+  "entries": [
+    {
+      "id": "legacy-identifier",
+      "check": "response.coverage-information",
+      "items": [
+        { "id": "healthy-fabrikam-order-sign-hospital-bed", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "healthy-fabrikam-order-sign-home-oxygen", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "healthy-fabrikam-order-sign-conditional-cpap", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "mutant-card-selection-behavior-removed", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "mutant-card-selection-behavior-unknown-code", "workbench": "WARN", "validator": "FAIL" }
+      ],
+      "reason": "Deliberate leniency in fhir-crd-router's CoverageInformationValidator: the HL7 CRD reference implementation (which Fabrikam imitates) sends the pre-2.x 'identifier' sub-extension in place of coverage-assertion-id, and the router reports it as a WARNING. The validator reports a missing coverage-assertion-id slice and an undefined sub-extension (errors).",
+      "issue": "https://github.com/dflippojr/fhir-crd-router/issues/96"
+    },
+    {
+      "id": "coverage-reference-type",
+      "check": "response.coverage-information",
+      "items": [
+        { "id": "mutant-ci-coverage-not-a-coverage", "workbench": "FAIL", "validator": "OK" }
+      ],
+      "reason": "Deliberate strictness in fhir-crd-router: the coverage sub-extension is Reference(Coverage), and 'Patient/pat-synthetic-001' names a Patient. The validator does not check the type of an unresolved literal reference.",
+      "issue": "https://github.com/dflippojr/fhir-crd-router/issues/96"
+    },
+    {
+      "id": "unknown-relative-sub-extension",
+      "check": "response.coverage-information",
+      "items": [
+        { "id": "mutant-ci-unknown-sub-extension", "workbench": "OK", "validator": "FAIL" }
+      ],
+      "reason": "Router bug: CoverageInformationValidator accepts a relative sub-extension url the profile does not define ('made-up-flag'); the validator reports Extension_EXT_SubExtension_Invalid. Fixing it belongs to fhir-crd-router.",
+      "issue": "https://github.com/dflippojr/fhir-crd-router/issues/125"
+    },
+    {
+      "id": "tools-model-looser-than-cds-hooks",
+      "check": "response.schema",
+      "items": [
+        { "id": "mutant-cards-removed", "workbench": "FAIL", "validator": "OK" },
+        { "id": "mutant-card-indicator-removed", "workbench": "FAIL", "validator": "OK" },
+        { "id": "mutant-card-summary-too-long", "workbench": "WARN", "validator": "OK" }
+      ],
+      "reason": "The validator judges cards with hl7.fhir.uv.tools.r4#1.1.2's CDSHooksResponse logical model, which is looser than CDS Hooks 2.0: cards is 0..* and indicator 0..1 where the spec says REQUIRED, and summary has no 140-character limit. The workbench follows the spec text.",
+      "issue": "PENDING"
+    },
+    {
+      "id": "empty-system-actions",
+      "check": "response.schema",
+      "items": [
+        { "id": "healthy-northwind-order-select-walker", "workbench": "OK", "validator": "FAIL" },
+        { "id": "healthy-tailspin-order-select-walker", "workbench": "OK", "validator": "FAIL" }
+      ],
+      "reason": "The validator applies FHIR JSON's rule that arrays are never empty to CDS Hooks JSON, so it rejects \"systemActions\": []. CDS Hooks 2.0 is plain JSON and does not forbid empty arrays (it requires \"cards\": [] when there are none).",
+      "issue": "PENDING"
+    }
+  ]
+}

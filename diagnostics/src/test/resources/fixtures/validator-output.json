@@ -1,0 +1,42 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "OperationOutcome",
+        "extension": [
+          { "url": "http://hl7.org/fhir/tools/StructureDefinition/validator-version", "valueString": "7.0.2" },
+          { "url": "http://hl7.org/fhir/StructureDefinition/operationoutcome-file", "valueString": "/corpus/a.json" }
+        ],
+        "issue": [
+          {
+            "extension": [
+              { "url": "http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id", "valueCode": "Validation_VAL_Profile_Minimum" }
+            ],
+            "severity": "error",
+            "code": "structure",
+            "details": { "text": "summary: minimum required = 1" },
+            "expression": [ "CDSHooksResponse.cards[0]" ]
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "OperationOutcome",
+        "extension": [
+          { "url": "http://hl7.org/fhir/StructureDefinition/operationoutcome-file", "valueString": "C:\\corpus\\b.json" }
+        ],
+        "issue": [
+          {
+            "severity": "warning",
+            "code": "processing",
+            "details": { "text": "located only" },
+            "location": [ "Bundle.entry[0]" ]
+          }
+        ]
+      }
+    }
+  ]
+}

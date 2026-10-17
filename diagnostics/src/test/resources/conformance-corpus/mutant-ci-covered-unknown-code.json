@@ -1,0 +1,68 @@
+{
+  "cards" : [ {
+    "uuid" : "7b31f1a3-b195-3f8b-be68-8b361a0349e2",
+    "summary" : "E0250: Covered; prior authorization required",
+    "indicator" : "warning",
+    "detail" : "See the coverage information recorded on DeviceRequest/devreq-hospital-bed.",
+    "source" : {
+      "label" : "Northwind Health (synthetic)",
+      "topic" : {
+        "system" : "http://terminology.hl7.org/CodeSystem/cdshooks-card-type",
+        "code" : "coverage-info",
+        "display" : "Coverage Information"
+      }
+    }
+  } ],
+  "systemActions" : [ {
+    "type" : "update",
+    "description" : "Record Northwind Health (synthetic) coverage information on DeviceRequest/devreq-hospital-bed",
+    "resource" : {
+      "resourceType" : "DeviceRequest",
+      "id" : "devreq-hospital-bed",
+      "status" : "draft",
+      "intent" : "original-order",
+      "codeCodeableConcept" : {
+        "coding" : [ {
+          "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+          "code" : "E0250",
+          "display" : "Hospital bed, fixed height, with any type side rails, with mattress"
+        } ],
+        "text" : "Hospital bed, fixed height, with any type side rails, with mattress"
+      },
+      "subject" : {
+        "reference" : "Patient/pat-synthetic-001"
+      },
+      "encounter" : {
+        "reference" : "Encounter/enc-synthetic-001"
+      },
+      "authoredOn" : "2026-03-02",
+      "requester" : {
+        "reference" : "Practitioner/pract-synthetic-001"
+      },
+      "insurance" : [ {
+        "reference" : "Coverage/cov-synthetic-001"
+      } ],
+      "extension" : [ {
+        "url" : "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+        "extension" : [ {
+          "url" : "coverage",
+          "valueReference" : {
+            "reference" : "Coverage/cov-synthetic-001"
+          }
+        }, {
+          "url" : "covered",
+          "valueCode" : "yes"
+        }, {
+          "url" : "pa-needed",
+          "valueCode" : "auth-needed"
+        }, {
+          "url" : "date",
+          "valueDate" : "2026-03-02"
+        }, {
+          "url" : "coverage-assertion-id",
+          "valueString" : "NW-DeviceRequest-devreq-hospital-bed-E0250"
+        } ]
+      } ]
+    }
+  } ]
+}

@@ -24,8 +24,8 @@ Thresholds and expectations are set with `DiagnosticsConfig`: the hooks the call
 | `auth.hook-rejected` | Hook 401/403 not explained by `auth.jwt-audience`: credential type (or that the request carried none), scheme, RFC 6750 error, description and scope from `WWW-Authenticate`, with JSON fallback and a specific fix. | FAIL |
 | `perf.rate-limit` | Hook 429 with quoted `Retry-After`, parsed seconds or HTTP-date delay, and backoff advice. | FAIL |
 | `ig.version` | The payer's CRD IG version differs from the connection record's `igVersion`. FAIL if the major version differs, otherwise WARN. INFO if either side doesn't state a version. | FAIL / WARN / INFO / PASS |
-| `response.schema` | Hook calls that return an error status, except a 401 that `auth.jwt-audience` already explains. Responses without a `cards` array. Cards missing `summary`, `indicator` or `source.label`. An `indicator` other than `info`/`warning`/`critical`. A summary over 140 characters is a WARN. | FAIL / WARN / PASS |
-| `response.coverage-location` | Coverage information (`ext-coverage-information`) sent in card suggestions instead of `systemActions`. The library handles both; the finding explains the interop risk. | INFO / PASS |
+| `response.schema` | Hook calls that return an error status, except a 401 that `auth.jwt-audience` already explains. Responses without a `cards` array. Cards missing `summary`, `indicator` or `source.label`. An `indicator` other than `info`/`warning`/`critical`. A card with `suggestions` but no `selectionBehavior`, or a `selectionBehavior` other than `at-most-one`/`any` (CDS Hooks 2.0). A summary over 140 characters is a WARN. | FAIL / WARN / PASS |
+| `response.coverage-location` | Coverage information (`ext-coverage-information`) sent in card suggestions instead of `systemActions`. The library handles both; the finding explains the interop risk. FAIL when the extension is anywhere but the action resource's own `extension` list on a resource type the CRD 2.2.1 extension's context allows (for example on a coding inside the order), because the library and EHRs never read it there. | FAIL / INFO / PASS |
 | `response.coverage-information` | Router validation of every coverage-information extension in action resources against CRD 2.2.1; evidence includes the resource, path and message. Legacy `identifier` warns. No extensions means no finding. | FAIL / WARN / PASS |
 | `perf.latency` | Hook latency over budget (default WARN above 5 s, FAIL above 10 s, where CDS Hooks clients often time out) and timed-out hook calls. | FAIL / WARN / PASS |
 | `tls.handshake` | TLS/mTLS failures and their likely cause: untrusted server CA, expired server certificate, hostname mismatch, missing client certificate, rejected client certificate, no common protocol version. | FAIL / PASS |
@@ -45,3 +45,7 @@ The fixtures are hand-written `RunObservations` built in `Fixtures` (under `src/
 ```sh
 ./mvnw -pl diagnostics -am test
 ```
+
+## Outside judge: the HL7 FHIR Validator
+
+`HL7ValidatorConformanceTest` checks `response.schema`, `response.coverage-information` and `response.coverage-location` against the official HL7 FHIR Validator. It uses a corpus of the mock payers' real responses plus mutants. The pins, the mapping table, the allowlist and how to run it are in [src/test/resources/conformance-corpus/README.md](src/test/resources/conformance-corpus/README.md). The test is tagged `hl7-validator`, so `./mvnw verify` skips it; `bash scripts/hl7-validator.sh warm test` runs it, as CI's `hl7-validator` job does. `ConformanceCorpusTest` does run in every build. It fails when the committed corpus drifts from the mock payers, or when the allowlist is too long, lacks a reason or an issue, or no longer matches the workbench's verdict.
