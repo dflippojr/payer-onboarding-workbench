@@ -41,7 +41,7 @@
         { "id": "mutant-card-summary-too-long", "workbench": "WARN", "validator": "OK" }
       ],
       "reason": "The validator judges cards with hl7.fhir.uv.tools.r4#1.1.2's CDSHooksResponse logical model, which is looser than CDS Hooks 2.0: cards is 0..* and indicator 0..1 where the spec says REQUIRED, and summary has no 140-character limit. The workbench follows the spec text.",
-      "issue": "PENDING"
+      "issue": "https://github.com/dflippojr/payer-onboarding-workbench/issues/179"
     },
     {
       "id": "empty-system-actions",
@@ -51,7 +51,7 @@
         { "id": "healthy-tailspin-order-select-walker", "workbench": "OK", "validator": "FAIL" }
       ],
       "reason": "The validator applies FHIR JSON's rule that arrays are never empty to CDS Hooks JSON, so it rejects \"systemActions\": []. CDS Hooks 2.0 is plain JSON and does not forbid empty arrays (it requires \"cards\": [] when there are none).",
-      "issue": "PENDING"
+      "issue": "https://github.com/dflippojr/payer-onboarding-workbench/issues/179"
     }
   ]
 }
