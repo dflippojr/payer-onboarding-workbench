@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -57,10 +56,9 @@ public final class NorthwindPayer extends MockPayer {
     private final Map<String, String> clientSecrets;
     private final Duration tokenLifetime;
     private final Map<String, IssuedToken> tokens = new ConcurrentHashMap<>();
-    private final SecureRandom random = new SecureRandom();
 
     private NorthwindPayer(Builder builder) {
-        super(builder.clock, builder.publicBaseUrl);
+        super(builder.clock, builder.publicBaseUrl, builder.behaviour);
         this.clientSecrets = Map.copyOf(builder.clientSecrets);
         this.tokenLifetime = builder.tokenLifetime;
     }
@@ -122,21 +120,9 @@ public final class NorthwindPayer extends MockPayer {
         Instant now = clock.instant();
         // Keep expired tokens for a while so their use is reported as "expired", not "unknown".
         tokens.values().removeIf(t -> !now.isBefore(t.expiresAt().plus(Duration.ofHours(1))));
-        byte[] bytes = new byte[32];
-        random.nextBytes(bytes);
-        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        String token = newAccessToken(clientId, now, now.plus(tokenLifetime));
         tokens.put(token, new IssuedToken(clientId, publicBaseUrl(), now.plus(tokenLifetime)));
-
-        ObjectNode body = mapper.createObjectNode()
-                .put("access_token", token)
-                .put("token_type", "Bearer")
-                .put("expires_in", tokenLifetime.toSeconds());
-        if (form.get("scope") != null) {
-            body.put("scope", form.get("scope"));
-        }
-        return Response.json(mapper, 200, body)
-                .withHeader("Cache-Control", "no-store")
-                .withHeader("Pragma", "no-cache");
+        return tokenResponse(token, tokenLifetime.toSeconds(), form.get("scope"));
     }
 
     /** {@code client_secret_basic}: both parts are form-urlencoded before Base64 (RFC 6749 §2.3.1). */
@@ -218,6 +204,7 @@ public final class NorthwindPayer extends MockPayer {
         private Duration tokenLifetime = DEFAULT_TOKEN_LIFETIME;
         private Clock clock = Clock.systemUTC();
         private String publicBaseUrl;
+        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
 
         private Builder() { }
 
@@ -242,6 +229,12 @@ public final class NorthwindPayer extends MockPayer {
 
         public Builder publicBaseUrl(String publicBaseUrl) {
             this.publicBaseUrl = publicBaseUrl;
+            return this;
+        }
+
+        /** How this payer varies from the standard behaviour; {@link PayerBehaviour#STANDARD} by default. */
+        public Builder behaviour(PayerBehaviour behaviour) {
+            this.behaviour = Objects.requireNonNull(behaviour, "behaviour");
             return this;
         }
 

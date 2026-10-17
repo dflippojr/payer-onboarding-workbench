@@ -81,7 +81,8 @@
       "behaviour": {"expiresInAsString": true},
       "spec": "RFC 6749 §5.1",
       "clause": "Parameter names and string values are included as JSON strings. Numerical values are included as JSON numbers. A string expires_in is not a lifetime a conforming client can read; the router SDK ignores it and never caches the token, the same consequence as a missing expires_in, which auth.token already warns about.",
-      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}},
+      "knownDefect": "#177"
     },
     {
       "id": "token-response/extra-fields",
@@ -135,8 +136,8 @@
       "auth": "CDS_HOOKS_JWT",
       "behaviour": {},
       "spec": "CDS Hooks 2.0, Trusting CDS Clients",
-      "clause": "Each time a CDS Client transmits a request to a CDS Service which requires authentication, the request MUST include an Authorization header presenting the JWT as a Bearer token. For CDS Hooks, this [aud] value MUST be the URL of the CDS Service endpoint being invoked.",
-      "expect": {"verdict": "PASS", "findings": {"auth.jwt-audience": "PASS", "auth.clock-skew": "PASS", "auth.hook-rejected": "ABSENT"}}
+      "clause": "Each time a CDS Client transmits a request to a CDS Service which requires authentication, the request MUST include an Authorization header presenting the JWT as a Bearer token. For CDS Hooks, this [aud] value MUST be the URL of the CDS Service endpoint being invoked. Authentication raises nothing; the one warning is FabrikamPayer's own CRD 2.0.1 coverage-information form (the RI's identifier sub-extension), which response.coverage-information reports on every Fabrikam run.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.jwt-audience": "PASS", "auth.clock-skew": "PASS", "auth.hook-rejected": "ABSENT", "response.coverage-information": "WARN"}}
     },
     {
       "id": "auth-required/smart-private-key-jwt",

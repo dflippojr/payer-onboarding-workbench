@@ -7,12 +7,10 @@ import com.nimbusds.jwt.SignedJWT;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
-import java.security.SecureRandom;
 import java.text.ParseException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,10 +36,9 @@ public final class TailspinPayer extends MockPayer {
     private final RegisteredJwks verifier;
     private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
     private final Map<String, Instant> tokens = new ConcurrentHashMap<>();
-    private final SecureRandom random = new SecureRandom();
 
     private TailspinPayer(Builder builder) {
-        super(builder.clock, builder.publicBaseUrl);
+        super(builder.clock, builder.publicBaseUrl, builder.behaviour);
         clients = Map.copyOf(builder.clients);
         verifier = new RegisteredJwks(clients, TailspinPayer::invalidClient);
     }
@@ -66,20 +63,16 @@ public final class TailspinPayer extends MockPayer {
         if (!ASSERTION_TYPE.equals(form.get("client_assertion_type"))) {
             throw invalidClient("client_assertion_type must be " + ASSERTION_TYPE);
         }
-        validateAssertion(form.get("client_assertion"), form.get("client_id"));
+        String clientId = validateAssertion(form.get("client_assertion"), form.get("client_id"));
         Instant now = clock.instant();
         tokens.values().removeIf(exp -> !now.isBefore(exp));
-        byte[] bytes = new byte[32];
-        random.nextBytes(bytes);
-        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        String token = newAccessToken(clientId, now, now.plus(Duration.ofMinutes(5)));
         tokens.put(token, now.plus(Duration.ofMinutes(5)));
-        ObjectNode body = mapper.createObjectNode().put("access_token", token).put("token_type", "Bearer")
-                .put("expires_in", 300);
-        if (form.containsKey("scope")) { body.put("scope", form.get("scope")); }
-        return Response.json(mapper, 200, body).withHeader("Cache-Control", "no-store").withHeader("Pragma", "no-cache");
+        return tokenResponse(token, 300, form.get("scope"));
     }
 
-    private void validateAssertion(String assertion, String clientId) {
+    /** @return the authenticated client id */
+    private String validateAssertion(String assertion, String clientId) {
         SignedJWT jwt;
         JWTClaimsSet claims;
         try {
@@ -111,6 +104,7 @@ public final class TailspinPayer extends MockPayer {
         if (jti == null || jti.isBlank()) { throw invalidClient("jti is required"); }
         usedJtis.values().removeIf(expiry -> !now.isBefore(expiry));
         if (usedJtis.putIfAbsent(issuer + "|" + jti, exp) != null) { throw invalidClient("jti was already used (replay)"); }
+        return issuer;
     }
     private static HttpError invalidClient(String message) { return new HttpError(401, "invalid_client", message); }
 
@@ -132,6 +126,7 @@ public final class TailspinPayer extends MockPayer {
         private final Map<String, URI> clients = new LinkedHashMap<>();
         private Clock clock = Clock.systemUTC();
         private String publicBaseUrl;
+        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
         private Builder() { }
         public Builder client(String clientId, URI jwksUrl) {
             clients.put(Objects.requireNonNull(clientId), Objects.requireNonNull(jwksUrl));
@@ -139,6 +134,10 @@ public final class TailspinPayer extends MockPayer {
         }
         public Builder clock(Clock clock) { this.clock = Objects.requireNonNull(clock); return this; }
         public Builder publicBaseUrl(String url) { publicBaseUrl = url; return this; }
+        public Builder behaviour(PayerBehaviour behaviour) {
+            this.behaviour = Objects.requireNonNull(behaviour);
+            return this;
+        }
         public TailspinPayer build() { return new TailspinPayer(this); }
     }
     public static void main(String[] args) throws IOException {
