@@ -14,6 +14,11 @@
   <name>workbench-app</name>
   <description>Spring Boot app: REST API and static browser UI for the onboarding workbench.</description>
 
+  <properties>
+    <!-- JaCoCo LINE coverage floor (see the parent pom): measured 95.15% minus 1 point. Only ever raise it. -->
+    <jacoco.line.floor>0.941</jacoco.line.floor>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>
