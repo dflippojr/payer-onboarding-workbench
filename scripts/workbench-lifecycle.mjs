@@ -110,7 +110,8 @@ export function createWorkbench(skipBuild) {
       );
     });
   }
-  async function start(jar, log) {
+  // args are extra application arguments, e.g. --workbench.custom-endpoints.enabled=true.
+  async function start(jar, log, args = []) {
     const fd = openSync(log, 'w');
     console.log('==> Starting the workbench on a free port');
     const java = process.env.JAVA_HOME
@@ -119,7 +120,7 @@ export function createWorkbench(skipBuild) {
       console.log('    JAVA_HOME is unset; if java on the PATH is a launcher shim, cleanup can leave the JVM running');
     }
     try {
-      app = spawn(java, ['-jar', jar, '--server.port=0'], {
+      app = spawn(java, ['-jar', jar, '--server.port=0', ...args], {
         cwd: root, stdio: ['ignore', fd, fd], windowsHide: true,
       });
     } finally {
