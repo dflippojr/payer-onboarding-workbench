@@ -552,6 +552,21 @@ The app starts all three mock payers over real HTTPS at `https://127.0.0.1:<port
 
 Standalone payers use plain HTTP by default. Add `--tls` to any standalone launcher for HTTPS with an ephemeral test CA. This CA is not installed in the JVM or operating-system trust store. Fabrikam and Tailspin fetch the app's public JWKS over loopback HTTP. TLS faults affect the handshake for every endpoint, including admin endpoints; clear them programmatically or restart a standalone payer to recover.
 
+### Payer behaviours and the behaviour matrix
+
+Faults break a payer. A `PayerBehaviour` instead varies it the way real payers legitimately differ. Pass one to any payer's builder (`NorthwindPayer.builder().behaviour(...)`); it is fixed for the payer's lifetime, and `PayerBehaviour.STANDARD` (the default) changes nothing. It covers:
+
+- the access-token format: opaque, JWT signed RS256 or ES256, a JWT whose `aud` names another server, or an 8 KiB token;
+- the token response: `token_type` case, `expires_in` as a string, extra fields, the `Content-Type`, or HTTP 200 with an OAuth `error` body;
+- hook authentication: enforced, or ignored entirely;
+- the payer's clock, which also moves its `Date` header;
+- a 307/308 redirect on one endpoint;
+- the discovery document: extra services for unknown hooks, no `prefetch`, or an empty `services` array.
+
+The JDK server always stamps `Date` itself, so a payer with a clock offset listens behind a small loopback relay that rewrites that header. A clock offset therefore needs plain HTTP.
+
+`workbench-app/src/test/resources/payer-matrix.json` is the payer-behaviour matrix. Each row is one behaviour plus the spec clause (CDS Hooks 2.0, SMART Backend Services, RFC 6749/6750/7519/7523/9068/9110) that sets its expected verdict and findings. `PayerMatrixTest` runs every row end to end through `OnboardingRunner`, as a loopback custom endpoint. `PayerMatrixShapeTest` fails if a dimension drops below two values or a behaviour variant loses its row. A row the workbench gets wrong today carries `"knownDefect": "#NNN"`; the test then requires the wrong answer, so a fix fails the row until the marker is removed.
+
 ## Sample requests
 
 The `samples` module ships synthetic CDS Hooks requests, so you can run meaningful requests without writing FHIR by hand. Each sample is a directory under `samples/src/main/resources/samples/` with `request.json` (the request as sent) and `metadata.json` (title, hook, what it demonstrates, the outcome to expect from each mock payer).
