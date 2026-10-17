@@ -46,7 +46,8 @@ public final class NorthwindPayer extends MockPayer {
     /** The audience the resource server expects while {@link Fault#WRONG_AUDIENCE_REJECT} is on. */
     public static final String WRONG_AUDIENCE = "https://crd.northwind-health.example";
 
-    static final String CARD_TYPE_SYSTEM = "http://hl7.org/fhir/us/davinci-crd/CodeSystem/cardType";
+    /** The code system of CRD 2.2.1's cardType value set (the official validator knows no CRD cardType code system). */
+    static final String CARD_TYPE_SYSTEM = "http://terminology.hl7.org/CodeSystem/cdshooks-card-type";
 
     private static final List<ServiceDefinition> SERVICES = List.of(
             new ServiceDefinition("order-sign", "order-sign", "Northwind coverage requirements (order-sign)",

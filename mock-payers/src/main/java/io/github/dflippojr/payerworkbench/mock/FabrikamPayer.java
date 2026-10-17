@@ -204,6 +204,8 @@ public final class FabrikamPayer extends MockPayer {
             }
             String indicator = "not-covered".equals(determination.covered()) ? "warning" : "info";
             ObjectNode card = card(seed, summary, indicator, null, CARD_TYPE_SYSTEM, "coverage", "Coverage");
+            // CDS Hooks 2.0: selectionBehavior MUST be provided when a card has suggestions.
+            card.put("selectionBehavior", "at-most-one");
             ObjectNode suggestion = card.putArray("suggestions").addObject();
             suggestion.put("label", "Save coverage information to the order");
             suggestion.put("isRecommended", true);

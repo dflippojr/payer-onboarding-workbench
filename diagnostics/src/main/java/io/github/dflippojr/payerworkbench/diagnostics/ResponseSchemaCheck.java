@@ -16,14 +16,16 @@ import java.util.Set;
  * {@code response.schema}: each hook call returned HTTP 2xx with a CDS Hooks
  * response whose cards have the required fields ({@code summary},
  * {@code indicator}, {@code source.label}) and a valid {@code indicator}
- * ({@code info}, {@code warning} or {@code critical}). Authentication and throttling errors that dedicated checks
- * explain are left to those checks.
+ * ({@code info}, {@code warning} or {@code critical}). A card with suggestions also needs a
+ * {@code selectionBehavior} of {@code at-most-one} or {@code any} (CDS Hooks 2.0 Card; HL7 tools invariant
+ * {@code cds-resp-6}). Authentication and throttling errors that dedicated checks explain are left to those checks.
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
 
     public static final String CHECK_ID = "response.schema";
 
     static final Set<String> INDICATORS = Set.of("info", "warning", "critical");
+    static final Set<String> SELECTION_BEHAVIORS = Set.of("at-most-one", "any");
     static final int MAX_SUMMARY = 140;
 
     @Override
@@ -89,7 +91,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         if (findings.isEmpty() && okCalls > 0) {
             findings.add(new Finding(CHECK_ID, Severity.PASS, "Hook responses are well-formed",
                     "Every hook response was valid CDS Hooks JSON, and every card had a summary, a valid "
-                            + "indicator and a source label.",
+                            + "indicator, a source label and, when it offered suggestions, a selection behavior.",
                     okCalls + " response(s), " + cardCount + " card(s) checked", null));
         }
         return findings;
@@ -118,13 +120,20 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         } else if (!source.path("label").isTextual() || source.path("label").asText().isBlank()) {
             problems.add(path + ".source.label is missing");
         }
+        JsonNode behavior = card.get("selectionBehavior");
+        if (behavior != null && !SELECTION_BEHAVIORS.contains(behavior.asText())) {
+            problems.add(path + ".selectionBehavior is \"" + behavior.asText() + "\" (must be at-most-one or any)");
+        } else if (behavior == null && card.path("suggestions").isArray() && !card.path("suggestions").isEmpty()) {
+            problems.add(path + ".selectionBehavior is missing (required when the card has suggestions)");
+        }
     }
 
     private static Finding fail(String label, List<String> problems, HttpExchange exchange) {
         return new Finding(CHECK_ID, Severity.FAIL, "Invalid CDS Hooks response from " + label,
                 "The response does not follow the CDS Hooks card format. Each card (a message the payer wants "
                         + "shown to the clinician) needs a summary, an indicator of info, warning or critical, "
-                        + "and a source label naming the payer; EHRs may drop or refuse cards that lack them.",
+                        + "and a source label naming the payer, and a card with suggestions needs a selection "
+                        + "behavior (at-most-one or any); EHRs may drop or refuse cards that lack them.",
                 String.join("\n", problems) + "\n" + Support.describe(exchange),
                 "Send the payer the listed problems; until fixed, expect these cards to be dropped. If the payer "
                         + "uses another indicator word (e.g. \"hard-stop\"), ask them to map it to critical.");
