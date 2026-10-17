@@ -37,7 +37,9 @@
     {"id": "json-in-json-cut-off", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"result\":\"{\\\"access_token\\\":\\\"FAKE-embedded-cut-0039", "secrets": ["FAKE-embedded-cut-0039"]},
     {"id": "json-in-json-escaped-quote", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"result\":\"{\\\"password\\\":\\\"pa\\\\\\\"FAKE-embedded-0040\\\"}\"}", "secrets": ["FAKE-embedded-0040"]},
     {"id": "json-object-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"private_key\":{\"kty\":\"RSA\",\"d\":\"FAKE-jwk-d-0041\"}}", "secrets": ["FAKE-jwk-d-0041"]},
-    {"id": "json-array-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"access_token\":[\"FAKE-array-token-0042\"]}", "secrets": ["FAKE-array-token-0042"]}
+    {"id": "json-array-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"access_token\":[\"FAKE-array-token-0042\"]}", "secrets": ["FAKE-array-token-0042"]},
+    {"id": "bearer-url-encoded", "rule": "AUTH_SCHEME", "input": "Authorization: Bearer %2FFAKE0043%3ASECRETPART0043", "secrets": ["FAKE0043", "SECRETPART0043"]},
+    {"id": "json-in-json-cut-off-before-quote", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"debug\":\"{\\\"client_secret\\\":\\\"FAKE-embedded-cut-0044\"}", "secrets": ["FAKE-embedded-cut-0044"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},

@@ -1,0 +1,249 @@
+package io.github.dflippojr.payerworkbench.core;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+import net.jqwik.api.Arbitraries;
+import net.jqwik.api.Arbitrary;
+import net.jqwik.api.Combinators;
+import net.jqwik.api.ForAll;
+import net.jqwik.api.Property;
+import net.jqwik.api.Provide;
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * Class-level check (#160): generates secrets of every shape {@link Redactor} promises to mask
+ * (random tokens, Basic {@code user:pass}, colon-split bearers, numeric secrets, PEM private keys),
+ * raw or URL-encoded, places them where a payer echoes credentials (headers, bodies, query strings),
+ * with or without the whole text quoted inside a JSON string, and asserts that no piece of the
+ * secret survives. {@code replay/test/leaks.test.mjs} runs the same generator against the leak
+ * scanner. Everything is generated; nothing secret-shaped is committed.
+ */
+class RedactorPropertyTest {
+
+    private static final JsonMapper JSON = JsonMapper.builder().build();
+
+    /** Characters of an RFC 6750 b64token, without the {@code =} padding. */
+    private static final String TOKEN_CHARS =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/";
+
+    /** A secret leaks if any run of this many of its characters is still in the output. */
+    private static final int PIECE = 8;
+
+    private static final List<String> BEFORE =
+            List.of("", " ", "\n", "\r\n", "\t", "(", "\"", "Authorization: ", "debug=");
+    private static final List<String> AFTER =
+            List.of("", " ", "\n", ",", ";", ")", ".", "\"", "'", "&next=1", " and more text");
+
+    private static final List<String> JSON_FIELDS = List.of(
+            "client_secret", "clientSecret", "client-secret", "access_token", "accessToken", "ACCESS_TOKEN",
+            "refresh_token", "id_token", "password", "api_key", "apiKey", "private_key", "secret",
+            "client_assertion", "assertion");
+    private static final List<String> FORM_KEYS = List.of(
+            "client_secret", "Client_Secret", "access_token", "ACCESS_TOKEN", "refresh_token", "id_token",
+            "password", "api_key", "apikey", "private_key");
+    private static final List<String> PEM_KEYS = List.of("private_key", "privateKey", "Private-Key");
+    private static final List<String> CREDENTIAL_HEADERS = List.of(
+            "X-Api-Key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret", "Cookie", "Set-Cookie");
+    private static final List<String> AUTHORIZATION_HEADERS = List.of("Authorization", "authorization", "Proxy-Authorization");
+    private static final List<String> PEM_LABELS = List.of(
+            "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY");
+
+    enum Shape { TOKEN, BASIC_USER_PASS, COLON_BEARER, NUMERIC, PEM }
+
+    enum Encoding { RAW, URL }
+
+    enum Slot {
+        /** {@code Authorization: <scheme> <secret>}, through {@link Redactor#redactHeaders}. */
+        AUTHORIZATION_HEADER,
+        /** A credential header such as {@code X-Api-Key}, through {@link Redactor#redactHeaders}. */
+        CREDENTIAL_HEADER,
+        /** {@code <scheme> <secret>} in free text. */
+        AUTH_TEXT,
+        /** An httpbin-style echo: {@code {"headers":{"Authorization":"<scheme> <secret>"}}}. */
+        HEADERS_ECHO,
+        /** A secret-named JSON field, also with a number value and in a body cut off after the value. */
+        JSON_FIELD,
+        /** A secret key in a form body. */
+        FORM_BODY,
+        /** A secret key in a request line's query string. */
+        QUERY_STRING,
+        /** A PEM block in free text. */
+        PEM_TEXT
+    }
+
+    /** Where a text slot ends up: a response body, or the value of a header that is not a credential. */
+    enum Carrier { BODY, HEADER }
+
+    /**
+     * A generated secret: its text, and for a PEM block the base64 lines that are the secret
+     * (Redactor keeps the armor lines so the key type stays readable).
+     */
+    record Secret(Shape shape, String value, List<String> pemLines) {
+    }
+
+    record Case(Secret secret, Slot slot, Encoding encoding, int variant, String before, String after,
+                boolean jsonWrap, Carrier carrier) {
+
+        String placed() {
+            return encoding == Encoding.URL ? URLEncoder.encode(secret.value(), StandardCharsets.UTF_8) : secret.value();
+        }
+
+        private String pick(List<String> options) {
+            return options.get(variant % options.size());
+        }
+
+        private String scheme() {
+            return pick(secret.shape() == Shape.BASIC_USER_PASS ? List.of("Basic", "basic", "BASIC") : List.of("Bearer", "bearer", "BEARER"));
+        }
+
+        String text() {
+            String text = switch (slot) {
+                case AUTH_TEXT -> before + scheme() + " " + placed() + after;
+                case HEADERS_ECHO -> "{\"headers\":{\"Host\":\"payer.example.test\",\"Authorization\":"
+                        + JSON.writeValueAsString(scheme() + " " + placed()) + "}}";
+                case JSON_FIELD -> jsonField();
+                case FORM_BODY -> "grant_type=client_credentials&" + pick(keys(FORM_KEYS)) + "=" + placed()
+                        + (variant % 2 == 0 ? "&scope=system%2F*.read" : "");
+                case QUERY_STRING -> "GET https://payer.example.test/token?" + pick(keys(FORM_KEYS)) + "=" + placed()
+                        + List.of(" HTTP/1.1", "&state=af0ifjsldkj HTTP/1.1", "", "#frag").get(variant % 4);
+                case PEM_TEXT -> before + placed() + after;
+                default -> throw new IllegalStateException(slot + " is not a text slot");
+            };
+            return jsonWrap ? "{\"debug\":" + JSON.writeValueAsString(text) + "}" : text;
+        }
+
+        private List<String> keys(List<String> keys) {
+            return secret.shape() == Shape.PEM ? List.of("private_key") : keys;
+        }
+
+        /** A secret field after a harmless one; the body may continue, close, or be cut off after the value. */
+        private String jsonField() {
+            String name = pick(secret.shape() == Shape.PEM ? PEM_KEYS : JSON_FIELDS);
+            boolean number = secret.shape() == Shape.NUMERIC && encoding == Encoding.RAW && variant % 2 == 1;
+            String value = number ? placed() : JSON.writeValueAsString(placed());
+            return switch (variant % 3) {
+                case 0 -> "{\"error\":\"invalid_client\",\"" + name + "\":" + value + ",\"error_description\":\"Client authentication failed\"}";
+                case 1 -> "{\"error\":\"invalid_client\",\"" + name + "\":" + value + "}";
+                default -> "{\"error\":\"invalid_client\",\"" + name + "\":" + (number ? value : value.substring(0, value.length() - 1));
+            };
+        }
+
+        String redacted() {
+            return switch (slot) {
+                case AUTHORIZATION_HEADER -> redactHeader(pick(AUTHORIZATION_HEADERS), scheme() + " " + placed());
+                case CREDENTIAL_HEADER -> redactHeader(pick(CREDENTIAL_HEADERS), placed());
+                default -> carrier == Carrier.BODY ? Redactor.redact(text()) : redactHeader("X-Debug-Echo", text());
+            };
+        }
+
+        private static String redactHeader(String name, String value) {
+            return Redactor.redactHeaders(Map.of(name, List.of(value))).get(name).get(0);
+        }
+
+        /**
+         * Every {@link #PIECE}-character run of the secret as placed: of the base64 lines of a raw
+         * PEM block, otherwise of the whole (encoded) value. A shorter secret is one piece.
+         */
+        List<String> pieces() {
+            List<String> chunks = secret.shape() == Shape.PEM && encoding == Encoding.RAW ? secret.pemLines() : List.of(placed());
+            return chunks.stream()
+                    .flatMap(c -> c.length() <= PIECE
+                            ? Stream.of(c)
+                            : IntStream.rangeClosed(0, c.length() - PIECE).mapToObj(i -> c.substring(i, i + PIECE)))
+                    .toList();
+        }
+    }
+
+    @Property(tries = 3000)
+    void noGeneratedSecretSurvives(@ForAll("cases") Case c) {
+        String out = c.redacted();
+
+        for (String piece : c.pieces()) {
+            assertFalse(out.contains(piece), () -> "'" + piece + "' survived in: " + out);
+        }
+        assertTrue(out.contains(Redactor.MASK), () -> "no mask in: " + out);
+    }
+
+    @Provide
+    Arbitrary<Case> cases() {
+        return secrets().flatMap(secret -> Combinators.combine(
+                        Arbitraries.of(slotsFor(secret.shape())),
+                        Arbitraries.of(Encoding.values()),
+                        Arbitraries.integers().between(0, 59),
+                        Arbitraries.of(BEFORE),
+                        Arbitraries.of(AFTER),
+                        Arbitraries.of(false, true),
+                        Arbitraries.of(Carrier.values()))
+                .as((slot, encoding, variant, before, after, jsonWrap, carrier) -> new Case(secret, slot,
+                        // Outside a secret-named key, a PEM block is found by its armor, which URL encoding removes.
+                        slot == Slot.PEM_TEXT ? Encoding.RAW : encoding, variant, before, after, jsonWrap, carrier)));
+    }
+
+    private static List<Slot> slotsFor(Shape shape) {
+        return shape == Shape.PEM
+                ? List.of(Slot.CREDENTIAL_HEADER, Slot.JSON_FIELD, Slot.FORM_BODY, Slot.QUERY_STRING, Slot.PEM_TEXT)
+                : Arrays.stream(Slot.values()).filter(s -> s != Slot.PEM_TEXT).toList();
+    }
+
+    private static Arbitrary<Secret> secrets() {
+        return Arbitraries.oneOf(tokens(), basicUserPass(), colonBearers(), numbers(), pemBlocks());
+    }
+
+    /**
+     * One short all-letter word after a scheme, perhaps ending a sentence, is prose by design (#160),
+     * so a token is never one.
+     */
+    private static Arbitrary<Secret> tokens() {
+        return Combinators.combine(
+                        Arbitraries.strings().withChars(TOKEN_CHARS).ofMinLength(PIECE).ofMaxLength(64),
+                        Arbitraries.integers().between(0, 2))
+                .as((body, padding) -> body + "=".repeat(padding))
+                .filter(t -> !t.matches("[A-Za-z]{1,15}\\.*"))
+                .map(t -> new Secret(Shape.TOKEN, t, List.of()));
+    }
+
+    /** The base64 of an RFC 7617 {@code user:pass} pair; the password may hold a colon or non-ASCII letters. */
+    private static Arbitrary<Secret> basicUserPass() {
+        Arbitrary<String> user = Arbitraries.strings().withCharRange('!', '~').excludeChars(':').ofMinLength(3).ofMaxLength(20);
+        Arbitrary<String> pass = Arbitraries.strings().withCharRange(' ', '~').withChars("éüß€").ofMinLength(3).ofMaxLength(30);
+        return Combinators.combine(user, pass).as((u, p) -> new Secret(Shape.BASIC_USER_PASS,
+                Base64.getEncoder().encodeToString((u + ":" + p).getBytes(StandardCharsets.UTF_8)), List.of()));
+    }
+
+    private static Arbitrary<Secret> colonBearers() {
+        return Combinators.combine(
+                        Arbitraries.strings().withChars(TOKEN_CHARS).ofMinLength(4).ofMaxLength(32),
+                        Arbitraries.strings().withChars(TOKEN_CHARS + ":").ofMinLength(4).ofMaxLength(32))
+                .as((token, suffix) -> new Secret(Shape.COLON_BEARER, token + ":" + suffix, List.of()));
+    }
+
+    private static Arbitrary<Secret> numbers() {
+        return Arbitraries.longs().between(100_000L, Long.MAX_VALUE)
+                .map(n -> new Secret(Shape.NUMERIC, String.valueOf(n), List.of()));
+    }
+
+    /** A private key, sometimes cut off before its footer (a truncated paste). */
+    private static Arbitrary<Secret> pemBlocks() {
+        return Combinators.combine(
+                        Arbitraries.of(PEM_LABELS),
+                        Arbitraries.bytes().array(byte[].class).ofMinSize(48).ofMaxSize(1200),
+                        Arbitraries.of("\n", "\r\n"),
+                        Arbitraries.of(false, true))
+                .as((label, key, newline, truncated) -> {
+                    String body = Base64.getMimeEncoder(64, newline.getBytes(StandardCharsets.US_ASCII)).encodeToString(key);
+                    String pem = "-----BEGIN " + label + "-----" + newline + body + newline
+                            + (truncated ? "" : "-----END " + label + "-----");
+                    List<String> lines = Arrays.stream(body.split(newline)).filter(l -> l.length() >= PIECE).toList();
+                    return new Secret(Shape.PEM, pem, lines);
+                });
+    }
+}

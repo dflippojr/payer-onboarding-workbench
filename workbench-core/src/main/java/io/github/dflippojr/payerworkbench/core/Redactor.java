@@ -46,12 +46,13 @@ public final class Redactor {
     private static final String WORD_START = "(?:\\b|(?<=\\\\[nrtbf]))";
 
     /**
-     * A scheme, its token68 part (group 2) and anything else up to the next whitespace, quote,
-     * comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked whole.
+     * A scheme, its token68 part (group 2, which may be URL-encoded) and anything else up to the next
+     * whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked
+     * whole.
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)" + WORD_START + "(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
-                    + "([A-Za-z0-9\\-._~+/]+=*)([^\\s\"',;\\\\]*)");
+                    + "([A-Za-z0-9\\-._~+/%]+=*)([^\\s\"',;\\\\]*)");
 
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
@@ -88,12 +89,14 @@ public final class Redactor {
     /**
      * The same inside JSON that is itself embedded in a JSON string ({@code {\"key\": \"value\"}}),
      * where the inner string's own escapes are escaped again: an inner {@code \\} is four backslashes
-     * and an inner {@code \"} three and a quote. A string cut off by the end of the text counts too.
+     * and an inner {@code \"} three and a quote. A string cut off by the end of the text counts too,
+     * and so does one cut off by the end of the outer string (an unescaped quote): embedded JSON that
+     * was truncated before it was quoted.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
             BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"(?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
-                    + "|" + BACKSLASH + PLAIN + ")*+(?:" + BACKSLASH + "\"|\\z)|" + JSON_SCALAR + ")");
+                    + "|" + BACKSLASH + PLAIN + ")*+(?:" + BACKSLASH + "\"|(?=\")|\\z)|" + JSON_SCALAR + ")");
 
     /** A JSON field whose value is an object or array; group 1 is the name. */
     private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"([A-Za-z_-]{1,64})\"\\s*:\\s*(?=[{\\[])");

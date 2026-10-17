@@ -63,12 +63,16 @@ const SENSITIVE_HEADERS = new Set([
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
   { name: 'PEM block', re: /-----BEGIN [A-Z0-9 ]*-----/g },
-  // The credential runs to the next whitespace, quote, comma, semicolon or backslash, as in Redactor.
+  // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
+  // backslash, as in Redactor.
   {
     name: 'Bearer/Basic credential',
-    re: new RegExp(String.raw`${WORD_START}(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])([A-Za-z0-9\-._~+/]+=*)([^\s"',;\\]*)`, 'gi'),
+    re: new RegExp(String.raw`${WORD_START}(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])([A-Za-z0-9\-._~+/%]+=*)([^\s"',;\\]*)`, 'gi'),
     ok: isAuthProse,
   },
+  // Redactor masks the credential through to that end, so anything right after the mask is the rest
+  // of it (Bearer [REDACTED]:SECRETPART).
+  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${WORD_START}(?:Bearer|Basic)\s+\[REDACTED\][^\s"',;\\]`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
