@@ -1,0 +1,334 @@
+{
+  "description": "Payer-behaviour matrix (#169). Each row is one legal or illegal payer behaviour, run end to end through OnboardingRunner by PayerMatrixTest. The expected verdict and findings come from the cited spec clause, not from what the workbench currently reports. A row the workbench gets wrong today names its issue in knownDefect; the test then requires the mismatch, so fixing the defect fails the row until the marker is removed.",
+  "legend": {
+    "auth": "The connection's authType. NONE and OAUTH2_CLIENT_CREDENTIALS run against NorthwindPayer, CDS_HOOKS_JWT against FabrikamPayer, OAUTH2_PRIVATE_KEY_JWT against TailspinPayer, each configured with this row's PayerBehaviour.",
+    "behaviour": "PayerBehaviour fields; anything left out keeps the standard behaviour. clockOffsetSeconds moves the payer's clock and its Date header. redirect.to is same-host (a path on the same payer) or other-host (a second loopback server that counts what reaches it).",
+    "expect.verdict": "RunVerdict status: PASS, PASS_WITH_WARNINGS or FAIL.",
+    "expect.findings": "Check id to the most severe finding expected from that check (FAIL > WARN > INFO > PASS), or ABSENT when the check must report nothing.",
+    "expect.brokeAt": "The first failed step, when the row expects one.",
+    "expect.otherHostUntouched": "The other-host redirect target received no request at all."
+  },
+  "dimensions": ["access-token-format", "token-response", "auth-required", "clock", "redirect", "discovery"],
+  "rows": [
+    {
+      "id": "access-token-format/opaque",
+      "dimension": "access-token-format", "value": "opaque",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"accessToken": "OPAQUE"},
+      "spec": "RFC 6749 §1.4",
+      "clause": "An access token is a string representing an authorization issued to the client. The string is usually opaque to the client.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.client-assertion": "PASS"}}
+    },
+    {
+      "id": "access-token-format/jwt-rs256",
+      "dimension": "access-token-format", "value": "jwt-rs256",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"accessToken": "JWT_RS256"},
+      "spec": "RFC 9068 §6",
+      "clause": "The client MUST NOT inspect the content of the access token ... The OAuth 2.0 framework assumes that access tokens are treated as opaque by clients.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.client-assertion": "PASS", "auth.jwt-audience": "ABSENT"}}
+    },
+    {
+      "id": "access-token-format/jwt-es256",
+      "dimension": "access-token-format", "value": "jwt-es256",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"accessToken": "JWT_ES256"},
+      "spec": "RFC 9068 §6",
+      "clause": "The client MUST NOT inspect the content of the access token: the authorization server and the resource server might decide to change the token format at any time.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.jwt-audience": "ABSENT", "auth.clock-skew": "ABSENT"}}
+    },
+    {
+      "id": "access-token-format/jwt-other-audience",
+      "dimension": "access-token-format", "value": "jwt-other-audience",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"accessToken": "JWT_OTHER_AUDIENCE"},
+      "spec": "RFC 9068 §4; RFC 9068 §6",
+      "clause": "The resource server MUST validate that the aud claim contains a resource indicator value corresponding to an identifier the resource server expects for itself (§4). That obligation is the payer's: the client MUST NOT inspect the content of the access token (§6), so a payer that accepts its own token with another aud gives the client nothing to report.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.client-assertion": "PASS", "auth.jwt-audience": "ABSENT"}}
+    },
+    {
+      "id": "access-token-format/very-long",
+      "dimension": "access-token-format", "value": "very-long",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"accessToken": "VERY_LONG"},
+      "spec": "RFC 6749 §5.1",
+      "clause": "The sizes of tokens and other values received from the authorization server are left undefined. The client should avoid making assumptions about value sizes.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+
+    {
+      "id": "token-response/token-type-lowercase",
+      "dimension": "token-response", "value": "token-type-bearer-lowercase",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenType": "bearer"},
+      "spec": "RFC 6749 §5.1; SMART Backend Services (STU 2.2) access token response",
+      "clause": "token_type: REQUIRED. The type of the token issued as described in Section 7.1. Value is case insensitive. SMART fixes the value as \"bearer\".",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+    {
+      "id": "token-response/token-type-capitalised",
+      "dimension": "token-response", "value": "token-type-Bearer",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenType": "Bearer"},
+      "spec": "RFC 6749 §5.1",
+      "clause": "token_type: REQUIRED. The type of the token issued as described in Section 7.1. Value is case insensitive.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+    {
+      "id": "token-response/expires-in-string",
+      "dimension": "token-response", "value": "expires-in-string",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"expiresInAsString": true},
+      "spec": "RFC 6749 §5.1",
+      "clause": "Parameter names and string values are included as JSON strings. Numerical values are included as JSON numbers. A string expires_in is not a lifetime a conforming client can read; the router SDK ignores it and never caches the token, the same consequence as a missing expires_in, which auth.token already warns about.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
+    },
+    {
+      "id": "token-response/extra-fields",
+      "dimension": "token-response", "value": "extra-fields",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"extraTokenFields": true},
+      "spec": "RFC 6749 §5.1",
+      "clause": "The client MUST ignore unrecognized value names in the response.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+    {
+      "id": "token-response/json-with-charset",
+      "dimension": "token-response", "value": "application/json;charset=UTF-8",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenContentType": "application/json;charset=UTF-8"},
+      "spec": "RFC 6749 §5.1; RFC 8259 §11",
+      "clause": "RFC 6749's own example response carries Content-Type: application/json;charset=UTF-8. RFC 8259: No \"charset\" parameter is defined for this registration. Adding one really has no effect on compliant recipients.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+    {
+      "id": "token-response/error-with-200",
+      "dimension": "token-response", "value": "oauth-error-body-with-200",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenErrorWith200": true},
+      "spec": "RFC 6749 §5.1; RFC 6749 §5.2",
+      "clause": "A successful response carries access_token (REQUIRED) with a 200 status; an error is answered with HTTP 400 (unless specified otherwise) and an error parameter. A 200 carrying only error and error_description issued no token.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.token": "FAIL"}}
+    },
+
+    {
+      "id": "auth-required/none",
+      "dimension": "auth-required", "value": "none",
+      "auth": "NONE",
+      "behaviour": {"hookAuthentication": "IGNORED"},
+      "spec": "CDS Hooks 2.0, Trusting CDS Clients",
+      "clause": "CDS Services SHOULD require authentication if invoking the service poses any risk of exposing sensitive data to the caller. A service that requires none is legal, and an unauthenticated hook call to it must succeed.",
+      "expect": {"verdict": "PASS", "findings": {"auth.hook-rejected": "ABSENT", "auth.token": "ABSENT"}}
+    },
+    {
+      "id": "auth-required/client-credentials",
+      "dimension": "auth-required", "value": "client-credentials",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {},
+      "spec": "RFC 6749 §4.4; RFC 6749 §2.3.1",
+      "clause": "The client can request an access token using only its client credentials. The authorization server MUST support the HTTP Basic authentication scheme for authenticating clients that were issued a client password.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.hook-rejected": "ABSENT"}}
+    },
+    {
+      "id": "auth-required/cds-hooks-jwt",
+      "dimension": "auth-required", "value": "cds-hooks-jwt",
+      "auth": "CDS_HOOKS_JWT",
+      "behaviour": {},
+      "spec": "CDS Hooks 2.0, Trusting CDS Clients",
+      "clause": "Each time a CDS Client transmits a request to a CDS Service which requires authentication, the request MUST include an Authorization header presenting the JWT as a Bearer token. For CDS Hooks, this [aud] value MUST be the URL of the CDS Service endpoint being invoked.",
+      "expect": {"verdict": "PASS", "findings": {"auth.jwt-audience": "PASS", "auth.clock-skew": "PASS", "auth.hook-rejected": "ABSENT"}}
+    },
+    {
+      "id": "auth-required/smart-private-key-jwt",
+      "dimension": "auth-required", "value": "smart-private-key-jwt",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {},
+      "spec": "SMART App Launch STU 2.2, Client Authentication: Asymmetric; RFC 7523 §2.2",
+      "clause": "exp: This time SHALL be no more than five minutes in the future. jti: A nonce string value that uniquely identifies this authentication JWT. iss and sub are the client_id; aud is the token endpoint URL.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.client-assertion": "PASS", "auth.clock-skew": "PASS"}}
+    },
+    {
+      "id": "auth-required/payer-ignores-credential",
+      "dimension": "auth-required", "value": "payer-ignores-credential",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"hookAuthentication": "IGNORED"},
+      "spec": "RFC 6750 §2.1; CDS Hooks 2.0, Trusting CDS Clients",
+      "clause": "Clients SHOULD make authenticated requests with a bearer token using the Authorization request header field. Whether the resource server checks it is the server's decision (CDS Services SHOULD require authentication); the client did its part and the call succeeded.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.hook-rejected": "ABSENT"}}
+    },
+    {
+      "id": "auth-required/none-against-a-payer-that-requires-it",
+      "dimension": "auth-required", "value": "none-but-required",
+      "auth": "NONE",
+      "behaviour": {},
+      "spec": "RFC 6750 §3",
+      "clause": "If the protected resource request does not include authentication credentials or does not contain an access token that enables access to the protected resource, the resource server MUST include the HTTP WWW-Authenticate response header field. The payer answers 401; the run must fail and say no credential was sent.",
+      "expect": {"verdict": "FAIL", "brokeAt": "hook-request", "findings": {"auth.hook-rejected": "FAIL"}}
+    },
+
+    {
+      "id": "clock/cds-hooks-jwt-payer-ahead-5m",
+      "dimension": "clock", "value": "+5m",
+      "auth": "CDS_HOOKS_JWT",
+      "behaviour": {"clockOffsetSeconds": 300},
+      "spec": "CDS Hooks 2.0, Trusting CDS Clients; RFC 7519 §4.1.4",
+      "clause": "exp: Expiration time integer for this authentication JWT. The processing of the exp claim requires that the current date/time MUST be before the expiration date/time. The client signs exp five minutes after iat, so a payer clock five minutes ahead sees it expired and rejects it: a rejection consistent with clock skew.",
+      "expect": {"verdict": "FAIL", "brokeAt": "hook-request", "findings": {"auth.clock-skew": "FAIL"}}
+    },
+    {
+      "id": "clock/cds-hooks-jwt-payer-behind-5m",
+      "dimension": "clock", "value": "-5m",
+      "auth": "CDS_HOOKS_JWT",
+      "behaviour": {"clockOffsetSeconds": -300},
+      "spec": "RFC 7519 §4.1.4; RFC 7519 §4.1.6",
+      "clause": "Implementers MAY provide for some small leeway, usually no more than a few minutes, to account for clock skew. iat identifies the time at which the JWT was issued. The payer accepts a JWT issued five minutes in its future; a stricter payer would not, so the run passes with a clock-skew warning.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.clock-skew": "WARN"}}
+    },
+    {
+      "id": "clock/cds-hooks-jwt-payer-ahead-1h",
+      "dimension": "clock", "value": "+1h",
+      "auth": "CDS_HOOKS_JWT",
+      "behaviour": {"clockOffsetSeconds": 3600},
+      "spec": "RFC 7519 §4.1.4",
+      "clause": "The processing of the exp claim requires that the current date/time MUST be before the expiration date/time listed in the exp claim. An hour of skew is far past any leeway; the rejection is caused by the clocks.",
+      "expect": {"verdict": "FAIL", "brokeAt": "hook-request", "findings": {"auth.clock-skew": "FAIL"}}
+    },
+    {
+      "id": "clock/cds-hooks-jwt-payer-behind-1h",
+      "dimension": "clock", "value": "-1h",
+      "auth": "CDS_HOOKS_JWT",
+      "behaviour": {"clockOffsetSeconds": -3600},
+      "spec": "RFC 7519 §4.1.6",
+      "clause": "iat: identifies the time at which the JWT was issued. This payer checks only exp, so it accepts a JWT issued an hour in its future; the measured offset is far beyond tolerance and must be reported.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.clock-skew": "WARN"}}
+    },
+    {
+      "id": "clock/smart-payer-ahead-5m",
+      "dimension": "clock", "value": "+5m",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"clockOffsetSeconds": 300},
+      "spec": "SMART App Launch STU 2.2, Client Authentication: Asymmetric; RFC 7523 §3",
+      "clause": "The JWT MUST contain an exp (expiration time) claim that limits the time window during which the JWT can be used. The authorization server MUST reject any JWT with an expiration time that has passed. Five minutes of payer skew expires the five-minute assertion.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.clock-skew": "FAIL"}}
+    },
+    {
+      "id": "clock/smart-payer-behind-5m",
+      "dimension": "clock", "value": "-5m",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"clockOffsetSeconds": -300},
+      "spec": "SMART App Launch STU 2.2, Client Authentication: Asymmetric",
+      "clause": "exp: This time SHALL be no more than five minutes in the future. By a payer clock five minutes behind, the assertion's exp is ten minutes ahead, so the payer rejects it.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.clock-skew": "FAIL"}}
+    },
+    {
+      "id": "clock/smart-payer-ahead-1h",
+      "dimension": "clock", "value": "+1h",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"clockOffsetSeconds": 3600},
+      "spec": "RFC 7523 §3",
+      "clause": "The authorization server MUST reject any JWT with an expiration time that has passed, subject to allowable clock skew between systems.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.clock-skew": "FAIL"}}
+    },
+    {
+      "id": "clock/smart-payer-behind-1h",
+      "dimension": "clock", "value": "-1h",
+      "auth": "OAUTH2_PRIVATE_KEY_JWT",
+      "behaviour": {"clockOffsetSeconds": -3600},
+      "spec": "SMART App Launch STU 2.2, Client Authentication: Asymmetric",
+      "clause": "exp: This time SHALL be no more than five minutes in the future. RFC 7523 §3: the authorization server may reject JWTs with an exp claim value that is unreasonably far in the future. An hour of payer skew puts exp more than an hour ahead.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.clock-skew": "FAIL"}}
+    },
+    {
+      "id": "clock/client-credentials-payer-ahead-1h-jwt-access-token",
+      "dimension": "clock", "value": "+1h",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"clockOffsetSeconds": 3600, "accessToken": "JWT_RS256"},
+      "spec": "RFC 9068 §6; RFC 6749 §2.3.1",
+      "clause": "The client MUST NOT inspect the content of the access token, so the token's skewed iat and exp are not the client's to judge; client_secret_basic carries no time claim. The payer validates against its own clock and accepts, so nothing measurable is skewed.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.clock-skew": "ABSENT"}}
+    },
+    {
+      "id": "clock/client-credentials-payer-behind-5m",
+      "dimension": "clock", "value": "-5m",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"clockOffsetSeconds": -300},
+      "spec": "RFC 6749 §5.1",
+      "clause": "expires_in: The lifetime in seconds of the access token. A lifetime is relative, so a skewed payer clock does not change it, and client_secret_basic sends no time claim to compare.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS", "auth.clock-skew": "ABSENT"}}
+    },
+
+    {
+      "id": "redirect/discovery-307-same-host",
+      "dimension": "redirect", "value": "discovery-307-same-host",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"redirect": {"endpoint": "discovery", "status": 307, "to": "same-host"}},
+      "spec": "RFC 9110 §15.4.8; CDS Hooks 2.0, Discovery",
+      "clause": "The user agent MAY use the Location field value for automatic redirection (following is optional), and since the redirection can change over time, the client ought to continue using the original target URI. The Discovery endpoint SHALL always be available at {baseUrl}/cds-services, so a redirect there means the connection record is wrong and must be reported.",
+      "expect": {"verdict": "FAIL", "brokeAt": "discovery", "findings": {"discovery.reachable": "FAIL"}}
+    },
+    {
+      "id": "redirect/discovery-308-other-host",
+      "dimension": "redirect", "value": "discovery-308-other-host",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"redirect": {"endpoint": "discovery", "status": 308, "to": "other-host"}},
+      "spec": "RFC 9110 §15.4; CDS Hooks 2.0, Trusting CDS Services",
+      "clause": "Automatic redirection needs to be done with care. Each CDS Client vendor/provider SHOULD maintain an allow list of the CDS Services it has vetted. The workbench's endpoint guard (#138) only calls the approved payer host, so nothing may reach the other host.",
+      "expect": {"verdict": "FAIL", "brokeAt": "discovery", "findings": {"discovery.reachable": "FAIL"}, "otherHostUntouched": true}
+    },
+    {
+      "id": "redirect/token-307-same-host",
+      "dimension": "redirect", "value": "token-307-same-host",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"redirect": {"endpoint": "token", "status": 307, "to": "same-host"}},
+      "spec": "RFC 9110 §15.4; RFC 9110 §15.4.8",
+      "clause": "Automatic redirection needs to be done with care for methods not known to be safe; the token request is a POST carrying the client secret. Following is optional (MAY), so the token step reports the redirect instead.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.token": "FAIL"}}
+    },
+    {
+      "id": "redirect/token-308-other-host",
+      "dimension": "redirect", "value": "token-308-other-host",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"redirect": {"endpoint": "token", "status": 308, "to": "other-host"}},
+      "spec": "RFC 9110 §15.4; RFC 6749 §2.3.1",
+      "clause": "A user agent following a redirect removes Authorization, and automatic redirection of unsafe methods needs care. The client secret is for the authorization server the client registered with, so the redirected token request must not reach the other host.",
+      "expect": {"verdict": "FAIL", "brokeAt": "authenticate", "findings": {"auth.token": "FAIL"}, "otherHostUntouched": true}
+    },
+
+    {
+      "id": "discovery/standard",
+      "dimension": "discovery", "value": "standard",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"discovery": "STANDARD"},
+      "spec": "CDS Hooks 2.0, Discovery",
+      "clause": "The response to the discovery endpoint SHALL be an object containing a list of CDS Services. Each CDS Service SHALL be described by hook, description and id (REQUIRED).",
+      "expect": {"verdict": "PASS", "findings": {"discovery.reachable": "PASS", "discovery.services": "PASS"}}
+    },
+    {
+      "id": "discovery/extra-unknown-services",
+      "dimension": "discovery", "value": "extra-unknown-services",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"discovery": "EXTRA_UNKNOWN_SERVICES"},
+      "spec": "CDS Hooks 2.0, Discovery; CDS Hooks 2.0, Extensions",
+      "clause": "Discovery lists every CDS Service the server hosts, whatever its hook. The specification reserves the name extension, allowing implementations to use it to provide custom behavior. A client picks the services for the hooks it calls.",
+      "expect": {"verdict": "PASS", "findings": {"discovery.reachable": "PASS", "discovery.services": "PASS"}}
+    },
+    {
+      "id": "discovery/no-prefetch",
+      "dimension": "discovery", "value": "no-prefetch",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"discovery": "NO_PREFETCH"},
+      "spec": "CDS Hooks 2.0, Discovery",
+      "clause": "prefetch: OPTIONAL. An object containing key/value pairs of FHIR queries that this service is requesting the CDS Client to perform.",
+      "expect": {"verdict": "PASS", "findings": {"discovery.services": "PASS", "discovery.prefetch-keys": "PASS"}}
+    },
+    {
+      "id": "discovery/empty-services",
+      "dimension": "discovery", "value": "empty-services",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"discovery": "EMPTY"},
+      "spec": "CDS Hooks 2.0, Discovery",
+      "clause": "If your CDS server hosts no CDS Services, the discovery endpoint should return a 200 HTTP response with an empty array of services. Legal, but there is no order-sign service to onboard against.",
+      "expect": {"verdict": "FAIL", "brokeAt": "discovery", "findings": {"discovery.reachable": "PASS", "discovery.services": "FAIL"}}
+    }
+  ]
+}
