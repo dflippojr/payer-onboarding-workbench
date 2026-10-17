@@ -14,9 +14,13 @@ permissions:
   contents: read
   pull-requests: read
 
+# A newer PR push cancels the older PR run. Main runs are never cancelled, so
+# every merge gets a quality-gate result: cancel-in-progress is off on main, and
+# each main run gets its own group because GitHub otherwise still drops a
+# pending run when a third merge queues behind it.
 concurrency:
-  group: sonar-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: sonar-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   sonar:

@@ -9,7 +9,8 @@
     "test:ui-instance": "node --test scripts/ui-instance.test.mjs",
     "verify": "node .claude/skills/verify/scripts/verify.mjs",
     "test:verify": "node --test .claude/skills/verify/scripts/doctor.test.mjs .claude/skills/verify/scripts/cleanup.test.mjs",
-    "test:lifecycle": "node --experimental-vm-modules --test --test-timeout=10000 scripts/workbench-lifecycle.test.mjs"
+    "test:lifecycle": "node --experimental-vm-modules --test --test-timeout=10000 scripts/workbench-lifecycle.test.mjs",
+    "ci:local": "node scripts/ci-local.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.64.0"

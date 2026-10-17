@@ -15,6 +15,8 @@
   <description>Two embedded synthetic CDS Hooks payers for demos and tests.</description>
 
   <properties>
+    <!-- JaCoCo LINE coverage floor (see the parent pom): measured 91.96% minus 1 point. Only ever raise it. -->
+    <jacoco.line.floor>0.909</jacoco.line.floor>
     <!-- Same version fhir-crd-router uses; not managed by the Spring Boot parent. -->
     <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
   </properties>

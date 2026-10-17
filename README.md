@@ -38,8 +38,10 @@ Run the app (serves on http://localhost:8080 by default). Install the sibling mo
 
 CI runs two GitHub Actions workflows on pushes and pull requests:
 
-- `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [replay export](#embed-on-a-website), the leak scanner's self-test (`replay/test/leaks.test.mjs`) and the bundle check, and uploads `demo-output/` and `site-dist/` as build artifacts.
-- `.github/workflows/sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). The organization and project keys are in the parent `pom.xml`.
+- `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [UI journeys](#ui-interaction-tests), the [replay export](#embed-on-a-website), the leak scanner's self-test (`replay/test/leaks.test.mjs`), the bundle check and the Node regression suites, and uploads `demo-output/` and `site-dist/` as build artifacts. Its `gate` job always reports and fails unless every other job in the file succeeded, so it is the one check to require. `npm run ci:local` runs the same steps in the same order on your machine (JDK 21 on `JAVA_HOME`; Git Bash on Windows) and stops the UI instance even when a step fails.
+- `.github/workflows/sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). A newer push cancels an older PR run; runs on `main` are never cancelled. The organization and project keys are in the parent `pom.xml`.
+
+`verify` also fails when a module's JaCoCo line coverage drops below its floor, the `jacoco.line.floor` property in that module's `pom.xml`. Each floor started at the measured coverage minus 1 point. Raise a floor when coverage rises; never lower one.
 
 Dependabot (`.github/dependabot.yml`) checks Maven dependencies and GitHub Actions weekly and opens at most 3 pull requests per ecosystem, labeled `dependencies`. The root Maven reactor includes all five module POMs and the Maven wrapper; GitHub Actions updates cover `.github/workflows/`. Nothing auto-merges: CI decides whether each update is safe and the owner merges. Major Spring Boot bumps are ignored and handled as deliberate issues. The `fhir-crd-router` pin (`COMMIT=` in `scripts/install-crd-router.sh`) is invisible to Dependabot and stays a manual bump.
 
@@ -124,7 +126,7 @@ Off by default. The workbench otherwise only talks to its own synthetic payers; 
 ./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--workbench.custom-endpoints.enabled=true
 ```
 
-The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Faults and connection edits don't apply.
+The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Connection edits (`baseUrlSuffix`, `igVersion`, `clientId`) apply to the supplied endpoint for this run only, overriding its values; blank edits keep the supplied values. The suffix uses the same path-only validation as synthetic runs and cannot add user info, a query or a fragment. Payer faults only apply to synthetic payers: the UI hides them for custom runs, and the API rejects custom requests with faults.
 
 ```sh
 # The HL7 CRD reference server, started locally in Docker (not run in CI):

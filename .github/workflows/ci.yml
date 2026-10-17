@@ -1,5 +1,8 @@
 name: ci
 on: [push, pull_request]
+# No concurrency group: CI runs, on main above all, are never cancelled.
+# npm run ci:local runs the same run: steps in the same order; scripts/ci-local.test.mjs
+# fails when the two drift apart.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -49,6 +52,10 @@ jobs:
         run: node --test scripts/audit-reader.test.mjs
       - name: Check the workbench lifecycle regression suite (timeout fails a hung cleanup)
         run: node --experimental-vm-modules --test --test-timeout=10000 scripts/workbench-lifecycle.test.mjs
+      - name: Check the verify skill's doctor and cleanup
+        run: npm run test:verify
+      - name: Check that npm run ci:local matches this workflow
+        run: node --test scripts/ci-local.test.mjs
       - name: Upload demo reports
         if: always()
         uses: actions/upload-artifact@v6
@@ -63,3 +70,18 @@ jobs:
           name: site-dist
           path: site-dist/
           if-no-files-found: ignore
+
+  # The one required check for the ruleset and `ao ready`. It always reports and
+  # fails unless every needed job succeeded. Add every job added to this file to
+  # needs; scripts/ci-local.test.mjs fails when one is missing.
+  gate:
+    needs: [build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'length > 0 and all(.[]; .result == "success")' > /dev/null

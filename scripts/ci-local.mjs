@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+// The full CI gate on your machine: npm run ci:local. Node 22+, JDK 21 on JAVA_HOME,
+// and bash (Git Bash on Windows). Runs every run: step of .github/workflows/ci.yml in
+// the same order through bash, stops at the first failure, still runs the
+// if: always() steps (so the UI instance is stopped), then exits non-zero.
+// scripts/ci-local.test.mjs fails when this list drifts from ci.yml.
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Copied verbatim from ci.yml: name (when the step has one), run, and always for if: always().
+export const steps = [
+  { name: 'Install fhir-crd-router at the pinned commit', run: 'bash scripts/install-crd-router.sh' },
+  { run: './mvnw -B verify' },
+  { name: 'Demo tour (reuses the jar built by verify)', run: 'DEMO_SKIP_BUILD=1 node scripts/demo.mjs' },
+  { name: 'Install locked UI test dependencies', run: 'npm ci --ignore-scripts' },
+  { name: 'Install UI browsers', run: 'node node_modules/@playwright/test/cli.js install --with-deps chromium webkit' },
+  { name: 'Verify disposable-instance safety boundaries', run: 'npm run test:ui-instance' },
+  { name: 'Disposable synthetic UI journeys (one worker)', run: 'npm run test:ui' },
+  { name: 'Stop the owned UI instance even on failure', run: 'node scripts/ui-instance.mjs stop', always: true },
+  { name: 'Export the website replay bundle (reuses the jar)', run: 'EXPORT_SKIP_BUILD=1 node scripts/export-replays.mjs' },
+  { name: 'Check the leak scanner against the shared redaction corpus', run: 'node --test replay/test/leaks.test.mjs' },
+  { name: 'Check the replay bundle', run: 'node --test replay/test/bundle.test.mjs' },
+  { name: 'Check the audit reader regression suite', run: 'node --test scripts/audit-reader.test.mjs' },
+  {
+    name: 'Check the workbench lifecycle regression suite (timeout fails a hung cleanup)',
+    run: 'node --experimental-vm-modules --test --test-timeout=10000 scripts/workbench-lifecycle.test.mjs',
+  },
+  { name: "Check the verify skill's doctor and cleanup", run: 'npm run test:verify' },
+  { name: 'Check that npm run ci:local matches this workflow', run: 'node --test scripts/ci-local.test.mjs' },
+];
+
+const bash = command => {
+  const result = spawnSync('bash', ['-c', command], { cwd: root, stdio: 'inherit' });
+  if (result.error) console.error(`    ${result.error.message}`);
+  return result.status ?? 1;
+};
+
+// Returns the name of the first failed step, or null when every step passed.
+export function runSteps(list = steps, exec = bash, log = console.log) {
+  let failed = null;
+  for (const [index, step] of list.entries()) {
+    const label = step.name ?? step.run;
+    if (failed && !step.always) {
+      log(`\n--  ${index + 1}/${list.length} skipped: ${label}`);
+      continue;
+    }
+    log(`\n==> ${index + 1}/${list.length} ${label}\n    $ ${step.run}`);
+    const started = Date.now();
+    const status = exec(step.run);
+    log(`    ${status === 0 ? 'ok' : `FAILED (exit ${status})`} in ${Math.round((Date.now() - started) / 1000)} s`);
+    if (status !== 0) failed ??= label;
+  }
+  return failed;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const failed = runSteps();
+  console.log(failed ? `\nci:local FAILED at: ${failed}` : '\nci:local passed: every ci.yml step succeeded');
+  process.exitCode = failed ? 1 : 0;
+}

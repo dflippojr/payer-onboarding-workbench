@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { root } from './doctor.mjs';
 
-export const FEATURES = ['healthy', 'failure', 'report', 'reset', 'running', 'compare'];
+export const FEATURES = ['healthy', 'failure', 'report', 'reset', 'running', 'compare', 'custom'];
 const TEST_ONLY = ['selftest-fail'];
 
 /** Resolves to the exit code. onSpawn receives the PID before any test runs, so it can be recorded. */

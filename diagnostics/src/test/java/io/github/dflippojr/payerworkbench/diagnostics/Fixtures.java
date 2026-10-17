@@ -172,6 +172,7 @@ final class Fixtures {
         TokenResponseMetadata tokenResponse = okToken();
         List<HookResponse> hooks = new ArrayList<>(List.of(orderSign(hook(200, resource("order-sign-healthy.json"), 800))));
         List<HttpExchange> extraExchanges = new ArrayList<>();
+        JwtClaims clientAssertion;
 
         Run hookBody(String body) {
             hooks = new ArrayList<>(List.of(orderSign(hook(200, body, 800))));
@@ -186,7 +187,7 @@ final class Fixtures {
             if (token != null) {
                 b.exchange(token);
             }
-            b.tokenResponse(tokenResponse);
+            b.tokenResponse(tokenResponse).clientAssertion(clientAssertion);
             for (HookResponse h : hooks) {
                 b.exchange(h.exchange()).hookResponse(h);
             }

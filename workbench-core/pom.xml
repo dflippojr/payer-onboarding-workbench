@@ -14,6 +14,11 @@
   <name>workbench-core</name>
   <description>Pure-Java domain and shared contracts (no Spring): findings, steps, run observations, redaction.</description>
 
+  <properties>
+    <!-- JaCoCo LINE coverage floor (see the parent pom): measured 79.87% minus 1 point. Only ever raise it. -->
+    <jacoco.line.floor>0.788</jacoco.line.floor>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>

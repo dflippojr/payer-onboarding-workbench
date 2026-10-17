@@ -14,6 +14,11 @@
   <name>diagnostics</name>
   <description>Diagnostic checks and the engine that runs them over run observations.</description>
 
+  <properties>
+    <!-- JaCoCo LINE coverage floor (see the parent pom): measured 92.48% minus 1 point. Only ever raise it. -->
+    <jacoco.line.floor>0.914</jacoco.line.floor>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>io.github.dflippojr</groupId>

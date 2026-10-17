@@ -43,6 +43,9 @@
     <sonar.organization>dflippojr</sonar.organization>
     <sonar.projectKey>dflippojr_payer-onboarding-workbench</sonar.projectKey>
     <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+    <!-- Every module with tests sets its own floor (see the jacoco check execution); until it
+         does, this default fails its build. -->
+    <jacoco.line.floor>1.00</jacoco.line.floor>
   </properties>
 
   <dependencyManagement>
@@ -100,6 +103,28 @@
             <id>report</id>
             <phase>verify</phase>
             <goals><goal>report</goal></goals>
+          </execution>
+          <!-- Coverage floor: verify fails when a module's LINE coverage drops below its
+               jacoco.line.floor (set in each module pom to its measured value minus 1 point).
+               The floor only ever goes up: raise it when coverage rises, never lower it. -->
+          <execution>
+            <id>check</id>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>${jacoco.line.floor}</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
           </execution>
         </executions>
       </plugin>

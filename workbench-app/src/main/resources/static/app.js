@@ -141,6 +141,7 @@
     $('reset-button').addEventListener('click', reset);
     $('sample').addEventListener('change', updateSampleNote);
     $('customAuthType').addEventListener('change', updateCustomFields);
+    ['customBaseUrl', 'customClientId'].forEach(id => $(id).addEventListener('input', updateConnectionHints));
     $('report-format').addEventListener('change', updateReportLink);
     $('recent-runs').addEventListener('change', reopenRun);
     $('compare-runs').addEventListener('change', compareRun);
@@ -305,7 +306,7 @@
     const faults = [...form.querySelectorAll('input[name="fault"]:checked')].map(c => (FAULTS[c.value] || [c.value])[0]);
     const edited = Object.keys(OVERRIDES).filter(id => $(id).value.trim()).map(id => OVERRIDES[id]);
     drawerState('faults-state', faults, 'None on', 'on');
-    drawerState('overrides-state', edited, 'Stored settings', 'changed');
+    drawerState('overrides-state', edited, customSelected() ? 'Endpoint settings' : 'Stored settings', 'changed');
   }
 
   function drawerState(id, names, none, verb) {
@@ -341,8 +342,19 @@
   }
 
   function updateConnectionHints() {
-    $('custom-endpoint').hidden = !customSelected();
+    const custom = customSelected();
+    $('custom-endpoint').hidden = !custom;
+    $('faults-drawer').hidden = custom;
     updateCustomFields();
+    updateDrawerStates();
+    if (custom) {
+      $('baseUrl-hint').textContent = `supplied: ${$('customBaseUrl').value.trim() || 'Base URL above'}`;
+      $('igVersion').placeholder = '2.0.1';
+      $('igVersion-hint').textContent = 'default: 2.0.1';
+      $('clientId').placeholder = '';
+      $('clientId-hint').textContent = `supplied: ${$('customClientId').value.trim() || 'Client id above (when authentication is configured)'}`;
+      return;
+    }
     const p = selectedPayer();
     if (!p) return;
     const conn = p.connections.find(c => c.environment === 'SANDBOX') || p.connections[0] || {};

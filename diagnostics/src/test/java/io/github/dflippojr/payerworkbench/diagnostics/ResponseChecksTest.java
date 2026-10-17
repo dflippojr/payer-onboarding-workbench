@@ -16,6 +16,8 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 class ResponseChecksTest {
 
@@ -41,6 +43,30 @@ class ResponseChecksTest {
             var run = healthy();
             run.connection = Fixtures.connection("1.0.0", false);
             assertOnly(check.evaluate(run.build()), Severity.FAIL);
+        }
+
+        @ParameterizedTest(name = "record {0}, payer {1} -> {2}")
+        @CsvSource({
+                "2.0, 2.0.0, PASS",
+                "2, 2.0.0, PASS",
+                "v2.0, 2.0.0, PASS",
+                "2.0.0, 2.0, PASS",
+                "2.1.0, 2.1, PASS",
+                "2.0, 2.0.1, WARN",
+                "2.0.0-ballot, 2.0.0, WARN",
+                "2.0.0-ballot, 2.0-ballot, PASS",
+                "1.0.0, 2.0.0, FAIL",
+                "2.10, 2.1, WARN"})
+        void trailingZeroComponentsDoNotMakeVersionsDiffer(String record, String payer, Severity expected) {
+            var run = healthy();
+            run.connection = Fixtures.connection(record, false);
+            run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"" + payer + "\"}}");
+            Finding f = assertOnly(check.evaluate(run.build()), expected);
+            if (expected == Severity.PASS) {
+                assertEquals("CRD IG version matches (" + payer + ")", f.title());
+            } else {
+                assertEquals("CRD IG version mismatch: payer " + payer + ", record " + record, f.title());
+            }
         }
 
         @Test
