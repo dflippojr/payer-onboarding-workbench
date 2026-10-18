@@ -72,6 +72,72 @@ const hookExchange = report => step(report, 'hook-request').details.exchanges?.a
   ?? assert.fail('the hook-request step recorded no exchange');
 const describe = report => `${report.verdict.status} at ${report.verdict.brokeAt ?? '-'}; FAIL: ${fails(report).join('; ') || 'none'}`;
 
+// Known deviation of the pinned reference server (crd-reference-server.env, CRD 43547c4,
+// CdsService.java:262-273): its prior-auth and documentation cards carry a suggestion but no
+// selectionBehavior. CDS Hooks 2.0 §Card Attributes (#card-attributes) makes selectionBehavior
+// required when suggestions are present (HL7 tools invariant cds-resp-6), so response.schema is
+// right to FAIL them. Only that finding is accepted, and only when its problems are exactly the
+// cards in the server's own answer that have suggestions and no selectionBehavior.
+const MISSING_SELECTION_BEHAVIOR = ' is missing (required when the card has suggestions)';
+let selectionBehaviorDeviations = 0;
+
+function isSelectionBehaviorDeviation(finding, responseBody) {
+  if (finding.checkId !== 'response.schema' || finding.severity !== 'FAIL') return false;
+  let cards;
+  try {
+    cards = JSON.parse(responseBody).cards;
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(cards)) return false;
+  const expected = cards.flatMap((card, i) => Array.isArray(card?.suggestions) && card.suggestions.length > 0
+    && card.selectionBehavior === undefined ? [`cards[${i}].selectionBehavior${MISSING_SELECTION_BEHAVIOR}`] : []);
+  // The evidence is the problem lines, then Support.describe's "METHOD url -> ..." line.
+  const lines = (finding.evidence ?? '').split('\n');
+  const problems = lines.slice(0, lines.findIndex(line => /^[A-Z]+ \S+ -> /.test(line)));
+  return expected.length > 0 && JSON.stringify(problems) === JSON.stringify(expected);
+}
+
+// The FAIL findings other than the known deviation, as `${checkId}: ${title}`.
+const unexpectedFails = (report, responseBody) => report.findings
+  .filter(f => f.severity === 'FAIL' && !isSelectionBehaviorDeviation(f, responseBody))
+  .map(f => `${f.checkId}: ${f.title}`);
+
+// A healthy run against the reference server: PASS, or FAIL for the known deviation alone,
+// which only the diagnostics step reports.
+function assertHealthy(report, responseBody) {
+  assert.deepEqual(unexpectedFails(report, responseBody), []);
+  if (fails(report).length === 0) {
+    assert.equal(report.verdict.status, 'PASS', describe(report));
+    assert.ok(report.steps.every(s => s.status === 'passed'), describe(report));
+    return;
+  }
+  selectionBehaviorDeviations++;
+  assert.equal(report.verdict.status, 'FAIL', describe(report));
+  assert.equal(report.verdict.brokeAt ?? null, null, describe(report));
+  assert.ok(report.steps.every(s => s.status === (s.stepId === 'diagnostics' ? 'failed' : 'passed')), describe(report));
+}
+
+test('only a missing selectionBehavior on a card with suggestions is accepted as the known deviation', () => {
+  const body = JSON.stringify({ cards: [
+    { summary: 'Prior auth', suggestions: [{ label: 'Save' }] },
+    { summary: 'Covered', suggestions: [{ label: 'Save' }], selectionBehavior: 'any' },
+    { summary: 'Info' },
+  ] });
+  const tail = 'POST http://127.0.0.1:18090/r4/cds-services/order-sign-crd -> HTTP 200 in 12 ms\nresponse body: {}';
+  const schema = problems => ({ checkId: 'response.schema', severity: 'FAIL', title: 'Invalid', evidence: `${problems}\n${tail}` });
+  const missing = i => `cards[${i}].selectionBehavior${MISSING_SELECTION_BEHAVIOR}`;
+  assert.ok(isSelectionBehaviorDeviation(schema(missing(0)), body));
+  // Any other problem, a card that does send selectionBehavior, or another check still fails the run.
+  assert.ok(!isSelectionBehaviorDeviation(schema(`${missing(0)}\ncards[2].indicator is missing`), body));
+  assert.ok(!isSelectionBehaviorDeviation(schema(missing(1)), body));
+  assert.ok(!isSelectionBehaviorDeviation(schema('cards[0].summary is missing'), body));
+  assert.ok(!isSelectionBehaviorDeviation({ ...schema(missing(0)), checkId: 'response.coverage-location' }, body));
+  assert.ok(!isSelectionBehaviorDeviation(schema(missing(0)), 'not json'));
+  const report = { findings: [schema(missing(0)), { checkId: 'auth.token', severity: 'FAIL', title: 'Bad token' }] };
+  assert.deepEqual(unexpectedFails(report, body), ['auth.token: Bad token']);
+});
+
 test('discovery lists exactly the services the reference server advertises', async () => {
   const report = await run('discovery', sampleIds[0]);
   const discovery = step(report, 'discovery');
@@ -159,9 +225,7 @@ for (const sampleId of sampleIds) {
     // auth gets PASS, with no FAIL findings.
     assert.equal(exchange.status, 200, describe(report));
     assert.ok(Array.isArray(JSON.parse(exchange.responseBody).cards), 'the 200 response has no cards array');
-    assert.deepEqual(fails(report), []);
-    assert.equal(report.verdict.status, 'PASS', describe(report));
-    assert.ok(report.steps.every(s => s.status === 'passed'), describe(report));
+    assertHealthy(report, exchange.responseBody);
   });
 }
 
@@ -185,7 +249,11 @@ test('a credential the server does not require is sent, and the run still passes
   const sent = hookExchange(report).requestHeaders.Authorization;
   assert.ok(sent?.length === 1 && /^Bearer \S/.test(sent[0]), `Authorization sent: ${JSON.stringify(sent)}`);
   assert.equal(hookExchange(report).status, 200, describe(report));
-  assert.deepEqual(fails(report), []);
-  assert.equal(report.verdict.status, 'PASS', describe(report));
+  assertHealthy(report, hookExchange(report).responseBody);
   assert.ok(!JSON.stringify(report).includes(pem.split('\n')[1]), 'the report contains the private key');
+});
+
+test('the known selectionBehavior deviation is still there, so its allowance is still needed', () => {
+  // When a bump of crd-reference-server.env fixes the server, remove the allowance above.
+  assert.ok(selectionBehaviorDeviations > 0, 'no run hit the selectionBehavior deviation: remove its allowance');
 });
