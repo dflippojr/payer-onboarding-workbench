@@ -106,7 +106,8 @@ const unexpectedFails = (report, responseBody) => report.findings
 // A healthy run against the reference server: PASS, or FAIL for the known deviation alone,
 // which only the diagnostics step reports.
 function assertHealthy(report, responseBody) {
-  assert.deepEqual(unexpectedFails(report, responseBody), []);
+  assert.deepEqual(unexpectedFails(report, responseBody), [], report.findings
+    .filter(f => f.severity === 'FAIL').map(f => `${f.checkId}:\n${f.evidence}`).join('\n\n'));
   if (fails(report).length === 0) {
     assert.equal(report.verdict.status, 'PASS', describe(report));
     assert.ok(report.steps.every(s => s.status === 'passed'), describe(report));
