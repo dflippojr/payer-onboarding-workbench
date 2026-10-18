@@ -7,12 +7,16 @@ import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.util.List;
+import java.util.Set;
 
 /**
  * {@code response.coverage-location}: where the payer puts CRD coverage
  * information. CRD 2.x returns it as {@code systemActions} that update the order;
  * some payers put it in card suggestions instead. The router's library reads both,
- * so this is informational.
+ * so that is informational. Either way the extension must sit in the action
+ * resource's own {@code extension} list, on a resource type the CRD 2.2.1
+ * extension's context allows; anywhere else the library does not read it, so the
+ * check fails.
  */
 public final class CoverageLocationCheck implements DiagnosticCheck {
 
@@ -21,6 +25,10 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
     /** The CRD coverage-information extension URL. */
     public static final String COVERAGE_INFORMATION_URL =
             "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information";
+
+    /** The resource types in the CRD 2.2.1 extension's {@code context}. */
+    static final Set<String> CONTEXT = Set.of("Appointment", "CommunicationRequest", "Encounter", "DeviceRequest",
+            "MedicationRequest", "NutritionOrder", "QuestionnaireResponse", "ServiceRequest", "VisionPrescription");
 
     @Override
     public String id() {
@@ -31,6 +39,7 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
     public List<Finding> evaluate(RunObservations obs) {
         CappedLines inSystemActions = new CappedLines();
         CappedLines inSuggestions = new CappedLines();
+        CappedLines misplaced = new CappedLines();
         for (HookResponse hook : obs.hookResponses()) {
             if (!Support.isSuccess(hook.exchange().status())) {
                 continue;
@@ -41,8 +50,9 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
             }
             JsonNode actions = json.path("systemActions");
             for (int i = 0; i < actions.size(); i++) {
-                if (hasCoverageInfo(actions.get(i).path("resource"))) {
-                    inSystemActions.add(hook.serviceId() + ": systemActions[" + i + "]");
+                String path = hook.serviceId() + ": systemActions[" + i + "]";
+                if (classify(actions.get(i).path("resource"), path, misplaced)) {
+                    inSystemActions.add(path);
                 }
             }
             JsonNode cards = json.path("cards");
@@ -51,13 +61,25 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
                 for (int s = 0; s < suggestions.size(); s++) {
                     JsonNode suggestionActions = suggestions.get(s).path("actions");
                     for (int a = 0; a < suggestionActions.size(); a++) {
-                        if (hasCoverageInfo(suggestionActions.get(a).path("resource"))) {
-                            inSuggestions.add(hook.serviceId() + ": cards[" + c + "].suggestions[" + s
-                                    + "].actions[" + a + "]");
+                        String path = hook.serviceId() + ": cards[" + c + "].suggestions[" + s + "].actions[" + a + "]";
+                        if (classify(suggestionActions.get(a).path("resource"), path, misplaced)) {
+                            inSuggestions.add(path);
                         }
                     }
                 }
             }
+        }
+        if (!misplaced.isEmpty()) {
+            return List.of(new Finding(CHECK_ID, Severity.FAIL, "Coverage information attached where CRD does not allow it",
+                    "The payer sends a coverage determination (the CRD coverage-information extension), but not in "
+                            + "the action resource's own extension list on an order, appointment or encounter as the "
+                            + "CRD 2.2.1 extension's context requires. The router's library and EHRs read it only "
+                            + "there, so this determination is lost.",
+                    "misplaced: " + misplaced.join(", ")
+                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + inSystemActions.join(", "))
+                            + (inSuggestions.isEmpty() ? "" : "\nfound in suggestions: " + inSuggestions.join(", ")),
+                    "Ask the payer to put the extension in the extension list of the order resource it returns, "
+                            + "not on an element inside it or on another resource type."));
         }
         if (!inSuggestions.isEmpty()) {
             return List.of(new Finding(CHECK_ID, Severity.INFO, "Coverage information delivered in card suggestions",
@@ -79,27 +101,50 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
         return List.of();
     }
 
-    /** Whether {@code node} or anything under it is a coverage-information extension. */
-    private static boolean hasCoverageInfo(JsonNode node) {
-        if (node == null || node.isMissingNode()) {
-            return false;
-        }
-        if (node.isObject()) {
-            if (COVERAGE_INFORMATION_URL.equals(node.path("url").asText(null))) {
-                return true;
-            }
-            for (JsonNode child : node) {
-                if (hasCoverageInfo(child)) {
-                    return true;
+    /**
+     * Whether {@code resource} carries coverage information where CRD allows it: in its own
+     * {@code extension} list, on a resource type in the extension's context. Every other
+     * coverage-information extension under it is added to {@code misplaced}.
+     */
+    private static boolean classify(JsonNode resource, String path, CappedLines misplaced) {
+        boolean placed = false;
+        boolean allowed = CONTEXT.contains(resource.path("resourceType").asText());
+        String owner = path + ".resource";
+        for (var fields = resource.fields(); fields.hasNext(); ) {
+            var field = fields.next();
+            JsonNode value = field.getValue();
+            if (field.getKey().equals("extension") && value.isArray()) {
+                for (int i = 0; i < value.size(); i++) {
+                    String at = owner + ".extension[" + i + "]";
+                    if (!isCoverageInfo(value.get(i))) {
+                        collectMisplaced(value.get(i), at, misplaced);
+                    } else if (allowed) {
+                        placed = true;
+                    } else {
+                        misplaced.add(at + " (on a " + resource.path("resourceType").asText("resource without a type") + ")");
+                    }
                 }
+            } else {
+                collectMisplaced(value, owner + "." + field.getKey(), misplaced);
             }
+        }
+        return placed;
+    }
+
+    /** Adds every coverage-information extension at or under {@code node}. */
+    private static void collectMisplaced(JsonNode node, String path, CappedLines misplaced) {
+        if (isCoverageInfo(node)) {
+            misplaced.add(path);
+        } else if (node.isObject()) {
+            node.fields().forEachRemaining(f -> collectMisplaced(f.getValue(), path + "." + f.getKey(), misplaced));
         } else if (node.isArray()) {
-            for (JsonNode child : node) {
-                if (hasCoverageInfo(child)) {
-                    return true;
-                }
+            for (int i = 0; i < node.size(); i++) {
+                collectMisplaced(node.get(i), path + "[" + i + "]", misplaced);
             }
         }
-        return false;
+    }
+
+    private static boolean isCoverageInfo(JsonNode node) {
+        return node.isObject() && COVERAGE_INFORMATION_URL.equals(node.path("url").asText(null));
     }
 }

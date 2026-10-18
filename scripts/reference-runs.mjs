@@ -71,6 +71,8 @@ const fails = report => report.findings.filter(f => f.severity === 'FAIL').map(f
 const hookExchange = report => step(report, 'hook-request').details.exchanges?.at(-1)
   ?? assert.fail('the hook-request step recorded no exchange');
 const describe = report => `${report.verdict.status} at ${report.verdict.brokeAt ?? '-'}; FAIL: ${fails(report).join('; ') || 'none'}`;
+const failEvidence = report => report.findings.filter(f => f.severity === 'FAIL')
+  .map(f => `${f.checkId}:\n${f.evidence}`).join('\n\n');
 
 test('discovery lists exactly the services the reference server advertises', async () => {
   const report = await run('discovery', sampleIds[0]);
@@ -159,7 +161,7 @@ for (const sampleId of sampleIds) {
     // auth gets PASS, with no FAIL findings.
     assert.equal(exchange.status, 200, describe(report));
     assert.ok(Array.isArray(JSON.parse(exchange.responseBody).cards), 'the 200 response has no cards array');
-    assert.deepEqual(fails(report), []);
+    assert.deepEqual(fails(report), [], failEvidence(report));
     assert.equal(report.verdict.status, 'PASS', describe(report));
     assert.ok(report.steps.every(s => s.status === 'passed'), describe(report));
   });
@@ -185,7 +187,7 @@ test('a credential the server does not require is sent, and the run still passes
   const sent = hookExchange(report).requestHeaders.Authorization;
   assert.ok(sent?.length === 1 && /^Bearer \S/.test(sent[0]), `Authorization sent: ${JSON.stringify(sent)}`);
   assert.equal(hookExchange(report).status, 200, describe(report));
-  assert.deepEqual(fails(report), []);
+  assert.deepEqual(fails(report), [], failEvidence(report));
   assert.equal(report.verdict.status, 'PASS', describe(report));
   assert.ok(!JSON.stringify(report).includes(pem.split('\n')[1]), 'the report contains the private key');
 });

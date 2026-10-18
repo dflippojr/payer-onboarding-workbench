@@ -1,0 +1,187 @@
+[ {
+  "id" : "healthy-northwind-order-sign-hospital-bed",
+  "file" : "healthy-northwind-order-sign-hospital-bed.json",
+  "description" : "Northwind Health (synthetic) answering sample order-sign-hospital-bed on order-sign"
+}, {
+  "id" : "healthy-northwind-order-sign-home-oxygen",
+  "file" : "healthy-northwind-order-sign-home-oxygen.json",
+  "description" : "Northwind Health (synthetic) answering sample order-sign-home-oxygen on order-sign"
+}, {
+  "id" : "healthy-northwind-order-sign-conditional-cpap",
+  "file" : "healthy-northwind-order-sign-conditional-cpap.json",
+  "description" : "Northwind Health (synthetic) answering sample order-sign-conditional-cpap on order-sign"
+}, {
+  "id" : "healthy-northwind-order-select-walker",
+  "file" : "healthy-northwind-order-select-walker.json",
+  "description" : "Northwind Health (synthetic) answering sample order-select-walker on order-select"
+}, {
+  "id" : "healthy-fabrikam-order-sign-hospital-bed",
+  "file" : "healthy-fabrikam-order-sign-hospital-bed.json",
+  "description" : "Fabrikam Benefits (synthetic) answering sample order-sign-hospital-bed on order-sign-crd"
+}, {
+  "id" : "healthy-fabrikam-order-sign-home-oxygen",
+  "file" : "healthy-fabrikam-order-sign-home-oxygen.json",
+  "description" : "Fabrikam Benefits (synthetic) answering sample order-sign-home-oxygen on order-sign-crd"
+}, {
+  "id" : "healthy-fabrikam-order-sign-conditional-cpap",
+  "file" : "healthy-fabrikam-order-sign-conditional-cpap.json",
+  "description" : "Fabrikam Benefits (synthetic) answering sample order-sign-conditional-cpap on order-sign-crd"
+}, {
+  "id" : "healthy-fabrikam-order-select-walker",
+  "file" : "healthy-fabrikam-order-select-walker.json",
+  "description" : "Fabrikam Benefits (synthetic) answering sample order-select-walker on order-select-crd"
+}, {
+  "id" : "healthy-tailspin-order-sign-hospital-bed",
+  "file" : "healthy-tailspin-order-sign-hospital-bed.json",
+  "description" : "Tailspin Health Plan (synthetic) answering sample order-sign-hospital-bed on order-sign"
+}, {
+  "id" : "healthy-tailspin-order-sign-home-oxygen",
+  "file" : "healthy-tailspin-order-sign-home-oxygen.json",
+  "description" : "Tailspin Health Plan (synthetic) answering sample order-sign-home-oxygen on order-sign"
+}, {
+  "id" : "healthy-tailspin-order-sign-conditional-cpap",
+  "file" : "healthy-tailspin-order-sign-conditional-cpap.json",
+  "description" : "Tailspin Health Plan (synthetic) answering sample order-sign-conditional-cpap on order-sign"
+}, {
+  "id" : "healthy-tailspin-order-select-walker",
+  "file" : "healthy-tailspin-order-select-walker.json",
+  "description" : "Tailspin Health Plan (synthetic) answering sample order-select-walker on order-select"
+}, {
+  "id" : "mutant-card-summary-removed",
+  "file" : "mutant-card-summary-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "cards[0].summary removed (CDS Hooks 2.0 Card: summary REQUIRED)"
+}, {
+  "id" : "mutant-card-indicator-removed",
+  "file" : "mutant-card-indicator-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "cards[0].indicator removed (CDS Hooks 2.0 Card: indicator REQUIRED)"
+}, {
+  "id" : "mutant-card-source-label-removed",
+  "file" : "mutant-card-source-label-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "cards[0].source.label removed (CDS Hooks 2.0 Source: label REQUIRED)"
+}, {
+  "id" : "mutant-cards-removed",
+  "file" : "mutant-cards-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "the cards array removed (CDS Hooks 2.0 response: cards REQUIRED, [] when empty)"
+}, {
+  "id" : "mutant-card-source-repeated",
+  "file" : "mutant-card-source-repeated.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "cardinality broken",
+  "description" : "cards[0].source sent as an array of two sources (CDS Hooks 2.0 Card: source is one object)"
+}, {
+  "id" : "mutant-card-indicator-unknown-code",
+  "file" : "mutant-card-indicator-unknown-code.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong code",
+  "description" : "cards[0].indicator is hard-stop (CDS Hooks 2.0: info, warning or critical)"
+}, {
+  "id" : "mutant-card-summary-too-long",
+  "file" : "mutant-card-summary-too-long.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "cardinality broken",
+  "description" : "cards[0].summary is 160 characters (CDS Hooks 2.0: <140 characters)"
+}, {
+  "id" : "mutant-ci-covered-removed",
+  "file" : "mutant-ci-covered-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "the covered sub-extension removed (CRD 2.2.1 ext-coverage-information: covered 1..1)"
+}, {
+  "id" : "mutant-ci-coverage-assertion-id-removed",
+  "file" : "mutant-ci-coverage-assertion-id-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "the coverage-assertion-id sub-extension removed (CRD 2.2.1: coverage-assertion-id 1..1)"
+}, {
+  "id" : "mutant-ci-date-repeated",
+  "file" : "mutant-ci-date-repeated.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "cardinality broken",
+  "description" : "a second date sub-extension added (CRD 2.2.1: date 1..1)"
+}, {
+  "id" : "mutant-ci-covered-unknown-code",
+  "file" : "mutant-ci-covered-unknown-code.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong code",
+  "description" : "covered is yes (CRD 2.2.1: required binding to coverageInfo)"
+}, {
+  "id" : "mutant-ci-reason-wrong-code-system",
+  "file" : "mutant-ci-reason-wrong-code-system.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong code system",
+  "description" : "a reason coding from a code system outside coverageAssertionReasons, with no text (CRD 2.2.1 invariant crd-ci-q7)"
+}, {
+  "id" : "mutant-ci-covered-wrong-value-type",
+  "file" : "mutant-ci-covered-wrong-value-type.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong coverage-information extension structure",
+  "description" : "covered carried as valueString instead of valueCode"
+}, {
+  "id" : "mutant-ci-value-on-complex-extension",
+  "file" : "mutant-ci-value-on-complex-extension.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong coverage-information extension structure",
+  "description" : "a valueString on the complex extension itself (FHIR ext-1: value or extensions, not both)"
+}, {
+  "id" : "mutant-ci-conditional-without-info-needed",
+  "file" : "mutant-ci-conditional-without-info-needed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong coverage-information extension structure",
+  "description" : "covered is conditional with no info-needed (CRD 2.2.1 invariant crd-ci-q3)"
+}, {
+  "id" : "mutant-ci-coverage-not-a-coverage",
+  "file" : "mutant-ci-coverage-not-a-coverage.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong coverage-information extension structure",
+  "description" : "coverage references a Patient (CRD 2.2.1: coverage is Reference(Coverage))"
+}, {
+  "id" : "mutant-ci-date-not-a-date",
+  "file" : "mutant-ci-date-not-a-date.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong coverage-information extension structure",
+  "description" : "date is 2026-13-01 (FHIR date)"
+}, {
+  "id" : "mutant-ci-unknown-sub-extension",
+  "file" : "mutant-ci-unknown-sub-extension.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "unknown extension",
+  "description" : "an unknown relative sub-extension made-up-flag (the profile slices sub-extensions by url)"
+}, {
+  "id" : "mutant-ci-unknown-absolute-extension",
+  "file" : "mutant-ci-unknown-absolute-extension.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "unknown extension",
+  "description" : "an unknown absolute-URL extension inside coverage-information"
+}, {
+  "id" : "mutant-ci-on-coding",
+  "file" : "mutant-ci-on-coding.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong coverage-information extension structure",
+  "description" : "the coverage-information extension moved from the order onto its code's coding (CRD 2.2.1: the extension's context is the order resources)"
+}, {
+  "id" : "mutant-card-selection-behavior-removed",
+  "file" : "mutant-card-selection-behavior-removed.json",
+  "base" : "healthy-fabrikam-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "selectionBehavior removed from a card with suggestions (CDS Hooks 2.0 Card: required when suggestions are present)"
+}, {
+  "id" : "mutant-card-selection-behavior-unknown-code",
+  "file" : "mutant-card-selection-behavior-unknown-code.json",
+  "base" : "healthy-fabrikam-order-sign-hospital-bed",
+  "rule" : "wrong code",
+  "description" : "selectionBehavior is all (CDS Hooks 2.0: at-most-one or any)"
+}, {
+  "id" : "mutant-suggestion-ci-covered-removed",
+  "file" : "mutant-suggestion-ci-covered-removed.json",
+  "base" : "healthy-fabrikam-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "covered removed from coverage-information inside a card suggestion"
+} ]

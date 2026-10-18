@@ -37,5 +37,16 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- The conformance corpus holds the mock payers' own answers to the samples. -->
+    <dependency>
+      <groupId>io.github.dflippojr</groupId>
+      <artifactId>mock-payers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.github.dflippojr</groupId>
+      <artifactId>samples</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

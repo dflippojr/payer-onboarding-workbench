@@ -1,0 +1,69 @@
+{
+  "cards" : [ {
+    "uuid" : "6a5491bc-27f5-339c-9aac-bba2961ee9ae",
+    "summary" : "Fabrikam: E0601 - Not a covered benefit under this plan",
+    "indicator" : "warning",
+    "source" : {
+      "label" : "Fabrikam Benefits (synthetic)",
+      "topic" : {
+        "system" : "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp",
+        "code" : "coverage",
+        "display" : "Coverage"
+      }
+    },
+    "selectionBehavior" : "at-most-one",
+    "suggestions" : [ {
+      "label" : "Save coverage information to the order",
+      "isRecommended" : true,
+      "actions" : [ {
+        "type" : "update",
+        "description" : "Add coverage information to DeviceRequest/devreq-cpap",
+        "resource" : {
+          "resourceType" : "DeviceRequest",
+          "id" : "devreq-cpap",
+          "status" : "draft",
+          "intent" : "original-order",
+          "codeCodeableConcept" : {
+            "coding" : [ {
+              "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+              "code" : "E0601",
+              "display" : "Continuous positive airway pressure (CPAP) device"
+            } ],
+            "text" : "Continuous positive airway pressure (CPAP) device"
+          },
+          "subject" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "encounter" : {
+            "reference" : "Encounter/enc-synthetic-001"
+          },
+          "authoredOn" : "2026-03-02",
+          "requester" : {
+            "reference" : "Practitioner/pract-synthetic-001"
+          },
+          "insurance" : [ {
+            "reference" : "Coverage/cov-synthetic-001"
+          } ],
+          "extension" : [ {
+            "url" : "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+            "extension" : [ {
+              "url" : "coverage",
+              "valueReference" : {
+                "reference" : "Coverage/cov-synthetic-001"
+              }
+            }, {
+              "url" : "covered",
+              "valueCode" : "not-covered"
+            }, {
+              "url" : "date",
+              "valueDate" : "2026-03-02"
+            }, {
+              "url" : "identifier",
+              "valueString" : "FAB-DeviceRequest-devreq-cpap-E0601"
+            } ]
+          } ]
+        }
+      } ]
+    } ]
+  } ]
+}

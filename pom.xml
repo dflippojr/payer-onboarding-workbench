@@ -90,6 +90,15 @@
 
   <build>
     <plugins>
+      <!-- Tests tagged hl7-validator need the pinned HL7 FHIR Validator and its package cache;
+           bash scripts/hl7-validator.sh warm test runs them with -P hl7-validator. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludedGroups>hl7-validator</excludedGroups>
+        </configuration>
+      </plugin>
       <!-- Coverage for SonarCloud; version managed by spring-boot-starter-parent. -->
       <plugin>
         <groupId>org.jacoco</groupId>
@@ -130,4 +139,23 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!-- Only the tests tagged hl7-validator (scripts/hl7-validator.sh test). -->
+    <profile>
+      <id>hl7-validator</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <groups>hl7-validator</groups>
+              <excludedGroups combine.self="override"/>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
