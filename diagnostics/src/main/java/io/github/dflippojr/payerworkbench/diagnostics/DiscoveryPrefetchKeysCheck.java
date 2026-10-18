@@ -6,7 +6,6 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,8 +41,8 @@ public final class DiscoveryPrefetchKeysCheck implements DiagnosticCheck {
         if (services == null || services.isEmpty()) {
             return List.of();
         }
-        List<String> mapped = new ArrayList<>();
-        List<String> unmapped = new ArrayList<>();
+        CappedLines mapped = new CappedLines();
+        CappedLines unmapped = new CappedLines();
         int keyCount = 0;
         for (JsonNode service : services) {
             String serviceId = service.path("id").asText("(no id)");
@@ -74,13 +73,13 @@ public final class DiscoveryPrefetchKeysCheck implements DiagnosticCheck {
         }
         StringBuilder evidence = new StringBuilder();
         if (!mapped.isEmpty()) {
-            evidence.append("mapped to standard keys:\n  ").append(String.join("\n  ", mapped));
+            evidence.append("mapped to standard keys:\n  ").append(mapped.join("\n  "));
         }
         if (!unmapped.isEmpty()) {
             if (!evidence.isEmpty()) {
                 evidence.append('\n');
             }
-            evidence.append("no standard equivalent:\n  ").append(String.join("\n  ", unmapped));
+            evidence.append("no standard equivalent:\n  ").append(unmapped.join("\n  "));
         }
         String fix = "When building the request, put the resource under the payer's key name (CrdPrefetch.builder()"
                 + ".put(\"<payer key>\", resource)) instead of, or as well as, the standard key"

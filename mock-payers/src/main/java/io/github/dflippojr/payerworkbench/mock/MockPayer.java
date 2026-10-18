@@ -16,6 +16,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -84,11 +85,15 @@ public abstract class MockPayer implements AutoCloseable {
             Pattern.compile("\\{\\{context\\.([A-Za-z]+)(?:\\.([A-Za-z]+)\\.id)?}}");
 
     protected final ObjectMapper mapper = new ObjectMapper();
+    /** The payer's clock: the configured one moved by {@link PayerBehaviour#clockOffset()}. */
     protected final Clock clock;
+    private final PayerBehaviour behaviour;
+    private final AccessTokens accessTokens;
     private final FaultSettings faults = new FaultSettings();
     private final FaultAudit audit = new FaultAudit(getClass().getSimpleName());
     private final String configuredPublicBaseUrl;
     private HttpServer server;
+    private DateShiftingRelay relay;
     private TestTls tls;
 
     /** Enables in-memory test TLS before starting the payer. */
@@ -108,8 +113,18 @@ public abstract class MockPayer implements AutoCloseable {
      *     {@code null} for the default.
      */
     protected MockPayer(Clock clock, String publicBaseUrl) {
-        this.clock = Objects.requireNonNull(clock, "clock");
+        this(clock, publicBaseUrl, PayerBehaviour.STANDARD);
+    }
+
+    /**
+     * @param behaviour how this payer varies from the standard behaviour, for its whole lifetime
+     * @see #MockPayer(Clock, String)
+     */
+    protected MockPayer(Clock clock, String publicBaseUrl, PayerBehaviour behaviour) {
+        this.behaviour = Objects.requireNonNull(behaviour, "behaviour");
+        this.clock = Clock.offset(Objects.requireNonNull(clock, "clock"), behaviour.clockOffset());
         this.configuredPublicBaseUrl = publicBaseUrl == null ? null : trimTrailingSlash(publicBaseUrl);
+        this.accessTokens = new AccessTokens(behaviour.accessToken());
         faults.onProgrammaticChange(change -> audit.programmatic(this.clock, change));
     }
 
@@ -137,12 +152,21 @@ public abstract class MockPayer implements AutoCloseable {
         return null;
     }
 
-    /** Starts listening on {@code port} on loopback; {@code 0} picks an ephemeral port. */
+    /**
+     * Starts listening on {@code port} on loopback; {@code 0} picks an ephemeral port. A payer with a
+     * {@linkplain PayerBehaviour#clockOffset() clock offset} listens behind a {@link DateShiftingRelay},
+     * which needs plain HTTP.
+     */
     public synchronized MockPayer start(int port) throws IOException {
         if (server != null) {
             throw new IllegalStateException(displayName() + " is already running on port " + port());
         }
-        InetSocketAddress address = new InetSocketAddress("127.0.0.1", port);
+        boolean shifted = !behaviour.clockOffset().isZero();
+        if (shifted && tls != null) {
+            throw new IllegalStateException("A payer clock offset needs plain HTTP: the Date header is "
+                    + "rewritten by a relay that cannot see inside TLS");
+        }
+        InetSocketAddress address = new InetSocketAddress("127.0.0.1", shifted ? 0 : port);
         HttpServer created;
         if (tls == null) {
             created = HttpServer.create(address, 0);
@@ -156,12 +180,19 @@ public abstract class MockPayer implements AutoCloseable {
         created.createContext("/", this::handle);
         created.start();
         server = created;
+        if (shifted) {
+            relay = new DateShiftingRelay(port, created.getAddress().getPort(), behaviour.clockOffset());
+        }
         return this;
     }
 
     /** Stops the server, abandoning in-flight requests (including ones held by {@code slow-response}). */
     public synchronized void stop() {
         if (server != null) {
+            if (relay != null) {
+                relay.close();
+                relay = null;
+            }
             server.stop(0);
             executor.shutdownNow();
             server = null;
@@ -178,7 +209,7 @@ public abstract class MockPayer implements AutoCloseable {
         if (server == null) {
             throw new IllegalStateException(displayName() + " is not running");
         }
-        return server.getAddress().getPort();
+        return relay != null ? relay.port() : server.getAddress().getPort();
     }
 
     /** Where clients reach this payer, using HTTP or HTTPS as configured. Use as a {@code ConnectionRecord} base URL. */
@@ -189,6 +220,11 @@ public abstract class MockPayer implements AutoCloseable {
     /** The base URL the payer believes it is published at; audience checks are made against this. */
     public String publicBaseUrl() {
         return configuredPublicBaseUrl != null ? configuredPublicBaseUrl : baseUrl();
+    }
+
+    /** How this payer varies from the standard behaviour. */
+    public PayerBehaviour behaviour() {
+        return behaviour;
     }
 
     /** The programmatic fault switchboard; the admin endpoint changes the same settings. */
@@ -248,6 +284,13 @@ public abstract class MockPayer implements AutoCloseable {
         if (path.equals("/admin/faults") || path.startsWith("/admin/faults/")) {
             return admin(request);
         }
+        PayerBehaviour.Redirect redirect = behaviour.redirect();
+        if (path.startsWith(PayerBehaviour.Redirect.MOVED_PREFIX + "/")) {
+            request = request.withPath(path.substring(PayerBehaviour.Redirect.MOVED_PREFIX.length()));
+        } else if (redirect != null && redirect.path().equals(path)) {
+            return Response.json(mapper, redirect.status(), error("moved", "This endpoint moved"))
+                    .withHeader("Location", redirect.location());
+        }
         boolean slowed = faults.isEnabled(Fault.SLOW_RESPONSE) && isHookCall(request);
         if (slowed) {
             pause(faults.slowResponseDelay());
@@ -294,21 +337,37 @@ public abstract class MockPayer implements AutoCloseable {
         }
         ObjectNode root = mapper.createObjectNode();
         ArrayNode list = root.putArray("services");
+        if (behaviour.discovery() == PayerBehaviour.Discovery.EMPTY) {
+            return Response.json(mapper, 200, root);
+        }
         for (ServiceDefinition service : services()) {
             ObjectNode node = list.addObject();
             node.put("hook", service.hook());
             node.put("title", service.title());
             node.put("description", service.description());
             node.put("id", service.id());
-            ObjectNode prefetch = node.putObject("prefetch");
-            service.prefetch().forEach(prefetch::put);
+            if (behaviour.discovery() != PayerBehaviour.Discovery.NO_PREFETCH) {
+                ObjectNode prefetch = node.putObject("prefetch");
+                service.prefetch().forEach(prefetch::put);
+            }
             node.putObject("extension").put(IG_VERSION_EXTENSION, igVersion());
+        }
+        if (behaviour.discovery() == PayerBehaviour.Discovery.EXTRA_UNKNOWN_SERVICES) {
+            // A standard hook CRD does not use, then a custom hook with a field and extension no client knows.
+            list.insert(0, mapper.createObjectNode().put("hook", "patient-view").put("title", "Benefit summary")
+                    .put("description", "Plan benefits for the patient in context.").put("id", "benefit-summary"));
+            ObjectNode custom = list.addObject().put("hook", "com.example.payer-risk-score")
+                    .put("title", "Risk score").put("description", "A payer-specific hook.").put("id", "risk-score")
+                    .put("usageRequirements", "Contracted providers only.").put("x-routing-tier", "gold");
+            custom.putObject("extension").put("com.example.payer.tier", "gold");
         }
         return Response.json(mapper, 200, root);
     }
 
     private Response hook(ServiceDefinition service, Request request) {
-        authenticate(request);
+        if (behaviour.hookAuthentication() == PayerBehaviour.HookAuthentication.ENFORCED) {
+            authenticate(request);
+        }
         if (faults.isEnabled(Fault.RATE_LIMITED_429)) {
             return Response.json(mapper, 429, error("rate_limited", "Too many hook calls; retry after 30 seconds"))
                     .withHeader("Retry-After", "30").withFault(Fault.RATE_LIMITED_429);
@@ -494,6 +553,40 @@ public abstract class MockPayer implements AutoCloseable {
 
     // ---- helpers for subclasses ----
 
+    /** A new access token for {@code clientId}, in the format {@link PayerBehaviour#accessToken()} names. */
+    protected String newAccessToken(String clientId, Instant issuedAt, Instant expiresAt) {
+        return accessTokens.issue(publicBaseUrl(), clientId, issuedAt, expiresAt);
+    }
+
+    /**
+     * The token endpoint's answer to a valid request: RFC 6749 section 5.1 by default, shaped by the
+     * behaviour's token-response fields. With {@link PayerBehaviour#tokenErrorWith200()} no token is issued.
+     */
+    protected Response tokenResponse(String accessToken, long expiresInSeconds, String scope) {
+        ObjectNode body;
+        if (behaviour.tokenErrorWith200()) {
+            body = error("invalid_client", "Client authentication failed");
+        } else {
+            body = mapper.createObjectNode().put("access_token", accessToken).put("token_type", behaviour.tokenType());
+            if (behaviour.expiresInAsString()) {
+                body.put("expires_in", String.valueOf(expiresInSeconds));
+            } else {
+                body.put("expires_in", expiresInSeconds);
+            }
+            if (scope != null) {
+                body.put("scope", scope);
+            }
+            if (behaviour.extraTokenFields()) {
+                body.put("ext_expires_in", expiresInSeconds).put("example_parameter", "example_value");
+                body.putObject("x-payer").put("region", "synthetic");
+            }
+        }
+        return Response.json(mapper, 200, body)
+                .withHeader("Content-Type", behaviour.tokenContentType())
+                .withHeader("Cache-Control", "no-store")
+                .withHeader("Pragma", "no-cache");
+    }
+
     /** The resources in a {@code draftOrders} Bundle. */
     static List<ObjectNode> draftOrders(JsonNode draftOrders) {
         List<ObjectNode> orders = new ArrayList<>();
@@ -620,8 +713,8 @@ public abstract class MockPayer implements AutoCloseable {
 
     private static void send(HttpExchange exchange, Response response) throws IOException {
         byte[] bytes = response.body().getBytes(StandardCharsets.UTF_8);
-        response.headers().forEach((name, value) -> exchange.getResponseHeaders().set(name, value));
         exchange.getResponseHeaders().set("Content-Type", "application/json");
+        response.headers().forEach((name, value) -> exchange.getResponseHeaders().set(name, value));
         exchange.sendResponseHeaders(response.status(), bytes.length == 0 ? -1 : bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
@@ -667,6 +760,10 @@ public abstract class MockPayer implements AutoCloseable {
 
         public String header(String name) {
             return headers.get(name.toLowerCase(Locale.ROOT));
+        }
+
+        Request withPath(String newPath) {
+            return new Request(method, newPath, rawQuery, headers, body);
         }
 
         /** The value after an {@code Authorization: Bearer} prefix, or {@code null}. */

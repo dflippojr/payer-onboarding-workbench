@@ -78,7 +78,7 @@ public final class FabrikamPayer extends MockPayer {
     private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
 
     private FabrikamPayer(Builder builder) {
-        super(builder.clock, builder.publicBaseUrl);
+        super(builder.clock, builder.publicBaseUrl, builder.behaviour);
         this.jwksUrls = Map.copyOf(builder.jwksUrls);
         this.verifier = new RegisteredJwks(jwksUrls, FabrikamPayer::unauthorized);
     }
@@ -226,6 +226,7 @@ public final class FabrikamPayer extends MockPayer {
         private final Map<String, URI> jwksUrls = new LinkedHashMap<>();
         private Clock clock = Clock.systemUTC();
         private String publicBaseUrl;
+        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
 
         private Builder() { }
 
@@ -242,6 +243,12 @@ public final class FabrikamPayer extends MockPayer {
 
         public Builder publicBaseUrl(String publicBaseUrl) {
             this.publicBaseUrl = publicBaseUrl;
+            return this;
+        }
+
+        /** How this payer varies from the standard behaviour; {@link PayerBehaviour#STANDARD} by default. */
+        public Builder behaviour(PayerBehaviour behaviour) {
+            this.behaviour = Objects.requireNonNull(behaviour, "behaviour");
             return this;
         }
 

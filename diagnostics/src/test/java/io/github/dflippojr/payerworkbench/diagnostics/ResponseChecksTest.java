@@ -119,6 +119,17 @@ class ResponseChecksTest {
         }
 
         @Test
+        void manyBadCardsNameTheFirstProblemsAndCountTheRest() {
+            // 200k empty cards would be 600k problem lines; the evidence keeps a few (#162).
+            var run = healthy().hookBody("{\"cards\":[" + "{},".repeat(199_999) + "{}]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().startsWith("cards[0].summary is missing\ncards[0].indicator is missing"), f::evidence);
+            assertEquals(CappedLines.MAX, f.evidence().lines().filter(l -> l.startsWith("cards[")).count(), f::evidence);
+            assertTrue(f.evidence().contains("\nand " + (600_000 - CappedLines.MAX) + " more\n"), f::evidence);
+            assertTrue(f.evidence().length() < 2_000, () -> f.evidence().length() + " characters");
+        }
+
+        @Test
         void missingCardsArrayFails() {
             var run = healthy().hookBody("{\"systemActions\":[]}");
             assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().contains("\"cards\" array"));

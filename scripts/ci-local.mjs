@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The full CI gate on your machine: npm run ci:local. Node 22+, JDK 21 on JAVA_HOME,
-// and bash (Git Bash on Windows). Runs every run: step of .github/workflows/ci.yml in
+// Docker running (crd-reference job), and bash (Git Bash on Windows). Runs every run: step of .github/workflows/ci.yml in
 // the same order through bash, stops at the first failure, still runs the
 // if: always() steps (so the UI instance is stopped), then exits non-zero.
 // scripts/ci-local.test.mjs fails when this list drifts from ci.yml. The hl7-validator
@@ -32,6 +32,18 @@ export const steps = [
   },
   { name: "Check the verify skill's doctor and cleanup", run: 'npm run test:verify' },
   { name: 'Check that npm run ci:local matches this workflow', run: 'node --test scripts/ci-local.test.mjs' },
+  // crd-reference job (needs Docker)
+  {
+    name: 'Start the CRD reference server on loopback (builds the image on a cache miss)',
+    run: 'bash scripts/crd-reference-server.sh start',
+  },
+  { name: 'Install fhir-crd-router at the pinned commit', run: 'bash scripts/install-crd-router.sh' },
+  { name: 'Build the workbench jar (tests run in build)', run: './mvnw -B -pl workbench-app -am package -DskipTests' },
+  {
+    name: 'Reference runs against the CRD reference server',
+    run: 'REFERENCE_SKIP_BUILD=1 node --test scripts/reference-runs.mjs',
+  },
+  { name: 'Stop the CRD reference server even on failure', run: 'bash scripts/crd-reference-server.sh stop', always: true },
   // hl7-validator job
   { name: 'Download the pinned HL7 validator and FHIR packages (no-op when cached)', run: 'bash scripts/hl7-validator.sh warm' },
   { name: 'Install fhir-crd-router at the pinned commit', run: 'bash scripts/install-crd-router.sh' },

@@ -105,6 +105,13 @@ for (const platform of ['linux', 'win32']) {
   });
 }
 
+test('start passes extra application arguments after the port', async () => {
+  const f = await fixture();
+  await f.create('DEMO_SKIP_BUILD').start('app.jar', 'app.log', ['--workbench.custom-endpoints.enabled=true']);
+  assert.deepEqual(Array.from(f.calls.spawns[0][1]),
+    ['-jar', 'app.jar', '--server.port=0', '--workbench.custom-endpoints.enabled=true']);
+});
+
 for (const skip of ['DEMO_SKIP_BUILD', 'EXPORT_SKIP_BUILD']) {
   test(`${skip} skips only for 1 and retains the missing-jar message`, async () => {
     const f = await fixture({ env: { [skip]: '1' }, jars: [] });

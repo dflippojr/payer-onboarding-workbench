@@ -6,6 +6,8 @@ import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
+import io.github.dflippojr.payerworkbench.core.StepResult;
+import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
@@ -36,6 +38,11 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -68,6 +75,9 @@ class CustomEndpointTest {
 
     @Autowired
     OnboardingRunner runner;
+
+    @Autowired
+    RunStore runs;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newHttpClient();
@@ -311,6 +321,135 @@ class CustomEndpointTest {
     }
 
     @Test
+    void longListsShowTheFirstEntriesAndCountTheRest() throws Exception {
+        // Under the JSON value limit, 150 services and 150 cards still make 100 views each (#162).
+        StringBuilder services = new StringBuilder("{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\"}");
+        for (int i = 1; i < 150; i++) {
+            services.append(",{\"hook\":\"patient-view\",\"id\":\"pv-").append(i).append("\"}");
+        }
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/long/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, exchange.getRequestMethod().equals("GET") ? services + "]}"
+                    : "{\"cards\":[" + "{},".repeat(149) + "{}]}");
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/long",
+                AuthType.NONE, null, null, null));
+
+        StepResult discovery = run.steps().get(1);
+        assertEquals("Found 150 services; order-sign is served by crd-order-sign", discovery.summary());
+        assertEquals(OnboardingRunner.MAX_VIEWS, ((List<?>) discovery.details().get("services")).size());
+        assertEquals(50, discovery.details().get("servicesNotShown"));
+        StepResult parse = run.steps().get(4);
+        assertEquals("Parsed 150 cards, but card 1 lacks summary, indicator, source.label; card 2 lacks summary, "
+                + "indicator, source.label; card 3 lacks summary, indicator, source.label; card 4 lacks summary, "
+                + "indicator, source.label; card 5 lacks summary, indicator, source.label; and 145 more cards lack "
+                + "fields", parse.summary());
+        assertEquals(OnboardingRunner.MAX_VIEWS, ((List<?>) parse.details().get("cards")).size());
+        assertEquals(50, parse.details().get("cardsNotShown"));
+        assertTrue(run.findings().stream().noneMatch(f -> f.checkId().equals(OnboardingRunner.TOO_MANY_CARDS_CHECK)));
+    }
+
+    @Test
+    void longPayerStringsAreCutSoOneResponseMakesASmallRun() throws Exception {
+        // A few huge strings stay under both response limits, but must not make a run of megabytes (#162).
+        String keys = java.util.stream.IntStream.range(0, 50)
+                .mapToObj(i -> "\"key" + i + "-" + "k".repeat(10_000) + "\":\"Patient/{{context.patientId}}\"")
+                .collect(java.util.stream.Collectors.joining(","));
+        String services = "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\",\"prefetch\":{"
+                + keys + "}},{\"hook\":\"" + "h".repeat(500_000) + "\",\"id\":\"" + "i".repeat(500_000) + "\"}]}";
+        String card = "{\"summary\":\"" + "s".repeat(400_000) + "\",\"indicator\":\"" + "w".repeat(20_000)
+                + "\",\"source\":{\"label\":\"" + "l".repeat(20_000) + "\"}}";
+        String cards = "{\"cards\":[" + String.join(",", java.util.Collections.nCopies(8, card)) + "]}";
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/huge/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, exchange.getRequestMethod().equals("GET") ? services : cards);
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/huge",
+                AuthType.NONE, null, null, null));
+
+        String cut = "s".repeat(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS) + "\u2026";
+        List<?> views = (List<?>) run.steps().get(4).details().get("cards");
+        assertEquals(8, views.size());
+        assertEquals(cut, ((Map<?, ?>) views.getFirst()).get("summary"));
+        Map<?, ?> selected = (Map<?, ?>) ((List<?>) run.steps().get(1).details().get("services")).get(0);
+        assertEquals(OnboardingRunner.MAX_LIST_ENTRIES, ((List<?>) selected.get("prefetchKeys")).size());
+        assertEquals(30, selected.get("prefetchKeysNotShown"));
+        Map<?, ?> other = (Map<?, ?>) ((List<?>) run.steps().get(1).details().get("services")).get(1);
+        assertEquals(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS + 1, ((String) other.get("id")).length());
+        assertEquals(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS + 1, ((String) other.get("hook")).length());
+        runs.save(run);
+        long size = RunStore.sizeOf(runs.find(run.runId()).orElseThrow());
+        assertTrue(size < 256 * 1024, "the stored run is " + size + " bytes");
+
+        // The token step's strings too: a huge token_type, a scope of a million words, and a huge error.
+        String token = "{\"access_token\":\"t\",\"expires_in\":300,\"token_type\":\"Bearer" + "x".repeat(1_000_000)
+                + "\",\"scope\":\"system/*.read " + "a ".repeat(1_000_000) + "\"}";
+        String error = "{\"error\":\"" + "e".repeat(1_000_000) + "\",\"error_description\":\""
+                + "d".repeat(1_000_000) + "\"}";
+        server.createContext("/huge/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, token);
+        });
+        server.createContext("/huge/token-error", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] bytes = error.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(400, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/huge";
+        for (String endpoint : List.of(base + "/token", base + "/token-error")) {
+            OnboardingRun oauth = runner.run(custom(base, AuthType.OAUTH2_CLIENT_CREDENTIALS, endpoint, null, secret()));
+            StepResult auth = oauth.steps().get(2);
+            assertTrue(auth.summary().length() < 4 * io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS,
+                    () -> auth.summary().length() + " characters");
+            runs.save(oauth);
+            long oauthSize = RunStore.sizeOf(runs.find(oauth.runId()).orElseThrow());
+            // Discovery, token and hook exchanges keep a 64 Ki body each; uncut, this run was 8.5 MB.
+            assertTrue(oauthSize < 512 * 1024, endpoint + ": the stored run is " + oauthSize + " bytes");
+        }
+        OnboardingRun granted = runner.run(custom(base, AuthType.OAUTH2_CLIENT_CREDENTIALS, base + "/token", null,
+                secret()));
+        assertTrue(granted.steps().get(2).ok(), granted.steps().get(2).summary());
+        Map<?, ?> tokenView = (Map<?, ?>) granted.steps().get(2).details().get("token");
+        assertEquals("Bearer" + "x".repeat(io.github.dflippojr.payerworkbench.core.TextLimit.MAX_CHARS - 6) + "…",
+                tokenView.get("tokenType"));
+        String evidence = granted.findings().stream().filter(f -> f.checkId().equals("auth.token")).findFirst()
+                .orElseThrow().evidence();
+        assertTrue(evidence.contains(", scope=system/*.read" + " a".repeat(TokenResponseMetadata.MAX_SCOPES - 1)
+                + " and " + (1_000_000 - TokenResponseMetadata.MAX_SCOPES + 1) + " more not shown"), evidence);
+    }
+
+    @Test
+    void aServiceIdTooLongForAUrlFailsDiscovery() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/long-id/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + "a".repeat(5000) + "\"}]}");
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/long-id",
+                AuthType.NONE, null, null, null));
+
+        StepResult discovery = run.steps().get(1);
+        assertFalse(discovery.ok());
+        assertEquals("The payer advertises a service id of 5000 characters for order-sign, longer than the 1024 "
+                + "the workbench puts in a URL", discovery.summary());
+        assertEquals("skipped", run.steps().get(2).details().get("status"));
+    }
+
+    @Test
     void healthyNoAuthEndpointPasses() throws Exception {
         // A CDS Hooks server that serves discovery and one hook without asking for credentials.
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -407,6 +546,205 @@ class CustomEndpointTest {
             assertFalse(surface.contains("some-user"), "access-token claims leaked");
             assertFalse(surface.contains(accessToken.split("\\.")[1]), "access token leaked");
         }
+    }
+
+    @Test
+    void payerEchoedCredentialsAreMaskedOnEverySurface() throws Exception {
+        // A debug server that echoes credentials into a 401 body: a Basic pair that is all letters in
+        // base64 ("user:pass"), a colon-split bearer token, numeric secrets and a private_key field.
+        String base = startEchoServer(401, """
+                {"error":"unauthorized","access_token":918273645,"echo":{"private_key":"MIIEvSyntheticOnly123"},\
+                "debug":"Authorization: Basic dXNlcjpwYXNz\\nBearer abc123:SECRETPART\\n{\\"client_secret\\":918273646}"}""");
+        String body = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint",
+                Map.of("baseUrl", base, "authType", "NONE", "igVersion", igVersion)));
+
+        HttpResponse<String> posted = send("POST", "/api/runs", body);
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        var run = mapper.readTree(posted.body());
+        assertEquals("Hook call to crd-order-sign returned HTTP 401", run.path("steps").get(3).path("summary").asText());
+        String recorded = run.path("steps").get(3).path("details").path("exchanges").get(0).path("responseBody").asText();
+        assertTrue(recorded.contains("Basic [REDACTED]") && recorded.contains("\"access_token\":\"[REDACTED]\""), recorded);
+        String runId = run.path("runId").asText();
+        List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body()));
+        for (String format : List.of("md", "html", "json")) {
+            HttpResponse<String> report = send("GET", "/api/runs/" + runId + "/report?format=" + format, null);
+            assertEquals(200, report.statusCode());
+            surfaces.add(report.body());
+        }
+        for (String surface : surfaces) {
+            for (String secret : List.of("dXNlcjpwYXNz", "SECRETPART", "918273645", "918273646", "MIIEvSyntheticOnly123")) {
+                assertFalse(surface.contains(secret), secret + " leaked");
+            }
+        }
+    }
+
+    @Test
+    void aRunPastTheConcurrencyLimitIsRefusedWith503() throws Exception {
+        // Every permitted custom run waits in its hook call, so one more is refused instead of queued.
+        int limit = WorkbenchProperties.DEFAULT_MAX_CONCURRENT_RUNS;
+        CountDownLatch inHook = new CountDownLatch(limit);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService payerThreads = Executors.newCachedThreadPool();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(payerThreads);
+        open.add(payerThreads::shutdownNow);
+        open.add(() -> server.stop(0));
+        server.createContext("/held/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""");
+                return;
+            }
+            exchange.getRequestBody().readAllBytes();
+            inHook.countDown();
+            try {
+                release.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            respond(exchange, "{\"cards\":[]}");
+        });
+        server.start();
+        String run = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", Map.of("baseUrl",
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/held", "authType", "NONE", "igVersion", igVersion)));
+        ExecutorService callers = Executors.newFixedThreadPool(limit);
+        try {
+            List<Future<HttpResponse<String>>> held = new ArrayList<>();
+            for (int i = 0; i < limit; i++) {
+                held.add(callers.submit(() -> send("POST", "/api/runs", run)));
+            }
+            assertTrue(inHook.await(30, TimeUnit.SECONDS), "every permitted run reached its hook call");
+
+            HttpResponse<String> refused = send("POST", "/api/runs", run);
+
+            assertEquals(503, refused.statusCode(), refused.body());
+            assertEquals("5", refused.headers().firstValue("Retry-After").orElse(null));
+            assertEquals(limit + " custom-endpoint runs are already in progress (workbench.max-concurrent-runs); "
+                    + "try again when one finishes", mapper.readTree(refused.body()).path("detail").asText());
+            release.countDown();
+            for (Future<HttpResponse<String>> answer : held) {
+                assertEquals(200, answer.get(30, TimeUnit.SECONDS).statusCode());
+            }
+            assertEquals(200, send("POST", "/api/runs", run).statusCode(), "the finished runs gave their permits back");
+        } finally {
+            release.countDown();
+            callers.shutdownNow();
+        }
+    }
+
+    @Test
+    void secretCutInsideAnEscapeByTheJsonValueLimitIsMaskedOnEverySurface() throws Exception {
+        // The kept 8 Ki prefix of a body with too many JSON values ends in the first half of an escaped
+        // backslash inside an echoed access token.
+        String start = "{\"access_token\":\"FAKE-CREDENTIAL-123456";
+        String hookBody = start + "x".repeat(ResponseTooLargeException.JSON_VALUES_PREFIX_CHARS - 1 - start.length())
+                + "\\\\\",\"cards\":[" + "{},".repeat(100_000) + "{}]}";
+        String base = startEchoServer(200, hookBody);
+
+        HttpResponse<String> posted = send("POST", "/api/runs", mapper.writeValueAsString(Map.of("sampleId", SAMPLE,
+                "customEndpoint", Map.of("baseUrl", base, "authType", "NONE", "igVersion", igVersion))));
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        var run = mapper.readTree(posted.body());
+        String recorded = run.path("steps").get(3).path("details").path("exchanges").get(0).path("responseBody").asText();
+        assertEquals("{\"access_token\":\"[REDACTED]\"\n[not parsed: more than "
+                + WorkbenchProperties.DEFAULT_MAX_RESPONSE_JSON_VALUES + " JSON values; kept the first "
+                + ResponseTooLargeException.JSON_VALUES_PREFIX_CHARS + " characters]", recorded);
+        String runId = run.path("runId").asText();
+        List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body()));
+        for (String format : List.of("md", "html", "json")) {
+            HttpResponse<String> report = send("GET", "/api/runs/" + runId + "/report?format=" + format, null);
+            assertEquals(200, report.statusCode());
+            surfaces.add(report.body());
+        }
+        for (String surface : surfaces) {
+            assertFalse(surface.contains("FAKE-CREDENTIAL"), "the access token leaked");
+        }
+    }
+
+    @Test
+    void oversizedHookBodyIsCutAtTheLimitAndNamed() throws Exception {
+        long limit = WorkbenchProperties.DEFAULT_MAX_RESPONSE_BYTES;
+        long recordedLength = limit + 1 + "[truncated at 4194304 bytes]".length();
+        String note = "\n[kept the first " + ExchangeView.BODY_LIMIT_CHARS + " of " + recordedLength + " characters]";
+        // 64 MiB, streamed in chunks so the test payer never holds it in memory either.
+        String base = startEchoServer(200, null);
+
+        for (int i = 0; i < 3; i++) {
+            HttpResponse<String> posted = send("POST", "/api/runs", mapper.writeValueAsString(Map.of("sampleId", SAMPLE,
+                    "customEndpoint", Map.of("baseUrl", base, "authType", "NONE", "igVersion", igVersion))));
+
+            assertEquals(200, posted.statusCode());
+            assertTrue(posted.body().length() < 2 * limit, "POST response is " + posted.body().length() + " chars");
+            var run = mapper.readTree(posted.body());
+            var hook = run.path("steps").get(3);
+            assertFalse(hook.path("ok").asBoolean());
+            assertEquals("Hook call to crd-order-sign got HTTP 200, but the response exceeded the 4 MiB limit, "
+                    + "so the workbench stopped reading it", hook.path("summary").asText());
+            var exchange = hook.path("details").path("exchanges").get(0);
+            assertEquals(200, exchange.path("status").asInt(), exchange.toString().substring(0, 300));
+            String recorded = exchange.path("responseBody").asText();
+            assertTrue(recorded.startsWith("{\"cards\":[],\"padding\":\"aaaa"), recorded.substring(0, 40));
+            // The run keeps a prefix of what was read, so max-runs such runs stay small (#162).
+            assertTrue(recorded.endsWith(note), recorded.substring(recorded.length() - 60));
+            assertEquals(ExchangeView.BODY_LIMIT_CHARS + note.length(), recorded.length());
+            assertTrue(RunStore.sizeOf(runs.find(run.path("runId").asText()).orElseThrow()) < 2 * ExchangeView.BODY_LIMIT_CHARS);
+            assertTrue(exchange.path("transportError").asText().contains("exceeded the 4 MiB limit"),
+                    exchange.path("transportError").asText());
+            var finding = java.util.stream.StreamSupport.stream(run.path("findings").spliterator(), false)
+                    .filter(f -> f.path("checkId").asText().equals(OnboardingRunner.RESPONSE_TOO_LARGE_CHECK))
+                    .findFirst().orElseThrow();
+            assertEquals("FAIL", finding.path("severity").asText());
+            assertTrue(finding.path("title").asText().contains("4 MiB"), finding.toString());
+            assertFalse(posted.body().contains("OutOfMemoryError"));
+            assertFalse(posted.body().contains("got no response"));
+        }
+        OnboardingRun healthy = runner.run(new RunRequest(SyntheticPayers.FABRIKAM_ID, Environment.SANDBOX, SAMPLE,
+                List.of(), null, null));
+        assertTrue(healthy.steps().stream().allMatch(s -> s.ok()), "every step passes: " + healthy.steps());
+        assertTrue(healthy.findings().stream().noneMatch(f -> f.severity() == io.github.dflippojr.payerworkbench.core.Severity.FAIL),
+                healthy.findings()::toString);
+    }
+
+    /**
+     * A no-auth CDS Hooks server whose hook call answers {@code status} with {@code hookBody}, or
+     * with a 64 MiB body when {@code hookBody} is null. Returns its base URL.
+     */
+    private String startEchoServer(int status, String hookBody) throws java.io.IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/echo/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""");
+                return;
+            }
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            if (hookBody != null) {
+                byte[] bytes = hookBody.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(status, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+                return;
+            }
+            byte[] chunk = "a".repeat(64 * 1024).getBytes(StandardCharsets.US_ASCII);
+            exchange.sendResponseHeaders(status, 0);
+            try (var out = exchange.getResponseBody()) {
+                out.write("{\"cards\":[],\"padding\":\"".getBytes(StandardCharsets.US_ASCII));
+                for (int i = 0; i < 1024; i++) {
+                    out.write(chunk);
+                }
+                out.write("\"}".getBytes(StandardCharsets.US_ASCII));
+            } catch (java.io.IOException e) {
+                // The workbench stopped reading at its limit and closed the connection.
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        return "http://127.0.0.1:" + server.getAddress().getPort() + "/echo";
     }
 
     private static void respond(com.sun.net.httpserver.HttpExchange exchange, String body) throws java.io.IOException {

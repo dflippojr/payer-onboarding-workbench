@@ -6,7 +6,6 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -38,9 +37,9 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
 
     @Override
     public List<Finding> evaluate(RunObservations obs) {
-        List<String> inSystemActions = new ArrayList<>();
-        List<String> inSuggestions = new ArrayList<>();
-        List<String> misplaced = new ArrayList<>();
+        CappedLines inSystemActions = new CappedLines();
+        CappedLines inSuggestions = new CappedLines();
+        CappedLines misplaced = new CappedLines();
         for (HookResponse hook : obs.hookResponses()) {
             if (!Support.isSuccess(hook.exchange().status())) {
                 continue;
@@ -76,9 +75,9 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
                             + "the action resource's own extension list on an order, appointment or encounter as the "
                             + "CRD 2.2.1 extension's context requires. The router's library and EHRs read it only "
                             + "there, so this determination is lost.",
-                    "misplaced: " + String.join(", ", misplaced)
-                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + String.join(", ", inSystemActions))
-                            + (inSuggestions.isEmpty() ? "" : "\nfound in suggestions: " + String.join(", ", inSuggestions)),
+                    "misplaced: " + misplaced.join(", ")
+                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + inSystemActions.join(", "))
+                            + (inSuggestions.isEmpty() ? "" : "\nfound in suggestions: " + inSuggestions.join(", ")),
                     "Ask the payer to put the extension in the extension list of the order resource it returns, "
                             + "not on an element inside it or on another resource type."));
         }
@@ -89,15 +88,15 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
                             + "the clinician must accept, rather than as a systemAction the EHR applies "
                             + "automatically as CRD 2.x expects. The router's library reads both places, but EHRs "
                             + "and other clients that only read systemActions will miss it.",
-                    "found in suggestions: " + String.join(", ", inSuggestions)
-                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + String.join(", ", inSystemActions)),
+                    "found in suggestions: " + inSuggestions.join(", ")
+                            + (inSystemActions.isEmpty() ? "" : "\nfound in systemActions: " + inSystemActions.join(", ")),
                     "No change is needed for this library. If other clients will consume this payer, ask the payer "
                             + "to also send coverage information as an update systemAction on the order."));
         }
         if (!inSystemActions.isEmpty()) {
             return List.of(new Finding(CHECK_ID, Severity.PASS, "Coverage information delivered in systemActions",
                     "The payer returns coverage information as systemActions, the location CRD 2.x specifies.",
-                    "found in systemActions: " + String.join(", ", inSystemActions), null));
+                    "found in systemActions: " + inSystemActions.join(", "), null));
         }
         return List.of();
     }
@@ -107,7 +106,7 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
      * {@code extension} list, on a resource type in the extension's context. Every other
      * coverage-information extension under it is added to {@code misplaced}.
      */
-    private static boolean classify(JsonNode resource, String path, List<String> misplaced) {
+    private static boolean classify(JsonNode resource, String path, CappedLines misplaced) {
         boolean placed = false;
         boolean allowed = CONTEXT.contains(resource.path("resourceType").asText());
         String owner = path + ".resource";
@@ -133,7 +132,7 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
     }
 
     /** Adds every coverage-information extension at or under {@code node}. */
-    private static void collectMisplaced(JsonNode node, String path, List<String> misplaced) {
+    private static void collectMisplaced(JsonNode node, String path, CappedLines misplaced) {
         if (isCoverageInfo(node)) {
             misplaced.add(path);
         } else if (node.isObject()) {

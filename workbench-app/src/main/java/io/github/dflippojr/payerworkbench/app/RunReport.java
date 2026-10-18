@@ -14,7 +14,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * A shareable diagnostic report of one {@link OnboardingRun}, the model behind every
@@ -87,11 +86,6 @@ public record RunReport(
             Map<String, Object> details
     ) {
     }
-
-    /** Field names (lower case, without {@code _} and {@code -}) whose values are always masked. */
-    private static final Set<String> SECRET_FIELDS = Set.of(
-            "clientsecret", "accesstoken", "refreshtoken", "idtoken", "password", "apikey", "privatekey",
-            "secret", "clientassertion", "assertion");
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
@@ -183,8 +177,7 @@ public record RunReport(
     }
 
     private static boolean isSecretField(String key) {
-        String normalized = key.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "");
-        return SECRET_FIELDS.contains(normalized) || Redactor.isSensitiveHeader(key);
+        return Redactor.isSecretField(key) || Redactor.isSensitiveHeader(key);
     }
 
     /** Keeps the scheme of an {@code Authorization}-style value so the report still says which was sent. */

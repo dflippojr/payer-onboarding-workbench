@@ -37,7 +37,8 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                     + ", access_token present=" + token.accessTokenPresent()
                     + ", token_type=" + token.tokenType()
                     + ", expires_in=" + token.expiresInSeconds()
-                    + ", scope=" + String.join(" ", token.scopes());
+                    + ", scope=" + String.join(" ", token.scopes())
+                    + (token.scopesNotShown() == 0 ? "" : " and " + token.scopesNotShown() + " more not shown");
         }
         if (exchange.isPresent() && !exchange.get().responded()) {
             return List.of(new Finding(CHECK_ID, Severity.FAIL, "Token endpoint unreachable",

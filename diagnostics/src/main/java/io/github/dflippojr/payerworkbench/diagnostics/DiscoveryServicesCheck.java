@@ -6,7 +6,6 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -60,13 +59,13 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
             return List.of();
         }
         Set<String> advertised = new TreeSet<>();
-        List<String> lines = new ArrayList<>();
+        CappedLines lines = new CappedLines();
         for (JsonNode service : services) {
             String hook = service.path("hook").asText("");
             advertised.add(hook);
             lines.add(service.path("id").asText("(no id)") + " -> " + (hook.isEmpty() ? "(no hook)" : hook));
         }
-        String evidence = "advertised services: " + (lines.isEmpty() ? "none" : String.join(", ", lines));
+        String evidence = "advertised services: " + (lines.isEmpty() ? "none" : lines.join(", "));
 
         Set<String> crd = new TreeSet<>(advertised);
         crd.retainAll(CRD_HOOKS);
