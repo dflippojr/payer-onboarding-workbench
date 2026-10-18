@@ -79,11 +79,24 @@ jobs:
         if: steps.tip.outputs.skip != 'true'
         id: order
         run: |
-          published=$(gh release download "$TAG" --pattern manifest.json --output - 2>/dev/null | jq -r '.gitCommit // empty' || true)
-          if [[ -n "$published" ]] && git cat-file -e "$published^{commit}" 2>/dev/null \
-            && ! git merge-base --is-ancestor "$published" "$SHA"; then
-            echo "The published bundle ($published) is newer than $SHA; leaving it."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          # Only an explicit 404 permits the first publish. API/transport failures must
+          # not turn an unknown published version into permission to overwrite it.
+          if release=$(gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$TAG"); then
+            published=$(gh release download "$TAG" --pattern manifest.json --output - | jq -er '.gitCommit | strings')
+            if [[ ! "$published" =~ ^([0-9a-f]{12}|[0-9a-f]{40})$ ]] \
+              || ! git cat-file -e "$published^{commit}"; then
+              echo "Cannot establish the published bundle's commit; refusing to publish." >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$published" "$SHA"; then
+              echo "The published bundle ($published) is newer than $SHA; leaving it."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "$release" =~ ^HTTP/[0-9.]+[[:space:]]+404([[:space:]]|$) ]]; then
+            echo "No published release exists yet; creating the first bundle."
+          else
+            echo "Cannot determine whether the published release exists; refusing to publish." >&2
+            exit 1
           fi
       - name: Publish to the replay-bundle pre-release
         if: steps.tip.outputs.skip != 'true' && steps.order.outputs.skip != 'true'

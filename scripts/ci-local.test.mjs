@@ -75,19 +75,41 @@ function publishingHistory(t, mainAt = 'c') {
   const other = commit('not on main');
   git('branch', '-f', 'main', mainAt === 'b' ? b : c);
   git('checkout', 'main');
-  function guard(step, sha, published) {
+  function guard(step, sha, published, scenario = {}) {
     const output = join(dir, 'output').replaceAll('\\', '/');
     writeFileSync(output, '');
     const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
-      'gh() { printf \'{"gitCommit":"%s"}\\n\' "$PUBLISHED_COMMIT"; }\n' + step.run], {
+      `gh() {
+        if [[ "$1" == api ]]; then
+          case "$RELEASE_STATE" in
+            absent) printf 'HTTP/2.0 404 Not Found\\n'; return 1 ;;
+            forbidden) printf 'HTTP/2.0 403 Forbidden\\n'; return 1 ;;
+            server-error) printf 'HTTP/2.0 500 Internal Server Error\\n'; return 1 ;;
+            transport-error) echo 'connection failed' >&2; return 1 ;;
+            *) printf 'HTTP/2.0 200 OK\\n'; return 0 ;;
+          esac
+        fi
+        if [[ "$1 $2" == "release download" ]]; then
+          case "$MANIFEST_STATE" in
+            download-error) echo 'download failed' >&2; return 1 ;;
+            truncated) printf '{"gitCommit":"%s"}' "$PUBLISHED_COMMIT"; return 23 ;;
+            invalid-json) printf 'not JSON'; return 0 ;;
+            missing-commit) printf '{}'; return 0 ;;
+            *) printf '{"gitCommit":"%s"}\\n' "$PUBLISHED_COMMIT"; return 0 ;;
+          esac
+        fi
+        echo 'unexpected gh command' >&2; return 99
+      }\n` + step.run], {
       cwd: dir, encoding: 'utf8',
-      env: { ...process.env, SHA: sha, TAG: 'replay-bundle', PUBLISHED_COMMIT: published, GITHUB_OUTPUT: output },
+      env: { ...process.env, SHA: sha, TAG: 'replay-bundle', PUBLISHED_COMMIT: published, GITHUB_OUTPUT: output,
+        RELEASE_STATE: scenario.release ?? 'present', MANIFEST_STATE: scenario.manifest ?? 'valid' },
     });
-    assert.equal(result.status, 0, result.stderr || result.error?.message);
-    return readFileSync(output, 'utf8').includes('skip=true');
+    return { ...result, skip: readFileSync(output, 'utf8').includes('skip=true') };
   }
-  return { previous, a, b, c, other, accepts: (sha, published) =>
-    !guard(eligibility, sha, published) && !guard(ordering, sha, published) };
+  const permits = result => result.status === 0 && !result.skip;
+  return { previous, a, b, c, other,
+    order: (sha, published, scenario) => guard(ordering, sha, published, scenario),
+    accepts: (sha, published) => permits(guard(eligibility, sha, published)) && permits(guard(ordering, sha, published)) };
 }
 
 test('publisher accepts successful A when main has advanced to a failing B', t => {
@@ -111,6 +133,37 @@ test('publisher skips an older completion after a newer bundle has published', t
 test('publisher rejects a successful commit outside trusted main history', t => {
   const history = publishingHistory(t);
   assert.equal(history.accepts(history.other, history.previous), false);
+});
+
+test('publisher fails closed when an existing newer manifest cannot be downloaded', t => {
+  const history = publishingHistory(t);
+  for (const manifest of ['download-error', 'truncated']) {
+    const result = history.order(history.a, history.b.slice(0, 12), { manifest });
+    assert.notEqual(result.status, 0, manifest + ': must fail, not authorize publishing');
+  }
+});
+
+test('publisher fails closed on invalid or unresolvable published metadata', t => {
+  const history = publishingHistory(t);
+  for (const [manifest, published] of [
+    ['invalid-json', history.b], ['missing-commit', history.b], ['valid', ''],
+    ['valid', history.b.slice(0, 12) + '-dirty'], ['valid', 'HEAD'],
+    ['valid', '0'.repeat(12)],
+  ]) {
+    const result = history.order(history.a, published, { manifest });
+    assert.notEqual(result.status, 0, manifest + '/' + published + ': must fail closed');
+  }
+});
+
+test('publisher only bootstraps a release after an explicit not-found response', t => {
+  const history = publishingHistory(t);
+  const absent = history.order(history.a, '', { release: 'absent', manifest: 'download-error' });
+  assert.equal(absent.status, 0, absent.stderr);
+  assert.equal(absent.skip, false);
+  for (const release of ['forbidden', 'server-error', 'transport-error']) {
+    const result = history.order(history.a, history.b.slice(0, 12), { release });
+    assert.notEqual(result.status, 0, release + ': must fail closed');
+  }
 });
 
 test('every run: step in ci.yml has the matching ci:local step, in order', () => {
