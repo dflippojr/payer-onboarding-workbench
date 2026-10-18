@@ -120,10 +120,12 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         } else if (!source.path("label").isTextual() || source.path("label").asText().isBlank()) {
             problems.add(path + ".source.label is missing");
         }
-        JsonNode behavior = card.get("selectionBehavior");
-        if (behavior != null && !SELECTION_BEHAVIORS.contains(behavior.asText())) {
+        // A JSON null is an absent value: the CRD reference server writes every unset field as null.
+        JsonNode behavior = card.path("selectionBehavior");
+        boolean absent = behavior.isMissingNode() || behavior.isNull();
+        if (!absent && !SELECTION_BEHAVIORS.contains(behavior.asText())) {
             problems.add(path + ".selectionBehavior is \"" + behavior.asText() + "\" (must be at-most-one or any)");
-        } else if (behavior == null && card.path("suggestions").isArray() && !card.path("suggestions").isEmpty()) {
+        } else if (absent && card.path("suggestions").isArray() && !card.path("suggestions").isEmpty()) {
             problems.add(path + ".selectionBehavior is missing (required when the card has suggestions)");
         }
     }

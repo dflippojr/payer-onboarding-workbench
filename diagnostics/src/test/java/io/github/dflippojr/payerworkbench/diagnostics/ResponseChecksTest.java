@@ -161,6 +161,20 @@ class ResponseChecksTest {
         }
 
         @Test
+        void nullSelectionBehaviorIsAbsent() {
+            // The CRD reference server writes every unset field as JSON null.
+            var run = healthy().hookBody("""
+                    {"cards":[{"summary":"a","indicator":"info","source":{"label":"P","icon":null},
+                      "suggestions":null,"selectionBehavior":null,"links":null}],"systemActions":[]}""");
+            assertOnly(check.evaluate(run.build()), Severity.PASS);
+            run.hookBody("""
+                    {"cards":[{"summary":"a","indicator":"info","source":{"label":"P"},
+                      "suggestions":[{"label":"Save"}],"selectionBehavior":null}]}""");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("cards[0].selectionBehavior is missing"), f::evidence);
+        }
+
+        @Test
         void errorStatusFails() {
             var run = healthy();
             run.hooks = new ArrayList<>(List.of(orderSign(hook(500, "{\"error\":\"internal\"}", 300))));
