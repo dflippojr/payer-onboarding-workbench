@@ -1,0 +1,84 @@
+name: Publish replay bundle
+
+# Publishes the replay bundle (site-dist/) that a green ci run on a main push exported, as
+# assets of the rolling replay-bundle pre-release: replay-bundle.tar.gz and its manifest.json.
+# node scripts/vendor-into-site.mjs --check compares a website's copy with this manifest, and
+# --from-release vendors the archive. workflow_run runs this file as it is on main, so pull
+# requests can't change it, and it only ever sees runs ci made for main pushes.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One publish at a time, oldest first, so a slow older run can't land after a newer one; the
+# ancestry check below also skips a bundle older than the one already published.
+concurrency:
+  group: publish-replay-bundle
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      # contents: write for the release and its tag; actions: read for the ci run's artifact.
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      TAG: replay-bundle
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Download the bundle the ci run exported
+        uses: actions/download-artifact@v7
+        with:
+          name: site-dist
+          path: site-dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Check the bundle came from this clean main commit
+        run: |
+          commit=$(jq -r .gitCommit site-dist/manifest.json)
+          echo "manifest gitCommit: $commit, run head: $SHA"
+          [[ "$commit" =~ ^[0-9a-f]{12}$ && "$SHA" == "$commit"* ]]
+      # The same checks ci ran, on these exact files, before anything is uploaded.
+      - name: Check the leak scanner against the shared redaction corpus
+        run: node --test replay/test/leaks.test.mjs
+      - name: Check the replay bundle (leak scan, manifest and rendering)
+        run: node --test replay/test/bundle.test.mjs
+      - name: Skip a bundle older than the published one
+        id: order
+        run: |
+          published=$(gh release download "$TAG" --pattern manifest.json --output - 2>/dev/null | jq -r '.gitCommit // empty' || true)
+          if [[ -n "$published" ]] && git cat-file -e "$published^{commit}" 2>/dev/null \
+            && ! git merge-base --is-ancestor "$published" "$SHA"; then
+            echo "The published bundle ($published) is newer than $SHA; leaving it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to the replay-bundle pre-release
+        if: steps.order.outputs.skip != 'true'
+        run: |
+          tar -czf replay-bundle.tar.gz -C site-dist .
+          cp site-dist/manifest.json manifest.json
+          notes="Replay bundle exported from main at $SHA by ci run ${{ github.event.workflow_run.html_url }}. Replaced after every green ci run on main. Vendor it with: node scripts/vendor-into-site.mjs --from-release <site>/public/workbench"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" -f sha="$SHA" -F force=true > /dev/null
+            gh release edit "$TAG" --prerelease --title "Replay bundle (main ${SHA:0:12})" --notes "$notes"
+            gh release upload "$TAG" replay-bundle.tar.gz manifest.json --clobber
+          else
+            gh release create "$TAG" replay-bundle.tar.gz manifest.json --target "$SHA" --prerelease \
+              --title "Replay bundle (main ${SHA:0:12})" --notes "$notes"
+          fi
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/replay-bundle.tar.gz" >> "$GITHUB_STEP_SUMMARY"
