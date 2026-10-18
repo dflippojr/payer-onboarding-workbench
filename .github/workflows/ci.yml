@@ -166,7 +166,8 @@ jobs:
 
   # Mutation testing for the diagnostics module (scripts/mutation.sh): pitest mutates the checks
   # and fails below pitest.mutation.floor in diagnostics/pom.xml; the surviving mutants go to the job
-  # summary. The report is cached by the module's sources, so an unchanged module is judged from the
+  # summary. The report is cached by scripts/mutation-fingerprint.mjs (diagnostics, the modules it
+  # depends on, Maven, the mutation scripts and the JDK), so unchanged inputs are judged from the
   # cache instead of being analysed again. It runs beside build (no needs).
   mutation:
     runs-on: ubuntu-latest
@@ -180,17 +181,20 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Restore the mutation report for these diagnostics sources
+      - name: Fingerprint the mutation inputs
+        id: mutation-fingerprint
+        run: node scripts/mutation-fingerprint.mjs >> "${GITHUB_OUTPUT:-/dev/stdout}"
+      - name: Restore the mutation report for these inputs
         id: pitest-cache
         uses: actions/cache/restore@v6
         with:
           path: diagnostics/target/pit-reports
-          key: pitest-diagnostics-${{ hashFiles('pom.xml', 'diagnostics/pom.xml', 'diagnostics/src/**', 'workbench-core/pom.xml', 'workbench-core/src/main/**', 'scripts/install-crd-router.sh', 'scripts/mutation.sh', 'scripts/mutation-summary.mjs') }}
-      - name: Check the mutation summary script
-        run: node --test scripts/mutation-summary.test.mjs
+          key: pitest-diagnostics-${{ steps.mutation-fingerprint.outputs.fingerprint }}
+      - name: Check the mutation scripts
+        run: node --test scripts/mutation-summary.test.mjs scripts/mutation-fingerprint.test.mjs
       - name: Install fhir-crd-router at the pinned commit
         run: bash scripts/install-crd-router.sh
-      - name: Mutation testing on diagnostics (reuses the cached report when the sources are unchanged)
+      - name: Mutation testing on diagnostics (reuses the cached report when its inputs are unchanged)
         env:
           MUTATION_REUSE: ${{ steps.pitest-cache.outputs.cache-hit }}
         run: bash scripts/mutation.sh

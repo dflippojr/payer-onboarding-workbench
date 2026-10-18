@@ -9,22 +9,29 @@
 # surviving mutants) and appends summary.md to $GITHUB_STEP_SUMMARY when it is set. Needs JDK 21 and
 # fhir-crd-router installed (scripts/install-crd-router.sh).
 #
-# MUTATION_REUSE=true judges an existing mutations.xml instead of running pitest. CI sets it when it
-# restored the report from a cache keyed by the diagnostics sources, so an unchanged module costs
-# nothing. (Open-source pitest no longer ships per-mutant incremental history.)
+# MUTATION_REUSE=true judges an existing mutations.xml instead of running pitest, but only when the
+# fingerprint stored beside it matches scripts/mutation-fingerprint.mjs now (diagnostics, the modules
+# it depends on, Maven, these scripts and the JDK). CI sets it when it restored the report from the
+# cache keyed by that fingerprint, so unchanged inputs cost nothing. (Open-source pitest no longer
+# ships per-mutant incremental history.)
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 reports=diagnostics/target/pit-reports
 status=0
+fingerprint=$(node scripts/mutation-fingerprint.mjs)
 
-if [ "${MUTATION_REUSE:-}" = true ] && [ -f "$reports/mutations.xml" ]; then
-  echo "Reusing $reports/mutations.xml: the diagnostics sources are unchanged since it was produced"
+if [ "${MUTATION_REUSE:-}" = true ] && [ -f "$reports/mutations.xml" ] \
+  && [ "$(cat "$reports/fingerprint" 2>/dev/null)" = "$fingerprint" ]; then
+  echo "Reusing $reports/mutations.xml: its inputs are unchanged since it was produced ($fingerprint)"
 else
   rm -rf "$reports"
   ./mvnw -B -q -pl diagnostics -am install -DskipTests -Djacoco.skip=true
   ./mvnw -B -P mutation -pl diagnostics verify -Djacoco.skip=true || status=$?
+  if [ -f "$reports/mutations.xml" ]; then
+    echo "$fingerprint" > "$reports/fingerprint"
+  fi
 fi
 
 if [ -f "$reports/mutations.xml" ]; then
