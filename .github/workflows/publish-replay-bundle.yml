@@ -16,11 +16,13 @@ on:
 permissions:
   contents: read
 
+# Retain pending publishers when CI finishes out of commit order (A running, C queued, B arrives).
 # One publish at a time; GitHub does not guarantee queue order, so the ancestry check below
 # also skips a bundle older than the one already published.
 concurrency:
   group: publish-replay-bundle
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:

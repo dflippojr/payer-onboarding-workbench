@@ -49,7 +49,12 @@ function keyValue(step, text) {
 
 const workflow = parseWorkflow(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
 
-const publisher = parseWorkflow(readFileSync(join(root, '.github', 'workflows', 'publish-replay-bundle.yml'), 'utf8'));
+const publisherSource = readFileSync(join(root, '.github', 'workflows', 'publish-replay-bundle.yml'), 'utf8');
+const publisher = parseWorkflow(publisherSource);
+const concurrencyBlock = /^concurrency:\n((?: {2}.+\n)+)/m.exec(code(publisherSource))?.[1] ?? '';
+const publisherConcurrency = Object.fromEntries(
+  [...concurrencyBlock.matchAll(/^ {2}([\w-]+):\s*(\S+)\s*$/gm)].map(([, key, value]) => [key, value]),
+);
 const eligibility = publisher.publish.steps.find(step => step.run);
 const ordering = publisher.publish.steps.find(step => step.name === 'Skip a bundle older than the published one');
 
@@ -117,6 +122,38 @@ function publishingHistory(t, mainAt = 'c') {
     order: (sha, published, scenario) => guard(ordering, sha, published, scenario),
     accepts: (sha, published) => permits(guard(eligibility, sha, published)) && permits(guard(ordering, sha, published)) };
 }
+
+test('publisher queues pending runs without cancelling the running publisher', () => {
+  assert.deepEqual(publisherConcurrency, {
+    group: 'publish-replay-bundle', 'cancel-in-progress': 'false', queue: 'max',
+  });
+});
+
+test('publisher preserves newest green C when B arrives with A running and C pending', t => {
+  const history = publishingHistory(t);
+  const pending = [], cancelled = [];
+  let running = history.a, published = history.previous;
+  function enqueue(sha) {
+    if (publisherConcurrency['cancel-in-progress'] === 'true') {
+      cancelled.push(running);
+      running = sha;
+    } else {
+      // GitHub defaults to one pending slot: each arrival replaces that slot.
+      // queue: max retains up to 100 pending runs instead.
+      if (publisherConcurrency.queue !== 'max') cancelled.push(...pending.splice(0));
+      pending.push(sha);
+    }
+  }
+  enqueue(history.c);
+  enqueue(history.b);
+  // A completes, then whichever publishers survived the configured queue run.
+  // Use the real workflow guards for eligibility and release ordering.
+  for (const sha of [running, ...pending]) {
+    if (history.accepts(sha, published)) published = sha;
+  }
+  assert.equal(published, history.c, 'latest green C must publish despite slower B arriving last');
+  assert.deepEqual(cancelled, [], 'no running or pending publisher should be cancelled');
+});
 
 test('publisher accepts successful A when main has advanced to a failing B', t => {
   const history = publishingHistory(t, 'b');
