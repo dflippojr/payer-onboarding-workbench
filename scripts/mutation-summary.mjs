@@ -42,10 +42,14 @@ export function readFloor(pom) {
   return Number(match[1]);
 }
 
-// pitest's mutation score: detected mutants over all mutants, rounded down to a whole percent.
+// pitest's mutation score, as pitest 1.30.0's PercentageCalculator.getPercentage computes it:
+// Math.min(99, Math.round((100f / total) * detected)) in float arithmetic, 100 only when every
+// mutant is detected. pitest compares this to the floor, so the cached report is judged the same way.
 export function score(mutations) {
   if (mutations.length === 0) throw new Error('the report has no mutations');
-  return Math.floor((100 * mutations.filter(m => m.detected).length) / mutations.length);
+  const detected = mutations.filter(m => m.detected).length;
+  if (detected === mutations.length) return 100;
+  return Math.min(99, Math.round(Math.fround(Math.fround(100 / mutations.length) * detected)));
 }
 
 const cell = text => String(text).replaceAll('|', '\\|').replaceAll('\n', ' ');

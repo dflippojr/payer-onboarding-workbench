@@ -15,11 +15,32 @@ const mutation = (status, line, description = 'negated conditional') =>
   + `<description>${description}</description></mutation>`;
 const report = (...mutations) => `<?xml version="1.0" encoding="UTF-8"?>\n<mutations partial="true">\n${mutations.join('\n')}\n</mutations>`;
 
-test('the score is detected over all mutants, rounded down like pitest', () => {
+test('the score is detected over all mutants, rounded like pitest', () => {
   const mutations = parseMutations(report(mutation('KILLED', 1), mutation('TIMED_OUT', 2), mutation('SURVIVED', 3)));
-  assert.equal(score(mutations), 66);
+  assert.equal(score(mutations), 67);
   assert.deepEqual(mutations.map(m => m.status), ['KILLED', 'TIMED_OUT', 'SURVIVED']);
   assert.equal(mutations[0].mutator, 'NegateConditionalsMutator');
+});
+
+// Expected values are pitest 1.30.0's PercentageCalculator.getPercentage, run in jshell:
+// Math.min(99, Math.round((100f / total) * detected)), 100 when every mutant is detected.
+const scoreOf = (detected, total) => score(Array.from({ length: total }, (_, i) => ({ detected: i < detected })));
+
+test('the score matches pitest around the 79% floor', () => {
+  assert.equal(scoreOf(516, 658), 78);
+  assert.equal(scoreOf(517, 658), 79);
+  assert.equal(scoreOf(518, 658), 79);
+  const xml = report(...Array.from({ length: 658 }, (_, i) => mutation(i < 518 ? 'KILLED' : 'SURVIVED', i)));
+  const { markdown, passed } = summary(parseMutations(xml), 79);
+  assert.ok(passed);
+  assert.match(markdown, /\*\*Score 79%\*\* \(518 of 658 mutants detected\); floor 79%: passed/);
+});
+
+test('the score is capped at 99 until every mutant is detected, and uses float arithmetic like pitest', () => {
+  assert.equal(scoreOf(999, 1000), 99);
+  assert.equal(scoreOf(1000, 1000), 100);
+  assert.equal(scoreOf(0, 5), 0);
+  assert.equal(scoreOf(15, 24), 62); // 62.5 in double precision, 62.4999975 in float
 });
 
 test('surviving and uncovered mutants are listed, killed ones are not', () => {
