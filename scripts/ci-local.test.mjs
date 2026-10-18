@@ -117,7 +117,7 @@ test('the trusted gate guard runs from the default branch and runs no pull reque
   // objects; its verdict is the gate-guard check the ruleset requires.
   const target = code(readFileSync(join(root, '.github', 'workflows', 'gate-guard-target.yml'), 'utf8'));
   const [header, jobs] = target.split('\njobs:\n');
-  assert.match(header, /^on:\n {2}pull_request_target:\n {4}types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]\n\n/m);
+  assert.match(header, /^on:\n {2}pull_request_target:\n {4}types: \[opened, synchronize, reopened, edited, labeled, unlabeled, closed\]\n\n/m);
   assert.ok(!/\bpull_request:|workflow_dispatch|workflow_run/.test(target), target);
   assert.match(header, /^permissions:\n {2}contents: read\n {2}issues: read\n {2}pull-requests: read\n {2}checks: write\n\n/m);
   assert.ok(header.includes('group: gate-guard-target-${{ github.event.pull_request.head.sha }}\n'));

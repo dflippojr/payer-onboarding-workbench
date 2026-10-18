@@ -17,8 +17,11 @@ name: Gate guard (default branch)
 on:
   pull_request_target:
     # edited re-judges a pull request moved to another base, where the same head can bring
-    # new hits; labeled/unlabeled re-judge it when an owner label changes.
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    # new hits; labeled/unlabeled re-judge it when an owner label changes; closed re-judges
+    # the other open pull requests that share the closed one's head. At the pinned SHA the
+    # script still judges the closed pull request from the event payload too, so closing a
+    # failing one keeps the check failing (fails closed) until the shared script skips it.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled, closed]
 
 permissions:
   contents: read
