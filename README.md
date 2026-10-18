@@ -482,7 +482,7 @@ On the site:
 
 ### The published bundle
 
-After every green `ci` run on a push to `main`, `.github/workflows/publish-replay-bundle.yml` publishes that run's `site-dist/` as assets of the rolling [`replay-bundle` pre-release](https://github.com/dflippojr/payer-onboarding-workbench/releases/tag/replay-bundle): `replay-bundle.tar.gz` (the whole bundle) and its `manifest.json`. Each publish replaces the last one and moves the tag to that commit. Before uploading, the workflow checks that the manifest's `gitCommit` is that clean `main` commit and runs the leak-scanner corpus and `replay/test/bundle.test.mjs` on the exact files it uploads. It skips a bundle older than the one already published.
+After every green `ci` run on a push to `main`, `.github/workflows/publish-replay-bundle.yml` publishes that run's `site-dist/` as assets of the rolling [`replay-bundle` pre-release](https://github.com/dflippojr/payer-onboarding-workbench/releases/tag/replay-bundle): `replay-bundle.tar.gz` (the whole bundle) and its `manifest.json`. Each publish replaces the last one and moves the tag to that commit. Before uploading, the workflow checks that the manifest's `gitCommit` is that clean `main` commit and runs the leak-scanner corpus and `replay/test/bundle.test.mjs` on the exact files it uploads. It checks out `main`, never the triggering run's ref, and publishes only when that run's commit is still `main`'s tip; otherwise the newer commit's `ci` run publishes. It also skips a bundle older than the one already published.
 
 Two modes of `vendor-into-site.mjs` use it. Both need only Node 22+ and `tar`, so the website repository can run a copy of the script without building this project:
 

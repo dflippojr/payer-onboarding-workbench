@@ -5,6 +5,9 @@ name: Publish replay bundle
 # node scripts/vendor-into-site.mjs --check compares a website's copy with this manifest, and
 # --from-release vendors the archive. workflow_run runs this file as it is on main, so pull
 # requests can't change it, and it only ever sees runs ci made for main pushes.
+# It checks out main as it is now (never the triggering run's ref) and publishes only when the
+# run's commit is still main's tip, so the checks below and the bundle come from one commit.
+# When main has moved on, the newer commit's ci run publishes instead.
 on:
   workflow_run:
     workflows: [ci]
@@ -22,7 +25,10 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       # contents: write for the release and its tag; actions: read for the ci run's artifact.
@@ -35,13 +41,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Skip a run whose commit is no longer main's tip
+        id: tip
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$SHA" ]]; then
+            echo "main is now at $(git rev-parse HEAD), past $SHA; that commit's ci run publishes instead."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v7
+        if: steps.tip.outputs.skip != 'true'
         with:
           node-version: 22
       - name: Download the bundle the ci run exported
+        if: steps.tip.outputs.skip != 'true'
         uses: actions/download-artifact@v7
         with:
           name: site-dist
@@ -49,16 +63,20 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - name: Check the bundle came from this clean main commit
+        if: steps.tip.outputs.skip != 'true'
         run: |
           commit=$(jq -r .gitCommit site-dist/manifest.json)
           echo "manifest gitCommit: $commit, run head: $SHA"
           [[ "$commit" =~ ^[0-9a-f]{12}$ && "$SHA" == "$commit"* ]]
       # The same checks ci ran, on these exact files, before anything is uploaded.
       - name: Check the leak scanner against the shared redaction corpus
+        if: steps.tip.outputs.skip != 'true'
         run: node --test replay/test/leaks.test.mjs
       - name: Check the replay bundle (leak scan, manifest and rendering)
+        if: steps.tip.outputs.skip != 'true'
         run: node --test replay/test/bundle.test.mjs
       - name: Skip a bundle older than the published one
+        if: steps.tip.outputs.skip != 'true'
         id: order
         run: |
           published=$(gh release download "$TAG" --pattern manifest.json --output - 2>/dev/null | jq -r '.gitCommit // empty' || true)
@@ -68,7 +86,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish to the replay-bundle pre-release
-        if: steps.order.outputs.skip != 'true'
+        if: steps.tip.outputs.skip != 'true' && steps.order.outputs.skip != 'true'
         run: |
           tar -czf replay-bundle.tar.gz -C site-dist .
           cp site-dist/manifest.json manifest.json
