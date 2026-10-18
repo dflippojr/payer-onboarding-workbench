@@ -133,10 +133,20 @@ test('mutation.sh reuses a cached report only when it was produced from the same
   }
 });
 
-test('CI keys the cached mutation report by the fingerprint', () => {
-  const workflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
-  const job = /\n {2}mutation:\n([\s\S]*?)\n {2}\S/.exec(workflow)?.[1] ?? '';
+function assertMutationJobKeyedByFingerprint(workflow) {
+  const job = /\n {2}mutation:\n([\s\S]*?)\n {2}\S/.exec(workflow.replaceAll('\r\n', '\n'))?.[1] ?? '';
   assert.match(job, /- name: .*\n\s+id: mutation-fingerprint\n\s+run: node scripts\/mutation-fingerprint\.mjs >> "\$\{GITHUB_OUTPUT:-\/dev\/stdout\}"/);
   assert.match(job, /key: pitest-diagnostics-\$\{\{ steps\.mutation-fingerprint\.outputs\.fingerprint \}\}\n/);
   assert.doesNotMatch(job, /hashFiles/, 'the key must not list inputs by hand');
+}
+
+test('CI keys the cached mutation report by the fingerprint', () => {
+  assertMutationJobKeyedByFingerprint(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
+});
+
+// A Windows checkout with core.autocrlf=true has CRLF line endings (.gitattributes is * text=auto).
+test('the workflow check reads LF and CRLF checkouts alike', () => {
+  const lf = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8').replaceAll('\r\n', '\n');
+  assertMutationJobKeyedByFingerprint(lf);
+  assertMutationJobKeyedByFingerprint(lf.replaceAll('\n', '\r\n'));
 });
