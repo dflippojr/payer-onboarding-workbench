@@ -17,6 +17,8 @@
   <properties>
     <!-- JaCoCo LINE coverage floor (see the parent pom): measured 92.48% minus 1 point. Only ever raise it. -->
     <jacoco.line.floor>0.914</jacoco.line.floor>
+    <!-- pitest mutation score floor (-P mutation, scripts/mutation.sh): measured 81% (536 of 658 mutants) minus 2 points. Only ever raise it. -->
+    <pitest.mutation.floor>79</pitest.mutation.floor>
   </properties>
 
   <dependencies>
@@ -49,4 +51,55 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <profiles>
+    <!-- Mutation testing: bash scripts/mutation.sh runs it, and CI's mutation job (inside gate).
+         The build fails when the mutation score drops below pitest.mutation.floor. CI caches the
+         report by this module's sources, so an unchanged module is not analysed again. -->
+    <profile>
+      <id>mutation</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.pitest</groupId>
+            <artifactId>pitest-maven</artifactId>
+            <version>1.30.0</version>
+            <dependencies>
+              <dependency>
+                <groupId>org.pitest</groupId>
+                <artifactId>pitest-junit5-plugin</artifactId>
+                <version>1.2.3</version>
+              </dependency>
+            </dependencies>
+            <executions>
+              <execution>
+                <id>mutation</id>
+                <phase>verify</phase>
+                <goals><goal>mutationCoverage</goal></goals>
+              </execution>
+            </executions>
+            <configuration>
+              <targetClasses>
+                <param>io.github.dflippojr.payerworkbench.diagnostics.*</param>
+              </targetClasses>
+              <targetTests>
+                <param>io.github.dflippojr.payerworkbench.diagnostics.*</param>
+              </targetTests>
+              <!-- Needs the HL7 validator; scripts/hl7-validator.sh runs it. -->
+              <excludedGroups>
+                <param>hl7-validator</param>
+              </excludedGroups>
+              <threads>4</threads>
+              <mutationThreshold>${pitest.mutation.floor}</mutationThreshold>
+              <timestampedReports>false</timestampedReports>
+              <outputFormats>
+                <param>XML</param>
+                <param>HTML</param>
+              </outputFormats>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
