@@ -78,6 +78,7 @@ jobs:
       - name: Skip a bundle older than the published one
         if: steps.tip.outputs.skip != 'true'
         id: order
+        shell: bash
         run: |
           # Only an explicit 404 permits the first publish. API/transport failures must
           # not turn an unknown published version into permission to overwrite it.

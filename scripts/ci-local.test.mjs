@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { root, runSteps, steps } from './ci-local.mjs';
 
 // Just enough YAML for ci.yml: jobs, needs, if, and each step's name, if and run
-// (inline or a | block). Anything else in a step is ignored.
+// (inline or a | block), plus the publisher's shell. Anything else is ignored.
 function parseWorkflow(text) {
   const jobs = {};
   let inJobs = false, job, step, block;
@@ -42,7 +42,7 @@ function parseWorkflow(text) {
   return jobs;
 }
 function keyValue(step, text) {
-  const match = /^(name|if|run):\s*(.*?)\s*$/.exec(text);
+  const match = /^(name|if|run|shell):\s*(.*?)\s*$/.exec(text);
   if (match) step[match[1]] = match[2].replace(/^"(.*)"$/, '$1');
   return match?.[2];
 }
@@ -78,7 +78,12 @@ function publishingHistory(t, mainAt = 'c') {
   function guard(step, sha, published, scenario = {}) {
     const output = join(dir, 'output').replaceAll('\\', '/');
     writeFileSync(output, '');
-    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
+    // Match GitHub's Linux shell templates: unspecified means bash -e {0};
+    // explicit bash also disables profiles and enables pipefail.
+    assert.ok(step.shell === undefined || step.shell === 'bash', `unsupported workflow shell: ${step.shell}`);
+    const shellArgs = step.shell === 'bash' ? ['--noprofile', '--norc', '-e', '-o', 'pipefail'] : ['-e'];
+    const script = join(dir, 'guard.sh');
+    writeFileSync(script,
       `gh() {
         if [[ "$1" == api ]]; then
           case "$RELEASE_STATE" in
@@ -99,7 +104,8 @@ function publishingHistory(t, mainAt = 'c') {
           esac
         fi
         echo 'unexpected gh command' >&2; return 99
-      }\n` + step.run], {
+      }\n` + step.run);
+    const result = spawnSync('bash', [...shellArgs, script.replaceAll('\\', '/')], {
       cwd: dir, encoding: 'utf8',
       env: { ...process.env, SHA: sha, TAG: 'replay-bundle', PUBLISHED_COMMIT: published, GITHUB_OUTPUT: output,
         RELEASE_STATE: scenario.release ?? 'present', MANIFEST_STATE: scenario.manifest ?? 'valid' },
@@ -135,13 +141,16 @@ test('publisher rejects a successful commit outside trusted main history', t => 
   assert.equal(history.accepts(history.other, history.previous), false);
 });
 
-test('publisher fails closed when an existing newer manifest cannot be downloaded', t => {
-  const history = publishingHistory(t);
-  for (const manifest of ['download-error', 'truncated']) {
-    const result = history.order(history.a, history.b.slice(0, 12), { manifest });
-    assert.notEqual(result.status, 0, manifest + ': must fail, not authorize publishing');
-  }
-});
+for (const [relation, commit] of [['older', 'previous'], ['newer', 'b']]) {
+  test(`publisher fails closed when an existing ${relation} manifest cannot be downloaded`, t => {
+    const history = publishingHistory(t);
+    for (const manifest of ['download-error', 'truncated']) {
+      const result = history.order(history.a, history[commit].slice(0, 12), { manifest });
+      assert.notEqual(result.status, 0, manifest + ': must fail, not authorize publishing or skip');
+      assert.equal(result.skip, false, manifest + ': must stop before the ordering decision');
+    }
+  });
+}
 
 test('publisher fails closed on invalid or unresolvable published metadata', t => {
   const history = publishingHistory(t);
@@ -206,11 +215,11 @@ test('the parser reads block runs, quoted names and job-level settings', () => {
   const jobs = parseWorkflow([
     'on:', '  push:', 'jobs:', '  build:', '    runs-on: ubuntu-latest', '    steps:',
     '      - uses: actions/checkout@v7', '      - name: "Quoted"', '        run: echo one',
-    '      - name: Block', '        if: always()', '        run: |', '          echo two', '', '          echo three',
+    '      - name: Block', '        if: always()', '        shell: bash', '        run: |', '          echo two', '', '          echo three',
     '  gate:', '    needs: [build, lint]', '    if: always()', '    steps:', '      - run: true', '',
   ].join('\r\n'));
   assert.deepEqual(jobs.build.steps, [{}, { name: 'Quoted', run: 'echo one' },
-    { name: 'Block', if: 'always()', run: 'echo two\n\necho three' }]);
+    { name: 'Block', if: 'always()', shell: 'bash', run: 'echo two\n\necho three' }]);
   assert.deepEqual(jobs.gate, { needs: ['build', 'lint'], if: 'always()', steps: [{ run: 'true' }] });
 });
 
