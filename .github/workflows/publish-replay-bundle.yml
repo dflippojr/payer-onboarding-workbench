@@ -5,9 +5,8 @@ name: Publish replay bundle
 # node scripts/vendor-into-site.mjs --check compares a website's copy with this manifest, and
 # --from-release vendors the archive. workflow_run runs this file as it is on main, so pull
 # requests can't change it, and it only ever sees runs ci made for main pushes.
-# It checks out main as it is now (never the triggering run's ref) and publishes only when the
-# run's commit is still main's tip, so the checks below and the bundle come from one commit.
-# When main has moved on, the newer commit's ci run publishes instead.
+# It checks out trusted main (never the triggering run's ref) for the validators, and verifies
+# the successful run's commit belongs to main even if another push has since advanced it.
 on:
   workflow_run:
     workflows: [ci]
@@ -17,8 +16,8 @@ on:
 permissions:
   contents: read
 
-# One publish at a time, oldest first, so a slow older run can't land after a newer one; the
-# ancestry check below also skips a bundle older than the one already published.
+# One publish at a time; GitHub does not guarantee queue order, so the ancestry check below
+# also skips a bundle older than the one already published.
 concurrency:
   group: publish-replay-bundle
   cancel-in-progress: false
@@ -41,13 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: main
           fetch-depth: 0
           persist-credentials: false
-      - name: Skip a run whose commit is no longer main's tip
+      - name: Skip a run whose commit is outside trusted main history
         id: tip
         run: |
-          if [[ "$(git rev-parse HEAD)" != "$SHA" ]]; then
-            echo "main is now at $(git rev-parse HEAD), past $SHA; that commit's ci run publishes instead."
+          if ! git merge-base --is-ancestor "$SHA" HEAD; then
+            echo "$SHA is not an ancestor of trusted main; refusing to publish it."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/setup-node@v7

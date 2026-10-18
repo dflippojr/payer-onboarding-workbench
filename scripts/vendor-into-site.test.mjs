@@ -6,9 +6,11 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
+import { vendor } from './vendor-into-site.mjs';
 
 const script = join(import.meta.dirname, 'vendor-into-site.mjs');
 const PUBLISHED = 'aaaaaaaaaaaa';
@@ -184,4 +186,70 @@ test('an unknown mode or a missing target prints the usage', async () => {
     assert.equal(code, 2, args.join(' '));
     assert.match(stderr, /^Usage: /);
   }
+});
+
+// Build link/special entries without requiring symlink privileges from the test runner.
+function typedArchive(entries) {
+  const blocks = [];
+  for (const { name, type = '0', link = '', text = '' } of entries) {
+    const data = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100);
+    header.write('0000755\0', 100);
+    header.write('0000000\0', 108);
+    header.write('0000000\0', 116);
+    header.write(data.length.toString(8).padStart(11, '0') + '\0', 124);
+    header.write('00000000000\0', 136);
+    header.fill(32, 148, 156);
+    header.write(type, 156);
+    header.write(link, 157, 100);
+    header.write('ustar\0', 257);
+    header.write('00', 263);
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148);
+    blocks.push(header, data, Buffer.alloc((512 - data.length % 512) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
+test('--from-release rejects archive links and special entries before changing the target', async t => {
+  const outside = mkdtempSync(join(work, 'outside-'));
+  writeFileSync(join(outside, 'private.json'), 'outside dummy marker');
+  for (const [label, entry] of [
+    ['directory symlink', { name: 'runs', type: '2', link: outside.replaceAll('\\', '/') }],
+    ['file symlink', { name: 'private.json', type: '2', link: join(outside, 'private.json').replaceAll('\\', '/') }],
+    ['hardlink', { name: 'linked.json', type: '1', link: 'manifest.json' }],
+    ['fifo', { name: 'pipe', type: '6' }],
+  ]) {
+    await t.test(label, async () => {
+      routes.set('/download/replay-bundle.tar.gz', typedArchive([
+        { name: 'manifest.json', text: manifest(PUBLISHED) }, entry,
+      ]));
+      const target = site('9c386b11a911');
+      mkdirSync(join(target, 'runs'));
+      writeFileSync(join(target, 'runs', 'stale.json'), 'keep this run');
+      const { code, stderr } = await run(['--from-release', target]);
+      assert.equal(code, 1, stderr);
+      assert.match(stderr, /only regular files and directories/);
+      assert.equal(readFileSync(join(target, 'manifest.json'), 'utf8'), manifest('9c386b11a911'));
+      assert.equal(readFileSync(join(target, 'runs', 'stale.json'), 'utf8'), 'keep this run');
+      assert.ok(!existsSync(join(target, 'runs', 'private.json')));
+      assert.ok(!existsSync(join(target, 'private.json')));
+      assert.equal(readFileSync(join(outside, 'private.json'), 'utf8'), 'outside dummy marker');
+    });
+  }
+});
+
+test('vendor rejects links in the extracted tree before removing stale target runs', () => {
+  const dist = site(PUBLISHED);
+  const outside = mkdtempSync(join(work, 'outside-tree-'));
+  writeFileSync(join(outside, 'private.json'), 'outside dummy marker');
+  symlinkSync(outside, join(dist, 'runs'), process.platform === 'win32' ? 'junction' : 'dir');
+  const target = site('9c386b11a911');
+  mkdirSync(join(target, 'runs'));
+  writeFileSync(join(target, 'runs', 'stale.json'), 'keep this run');
+  assert.throws(() => vendor(dist, target), /only regular files and directories/);
+  assert.equal(readFileSync(join(target, 'manifest.json'), 'utf8'), manifest('9c386b11a911'));
+  assert.equal(readFileSync(join(target, 'runs', 'stale.json'), 'utf8'), 'keep this run');
+  assert.ok(!existsSync(join(target, 'runs', 'private.json')));
 });

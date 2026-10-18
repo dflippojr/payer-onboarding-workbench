@@ -10,7 +10,7 @@
 // the GitHub API only. This script needs nothing but Node 22+ and tar, so a website repository
 // can run a copy of it without building this project.
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,10 +34,15 @@ export function vendor(dist, target) {
   }
   const files = [];
   (function walk(dir) {
+    if (!lstatSync(dir).isDirectory()) {
+      throw new Error(`Refusing ${dir}: bundle may contain only regular files and directories.`);
+    }
     for (const name of readdirSync(dir)) {
       const p = join(dir, name);
-      if (statSync(p).isDirectory()) walk(p);
-      else files.push(relative(dist, p));
+      const entry = lstatSync(p);
+      if (entry.isDirectory()) walk(p);
+      else if (entry.isFile()) files.push(relative(dist, p));
+      else throw new Error(`Refusing ${p}: bundle may contain only regular files and directories.`);
     }
   })(dist);
   const runsDir = join(target, 'runs');
@@ -89,22 +94,34 @@ export async function checkStaleness(target, { releaseUrl = RELEASE_URL, apiUrl 
 /** Downloads the published bundle into a new temporary folder and returns that folder. */
 export async function downloadRelease({ releaseUrl = RELEASE_URL } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pw-replay-bundle-'));
-  const archive = join(dir, BUNDLE_ASSET);
-  writeFileSync(archive, Buffer.from(await (await get(`${releaseUrl}/${BUNDLE_ASSET}`)).arrayBuffer()));
-  const tar = args => {
-    const result = spawnSync('tar', args, { cwd: dir, encoding: 'utf8' });
-    if (result.status !== 0) throw new Error(`tar ${args.join(' ')} failed: ${result.error?.message ?? result.stderr.trim()}`);
-    return result.stdout;
-  };
-  for (const entry of tar(['-tzf', BUNDLE_ASSET]).split('\n').filter(Boolean)) {
-    if (isAbsolute(entry) || /^[A-Za-z]:/.test(entry) || entry.split(/[\\/]/).includes('..')) {
-      throw new Error(`Refusing ${BUNDLE_ASSET}: entry ${entry} would land outside the bundle.`);
+  try {
+    const archive = join(dir, BUNDLE_ASSET);
+    writeFileSync(archive, Buffer.from(await (await get(`${releaseUrl}/${BUNDLE_ASSET}`)).arrayBuffer()));
+    const tar = args => {
+      const result = spawnSync('tar', args, { cwd: dir, encoding: 'utf8' });
+      if (result.status !== 0) throw new Error(`tar ${args.join(' ')} failed: ${result.error?.message ?? result.stderr.trim()}`);
+      return result.stdout;
+    };
+    for (const entry of tar(['-tzf', BUNDLE_ASSET]).split('\n').filter(Boolean)) {
+      if (isAbsolute(entry) || /^[A-Za-z]:/.test(entry) || entry.split(/[\\/]/).includes('..')) {
+        throw new Error(`Refusing ${BUNDLE_ASSET}: entry ${entry} would land outside the bundle.`);
+      }
     }
+    // Both GNU tar and bsdtar prefix verbose entries with the member's type. Check
+    // metadata before extraction: safe names alone do not stop links escaping the root.
+    for (const entry of tar(['-tvzf', BUNDLE_ASSET]).split('\n').filter(Boolean)) {
+      if (!/^[-d]/.test(entry)) {
+        throw new Error(`Refusing ${BUNDLE_ASSET}: bundle may contain only regular files and directories.`);
+      }
+    }
+    const bundle = join(dir, 'bundle');
+    mkdirSync(bundle);
+    tar(['-xzf', BUNDLE_ASSET, '-C', 'bundle']);
+    return bundle;
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
-  const bundle = join(dir, 'bundle');
-  mkdirSync(bundle);
-  tar(['-xzf', BUNDLE_ASSET, '-C', 'bundle']);
-  return bundle;
 }
 
 async function main(args) {
