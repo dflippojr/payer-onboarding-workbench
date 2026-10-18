@@ -94,3 +94,39 @@ test('the parser reads block runs, quoted names and job-level settings', () => {
     { name: 'Block', if: 'always()', run: 'echo two\n\necho three' }]);
   assert.deepEqual(jobs.gate, { needs: ['build', 'lint'], if: 'always()', steps: [{ run: 'true' }] });
 });
+
+// The workflow's lines without comment lines, so a key named in a comment doesn't count.
+function code(text) {
+  return text.replaceAll('\r\n', '\n').split('\n').filter(line => !line.trimStart().startsWith('#')).join('\n') + '\n';
+}
+const guardSha = /guard-ref: ([0-9a-f]{40})\n/.exec(code(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')))?.[1];
+
+test('ci.yml calls the shared gate guard at one full SHA, as an early signal inside gate', () => {
+  const ci = code(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
+  assert.ok(guardSha, 'ci.yml has no gate-guard job with a full-SHA guard-ref');
+  assert.ok(ci.includes(`  gate-guard:\n`), ci);
+  assert.ok(ci.includes(`    uses: dflippojr/.github/.github/workflows/gate-guard.yml@${guardSha}\n`));
+  assert.ok(ci.includes('      require-owner-label-actor: true\n'));
+  assert.ok(workflow.gate.needs.includes('gate-guard'));
+});
+
+test('the trusted gate guard runs from the default branch and runs no pull request code', () => {
+  // ci.yml runs on pull_request, so a pull request supplies its own copy of it and can
+  // replace its gate-guard job with a green no-op. Under pull_request_target this caller is
+  // read from main, and the called workflow only fetches the pull request's commits as git
+  // objects; its verdict is the gate-guard check the ruleset requires.
+  const target = code(readFileSync(join(root, '.github', 'workflows', 'gate-guard-target.yml'), 'utf8'));
+  const [header, jobs] = target.split('\njobs:\n');
+  assert.match(header, /^on:\n {2}pull_request_target:\n {4}types: \[opened, synchronize, reopened, edited, labeled, unlabeled, closed\]\n\n/m);
+  assert.ok(!/\bpull_request:|workflow_dispatch|workflow_run/.test(target), target);
+  assert.match(header, /^permissions:\n {2}contents: read\n {2}issues: read\n {2}pull-requests: read\n {2}checks: write\n\n/m);
+  assert.ok(header.includes('group: gate-guard-target-${{ github.event.pull_request.head.sha }}\n'));
+  assert.ok(header.includes('cancel-in-progress: true\n'));
+  assert.equal(jobs.trimEnd() + '\n', [
+    '  judge:',
+    `    uses: dflippojr/.github/.github/workflows/gate-guard-target.yml@${guardSha}`,
+    '    with:',
+    `      guard-ref: ${guardSha}`,
+    '',
+  ].join('\n'), 'the only job calls the pinned trusted guard with the same SHA as ci.yml');
+});
