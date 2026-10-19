@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// The identity of a mutation run: a SHA-256 over everything pitest's verdict on diagnostics depends
-// on, so a cached report is reused only when none of it changed. The inputs are the root pom, the
-// Maven wrapper, the mutation scripts (install-crd-router.sh pins fhir-crd-router), diagnostics' pom
-// and sources, the pom and src/main of every reactor module diagnostics depends on (any scope,
-// transitively: mock-payers and samples feed its tests), and the JDK's `java -version`.
+// The partitions of a mutation run and the key each one's pitest report is valid for. pitest analyses one
+// diagnostics class at a time (scripts/mutation.sh), and a class's report is reused only while its key
+// holds: a SHA-256 over every input its verdicts depend on. The inputs are the root pom, the Maven wrapper,
+// the mutation scripts (install-crd-router.sh pins fhir-crd-router), diagnostics' pom and sources, the pom
+// and src/main of every reactor module diagnostics depends on (any scope, transitively: mock-payers and
+// samples feed its tests), and the JDK's `java -version`. Each check (a class named *Check) also depends
+// only on itself, so editing one check invalidates that check's partition and no other. Every other
+// class depends on the shared sources, which include the other non-check classes, and so an edit to one
+// of them invalidates all partitions.
 //
-//   node scripts/mutation-fingerprint.mjs     prints fingerprint=<sha256> (CI appends it to $GITHUB_OUTPUT)
-//
-// mutation.sh stores it beside the report and refuses to reuse a report with another one.
+//   node scripts/mutation-fingerprint.mjs     prints <class>TAB<pitest targetClasses>TAB<key>, one line per partition
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -15,8 +17,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MODULE = 'diagnostics';
+const SOURCES = `${MODULE}/src/main/java`;
 const TOOLING = ['pom.xml', 'mvnw', '.mvn', 'scripts/install-crd-router.sh', 'scripts/mutation.sh',
-  'scripts/mutation-summary.mjs', 'scripts/mutation-fingerprint.mjs'];
+  'scripts/mutation-merge.mjs', 'scripts/mutation-summary.mjs', 'scripts/mutation-fingerprint.mjs'];
 
 const strip = (xml, tag) => xml.replaceAll(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, 'g'), '');
 const artifactIds = xml => [...xml.matchAll(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/g)].map(m => m[1]);
@@ -62,13 +65,30 @@ export function inputFiles(dir) {
   return [...new Set(paths.flatMap(path => walk(dir, path)))].sort();
 }
 
-export function fingerprint(dir, runtime) {
-  const hash = createHash('sha256').update(`runtime\0${runtime}\0`);
-  for (const path of inputFiles(dir)) {
-    const content = readFileSync(join(dir, path));
-    hash.update(`${path}\0${content.length}\0`).update(content);
-  }
-  return hash.digest('hex');
+const isCheck = path => /^diagnostics\/src\/main\/java\/.*Check\.java$/.test(path);
+
+// Every class pitest analyses, one partition each: its name, the targetClasses pattern that selects it
+// (inner classes included) and the key of the inputs its report depends on.
+export function partitions(dir, runtime) {
+  const hash = files => {
+    const digest = createHash('sha256').update(`runtime\0${runtime}\0`);
+    for (const path of files) {
+      const content = readFileSync(join(dir, path));
+      digest.update(`${path}\0${content.length}\0`).update(content);
+    }
+    return digest.digest('hex');
+  };
+  const inputs = inputFiles(dir);
+  const shared = inputs.filter(path => !isCheck(path));
+  return walk(dir, SOURCES)
+    .filter(path => path.endsWith('.java') && !path.endsWith('package-info.java'))
+    .sort()
+    .map(path => {
+      const dotted = path.slice(`${SOURCES}/`.length, -'.java'.length).replaceAll('/', '.');
+      const own = path.slice(0, -'.java'.length).replace(/^.*\//, '');
+      const files = [...new Set([...shared, path])].sort();
+      return { name: own, target: `${dotted}*`, key: hash(files) };
+    });
 }
 
 // The JDK Maven runs with: JAVA_HOME's java when set, as mvnw does, else java on PATH.
@@ -81,5 +101,7 @@ export function javaVersion() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = resolve(fileURLToPath(import.meta.url), '..', '..');
-  console.log(`fingerprint=${fingerprint(root, javaVersion())}`);
+  for (const { name, target, key } of partitions(root, javaVersion())) {
+    console.log([name, target, key].join('\t'));
+  }
 }

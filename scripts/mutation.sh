@@ -5,43 +5,58 @@
 #
 #   bash scripts/mutation.sh
 #
-# Writes diagnostics/target/pit-reports/ (mutations.xml, index.html and summary.md, which lists the
-# surviving mutants) and appends summary.md to $GITHUB_STEP_SUMMARY when it is set. Needs JDK 21 and
-# fhir-crd-router installed (scripts/install-crd-router.sh).
+# Incremental: pitest runs once per diagnostics class (scripts/mutation-fingerprint.mjs lists them), and
+# each class's mutations.xml is kept in diagnostics/target/pit-history/<class>/ beside the key of the inputs
+# it was produced from. A class whose key still matches is not analysed again, so a changed check costs one
+# class, and a changed shared file or test costs them all. CI restores pit-history from an earlier run
+# (.github/workflows/ci.yml). pitest's own history needs arcmutate, which open-source pitest 1.30.0 lacks.
 #
-# MUTATION_REUSE=true judges an existing mutations.xml instead of running pitest, but only when the
-# fingerprint stored beside it matches scripts/mutation-fingerprint.mjs now (diagnostics, the modules
-# it depends on, Maven, these scripts and the JDK). CI sets it when it restored the report from the
-# cache keyed by that fingerprint, so unchanged inputs cost nothing. (Open-source pitest no longer
-# ships per-mutant incremental history.)
+# Writes diagnostics/target/pit-reports/ (mutations.xml, merged from every class, and summary.md, which lists
+# the surviving mutants) and appends summary.md to $GITHUB_STEP_SUMMARY when it is set. The floor is judged
+# on the merged score. Needs JDK 21 and fhir-crd-router installed (scripts/install-crd-router.sh).
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
+history=diagnostics/target/pit-history
 reports=diagnostics/target/pit-reports
 status=0
-fingerprint=$(node scripts/mutation-fingerprint.mjs)
+partitions=$(node scripts/mutation-fingerprint.mjs)
+names=()
+files=()
 
-if [ "${MUTATION_REUSE:-}" = true ] && [ -f "$reports/mutations.xml" ] \
-  && [ "$(cat "$reports/fingerprint" 2>/dev/null)" = "$fingerprint" ]; then
-  echo "Reusing $reports/mutations.xml: its inputs are unchanged since it was produced ($fingerprint)"
-else
-  rm -rf "$reports"
-  ./mvnw -B -q -pl diagnostics -am install -DskipTests -Djacoco.skip=true
-  ./mvnw -B -P mutation -pl diagnostics verify -Djacoco.skip=true || status=$?
-  if [ -f "$reports/mutations.xml" ]; then
-    echo "$fingerprint" > "$reports/fingerprint"
-  fi
-fi
+./mvnw -B -q -pl diagnostics -am install -DskipTests -Djacoco.skip=true
+mkdir -p "$history"
 
-if [ -f "$reports/mutations.xml" ]; then
-  node scripts/mutation-summary.mjs "$reports/mutations.xml" diagnostics/pom.xml > "$reports/summary.md" || status=1
-  cat "$reports/summary.md"
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    cat "$reports/summary.md" >> "$GITHUB_STEP_SUMMARY"
+while IFS=$'\t' read -r name target key; do
+  names+=("$name")
+  dir="$history/$name"
+  if [ -f "$dir/mutations.xml" ] && [ "$(cat "$dir/key" 2>/dev/null)" = "$key" ]; then
+    echo "Reusing $name: its inputs are unchanged since its report was produced"
+  else
+    rm -rf "$dir" "$reports"
+    echo "Analysing $name: pitest targetClasses $target"
+    # The floor is judged on the merged score below, so a single class does not fail the run.
+    ./mvnw -B -P mutation -pl diagnostics test-compile org.pitest:pitest-maven:1.30.0:mutationCoverage \
+      -Djacoco.skip=true -Dpit.targetClasses="$target" -Dpitest.mutation.floor=0 \
+      || { echo "pitest failed on $name" >&2; exit 1; }
+    mkdir -p "$dir"
+    mv "$reports/mutations.xml" "$dir/mutations.xml"
+    echo "$key" > "$dir/key"
   fi
-else
-  echo "pitest wrote no $reports/mutations.xml" >&2
-  status=1
+  files+=("$dir/mutations.xml")
+done <<< "$partitions"
+
+for dir in "$history"/*/; do
+  case " ${names[*]} " in *" $(basename "$dir") "*) ;; *) rm -rf "$dir" ;; esac
+done
+
+rm -rf "$reports"
+mkdir -p "$reports"
+node scripts/mutation-merge.mjs "${files[@]}" > "$reports/mutations.xml"
+node scripts/mutation-summary.mjs "$reports/mutations.xml" diagnostics/pom.xml > "$reports/summary.md" || status=1
+cat "$reports/summary.md"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  cat "$reports/summary.md" >> "$GITHUB_STEP_SUMMARY"
 fi
 exit "$status"

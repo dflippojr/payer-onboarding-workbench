@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fingerprint, inputFiles } from './mutation-fingerprint.mjs';
+import { inputFiles, partitions } from './mutation-fingerprint.mjs';
 import { root } from './ci-local.mjs';
 
 const pom = (artifactId, ...dependencies) => `<project>
@@ -31,11 +31,12 @@ function fakeRepo() {
     'samples/src/main/resources/sample.json': '{}',
     'diagnostics/pom.xml': pom('diagnostics', 'core', 'payers', 'samples', 'jackson-databind'),
     'diagnostics/src/main/java/Check.java': 'class Check {}',
+    'diagnostics/src/main/java/Support.java': 'class Support {}',
     'diagnostics/src/test/java/CheckTest.java': 'class CheckTest {}',
     'app/pom.xml': pom('app', 'diagnostics'),
     'app/src/main/java/App.java': 'class App {}',
   };
-  for (const name of ['install-crd-router.sh', 'mutation.sh', 'mutation-summary.mjs', 'mutation-fingerprint.mjs']) {
+  for (const name of ['install-crd-router.sh', 'mutation.sh', 'mutation-summary.mjs', 'mutation-merge.mjs', 'mutation-fingerprint.mjs']) {
     files[`scripts/${name}`] = readFileSync(join(root, 'scripts', name), 'utf8');
   }
   for (const [path, text] of Object.entries(files)) {
@@ -51,12 +52,14 @@ test('the inputs are the diagnostics module, its reactor dependencies, Maven and
     assert.deepEqual(inputFiles(dir), [
       '.mvn/wrapper/maven-wrapper.properties',
       'core/pom.xml', 'core/src/main/java/Core.java',
-      'diagnostics/pom.xml', 'diagnostics/src/main/java/Check.java', 'diagnostics/src/test/java/CheckTest.java',
+      'diagnostics/pom.xml', 'diagnostics/src/main/java/Check.java', 'diagnostics/src/main/java/Support.java',
+      'diagnostics/src/test/java/CheckTest.java',
       'mvnw',
       'payers/pom.xml', 'payers/src/main/java/Payer.java',
       'pom.xml',
       'samples/pom.xml', 'samples/src/main/resources/sample.json',
-      'scripts/install-crd-router.sh', 'scripts/mutation-fingerprint.mjs', 'scripts/mutation-summary.mjs', 'scripts/mutation.sh',
+      'scripts/install-crd-router.sh', 'scripts/mutation-fingerprint.mjs', 'scripts/mutation-merge.mjs',
+      'scripts/mutation-summary.mjs', 'scripts/mutation.sh',
     ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -76,77 +79,132 @@ test('in this repo the inputs include mock-payers, samples and the Maven wrapper
   assert.ok(!files.some(f => f.startsWith('workbench-app/')), 'workbench-app is not a diagnostics dependency');
 });
 
-test('an edit to any input, or another JDK, changes the fingerprint; other files do not', () => {
+const RUNTIME = 'openjdk 21.0.5';
+const keys = dir => Object.fromEntries(partitions(dir, RUNTIME).map(({ name, key }) => [name, key]));
+
+test('every diagnostics class is a partition, with the pitest pattern for its classes', () => {
   const dir = fakeRepo();
   try {
-    const before = fingerprint(dir, 'openjdk 21.0.5');
-    for (const path of inputFiles(dir)) {
-      const original = readFileSync(join(dir, path));
-      writeFileSync(join(dir, path), Buffer.concat([original, Buffer.from('\n')]));
-      assert.notEqual(fingerprint(dir, 'openjdk 21.0.5'), before, `editing ${path} kept the fingerprint`);
-      writeFileSync(join(dir, path), original);
-    }
-    assert.notEqual(fingerprint(dir, 'openjdk 25.0.1'), before, 'another JDK kept the fingerprint');
-    writeFileSync(join(dir, 'samples/src/main/resources/new.json'), '{}');
-    assert.notEqual(fingerprint(dir, 'openjdk 21.0.5'), before, 'a new sample kept the fingerprint');
-    rmSync(join(dir, 'samples/src/main/resources/new.json'));
-    writeFileSync(join(dir, 'app/src/main/java/App.java'), 'class App { int changed; }');
-    writeFileSync(join(dir, 'core/src/test/java/CoreTest.java'), 'class CoreTest { int changed; }');
-    assert.equal(fingerprint(dir, 'openjdk 21.0.5'), before, 'a file diagnostics does not use changed the fingerprint');
+    assert.deepEqual(partitions(dir, RUNTIME).map(({ name, target }) => [name, target]), [
+      ['Check', 'Check*'],
+      ['Support', 'Support*'],
+    ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-// mutation.sh with a stub mvnw that records its calls and writes a one-mutant report.
+test('in this repo every diagnostics class is a partition, and package-info is not', () => {
+  const found = partitions(root, RUNTIME);
+  assert.ok(found.some(({ name, target }) => name === 'ClockSkewCheck'
+    && target === 'io.github.dflippojr.payerworkbench.diagnostics.ClockSkewCheck*'));
+  assert.ok(found.some(({ name }) => name === 'DiagnosticEngine'));
+  assert.ok(!found.some(({ name }) => name === 'package-info'));
+  assert.equal(new Set(found.map(({ name }) => name)).size, found.length, 'partition names must be unique');
+});
+
+test('editing one check changes only that check\'s partition key', () => {
+  const dir = fakeRepo();
+  try {
+    const before = keys(dir);
+    writeFileSync(join(dir, 'diagnostics/src/main/java/Check.java'), 'class Check { int changed; }');
+    const after = keys(dir);
+    assert.notEqual(after.Check, before.Check, 'editing the check kept its key');
+    assert.equal(after.Support, before.Support, 'editing one check invalidated another partition');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an edit to a shared class, a diagnostics test, the pom, an upstream module or the JDK invalidates every partition', () => {
+  const dir = fakeRepo();
+  try {
+    const before = keys(dir);
+    for (const path of ['diagnostics/src/main/java/Support.java', 'diagnostics/src/test/java/CheckTest.java',
+      'diagnostics/pom.xml', 'payers/src/main/java/Payer.java', 'scripts/mutation-merge.mjs']) {
+      const original = readFileSync(join(dir, path));
+      writeFileSync(join(dir, path), Buffer.concat([original, Buffer.from('\n')]));
+      const after = keys(dir);
+      for (const name of Object.keys(before)) assert.notEqual(after[name], before[name], `editing ${path} kept ${name}`);
+      writeFileSync(join(dir, path), original);
+    }
+    const jdk = Object.fromEntries(partitions(dir, 'openjdk 25.0.1').map(({ name, key }) => [name, key]));
+    for (const name of Object.keys(before)) assert.notEqual(jdk[name], before[name], `another JDK kept ${name}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('edits outside the diagnostics inputs change no partition key', () => {
+  const dir = fakeRepo();
+  try {
+    const before = keys(dir);
+    writeFileSync(join(dir, 'app/src/main/java/App.java'), 'class App { int changed; }');
+    writeFileSync(join(dir, 'core/src/test/java/CoreTest.java'), 'class CoreTest { int changed; }');
+    assert.deepEqual(keys(dir), before);
+    writeFileSync(join(dir, 'samples/src/main/resources/new.json'), '{}');
+    assert.notDeepEqual(keys(dir), before, 'a new sample kept the keys');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// mutation.sh with a stub mvnw: each pitest run writes a one-mutant report for the class it was given, and
+// the stub records the class pattern. Returns the patterns pitest was asked to analyse in this run.
 function runMutationSh(dir) {
   writeFileSync(join(dir, 'mvnw'), `#!/bin/sh
-echo "$*" >> "$(dirname "$0")/mvnw.calls"
-case "$*" in *mutation*)
+case "$*" in *mutationCoverage*)
+  for arg in "$@"; do
+    case "$arg" in -Dpit.targetClasses=*) target=$(echo "$arg" | cut -d= -f2-);; esac
+  done
+  echo "$target" >> "$(dirname "$0")/pitest.calls"
   mkdir -p diagnostics/target/pit-reports
-  echo "<mutations><mutation detected='true' status='KILLED'><sourceFile>Check.java</sourceFile><lineNumber>1</lineNumber></mutation></mutations>" > diagnostics/target/pit-reports/mutations.xml;;
+  echo "<mutations><mutation detected='true' status='KILLED'><sourceFile>$target</sourceFile><lineNumber>1</lineNumber></mutation></mutations>" > diagnostics/target/pit-reports/mutations.xml;;
 esac
 `);
   chmodSync(join(dir, 'mvnw'), 0o755);
   const result = spawnSync('bash', [join(dir, 'scripts', 'mutation.sh')], {
-    encoding: 'utf8', env: { ...process.env, MUTATION_REUSE: 'true', GITHUB_STEP_SUMMARY: '' },
+    encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '' },
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  const calls = join(dir, 'mvnw.calls');
-  const ran = existsSync(calls);
+  const calls = join(dir, 'pitest.calls');
+  const ran = existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean) : [];
   rmSync(calls, { force: true });
   return ran;
 }
 
-test('mutation.sh reuses a cached report only when it was produced from the same inputs', () => {
+test('mutation.sh analyses only the classes whose inputs changed, and merges every class into one report', () => {
   const dir = fakeRepo();
   try {
-    assert.equal(runMutationSh(dir), true, 'the first run must analyse');
-    assert.equal(runMutationSh(dir), false, 'unchanged inputs must reuse the report');
+    assert.deepEqual(runMutationSh(dir), ['Check*', 'Support*'], 'the first run must analyse every class');
+    const merged = readFileSync(join(dir, 'diagnostics/target/pit-reports/mutations.xml'), 'utf8');
+    assert.equal(merged.match(/<mutation /g).length, 2, 'the merged report must hold every class\'s mutants');
+    assert.deepEqual(runMutationSh(dir), [], 'unchanged inputs must analyse nothing');
+    writeFileSync(join(dir, 'diagnostics/src/main/java/Check.java'), 'class Check { int changed; }');
+    assert.deepEqual(runMutationSh(dir), ['Check*'], 'touching one check must analyse that check only');
     writeFileSync(join(dir, 'payers/src/main/java/Payer.java'), 'class Payer { int changed; }');
-    assert.equal(runMutationSh(dir), true, 'a mock payer edit must analyse again');
-    assert.equal(runMutationSh(dir), false);
-    copyFileSync(join(dir, 'pom.xml'), join(dir, 'diagnostics/target/pit-reports/fingerprint'));
-    assert.equal(runMutationSh(dir), true, 'a report with another fingerprint must not be reused');
+    assert.deepEqual(runMutationSh(dir), ['Check*', 'Support*'], 'an upstream edit must analyse every class');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-function assertMutationJobKeyedByFingerprint(workflow) {
+function assertMutationJobCachesThePitestHistory(workflow) {
   const job = /\n {2}mutation:\n([\s\S]*?)\n {2}\S/.exec(workflow.replaceAll('\r\n', '\n'))?.[1] ?? '';
-  assert.match(job, /- name: .*\n\s+id: mutation-fingerprint\n\s+run: node scripts\/mutation-fingerprint\.mjs >> "\$\{GITHUB_OUTPUT:-\/dev\/stdout\}"/);
-  assert.match(job, /key: pitest-diagnostics-\$\{\{ steps\.mutation-fingerprint\.outputs\.fingerprint \}\}\n/);
-  assert.doesNotMatch(job, /hashFiles/, 'the key must not list inputs by hand');
+  assert.match(job, /- name: .*\n\s+id: pitest-cache\n\s+uses: actions\/cache\/restore@v6\n\s+with:\n\s+path: diagnostics\/target\/pit-history\n/);
+  assert.match(job, /key: pitest-history-\$\{\{ hashFiles\('diagnostics\/pom\.xml', 'diagnostics\/src\/\*\*'\) \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/);
+  assert.match(job, /restore-keys: \|\n\s+pitest-history-\$\{\{ hashFiles\('diagnostics\/pom\.xml', 'diagnostics\/src\/\*\*'\) \}\}-\n\s+pitest-history-\n/);
+  assert.match(job, /- name: .*\n\s+if: always\(\)\n\s+uses: actions\/cache\/save@v6\n\s+with:\n\s+path: diagnostics\/target\/pit-history\n\s+key: \$\{\{ steps\.pitest-cache\.outputs\.cache-primary-key \}\}\n/);
+  assert.doesNotMatch(job, /MUTATION_REUSE|id: mutation-fingerprint/, 'the job still uses the whole-report cache');
 }
 
-test('CI keys the cached mutation report by the fingerprint', () => {
-  assertMutationJobKeyedByFingerprint(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
+test('CI restores the pitest history by the diagnostics sources, with a prefix fallback, and saves it', () => {
+  assertMutationJobCachesThePitestHistory(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
 });
 
 // A Windows checkout with core.autocrlf=true has CRLF line endings (.gitattributes is * text=auto).
 test('the workflow check reads LF and CRLF checkouts alike', () => {
   const lf = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8').replaceAll('\r\n', '\n');
-  assertMutationJobKeyedByFingerprint(lf);
-  assertMutationJobKeyedByFingerprint(lf.replaceAll('\n', '\r\n'));
+  assertMutationJobCachesThePitestHistory(lf);
+  assertMutationJobCachesThePitestHistory(lf.replaceAll('\n', '\r\n'));
 });
