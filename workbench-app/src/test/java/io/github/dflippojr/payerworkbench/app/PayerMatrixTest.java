@@ -116,8 +116,11 @@ class PayerMatrixTest {
         return out.toString();
     }
 
-    /** One row's payer, its keys and, for an other-host redirect, the second server that must stay untouched. */
-    private static final class Scenario implements AutoCloseable {
+    /**
+     * One row's payer, its keys and, for an other-host redirect, the second server that must stay untouched.
+     * {@link CheckReachabilityTest} runs matrix rows through it too.
+     */
+    static final class Scenario implements AutoCloseable {
 
         private static final SecureRandom RANDOM = new SecureRandom();
 

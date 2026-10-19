@@ -273,7 +273,8 @@ final class ConformanceCorpus {
 
     static String json(JsonNode node) {
         try {
-            return MAPPER.writeValueAsString(node) + "\n";
+            // Jackson indents with the platform line separator; the committed corpus is LF on every OS.
+            return MAPPER.writeValueAsString(node).replace("\r\n", "\n") + "\n";
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

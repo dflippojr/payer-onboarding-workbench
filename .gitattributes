@@ -4,3 +4,4 @@ mvnw text eol=lf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 scripts/crd-reference-server.env text eol=lf
+diagnostics/src/test/resources/conformance-corpus/*.json text eol=lf

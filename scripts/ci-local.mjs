@@ -48,6 +48,16 @@ export const steps = [
   { name: 'Download the pinned HL7 validator and FHIR packages (no-op when cached)', run: 'bash scripts/hl7-validator.sh warm' },
   { name: 'Install fhir-crd-router at the pinned commit', run: 'bash scripts/install-crd-router.sh' },
   { name: 'Differential conformance test against the HL7 validator (offline)', run: 'bash scripts/hl7-validator.sh test' },
+  // mutation job
+  {
+    name: 'Check the mutation scripts',
+    run: 'node --test scripts/mutation-summary.test.mjs scripts/mutation-fingerprint.test.mjs scripts/mutation-merge.test.mjs',
+  },
+  { name: 'Install fhir-crd-router at the pinned commit', run: 'bash scripts/install-crd-router.sh' },
+  {
+    name: 'Mutation testing on diagnostics (analyses only the classes whose inputs changed)',
+    run: 'bash scripts/mutation.sh',
+  },
 ];
 
 const bash = command => {
