@@ -229,9 +229,9 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
-    uses: dflippojr/.github/.github/workflows/gate-guard.yml@e2c7fae8508be0359f3abaf136caade46ee7479c
+    uses: dflippojr/.github/.github/workflows/gate-guard.yml@882623c67a5c3bab64da2136e6070a5325440b47
     with:
-      guard-ref: e2c7fae8508be0359f3abaf136caade46ee7479c
+      guard-ref: 882623c67a5c3bab64da2136e6070a5325440b47
       require-owner-label-actor: true
 
   # The one required check for the ruleset and `ao ready`. It always reports and
