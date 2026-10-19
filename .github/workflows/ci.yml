@@ -212,11 +212,32 @@ jobs:
           path: diagnostics/target/pit-reports/
           if-no-files-found: ignore
 
+  # The shared gate guard (dflippojr/.github), called at a full commit SHA of its main;
+  # guard-ref names the same SHA, so the script that judges the pull request is the one
+  # that was reviewed. It fails a pull request that deletes or skips tests, adds retries,
+  # or edits workflows or coverage config, unless the owner applied gate-change-approved.
+  # It checks pull requests only (a push prints a notice). Labels are read when it runs:
+  # after the owner applies one, re-run this job. This job is an early signal inside gate,
+  # not the judge: a pull request can replace it, and it accepts a label applied before
+  # the newest push. The gate-guard check from gate-guard-target.yml is the one the
+  # ruleset trusts.
+  gate-guard:
+    # The called workflow can't hold more than its caller grants: it reads the pull
+    # request's labels and the owner's label events.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: dflippojr/.github/.github/workflows/gate-guard.yml@e2c7fae8508be0359f3abaf136caade46ee7479c
+    with:
+      guard-ref: e2c7fae8508be0359f3abaf136caade46ee7479c
+      require-owner-label-actor: true
+
   # The one required check for the ruleset and `ao ready`. It always reports and
   # fails unless every needed job succeeded. Add every job added to this file to
   # needs; scripts/ci-local.test.mjs fails when one is missing.
   gate:
-    needs: [build, crd-reference, hl7-validator, mutation]
+    needs: [build, crd-reference, hl7-validator, mutation, gate-guard]
     if: always()
     runs-on: ubuntu-latest
     steps:

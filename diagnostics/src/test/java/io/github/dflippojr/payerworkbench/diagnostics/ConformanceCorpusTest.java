@@ -37,11 +37,16 @@ class ConformanceCorpusTest {
         assertEquals(expected, committed, "corpus files; regenerate with -Dconformance.corpus.write=true");
         for (ConformanceCorpus.Item item : items) {
             assertEquals(ConformanceCorpus.json(item.body()),
-                    Files.readString(ConformanceCorpus.DIR.resolve(item.file())),
+                    lf(Files.readString(ConformanceCorpus.DIR.resolve(item.file()))),
                     item.file() + " drifted from the mock payers; regenerate with -Dconformance.corpus.write=true");
         }
         assertEquals(ConformanceCorpus.json(ConformanceCorpus.index(items)),
-                Files.readString(ConformanceCorpus.DIR.resolve(ConformanceCorpus.INDEX)));
+                lf(Files.readString(ConformanceCorpus.DIR.resolve(ConformanceCorpus.INDEX))));
+    }
+
+    // A Windows checkout with core.autocrlf turns the committed LF files into CRLF; the generator writes LF.
+    private static String lf(String text) {
+        return text.replace("\r\n", "\n");
     }
 
     @Test
