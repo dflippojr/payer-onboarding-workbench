@@ -146,14 +146,23 @@ class CheckReachabilityTest {
     void eachCheckPassesThroughTheRunner(String checkId) throws Exception {
         Reachability row = TABLE.get(checkId);
         assertNotNull(row, () -> checkId + " has no reachability scenario: add a row to CheckReachabilityTest.TABLE");
-        List<Finding> findings = findings(row.passes().run(runner), checkId);
+        OnboardingRun run = row.passes().run(runner);
+        List<Finding> findings = findings(run, checkId);
 
         assertTrue(findings.stream().allMatch(f -> f.severity() == Severity.PASS),
                 () -> checkId + " did not pass under " + row.passes().name() + ": " + findings);
         if (row.pass() == Pass.EMITS_PASS) {
             assertFalse(findings.isEmpty(), () -> checkId + " reported nothing under " + row.passes().name()
                     + ", so it never evaluated the run");
+        } else {
+            assertTrue(hookExchanged(run), () -> checkId + " reported nothing under " + row.passes().name()
+                    + " without a successful hook exchange, so there was no hook response to judge");
         }
+    }
+
+    /** Whether the run completed the hook request, the step that a silent check judges. */
+    private static boolean hookExchanged(OnboardingRun run) {
+        return run.steps().stream().anyMatch(step -> step.stepId().equals(OnboardingRunner.HOOK_REQUEST) && step.ok());
     }
 
     /**
