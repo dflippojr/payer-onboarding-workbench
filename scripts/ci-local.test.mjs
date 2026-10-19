@@ -1,11 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { root, runSteps, steps } from './ci-local.mjs';
 
 // Just enough YAML for ci.yml: jobs, needs, if, and each step's name, if and run
-// (inline or a | block). Anything else in a step is ignored.
+// (inline or a | block), plus the publisher's shell. Anything else is ignored.
 function parseWorkflow(text) {
   const jobs = {};
   let inJobs = false, job, step, block;
@@ -40,12 +42,175 @@ function parseWorkflow(text) {
   return jobs;
 }
 function keyValue(step, text) {
-  const match = /^(name|if|run):\s*(.*?)\s*$/.exec(text);
+  const match = /^(name|if|run|shell):\s*(.*?)\s*$/.exec(text);
   if (match) step[match[1]] = match[2].replace(/^"(.*)"$/, '$1');
   return match?.[2];
 }
 
 const workflow = parseWorkflow(readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8'));
+
+const publisherSource = readFileSync(join(root, '.github', 'workflows', 'publish-replay-bundle.yml'), 'utf8');
+const publisher = parseWorkflow(publisherSource);
+const concurrencyBlock = /^concurrency:\n((?: {2}.+\n)+)/m.exec(code(publisherSource))?.[1] ?? '';
+const publisherConcurrency = Object.fromEntries(
+  [...concurrencyBlock.matchAll(/^ {2}([\w-]+):\s*(\S+)\s*$/gm)].map(([, key, value]) => [key, value]),
+);
+const eligibility = publisher.publish.steps.find(step => step.run);
+const ordering = publisher.publish.steps.find(step => step.name === 'Skip a bundle older than the published one');
+
+// Run the actual workflow guards against a real history: previous -> A -> B -> C (main).
+// gh only supplies the previous release's manifest; no release is created by these tests.
+function publishingHistory(t, mainAt = 'c') {
+  const dir = mkdtempSync(join(tmpdir(), 'pw-publish-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  function git(...args) {
+    const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  }
+  git('init', '-b', 'main');
+  git('config', 'user.name', 'Synthetic Publisher Test');
+  git('config', 'user.email', 'publisher@example.invalid');
+  function commit(message) {
+    git('commit', '--allow-empty', '-m', message);
+    return git('rev-parse', 'HEAD');
+  }
+  const previous = commit('previous release'), a = commit('A'), b = commit('B'), c = commit('C');
+  git('checkout', '-b', 'untrusted', a);
+  const other = commit('not on main');
+  git('branch', '-f', 'main', mainAt === 'b' ? b : c);
+  git('checkout', 'main');
+  function guard(step, sha, published, scenario = {}) {
+    const output = join(dir, 'output').replaceAll('\\', '/');
+    writeFileSync(output, '');
+    // Match GitHub's Linux shell templates: unspecified means bash -e {0};
+    // explicit bash also disables profiles and enables pipefail.
+    assert.ok(step.shell === undefined || step.shell === 'bash', `unsupported workflow shell: ${step.shell}`);
+    const shellArgs = step.shell === 'bash' ? ['--noprofile', '--norc', '-e', '-o', 'pipefail'] : ['-e'];
+    const script = join(dir, 'guard.sh');
+    writeFileSync(script,
+      `gh() {
+        if [[ "$1" == api ]]; then
+          case "$RELEASE_STATE" in
+            absent) printf 'HTTP/2.0 404 Not Found\\n'; return 1 ;;
+            forbidden) printf 'HTTP/2.0 403 Forbidden\\n'; return 1 ;;
+            server-error) printf 'HTTP/2.0 500 Internal Server Error\\n'; return 1 ;;
+            transport-error) echo 'connection failed' >&2; return 1 ;;
+            *) printf 'HTTP/2.0 200 OK\\n'; return 0 ;;
+          esac
+        fi
+        if [[ "$1 $2" == "release download" ]]; then
+          case "$MANIFEST_STATE" in
+            download-error) echo 'download failed' >&2; return 1 ;;
+            truncated) printf '{"gitCommit":"%s"}' "$PUBLISHED_COMMIT"; return 23 ;;
+            invalid-json) printf 'not JSON'; return 0 ;;
+            missing-commit) printf '{}'; return 0 ;;
+            *) printf '{"gitCommit":"%s"}\\n' "$PUBLISHED_COMMIT"; return 0 ;;
+          esac
+        fi
+        echo 'unexpected gh command' >&2; return 99
+      }\n` + step.run);
+    const result = spawnSync('bash', [...shellArgs, script.replaceAll('\\', '/')], {
+      cwd: dir, encoding: 'utf8',
+      env: { ...process.env, SHA: sha, TAG: 'replay-bundle', PUBLISHED_COMMIT: published, GITHUB_OUTPUT: output,
+        RELEASE_STATE: scenario.release ?? 'present', MANIFEST_STATE: scenario.manifest ?? 'valid' },
+    });
+    return { ...result, skip: readFileSync(output, 'utf8').includes('skip=true') };
+  }
+  const permits = result => result.status === 0 && !result.skip;
+  return { previous, a, b, c, other,
+    order: (sha, published, scenario) => guard(ordering, sha, published, scenario),
+    accepts: (sha, published) => permits(guard(eligibility, sha, published)) && permits(guard(ordering, sha, published)) };
+}
+
+test('publisher queues pending runs without cancelling the running publisher', () => {
+  assert.deepEqual(publisherConcurrency, {
+    group: 'publish-replay-bundle', 'cancel-in-progress': 'false', queue: 'max',
+  });
+});
+
+test('publisher preserves newest green C when B arrives with A running and C pending', t => {
+  const history = publishingHistory(t);
+  const pending = [], cancelled = [];
+  let running = history.a, published = history.previous;
+  function enqueue(sha) {
+    if (publisherConcurrency['cancel-in-progress'] === 'true') {
+      cancelled.push(running);
+      running = sha;
+    } else {
+      // GitHub defaults to one pending slot: each arrival replaces that slot.
+      // queue: max retains up to 100 pending runs instead.
+      if (publisherConcurrency.queue !== 'max') cancelled.push(...pending.splice(0));
+      pending.push(sha);
+    }
+  }
+  enqueue(history.c);
+  enqueue(history.b);
+  // A completes, then whichever publishers survived the configured queue run.
+  // Use the real workflow guards for eligibility and release ordering.
+  for (const sha of [running, ...pending]) {
+    if (history.accepts(sha, published)) published = sha;
+  }
+  assert.equal(published, history.c, 'latest green C must publish despite slower B arriving last');
+  assert.deepEqual(cancelled, [], 'no running or pending publisher should be cancelled');
+});
+
+test('publisher accepts successful A when main has advanced to a failing B', t => {
+  const history = publishingHistory(t, 'b');
+  assert.equal(history.accepts(history.a, history.previous), true);
+});
+
+test('publisher accepts successive successful ancestors even after another main push', t => {
+  const history = publishingHistory(t);
+  assert.equal(history.accepts(history.a, history.previous), true);
+  assert.equal(history.accepts(history.b, history.a.slice(0, 12)), true);
+});
+
+test('publisher skips an older completion after a newer bundle has published', t => {
+  const history = publishingHistory(t);
+  assert.equal(history.accepts(history.b, history.previous), true);
+  assert.equal(history.accepts(history.a, history.b.slice(0, 12)), false);
+  assert.equal(history.accepts(history.c, history.b.slice(0, 12)), true);
+});
+
+test('publisher rejects a successful commit outside trusted main history', t => {
+  const history = publishingHistory(t);
+  assert.equal(history.accepts(history.other, history.previous), false);
+});
+
+for (const [relation, commit] of [['older', 'previous'], ['newer', 'b']]) {
+  test(`publisher fails closed when an existing ${relation} manifest cannot be downloaded`, t => {
+    const history = publishingHistory(t);
+    for (const manifest of ['download-error', 'truncated']) {
+      const result = history.order(history.a, history[commit].slice(0, 12), { manifest });
+      assert.notEqual(result.status, 0, manifest + ': must fail, not authorize publishing or skip');
+      assert.equal(result.skip, false, manifest + ': must stop before the ordering decision');
+    }
+  });
+}
+
+test('publisher fails closed on invalid or unresolvable published metadata', t => {
+  const history = publishingHistory(t);
+  for (const [manifest, published] of [
+    ['invalid-json', history.b], ['missing-commit', history.b], ['valid', ''],
+    ['valid', history.b.slice(0, 12) + '-dirty'], ['valid', 'HEAD'],
+    ['valid', '0'.repeat(12)],
+  ]) {
+    const result = history.order(history.a, published, { manifest });
+    assert.notEqual(result.status, 0, manifest + '/' + published + ': must fail closed');
+  }
+});
+
+test('publisher only bootstraps a release after an explicit not-found response', t => {
+  const history = publishingHistory(t);
+  const absent = history.order(history.a, '', { release: 'absent', manifest: 'download-error' });
+  assert.equal(absent.status, 0, absent.stderr);
+  assert.equal(absent.skip, false);
+  for (const release of ['forbidden', 'server-error', 'transport-error']) {
+    const result = history.order(history.a, history.b.slice(0, 12), { release });
+    assert.notEqual(result.status, 0, release + ': must fail closed');
+  }
+});
 
 test('every run: step in ci.yml has the matching ci:local step, in order', () => {
   const fromWorkflow = Object.entries(workflow).filter(([id]) => id !== 'gate')
@@ -87,11 +252,11 @@ test('the parser reads block runs, quoted names and job-level settings', () => {
   const jobs = parseWorkflow([
     'on:', '  push:', 'jobs:', '  build:', '    runs-on: ubuntu-latest', '    steps:',
     '      - uses: actions/checkout@v7', '      - name: "Quoted"', '        run: echo one',
-    '      - name: Block', '        if: always()', '        run: |', '          echo two', '', '          echo three',
+    '      - name: Block', '        if: always()', '        shell: bash', '        run: |', '          echo two', '', '          echo three',
     '  gate:', '    needs: [build, lint]', '    if: always()', '    steps:', '      - run: true', '',
   ].join('\r\n'));
   assert.deepEqual(jobs.build.steps, [{}, { name: 'Quoted', run: 'echo one' },
-    { name: 'Block', if: 'always()', run: 'echo two\n\necho three' }]);
+    { name: 'Block', if: 'always()', shell: 'bash', run: 'echo two\n\necho three' }]);
   assert.deepEqual(jobs.gate, { needs: ['build', 'lint'], if: 'always()', steps: [{ run: 'true' }] });
 });
 

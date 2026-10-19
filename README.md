@@ -478,7 +478,25 @@ On the site:
 - **Disclaimer.** Every view starts with "Recorded run against a synthetic mock payer; addresses rewritten to example hosts. Passing here does not prove real-payer interoperability." It is part of the mounted element and cannot be turned off.
 - **Theming.** The colours come from the host page's custom properties when it defines them: `--paper`, `--ink`, `--green`, `--muted`, `--line`, `--accent`, `--warn`, plus an optional `--fail` (the same names as the lab's `lab.css`). Otherwise the workbench's own light and dark tokens apply, following `prefers-color-scheme`; tints the host does not define are mixed from its colours. To theme only the widget, set the `--pw-*` properties (`--pw-paper`, `--pw-ink`, `--pw-fail` and so on) on a selector more specific than `.pw-replay`. Text uses the page's font. Replay, Show result and every summary are at least 44 px tall, and the layout works at 320 px.
 - **Safety.** The runs are synthetic, and every string was redacted twice before export: once when it was recorded, and again when the report was built. `replay/test/bundle.test.mjs` scans every bundle file for the patterns `Redactor` masks: PEM blocks, Bearer and Basic credentials, signed JWTs, secret fields in JSON and form bodies, and sensitive headers. It fails on any hit, and also on any file that is not part of the bundle. Point `REPLAY_BUNDLE_DIR` at a vendored copy to check that instead.
-- **Vendoring.** `vendor-into-site.mjs` overwrites the bundle's files in the target and removes stale `runs/*.json`. It leaves everything else in the target alone. Re-export and re-vendor whenever the workbench changes.
+- **Vendoring.** `vendor-into-site.mjs` overwrites the bundle's files in the target and removes stale `runs/*.json`. It leaves everything else in the target alone. Re-export and re-vendor whenever the workbench changes, or vendor the published bundle (below).
+
+### The published bundle
+
+After every green `ci` run on a push to `main`, `.github/workflows/publish-replay-bundle.yml` publishes that run's `site-dist/` as assets of the rolling [`replay-bundle` pre-release](https://github.com/dflippojr/payer-onboarding-workbench/releases/tag/replay-bundle): `replay-bundle.tar.gz` (the whole bundle) and its `manifest.json`. Each publish replaces the last one and moves the tag to that commit. Before uploading, the workflow checks that the manifest's `gitCommit` is that clean `main` commit and runs the leak-scanner corpus and `replay/test/bundle.test.mjs` on the exact files it uploads. It checks out trusted `main` for the validators, never the triggering run's ref, and requires that run's commit to be an ancestor of `main`. A successful run can publish after another push advances `main`, even if the newer push's CI fails. It skips a bundle older than the one already published, so out-of-order completions cannot roll the release back.
+
+Two modes of `vendor-into-site.mjs` use it. Both need only Node 22+ and `tar`, so the website repository can run a copy of the script without building this project:
+
+```sh
+node scripts/vendor-into-site.mjs --check ../personal-website/public/workbench
+# stale by 187 commits: …/public/workbench has 9c386b11a911, the published bundle is 1a2b3c4d5e6f
+node scripts/vendor-into-site.mjs --from-release ../personal-website/public/workbench
+# Vendored 10 files from the published bundle (1a2b3c4d5e6f) into …/public/workbench
+```
+
+- **`--check`** compares the target's `manifest.json` `gitCommit` with the published one, counting commits through the GitHub compare API. It exits 0 when the copy is current (or newer), 1 when it is stale (`stale by N commits`, or `stale` when the copy names no clean commit), and 2 when it cannot tell: no manifest in the target, nothing published, or the API failed. A `-dirty` copy counts as its commit. Set `GITHUB_TOKEN` to lift the API's anonymous rate limit; it is sent to the API only.
+- **`--from-release`** downloads `replay-bundle.tar.gz`, refuses it if an entry would land outside the bundle, contains links or other entries besides regular files and directories, or has no `manifest.json`, and vendors it exactly as the plain mode vendors `site-dist/`. It also checks the extracted tree for links before changing the target.
+
+`WORKBENCH_RELEASE_URL` and `WORKBENCH_API_URL` point both modes at another release download and API base; `scripts/vendor-into-site.test.mjs` uses them with a local server.
 
 ![Replay of the Fabrikam wrong-audience run after playback: scenario cards, the result card with the auth.jwt-audience failure and its fix, and the step timeline stopped at the failed hook request](docs/screenshots/replay.png)
 

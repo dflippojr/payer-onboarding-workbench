@@ -25,6 +25,7 @@ export const steps = [
   { name: 'Export the website replay bundle (reuses the jar)', run: 'EXPORT_SKIP_BUILD=1 node scripts/export-replays.mjs' },
   { name: 'Check the leak scanner against the shared redaction corpus', run: 'node --test replay/test/leaks.test.mjs' },
   { name: 'Check the replay bundle', run: 'node --test replay/test/bundle.test.mjs' },
+  { name: "Check vendor-into-site's --check and --from-release modes", run: 'node --test scripts/vendor-into-site.test.mjs' },
   { name: 'Check the audit reader regression suite', run: 'node --test scripts/audit-reader.test.mjs' },
   {
     name: 'Check the workbench lifecycle regression suite (timeout fails a hung cleanup)',
