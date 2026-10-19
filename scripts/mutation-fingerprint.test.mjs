@@ -135,6 +135,27 @@ test('an edit to a shared class, a diagnostics test, the pom, an upstream module
   }
 });
 
+test('checks that name each other share a partition key in both directions; an unrelated check keeps its own', () => {
+  const dir = fakeRepo();
+  try {
+    writeFileSync(join(dir, 'diagnostics/src/main/java/JwtAudienceCheck.java'), 'class JwtAudienceCheck {}');
+    writeFileSync(join(dir, 'diagnostics/src/main/java/HookRejectedCheck.java'),
+      'class HookRejectedCheck { Object helper = JwtAudienceCheck.class; }');
+    const before = keys(dir);
+    writeFileSync(join(dir, 'diagnostics/src/main/java/JwtAudienceCheck.java'), 'class JwtAudienceCheck { int changed; }');
+    const helperEdit = keys(dir);
+    assert.notEqual(helperEdit.JwtAudienceCheck, before.JwtAudienceCheck, 'editing the check kept its key');
+    assert.notEqual(helperEdit.HookRejectedCheck, before.HookRejectedCheck, 'a check that calls the edited check kept its key');
+    assert.equal(helperEdit.Check, before.Check, 'an unrelated check was invalidated');
+    writeFileSync(join(dir, 'diagnostics/src/main/java/HookRejectedCheck.java'),
+      'class HookRejectedCheck { Object helper = JwtAudienceCheck.class; int changed; }');
+    const callerEdit = keys(dir);
+    assert.notEqual(callerEdit.JwtAudienceCheck, helperEdit.JwtAudienceCheck, 'editing a caller kept the helper\'s key');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('edits outside the diagnostics inputs change no partition key', () => {
   const dir = fakeRepo();
   try {

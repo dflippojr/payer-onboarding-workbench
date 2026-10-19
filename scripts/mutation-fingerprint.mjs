@@ -4,10 +4,10 @@
 // holds: a SHA-256 over every input its verdicts depend on. The inputs are the root pom, the Maven wrapper,
 // the mutation scripts (install-crd-router.sh pins fhir-crd-router), diagnostics' pom and sources, the pom
 // and src/main of every reactor module diagnostics depends on (any scope, transitively: mock-payers and
-// samples feed its tests), and the JDK's `java -version`. Each check (a class named *Check) also depends
-// only on itself, so editing one check invalidates that check's partition and no other. Every other
-// class depends on the shared sources, which include the other non-check classes, and so an edit to one
-// of them invalidates all partitions.
+// samples feed its tests), and the JDK's `java -version`. A check (a class named *Check) also depends on
+// the checks it is linked to: two checks are linked when either names the other, so a check's partition
+// covers its whole linked group. An unrelated check depends on itself alone. Every other class is shared
+// by all partitions, so an edit to one of them invalidates every partition.
 //
 //   node scripts/mutation-fingerprint.mjs     prints <class>TAB<pitest targetClasses>TAB<key>, one line per partition
 import { createHash } from 'node:crypto';
@@ -66,6 +66,39 @@ export function inputFiles(dir) {
 }
 
 const isCheck = path => /^diagnostics\/src\/main\/java\/.*Check\.java$/.test(path);
+const simpleName = path => path.replace(/^.*\//, '').replace(/\.java$/, '');
+
+// For each check, the paths of its linked group (itself included): the checks connected to it through
+// the names they use, directly or through other checks.
+function linkedChecks(dir, checks) {
+  const paths = new Map(checks.map(path => [simpleName(path), path]));
+  const sources = new Map([...paths].map(([name, path]) => [name, readFileSync(join(dir, path), 'utf8')]));
+  const links = new Map([...paths.keys()].map(name => [name, new Set()]));
+  for (const [name, source] of sources) {
+    for (const other of paths.keys()) {
+      if (other !== name && new RegExp(`\\b${other}\\b`).test(source)) {
+        links.get(name).add(other);
+        links.get(other).add(name);
+      }
+    }
+  }
+  const groups = new Map();
+  for (const start of paths.keys()) {
+    if (groups.has(start)) continue;
+    const group = new Set([start]);
+    const queue = [start];
+    while (queue.length) {
+      for (const next of links.get(queue.pop())) {
+        if (!group.has(next)) {
+          group.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    for (const name of group) groups.set(name, [...group].map(member => paths.get(member)));
+  }
+  return groups;
+}
 
 // Every class pitest analyses, one partition each: its name, the targetClasses pattern that selects it
 // (inner classes included) and the key of the inputs its report depends on.
@@ -78,16 +111,16 @@ export function partitions(dir, runtime) {
     }
     return digest.digest('hex');
   };
-  const inputs = inputFiles(dir);
-  const shared = inputs.filter(path => !isCheck(path));
+  const common = inputFiles(dir).filter(path => !isCheck(path));
+  const linked = linkedChecks(dir, walk(dir, SOURCES).filter(isCheck));
   return walk(dir, SOURCES)
     .filter(path => path.endsWith('.java') && !path.endsWith('package-info.java'))
     .sort()
     .map(path => {
       const dotted = path.slice(`${SOURCES}/`.length, -'.java'.length).replaceAll('/', '.');
-      const own = path.slice(0, -'.java'.length).replace(/^.*\//, '');
-      const files = [...new Set([...shared, path])].sort();
-      return { name: own, target: `${dotted}*`, key: hash(files) };
+      const name = simpleName(path);
+      const files = [...new Set([...common, ...(linked.get(name) ?? []), path])].sort();
+      return { name, target: `${dotted}*`, key: hash(files) };
     });
 }
 
