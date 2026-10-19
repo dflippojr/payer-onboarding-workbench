@@ -103,14 +103,14 @@ test('in this repo every diagnostics class is a partition, and package-info is n
   assert.equal(new Set(found.map(({ name }) => name)).size, found.length, 'partition names must be unique');
 });
 
-test('editing one check changes only that check\'s partition key', () => {
+test('editing one check changes its own key and the shared classes\' keys, since their tests run every check', () => {
   const dir = fakeRepo();
   try {
     const before = keys(dir);
     writeFileSync(join(dir, 'diagnostics/src/main/java/Check.java'), 'class Check { int changed; }');
     const after = keys(dir);
     assert.notEqual(after.Check, before.Check, 'editing the check kept its key');
-    assert.equal(after.Support, before.Support, 'editing one check invalidated another partition');
+    assert.notEqual(after.Support, before.Support, 'a shared class kept its key although the tests run every check');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -202,7 +202,7 @@ test('mutation.sh analyses only the classes whose inputs changed, and merges eve
     assert.equal(merged.match(/<mutation /g).length, 2, 'the merged report must hold every class\'s mutants');
     assert.deepEqual(runMutationSh(dir), [], 'unchanged inputs must analyse nothing');
     writeFileSync(join(dir, 'diagnostics/src/main/java/Check.java'), 'class Check { int changed; }');
-    assert.deepEqual(runMutationSh(dir), ['Check*'], 'touching one check must analyse that check only');
+    assert.deepEqual(runMutationSh(dir), ['Check*', 'Support*'], 'touching one check must analyse it and the shared classes');
     writeFileSync(join(dir, 'payers/src/main/java/Payer.java'), 'class Payer { int changed; }');
     assert.deepEqual(runMutationSh(dir), ['Check*', 'Support*'], 'an upstream edit must analyse every class');
   } finally {

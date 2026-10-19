@@ -6,8 +6,9 @@
 // and src/main of every reactor module diagnostics depends on (any scope, transitively: mock-payers and
 // samples feed its tests), and the JDK's `java -version`. A check (a class named *Check) also depends on
 // the checks it is linked to: two checks are linked when either names the other, so a check's partition
-// covers its whole linked group. An unrelated check depends on itself alone. Every other class is shared
-// by all partitions, so an edit to one of them invalidates every partition.
+// covers its whole linked group. An unrelated check depends on itself alone. Every other class is shared:
+// its partition covers every check, since each check's code reaches it, so an edit to any check invalidates
+// it, and an edit to any shared class invalidates every partition.
 //
 //   node scripts/mutation-fingerprint.mjs     prints <class>TAB<pitest targetClasses>TAB<key>, one line per partition
 import { createHash } from 'node:crypto';
@@ -112,14 +113,18 @@ export function partitions(dir, runtime) {
     return digest.digest('hex');
   };
   const common = inputFiles(dir).filter(path => !isCheck(path));
-  const linked = linkedChecks(dir, walk(dir, SOURCES).filter(isCheck));
+  const checks = walk(dir, SOURCES).filter(isCheck);
+  const linked = linkedChecks(dir, checks);
   return walk(dir, SOURCES)
     .filter(path => path.endsWith('.java') && !path.endsWith('package-info.java'))
     .sort()
     .map(path => {
       const dotted = path.slice(`${SOURCES}/`.length, -'.java'.length).replaceAll('/', '.');
       const name = simpleName(path);
-      const files = [...new Set([...common, ...(linked.get(name) ?? []), path])].sort();
+      // A check's mutants are judged against its own findings, so its linked group is enough. Shared
+      // classes are used by every check, so their mutants depend on all of them.
+      const dependencies = linked.get(name) ?? checks;
+      const files = [...new Set([...common, ...dependencies, path])].sort();
       return { name, target: `${dotted}*`, key: hash(files) };
     });
 }
