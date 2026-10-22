@@ -116,13 +116,17 @@ class PayerLockTest {
     }
 
     @Test
-    void aSlowResponseDelayPastTheRequestTimeoutIsRefused() throws Exception {
+    void aSlowResponseDelayPastTheRequestTimeoutIsRefused(CapturedOutput output) throws Exception {
         Answer over = post(slow(NORTHWIND_ID, CAP_MS + 1)).get(30, TimeUnit.SECONDS);
 
         assertEquals(400, over.status(), over.toString());
         assertEquals("slowResponseDelayMs must be at most 3000 (workbench.request-timeout plus 1 s)",
                 mapper.readTree(over.response().body()).path("detail").asText());
         assertTrue(over.elapsed().compareTo(WAIT) < 0, "refused before the payer was held: " + over.elapsed());
+        JsonNode refused = runCompleted(output).stream()
+                .filter(e -> e.path("metadata").path("httpStatus").asInt() == 400).findFirst().orElseThrow();
+        assertEquals("invalid_slow_response_delay", refused.path("metadata").path("reasonCode").asText());
+        assertTrue(refused.path("runId").isNull(), refused::toString);
 
         Answer atCap = post(slow(NORTHWIND_ID, CAP_MS)).get(30, TimeUnit.SECONDS);
         assertEquals(200, atCap.status(), atCap.toString());
