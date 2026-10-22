@@ -11,7 +11,7 @@ import java.util.Objects;
  *
  * @param accessToken       what the token endpoint issues as {@code access_token}
  * @param tokenType         the {@code token_type} value, case kept as given
- * @param expiresInAsString send {@code expires_in} as a JSON string instead of a number
+ * @param expiresIn         the JSON type and form of {@code expires_in}
  * @param extraTokenFields  add response fields the client does not know
  * @param tokenContentType  the token response's {@code Content-Type}
  * @param tokenErrorWith200 answer a valid token request with HTTP 200 and an OAuth {@code error} body
@@ -20,17 +20,18 @@ import java.util.Objects;
  * @param redirect          a redirect the payer answers one endpoint with, or {@code null}
  * @param discovery         the shape of the discovery document
  */
-public record PayerBehaviour(AccessToken accessToken, String tokenType, boolean expiresInAsString,
+public record PayerBehaviour(AccessToken accessToken, String tokenType, ExpiresIn expiresIn,
                              boolean extraTokenFields, String tokenContentType, boolean tokenErrorWith200,
                              HookAuthentication hookAuthentication, Duration clockOffset, Redirect redirect,
                              Discovery discovery) {
 
-    public static final PayerBehaviour STANDARD = new PayerBehaviour(AccessToken.OPAQUE, "Bearer", false, false,
+    public static final PayerBehaviour STANDARD = new PayerBehaviour(AccessToken.OPAQUE, "Bearer", ExpiresIn.NUMBER, false,
             "application/json", false, HookAuthentication.ENFORCED, Duration.ZERO, null, Discovery.STANDARD);
 
     public PayerBehaviour {
         Objects.requireNonNull(accessToken, "accessToken");
         Objects.requireNonNull(tokenType, "tokenType");
+        Objects.requireNonNull(expiresIn, "expiresIn");
         Objects.requireNonNull(tokenContentType, "tokenContentType");
         Objects.requireNonNull(hookAuthentication, "hookAuthentication");
         Objects.requireNonNull(clockOffset, "clockOffset");
@@ -50,6 +51,19 @@ public record PayerBehaviour(AccessToken accessToken, String tokenType, boolean 
         /** An opaque token of {@value PayerBehaviour#VERY_LONG_TOKEN_LENGTH} characters. */
         VERY_LONG
     }
+
+    /** How the token response sends {@code expires_in}. */
+    public enum ExpiresIn {
+        /** A JSON number of seconds, as RFC 6749 section 5.1 requires. */
+        NUMBER,
+        /** The same seconds as a JSON string, such as {@code "300"}; some identity providers do this. */
+        NUMERIC_STRING,
+        /** A JSON string that is not a number of seconds: {@value PayerBehaviour#NON_NUMERIC_EXPIRES_IN}. */
+        NON_NUMERIC_STRING
+    }
+
+    /** The {@code expires_in} a {@link ExpiresIn#NON_NUMERIC_STRING} payer sends. */
+    public static final String NON_NUMERIC_EXPIRES_IN = "5 minutes";
 
     /** Length of a {@link AccessToken#VERY_LONG} token; large identity-provider tokens reach this size. */
     public static final int VERY_LONG_TOKEN_LENGTH = 8192;
@@ -98,52 +112,52 @@ public record PayerBehaviour(AccessToken accessToken, String tokenType, boolean 
     }
 
     public PayerBehaviour withAccessToken(AccessToken value) {
-        return new PayerBehaviour(value, tokenType, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(value, tokenType, expiresIn, extraTokenFields, tokenContentType,
                 tokenErrorWith200, hookAuthentication, clockOffset, redirect, discovery);
     }
 
     public PayerBehaviour withTokenType(String value) {
-        return new PayerBehaviour(accessToken, value, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(accessToken, value, expiresIn, extraTokenFields, tokenContentType,
                 tokenErrorWith200, hookAuthentication, clockOffset, redirect, discovery);
     }
 
-    public PayerBehaviour withExpiresInAsString(boolean value) {
+    public PayerBehaviour withExpiresIn(ExpiresIn value) {
         return new PayerBehaviour(accessToken, tokenType, value, extraTokenFields, tokenContentType,
                 tokenErrorWith200, hookAuthentication, clockOffset, redirect, discovery);
     }
 
     public PayerBehaviour withExtraTokenFields(boolean value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, value, tokenContentType,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, value, tokenContentType,
                 tokenErrorWith200, hookAuthentication, clockOffset, redirect, discovery);
     }
 
     public PayerBehaviour withTokenContentType(String value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, extraTokenFields, value,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, extraTokenFields, value,
                 tokenErrorWith200, hookAuthentication, clockOffset, redirect, discovery);
     }
 
     public PayerBehaviour withTokenErrorWith200(boolean value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, extraTokenFields, tokenContentType,
                 value, hookAuthentication, clockOffset, redirect, discovery);
     }
 
     public PayerBehaviour withHookAuthentication(HookAuthentication value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, extraTokenFields, tokenContentType,
                 tokenErrorWith200, value, clockOffset, redirect, discovery);
     }
 
     public PayerBehaviour withClockOffset(Duration value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, extraTokenFields, tokenContentType,
                 tokenErrorWith200, hookAuthentication, value, redirect, discovery);
     }
 
     public PayerBehaviour withRedirect(Redirect value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, extraTokenFields, tokenContentType,
                 tokenErrorWith200, hookAuthentication, clockOffset, value, discovery);
     }
 
     public PayerBehaviour withDiscovery(Discovery value) {
-        return new PayerBehaviour(accessToken, tokenType, expiresInAsString, extraTokenFields, tokenContentType,
+        return new PayerBehaviour(accessToken, tokenType, expiresIn, extraTokenFields, tokenContentType,
                 tokenErrorWith200, hookAuthentication, clockOffset, redirect, value);
     }
 }

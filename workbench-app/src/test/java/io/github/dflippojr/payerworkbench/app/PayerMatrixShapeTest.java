@@ -79,21 +79,21 @@ class PayerMatrixShapeTest {
             seen.add(effective.accessToken());
             seen.add(effective.hookAuthentication());
             seen.add(effective.discovery());
+            seen.add(effective.expiresIn());
             if (b.redirect() != null) {
                 seen.add(b.redirect().endpoint() + "/" + b.redirect().to());
                 seen.add(b.redirect().status());
             }
         }
         for (Enum<?> variant : Stream.of(PayerBehaviour.AccessToken.values(), PayerBehaviour.HookAuthentication.values(),
-                PayerBehaviour.Discovery.values()).flatMap(Arrays::stream).toList()) {
+                PayerBehaviour.Discovery.values(), PayerBehaviour.ExpiresIn.values()).flatMap(Arrays::stream).toList()) {
             assertTrue(seen.contains(variant), "no row exercises " + variant);
         }
         for (Object redirect : List.of("discovery/same-host", "discovery/other-host", "token/same-host",
                 "token/other-host", 307, 308)) {
             assertTrue(seen.contains(redirect), "no row exercises redirect " + redirect);
         }
-        assertTrue(behaviours.stream().anyMatch(b -> Boolean.TRUE.equals(b.expiresInAsString()))
-                && behaviours.stream().anyMatch(b -> Boolean.TRUE.equals(b.extraTokenFields()))
+        assertTrue(behaviours.stream().anyMatch(b -> Boolean.TRUE.equals(b.extraTokenFields()))
                 && behaviours.stream().anyMatch(b -> Boolean.TRUE.equals(b.tokenErrorWith200()))
                 && behaviours.stream().anyMatch(b -> b.tokenContentType() != null)
                 && behaviours.stream().map(PayerMatrix.Behaviour::tokenType).filter(Objects::nonNull).distinct().count() >= 2,
