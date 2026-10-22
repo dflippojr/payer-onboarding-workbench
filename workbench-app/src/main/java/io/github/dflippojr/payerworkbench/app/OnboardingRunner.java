@@ -58,6 +58,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -70,7 +71,9 @@ import java.util.concurrent.locks.ReentrantLock;
  * recorded through {@link ExchangeRecorder}, so step details never carry a secret.
  *
  * <p>Faults are switched on at the mock payer for the length of one run. Runs against
- * the same payer are serialized so one run's faults never leak into another's.
+ * the same payer are serialized so one run's faults never leak into another's. A run waits its turn
+ * for at most {@code workbench.request-timeout} and is then refused, and a {@code slow-response} delay
+ * longer than {@link WorkbenchProperties#maxSlowResponseDelay()} is refused before it can hold the payer.
  *
  * <p>The run id is also the run's correlation id: it is sent to the payer as
  * {@value RequestIdClient#HEADER} on every call, held in the logging MDC as
@@ -136,7 +139,9 @@ public class OnboardingRunner {
     /**
      * Runs the steps for {@code request}.
      *
-     * @throws IllegalArgumentException if the payer, sample or a fault id is unknown
+     * @throws IllegalArgumentException if the payer, sample or a fault id is unknown, or the
+     *                                  {@code slow-response} delay is past {@link WorkbenchProperties#maxSlowResponseDelay()}
+     * @throws PayerBusyException       if another run held the synthetic payer for all of {@code workbench.request-timeout}
      */
     public OnboardingRun run(RunRequest request) {
         return run(request, true);
@@ -187,14 +192,27 @@ public class OnboardingRunner {
         List<Fault> faults = request.faults().stream()
                 .map(id -> Fault.fromId(id).orElseThrow(() -> new IllegalArgumentException("Unknown fault: " + id)))
                 .toList();
+        checkSlowResponseDelay(request);
         checkSuffix(request, payers.store().findByPayerIdAndEnvironment(request.payerId(), request.environment())
                 .map(ConnectionRecord::baseUrl).orElse(null));
 
         String runId = UUID.randomUUID().toString();
         AuditContext audit = AuditContext.current();
+        // Fair, so runs get the payer in the order they asked for it. The wait is at most request-timeout, the
+        // longest one call of the run ahead can hold the payer, so a queue of slow runs refuses the runs behind
+        // it instead of stalling them.
+        ReentrantLock lock = locks.computeIfAbsent(request.payerId(), id -> new ReentrantLock(true));
+        boolean held;
+        try {
+            held = lock.tryLock(properties.requestTimeout().toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            held = false;
+        }
+        if (!held) {
+            throw payerBusy(audit, request.payerId());
+        }
         if (audit != null) { audit.runId = runId; }
-        ReentrantLock lock = locks.computeIfAbsent(request.payerId(), id -> new ReentrantLock());
-        lock.lock();
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
              MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId())) {
             // One atomic setup snapshot; the setters inside are quiet so nothing is recorded twice.
@@ -231,6 +249,27 @@ public class OnboardingRunner {
                 lock.unlock();
             }
         }
+    }
+
+    /**
+     * Refuses a {@code slowResponseDelayMs} past {@link WorkbenchProperties#maxSlowResponseDelay()}: the
+     * workbench gives up on the hook call at {@code workbench.request-timeout}, but the mock payer would keep
+     * sleeping for the whole delay.
+     */
+    private void checkSlowResponseDelay(RunRequest request) {
+        long max = properties.maxSlowResponseDelay().toMillis();
+        if (request.slowResponseDelayMs() != null && request.slowResponseDelayMs() > max) {
+            AuditContext audit = AuditContext.current();
+            if (audit != null) { audit.reasonCode = "invalid_slow_response_delay"; }
+            throw new IllegalArgumentException("slowResponseDelayMs must be at most " + max
+                    + " (workbench.request-timeout plus 1 s)");
+        }
+    }
+
+    /** The payer was still held when the wait ended, or the wait was interrupted: no run is started. */
+    private static PayerBusyException payerBusy(AuditContext audit, String payerId) {
+        if (audit != null) { audit.reasonCode = "payer_busy"; }
+        return new PayerBusyException(payerId);
     }
 
     /**

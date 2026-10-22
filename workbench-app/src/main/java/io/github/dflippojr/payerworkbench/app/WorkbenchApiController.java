@@ -173,6 +173,13 @@ public class WorkbenchApiController {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
     }
 
+    /** Another run held the synthetic payer for the whole wait: 409, and no run was started. */
+    @ExceptionHandler(PayerBusyException.class)
+    ResponseEntity<ProblemDetail> payerBusy(PayerBusyException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage()));
+    }
+
     /** Too many custom-endpoint runs in flight: 503 with a hint to retry, rather than queuing the run. */
     @ExceptionHandler(RunsBusyException.class)
     ResponseEntity<ProblemDetail> busy(RunsBusyException e) {
