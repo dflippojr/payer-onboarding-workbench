@@ -30,6 +30,9 @@ class WorkbenchApiTest {
     @Value("${local.server.port}")
     int port;
 
+    @Value("${server.address:}")
+    String serverAddress;
+
     @Autowired
     SyntheticPayers payers;
 
@@ -50,6 +53,12 @@ class WorkbenchApiTest {
         assertFalse(payerList.get(1).path("editableSettings").toString().contains("audOverride"));
         assertFalse(payerList.get(0).path("editableSettings").toString().contains("audOverride"));
         assertEquals(11, payerList.get(0).path("faults").size());
+    }
+
+    @Test
+    void listensOnLoopbackOnlyByDefault() throws Exception {
+        assertFalse(serverAddress.isBlank(), "server.address is unset, so the API listens on every interface");
+        assertTrue(java.net.InetAddress.getByName(serverAddress).isLoopbackAddress(), serverAddress);
     }
 
     @Test

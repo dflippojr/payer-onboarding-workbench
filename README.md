@@ -28,7 +28,7 @@ Build and run the tests:
 ./mvnw verify
 ```
 
-Run the app (serves on http://localhost:8080 by default). Install the sibling modules once, then run `workbench-app` on its own; adding `-am` to `spring-boot:run` fails on the parent pom, which has no main class:
+Run the app (serves on http://localhost:8080 by default, listening on loopback only because the API has no authentication; `--server.address` changes that). Install the sibling modules once, then run `workbench-app` on its own; adding `-am` to `spring-boot:run` fails on the parent pom, which has no main class:
 
 ```sh
 ./mvnw install -DskipTests
