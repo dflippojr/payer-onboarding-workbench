@@ -53,6 +53,9 @@ class PayerLockTest {
     @Autowired
     SyntheticPayers payers;
 
+    @Autowired
+    OnboardingRunner runner;
+
     private final HttpClient http = HttpClient.newHttpClient();
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -126,6 +129,38 @@ class PayerLockTest {
         Answer byDefault = post("{\"payerId\":\"" + NORTHWIND_ID + "\",\"sampleId\":\"" + SAMPLE + "\",\"faults\":[\""
                 + Fault.SLOW_RESPONSE.id() + "\"]}").get(30, TimeUnit.SECONDS);
         assertEquals(200, byDefault.status(), byDefault.toString());
+    }
+
+    @Test
+    void theDefaultDelayFitsUnderTheDefaultCap() {
+        WorkbenchProperties defaults = new WorkbenchProperties(null, null, null, null, null);
+        assertEquals(Duration.ofSeconds(16), defaults.maxSlowResponseDelay());
+        assertTrue(defaults.slowResponseDelay().compareTo(defaults.maxSlowResponseDelay()) <= 0);
+    }
+
+    @Test
+    void aRunWaitingForThePayerStopsWhenInterrupted() throws Exception {
+        CompletableFuture<Answer> holder = post(slow(FABRIKAM_ID, CAP_MS));
+        awaitSlowResponseOn(FABRIKAM_ID);
+        CompletableFuture<RuntimeException> waiting = new CompletableFuture<>();
+        Thread waiter = new Thread(() -> {
+            try {
+                runner.run(new RunRequest(FABRIKAM_ID, null, SAMPLE, List.of(), null, null));
+                waiting.complete(null);
+            } catch (RuntimeException e) {
+                waiting.complete(e);
+            }
+        });
+        waiter.start();
+        Thread.sleep(200);
+        long start = System.nanoTime();
+        waiter.interrupt();
+
+        RuntimeException refused = waiting.get(30, TimeUnit.SECONDS);
+        assertTrue(refused instanceof PayerBusyException, String.valueOf(refused));
+        assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(WAIT) < 0, "the wait ended with the interrupt");
+        waiter.join(10_000);
+        assertEquals(200, holder.get(30, TimeUnit.SECONDS).status());
     }
 
     private void awaitSlowResponseOn(String payerId) throws InterruptedException {

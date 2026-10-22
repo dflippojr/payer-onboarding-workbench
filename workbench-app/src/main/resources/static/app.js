@@ -431,7 +431,8 @@
       // No new result: put the run that was on screen back, rather than leave the pending steps.
       if (previous) renderRun(...previous);
       else showEmpty('Nothing run yet.');
-      $('run-status').textContent = `Run failed: ${e.message}`;
+      // 409: another run held the payer for the whole wait, so this one never started.
+      $('run-status').textContent = `${e.status === 409 ? 'Run not started' : 'Run failed'}: ${e.message}`;
     } finally {
       $('run-status').className = 'muted small';
       $('run-label').textContent = 'Run onboarding';

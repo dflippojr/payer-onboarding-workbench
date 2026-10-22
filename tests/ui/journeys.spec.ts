@@ -381,3 +381,25 @@ test('synthetic banner and incomplete coverage fault explain the supported scena
   await runOnboarding(page);
   await expect(page.locator('#verdict-check, #findings .finding.FAIL').filter({ hasText: 'response.coverage-information' })).toHaveCount(1);
 });
+
+test('a run refused because the payer is busy shows the 409 reason and keeps the previous result', async ({ page }) => {
+  await ready(page);
+  await page.locator('input[value="fabrikam-synthetic"]').check();
+  await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+  const previous = await runOnboarding(page);
+  // The server answers this way when another run holds the payer for all of workbench.request-timeout
+  // (PayerLockTest drives the real 409); waiting 15 s for a real one here would slow every project.
+  const detail = 'another run against fabrikam-synthetic is in progress; try again when it finishes';
+  await page.route('**/api/runs', route => route.request().method() === 'POST'
+    ? route.fulfill({ status: 409, contentType: 'application/problem+json',
+        json: { type: 'about:blank', title: 'Conflict', status: 409, detail, instance: '/api/runs' } })
+    : route.continue());
+  const refused = page.waitForResponse(r => r.url().endsWith('/api/runs') && r.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run onboarding' }).click();
+  expect((await refused).status()).toBe(409);
+  await expect(page.locator('#run-status')).toHaveText('Run not started: ' + detail);
+  await expect(page.getByRole('button', { name: 'Run onboarding' })).toBeEnabled();
+  await expect(page.locator('#run-meta')).toContainText('run ' + previous.runId.slice(0, 8));
+  await expect(page.getByLabel('Recent runs')).toHaveValue(previous.runId);
+  await page.unroute('**/api/runs');
+});

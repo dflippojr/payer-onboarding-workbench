@@ -9,7 +9,8 @@ import java.time.Duration;
  * Settings under {@code workbench.*}.
  *
  * @param slowResponseDelay how long the {@code slow-response} fault holds each response when a run
- *                          doesn't say; the default is past the 10 s latency budget, so it fails
+ *                          doesn't say; the default is past the 10 s latency budget, so it fails.
+ *                          A run may ask for up to {@link #maxSlowResponseDelay()}
  * @param latencyWarn       hook latency that is a WARN
  * @param latencyFail       hook latency that is a FAIL (CDS Hooks clients often give up around here)
  * @param requestTimeout    how long the workbench waits for any one HTTP response, body included
@@ -43,6 +44,14 @@ public record WorkbenchProperties(
 ) {
     /** Default {@link #requestTimeout()}: 15 s. */
     public static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(15);
+
+    /**
+     * The longest {@code slowResponseDelayMs} a run may ask for: {@link #requestTimeout()} plus 1 s. The
+     * workbench gives up on the call at the timeout, so a longer delay only keeps the mock payer sleeping.
+     */
+    public Duration maxSlowResponseDelay() {
+        return requestTimeout.plusSeconds(1);
+    }
 
     /** Default {@link #maxResponseBytes()}: 4 MiB. */
     public static final long DEFAULT_MAX_RESPONSE_BYTES = 4L * 1024 * 1024;
