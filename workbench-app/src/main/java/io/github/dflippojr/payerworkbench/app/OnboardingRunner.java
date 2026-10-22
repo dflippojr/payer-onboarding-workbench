@@ -196,11 +196,22 @@ public class OnboardingRunner {
         checkSuffix(request, payers.store().findByPayerIdAndEnvironment(request.payerId(), request.environment())
                 .map(ConnectionRecord::baseUrl).orElse(null));
 
-        // Fair, so runs get the payer in the order they asked for it.
-        ReentrantLock lock = locks.computeIfAbsent(request.payerId(), id -> new ReentrantLock(true));
-        awaitTurn(lock, request.payerId());
         String runId = UUID.randomUUID().toString();
         AuditContext audit = AuditContext.current();
+        // Fair, so runs get the payer in the order they asked for it. The wait is at most request-timeout, the
+        // longest one call of the run ahead can hold the payer, so a queue of slow runs refuses the runs behind
+        // it instead of stalling them.
+        ReentrantLock lock = locks.computeIfAbsent(request.payerId(), id -> new ReentrantLock(true));
+        boolean held;
+        try {
+            held = lock.tryLock(properties.requestTimeout().toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            held = false;
+        }
+        if (!held) {
+            throw payerBusy(audit, request.payerId());
+        }
         if (audit != null) { audit.runId = runId; }
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
              MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId())) {
@@ -255,25 +266,10 @@ public class OnboardingRunner {
         }
     }
 
-    /**
-     * Waits for the payer at most {@code workbench.request-timeout}, the longest one call of the run ahead can
-     * hold it, so a queue of slow runs refuses the runs behind it instead of stalling them.
-     *
-     * @throws PayerBusyException if the payer is still held, or the wait is interrupted
-     */
-    private void awaitTurn(ReentrantLock lock, String payerId) {
-        boolean held;
-        try {
-            held = lock.tryLock(properties.requestTimeout().toNanos(), TimeUnit.NANOSECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            held = false;
-        }
-        if (!held) {
-            AuditContext audit = AuditContext.current();
-            if (audit != null) { audit.reasonCode = "payer_busy"; }
-            throw new PayerBusyException(payerId);
-        }
+    /** The payer was still held when the wait ended, or the wait was interrupted: no run is started. */
+    private static PayerBusyException payerBusy(AuditContext audit, String payerId) {
+        if (audit != null) { audit.reasonCode = "payer_busy"; }
+        return new PayerBusyException(payerId);
     }
 
     /**
