@@ -122,6 +122,7 @@ jobs:
           path: |
             .crd-ri/reports/
             .crd-ri/*.log
+          include-hidden-files: true
           if-no-files-found: ignore
 
   # The outside judge for response content: the official HL7 FHIR Validator, pinned with the
