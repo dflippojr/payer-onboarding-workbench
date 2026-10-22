@@ -10,7 +10,11 @@ import java.util.List;
  *
  * @param accessTokenPresent whether the response contained a non-empty {@code access_token}
  * @param tokenType the {@code token_type}, e.g. {@code Bearer}; may be {@code null}
- * @param expiresInSeconds the {@code expires_in}; {@code null} if absent
+ * @param expiresInSeconds the {@code expires_in} in seconds; {@code null} if absent or not usable (a
+ *                         JSON number or numeric string that is not a positive whole number)
+ * @param expiresInSent the {@code expires_in} as the payer sent it, as JSON text (a string keeps its
+ *                      quotes, so {@code "300"} tells a string from the number {@code 300}), redacted;
+ *                      {@code null} if absent
  * @param scopes the first {@link #MAX_SCOPES} of the granted {@code scope}, split on spaces; empty if absent
  * @param scopesNotShown how many more granted scopes there were
  * @param error the OAuth2 {@code error} code on failure; {@code null} on success
@@ -20,6 +24,7 @@ public record TokenResponseMetadata(
         boolean accessTokenPresent,
         String tokenType,
         Long expiresInSeconds,
+        String expiresInSent,
         List<String> scopes,
         int scopesNotShown,
         String error,
@@ -39,11 +44,13 @@ public record TokenResponseMetadata(
         error = TextLimit.cut(error);
         // Redact before the final cut; the first cut only bounds the redactor's work.
         errorDescription = TextLimit.cut(Redactor.redact(TextLimit.cut(errorDescription, TextLimit.MAX_FINDING_CHARS)));
+        expiresInSent = TextLimit.cut(Redactor.redact(TextLimit.cut(expiresInSent, TextLimit.MAX_FINDING_CHARS)));
     }
 
-    /** Metadata whose {@code scopes} are all the granted scopes. */
+    /** Metadata whose {@code scopes} are all the granted scopes and whose {@code expires_in}, if any, was a JSON number. */
     public TokenResponseMetadata(boolean accessTokenPresent, String tokenType, Long expiresInSeconds,
                                  List<String> scopes, String error, String errorDescription) {
-        this(accessTokenPresent, tokenType, expiresInSeconds, scopes, 0, error, errorDescription);
+        this(accessTokenPresent, tokenType, expiresInSeconds,
+                expiresInSeconds == null ? null : expiresInSeconds.toString(), scopes, 0, error, errorDescription);
     }
 }

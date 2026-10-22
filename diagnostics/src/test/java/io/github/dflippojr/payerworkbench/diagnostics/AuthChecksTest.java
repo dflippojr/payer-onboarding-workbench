@@ -66,7 +66,75 @@ class AuthChecksTest {
         void missingExpiresInWarns() {
             var run = healthy();
             run.tokenResponse = new TokenResponseMetadata(true, "Bearer", null, List.of("system/*.read"), null, null);
-            assertEquals("Token response lacks expires_in", assertOnly(check.evaluate(run.build()), Severity.WARN).title());
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertEquals("Token response lacks expires_in", f.title());
+            assertEquals("An access token was issued, but the response does not say how long it lasts (expires_in, "
+                    + "in seconds). Without it a client cannot tell when to fetch a new token, and may keep using "
+                    + "an expired one and get 401s mid-session.", f.explanation());
+            assertTrue(f.evidence().contains(", expires_in=null, "), f::evidence);
+        }
+
+        @Test
+        void unusableExpiresInWarnsThatItWasPresent() {
+            for (String sent : List.of("\"5 minutes\"", "\"1.5\"", "0", "-300", "true", "{}", "[300]")) {
+                var run = healthy();
+                run.tokenResponse = expiresIn(null, sent);
+                Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+                assertEquals("Token response lacks expires_in", f.title(), sent);
+                assertEquals("An access token was issued, but its expires_in (" + sent + ") was present but not "
+                        + "usable: it is not a positive whole number of seconds, and RFC 6749 §5.1 requires a JSON "
+                        + "number. The router SDK accepts a numeric-string expires_in, keeps the 24 h cap, and "
+                        + "caches nothing else, so it treats this response as having no expires_in and does not "
+                        + "cache the token. Without it a client cannot tell when to fetch a new token, and may keep "
+                        + "using an expired one and get 401s mid-session.", f.explanation(), sent);
+                assertTrue(f.evidence().contains(", expires_in=" + sent + ", "), f::evidence);
+                assertTrue(f.suggestedFix().startsWith("Ask the payer to return expires_in as a JSON number"));
+            }
+        }
+
+        @Test
+        void numberExpiresInPassesWithoutANote() {
+            Finding f = assertOnly(check.evaluate(healthy().build()), Severity.PASS);
+            assertEquals("Access token obtained", f.title());
+            assertEquals("The token endpoint issued an access token with an expiry of 300 seconds.", f.explanation());
+            assertTrue(f.evidence().contains(", expires_in=300, "), f::evidence);
+        }
+
+        @Test
+        void numericStringExpiresInPassesWithTheSdkRule() {
+            var run = healthy();
+            run.tokenResponse = expiresIn(300L, "\"300\"");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.PASS);
+            assertEquals("The token endpoint issued an access token with an expiry of 300 seconds. Its expires_in "
+                    + "was sent as a JSON string (\"300\"), where RFC 6749 §5.1 requires a JSON number. The router "
+                    + "SDK accepts a numeric-string expires_in, keeps the 24 h cap, and caches nothing else, so it "
+                    + "caches this token for at most 24 h.", f.explanation());
+            assertEquals(null, f.suggestedFix());
+        }
+
+        @Test
+        void expiresInAbove24HoursIsReportedWithTheCap() {
+            var run = healthy();
+            run.tokenResponse = expiresIn(86_400L, "86400");
+            assertEquals("The token endpoint issued an access token with an expiry of 86400 seconds.",
+                    assertOnly(check.evaluate(run.build()), Severity.PASS).explanation(), "exactly 24 h is not capped");
+
+            run.tokenResponse = expiresIn(86_401L, "86401");
+            assertEquals("The token endpoint issued an access token with an expiry of 86401 seconds. That is more "
+                    + "than 24 h: the router SDK caches a token for at most 24 h (86400 seconds), not the 86401 sent.",
+                    assertOnly(check.evaluate(run.build()), Severity.PASS).explanation());
+
+            run.tokenResponse = expiresIn(172_800L, "\" 172800\"");
+            assertEquals("The token endpoint issued an access token with an expiry of 172800 seconds. Its expires_in "
+                    + "was sent as a JSON string (\" 172800\"), where RFC 6749 §5.1 requires a JSON number. The "
+                    + "router SDK accepts a numeric-string expires_in, keeps the 24 h cap, and caches nothing else, "
+                    + "so it caches this token for at most 24 h. That is more than 24 h: the router SDK caches a "
+                    + "token for at most 24 h (86400 seconds), not the 172800 sent.",
+                    assertOnly(check.evaluate(run.build()), Severity.PASS).explanation());
+        }
+
+        private static TokenResponseMetadata expiresIn(Long seconds, String sent) {
+            return new TokenResponseMetadata(true, "Bearer", seconds, sent, List.of("system/*.read"), 0, null, null);
         }
 
         @Test

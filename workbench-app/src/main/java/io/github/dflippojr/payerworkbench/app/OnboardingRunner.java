@@ -681,8 +681,9 @@ public class OnboardingRunner {
                 }
                 start = end + 1;
             }
-            return new TokenResponseMetadata(accepted, text(json, "token_type"),
-                    json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
+            JsonNode expiresIn = json.hasNonNull("expires_in") ? json.get("expires_in") : null;
+            return new TokenResponseMetadata(accepted, text(json, "token_type"), ExpiresIn.seconds(expiresIn),
+                    expiresIn == null ? null : expiresIn.toString(),
                     scopes, notShown, text(error, "error"), text(error, "error_description"));
         }
 
