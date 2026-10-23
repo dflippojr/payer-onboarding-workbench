@@ -85,6 +85,61 @@ class AuditInfrastructureTest {
     }
 
     @Test
+    void auditedRoutesAreMatchedOnTheDecodedPathWithoutParameters() throws Exception {
+        // Mirrors MVC's PathPatternParser matching: decoded segments, ;parameters dropped, empty segments kept (#200).
+        java.util.Map<String, String> cases = new java.util.LinkedHashMap<>();
+        for (String uri : List.of("/api/runs", "/api/runs;x=1", "/api/run%73", "/api;a/runs", "/%61pi/runs;a;b=c")) {
+            cases.put("POST " + uri, "run.requested,run.completed");
+        }
+        for (String uri : List.of("/api/runs", "/api/runs;x", "/api/run%73")) { cases.put("GET " + uri, "run_history.read"); }
+        for (String uri : List.of("/api/runs/abc", "/api/runs/abc;x", "/api;a/runs/abc")) { cases.put("GET " + uri, "run.read"); }
+        for (String uri : List.of("/api/runs/abc/report", "/api/runs/abc/report;x", "/api/runs/abc/%72eport")) {
+            cases.put("GET " + uri, "report.rendered");
+        }
+        for (String uri : List.of("/api/runs/", "//api/runs", "/api//runs", "/api/runs//report", "/api/runs/abc/",
+                "/api/runs/abc/reports", "/api/runs/abc/report/x", "/api/runsx", "/apix/runs", "/api/payers", "/")) {
+            cases.put("GET " + uri, "");
+        }
+        cases.put("POST /api/runs/abc", ""); cases.put("DELETE /api/runs", ""); cases.put("DELETE /api/runs/abc", "");
+        for (var entry : cases.entrySet()) {
+            List<AuditEvent> events = new ArrayList<>();
+            AuditRequestFilter filter = new AuditRequestFilter(new AuditLog(events::add,
+                    Clock.fixed(NOW, ZoneOffset.UTC), new SimpleMeterRegistry()));
+            String[] request = entry.getKey().split(" ");
+            filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), (q, r) -> { });
+            assertEquals(entry.getValue(), String.join(",", events.stream().map(AuditEvent::action).toList()), entry.getKey());
+            if (entry.getValue().equals("run_history.read")) { assertEquals("run_history", events.getFirst().targetType()); }
+        }
+        MockHttpServletRequest nested = new MockHttpServletRequest("POST", "/app/api;a/run%73");
+        nested.setContextPath("/app");
+        List<AuditEvent> events = new ArrayList<>();
+        new AuditRequestFilter(new AuditLog(events::add, Clock.fixed(NOW, ZoneOffset.UTC), new SimpleMeterRegistry()))
+                .doFilter(nested, new MockHttpServletResponse(), (q, r) -> { });
+        assertEquals(List.of("run.requested", "run.completed"), events.stream().map(AuditEvent::action).toList());
+    }
+
+    @Test
+    void warmupValueIsHonouredOnlyOnTheCanonicalRunsPath() throws Exception {
+        List<AuditEvent> events = new ArrayList<>();
+        InternalRequestToken token = new InternalRequestToken();
+        AuditRequestFilter filter = new AuditRequestFilter(new AuditLog(events::add,
+                Clock.fixed(NOW, ZoneOffset.UTC), new SimpleMeterRegistry()), token);
+        String value = token.issue();
+        for (String uri : List.of("/api/runs;x=1", "/api/run%73", "/api;a/runs")) {
+            MockHttpServletRequest variant = new MockHttpServletRequest("POST", uri);
+            variant.addHeader(InternalRequestToken.HEADER, value);
+            filter.doFilter(variant, new MockHttpServletResponse(), (q, r) -> { });
+        }
+        assertEquals(6, events.size());
+        assertTrue(events.stream().allMatch(e -> e.actorType().equals("anonymous") && e.source().equals("http")));
+        MockHttpServletRequest canonical = new MockHttpServletRequest("POST", "/api/runs");
+        canonical.addHeader(InternalRequestToken.HEADER, value); // still unused, so the real warm-up keeps working
+        filter.doFilter(canonical, new MockHttpServletResponse(), (q, r) -> { });
+        assertEquals(List.of("system", "system"), events.subList(6, 8).stream().map(AuditEvent::actorType).toList());
+        assertEquals("first-run-warmup", events.getLast().actorId());
+    }
+
+    @Test
     void credentialResolutionRecordsActualCallsAndOmitsUnknownReferences() {
         List<AuditEvent> events = new ArrayList<>();
         AuditContext context = new AuditContext(new AuditLog(events::add,
