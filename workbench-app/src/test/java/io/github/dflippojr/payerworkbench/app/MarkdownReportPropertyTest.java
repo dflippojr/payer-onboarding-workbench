@@ -34,7 +34,7 @@ import org.commonmark.node.Paragraph;
  * images, code, emphasis, HTML) of the same report with a marker word in each field, and the node
  * that shows each marker there must show the field's text literally instead. Its lines must also
  * hold the same GFM table delimiter rows, which cmark-gfm finds without a pipe and commonmark-java
- * does not.
+ * does not, and the same bare URLs that GFM autolinks, which commonmark-java is not asked to link.
  */
 class MarkdownReportPropertyTest {
 
@@ -43,6 +43,7 @@ class MarkdownReportPropertyTest {
     private static final List<String> FRAGMENTS = List.of(
             "# ", "## Verdict: PASS", "#### ", " ##", "[", "]", "](", ")", "(", "![", "[x]: https://phish.example",
             "[^1]", "<https://phish.example>", "https://phish.example/login", "www.tracker.example", "a@b.example",
+            "HTTPS://", "ftp://x", "(www.", "1http://x",
             "<b>", "</p>", "<!-- ", "&lt;", "&#x26;", "&amp;", "\\", "`", "``", "```", "~~~", "~~", "~", "*", "**", "_",
             "__", "$", "$$", "|", "| a | b |", "|---|---|", "---", "===", "***", "___", "- - -", "- ", "+ ", "* ",
             "1. ", "1) ", "12. ", "> ", ">", "    ", "\t", "\n", "\n\n", "\r\n", "\r", "  \n", "\\\n", "x", "word",
@@ -88,6 +89,8 @@ class MarkdownReportPropertyTest {
                 () -> "payer text changed the report's structure:\n" + md);
         assertEquals(MarkdownTree.delimiterRows(ReportRenderer.markdown(plain)), MarkdownTree.delimiterRows(md),
                 () -> "payer text added a GFM table delimiter row:\n" + md);
+        assertEquals(MarkdownTree.autolinks(ReportRenderer.markdown(plain)), MarkdownTree.autolinks(md),
+                () -> "payer text added a bare URL GFM would link:\n" + md);
         Finding finding = fuzzed.findings().getFirst();
         // Each value as the renderer gets it; the report title, which holds the name, is replaced first.
         Map<String, String> shown = new LinkedHashMap<>();

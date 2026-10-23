@@ -16,7 +16,9 @@ import org.commonmark.node.Image;
 import org.commonmark.node.Link;
 import org.commonmark.node.Node;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -31,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -191,11 +194,55 @@ class RunReportTest {
 
         assertEquals(MarkdownTree.delimiterRows(ReportRenderer.markdown(report(payerSaid("plain")))),
                 MarkdownTree.delimiterRows(md), "a delimiter row from the payer: " + md);
+        assertEquals(MarkdownTree.autolinks(ReportRenderer.markdown(report(payerSaid("plain")))),
+                MarkdownTree.autolinks(md), "a bare URL from the payer: " + md);
         assertEquals(1, nodes.stream().filter(TableBlock.class::isInstance).count(), md);
         assertTrue(nodes.stream().noneMatch(n -> n instanceof Strikethrough || n instanceof TaskListItemMarker
                 || n instanceof FootnoteReference || n instanceof FootnoteDefinition || n instanceof Link), md);
         String lines = payload.lines().map(String::strip).filter(l -> !l.isEmpty()).collect(Collectors.joining("\n"));
         assertTrue(MarkdownTree.text(doc).contains("The payer said: " + lines), "not shown literally:\n" + md);
+    }
+
+    /**
+     * GFM links a bare {@code http://}, {@code https://}, {@code ftp://} or {@code www.} URL in text, and cmark-gfm
+     * does so after a digit, {@code _}, punctuation or a backslash, so the {@code :} of {@code ://} and the {@code .}
+     * of {@code www.} are escaped wherever they appear (#213 review). commonmark-java is not asked to link, so the
+     * report's raw text is checked: the escape itself, and no line a GFM renderer would link that the plain report
+     * lacks.
+     */
+    @ParameterizedTest
+    @MethodSource("bareUrls")
+    void markdownKeepsBareUrlsInPayerTextUnlinked(String payload, String escaped) {
+        String md = ReportRenderer.markdown(report(payerSaid(payload)));
+
+        assertTrue(md.contains("The payer said: " + escaped), "not escaped as " + escaped + ":\n" + md);
+        assertEquals(MarkdownTree.autolinks(ReportRenderer.markdown(report(payerSaid("plain")))),
+                MarkdownTree.autolinks(md), "a bare URL from the payer: " + md);
+        assertTrue(MarkdownTree.nodes(MarkdownTree.parse(md)).stream().noneMatch(Link.class::isInstance), md);
+    }
+
+    /** Payer text with a bare URL, and how the report must write it. */
+    static Stream<Arguments> bareUrls() {
+        return Stream.of(
+                Arguments.of("see https://phish.example/login", "see https\\://phish.example/login"),
+                Arguments.of("HTTP://phish.example", "HTTP\\://phish.example"),
+                Arguments.of("ftp://phish.example/x", "ftp\\://phish.example/x"),
+                Arguments.of("tokenhttps://phish.example", "tokenhttps\\://phish.example"),
+                Arguments.of("token1https://phish.example", "token1https\\://phish.example"),
+                Arguments.of("client_http://phish.example", "client_http\\://phish.example"),
+                Arguments.of("expired.https://phish.example", "expired.https\\://phish.example"),
+                Arguments.of("(ftp://phish.example)", "(ftp\\://phish.example)"),
+                Arguments.of("\\https://phish.example", "\\\\https\\://phish.example"),
+                Arguments.of("www.phish.example", "www\\.phish.example"),
+                Arguments.of("WWW.phish.example", "WWW\\.phish.example"),
+                Arguments.of("seewww.phish.example", "seewww\\.phish.example"),
+                Arguments.of("(www.phish.example)", "(www\\.phish.example)"),
+                Arguments.of("*www.phish.example", "\\*www\\.phish.example"),
+                Arguments.of("_www.phish.example", "\\_www\\.phish.example"),
+                Arguments.of("token expired\nhttps://phish.example", "token expired  \nhttps\\://phish.example"),
+                Arguments.of("token expired\r\nwww.phish.example", "token expired  \nwww\\.phish.example"),
+                Arguments.of("[Log in](https://phish.example)", "\\[Log in\\](https\\://phish.example)"),
+                Arguments.of("<https://phish.example>", "\\<https\\://phish.example\\>"));
     }
 
     /** An exchange line is a code span, so a line break in a transport error must not end it (#213 review). */
