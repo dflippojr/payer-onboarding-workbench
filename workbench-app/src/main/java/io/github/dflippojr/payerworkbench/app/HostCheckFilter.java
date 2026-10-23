@@ -47,7 +47,7 @@ public class HostCheckFilter extends OncePerRequestFilter {
 
     /** A host name or IPv4 address, or an IPv6 address in brackets, then an optional port. */
     private static final Pattern ENTRY = Pattern.compile(
-            "(\\[[0-9a-f:.]+]|[a-z0-9-]+(?:\\.[a-z0-9-]+)*)(?::([0-9]{1,5}))?", Pattern.CASE_INSENSITIVE);
+            "(\\[[0-9a-f:.]++]|[a-z0-9-]++(?:\\.[a-z0-9-]++)*+)(?::([0-9]{1,5}))?", Pattern.CASE_INSENSITIVE);
 
     /** Lower-case host names without a port; {@code null} when the check is off. */
     private final Set<String> allowed;
