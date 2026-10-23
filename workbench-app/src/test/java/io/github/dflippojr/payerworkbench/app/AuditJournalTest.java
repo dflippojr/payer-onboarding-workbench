@@ -247,6 +247,59 @@ class AuditJournalTest {
                 "bad label!", Clock.systemUTC(), MAPPER));
     }
 
+    /** Two closed segments in the manifest, as a restarted journal leaves them. */
+    static void seedTwoClosedSegments(Path dir) throws IOException {
+        for (int i = 0; i < 3; i++) {
+            try (AuditJournal journal = AuditJournal.open(dir.toString(), DEFAULT, null,
+                    Clock.fixed(NOW.plusSeconds(i), ZoneOffset.UTC), MAPPER)) {
+                if (i < 2) {
+                    journal.append(event(NOW.plusSeconds(i), "seed-" + i));
+                }
+            }
+        }
+    }
+
+    /** Every file name in the directory with the SHA-256 of its bytes. */
+    static java.util.Map<String, String> fingerprint(Path dir) throws Exception {
+        java.util.Map<String, String> files = new java.util.TreeMap<>();
+        try (Stream<Path> s = Files.list(dir)) {
+            for (Path p : s.toList()) {
+                files.put(p.getFileName().toString(), java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(p))));
+            }
+        }
+        return files;
+    }
+
+    @Test
+    void nonPositivePolicyIsRefusedBeforeAnyFileIsTouched() throws Exception {
+        Path dir = tmp.resolve("journal");
+        seedTwoClosedSegments(dir);
+        assertEquals(2, MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)))
+                .path("segments").size());
+        java.util.Map<String, String> before = fingerprint(dir);
+
+        List<AuditJournal.Policy> invalid = List.of(
+                new AuditJournal.Policy(Duration.ofDays(-1), DEFAULT.segmentBytes(), DEFAULT.totalBytes()),
+                new AuditJournal.Policy(Duration.ZERO, DEFAULT.segmentBytes(), DEFAULT.totalBytes()),
+                new AuditJournal.Policy(DEFAULT.retention(), DEFAULT.segmentBytes(), 0),
+                new AuditJournal.Policy(DEFAULT.retention(), 0, DEFAULT.totalBytes()),
+                new AuditJournal.Policy(DEFAULT.retention(), -1, DEFAULT.totalBytes()),
+                new AuditJournal.Policy(DEFAULT.retention(), DEFAULT.segmentBytes(), -1),
+                new AuditJournal.Policy(null, DEFAULT.segmentBytes(), DEFAULT.totalBytes()));
+        for (AuditJournal.Policy policy : invalid) {
+            IOException refused = assertThrows(AuditJournal.UnsafeJournalException.class,
+                    () -> open(dir, policy, NOW.plus(Duration.ofDays(1))), policy::toString);
+            assertEquals("invalid_policy", refused.getMessage());
+            assertEquals(before, fingerprint(dir), "segments and manifest unchanged after " + policy);
+        }
+
+        Path fresh = tmp.resolve("never-created");
+        assertEquals("invalid_policy", assertThrows(IOException.class, () -> open(fresh,
+                new AuditJournal.Policy(Duration.ZERO, 1, 1), NOW)).getMessage());
+        assertFalse(Files.exists(fresh), "a refused policy creates no directory");
+    }
+
     @Test
     void worldAccessibleExistingDirectoryIsNotAProtectedJournal() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(

@@ -4,11 +4,14 @@ import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -19,6 +22,31 @@ import static org.junit.jupiter.api.Assertions.*;
 @ExtendWith(OutputCaptureExtension.class)
 class AuditInfrastructureTest {
     private static final Instant NOW = Instant.parse("2026-10-08T12:00:00Z");
+
+    @TempDir
+    Path tmp;
+
+    @Test
+    void invalidJournalPolicyLeavesTheJournalUnavailableAndKeepsLogging(CapturedOutput output) throws Exception {
+        Path dir = tmp.resolve("journal");
+        AuditJournalTest.seedTwoClosedSegments(dir);
+        java.util.Map<String, String> before = AuditJournalTest.fingerprint(dir);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AuditLog log = new AuditLog(registry, new WorkbenchProperties(null, null, null, null, null, null,
+                new WorkbenchProperties.Audit(dir.toString(), Duration.ofDays(-1), null, null, null)));
+        try {
+            log.lifecycle("startup.configuration", "success", "configuration", null, null);
+        } finally {
+            log.destroy();
+        }
+
+        assertEquals(0.0, registry.get("workbench.audit.journal.protected").gauge().value());
+        assertEquals(1.0, registry.get("workbench.audit.write.failures").counter().count());
+        assertTrue(output.getAll().contains(AuditLog.JOURNAL_WARNING));
+        assertTrue(output.getAll().contains("audit {"));
+        assertFalse(output.getAll().contains(dir.toString()));
+        assertEquals(before, AuditJournalTest.fingerprint(dir), "every segment and the manifest are untouched");
+    }
 
     @Test
     void sinkFailuresPreserveHttpBehaviorAndOnlyWarnWithCounter(CapturedOutput output) throws Exception {

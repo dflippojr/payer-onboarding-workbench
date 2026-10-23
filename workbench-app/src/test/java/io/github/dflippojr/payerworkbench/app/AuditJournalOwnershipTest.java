@@ -67,7 +67,8 @@ class AuditJournalOwnershipTest {
             writer.append(first);
             byte[] manifest = Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST));
             byte[] segment = Files.readAllBytes(dir.resolve("audit-000001.jsonl"));
-            var destructivePolicy = new AuditJournal.Policy(Duration.ZERO, 1, 1);
+            // The most destructive policy open accepts: it would expire every closed segment at once.
+            var destructivePolicy = new AuditJournal.Policy(Duration.ofNanos(1), 1, 1);
             IOException busy = assertThrows(IOException.class, () -> AuditJournal.open(dir.toString(),
                     destructivePolicy, null, Clock.systemUTC(), MAPPER));
             assertEquals("journal_busy", busy.getMessage());
@@ -211,8 +212,13 @@ class AuditJournalOwnershipTest {
             journal.append(event("recovered"));
         }
         // An unchecked failure after adoption must also release ownership.
-        assertThrows(RuntimeException.class, () -> AuditJournal.open(dir.toString(),
-                new AuditJournal.Policy(null, 1000, 10000), null, Clock.systemUTC(), MAPPER));
+        Clock failing = new Clock() {
+            @Override public java.time.ZoneId getZone() { return java.time.ZoneOffset.UTC; }
+            @Override public Clock withZone(java.time.ZoneId zone) { return this; }
+            @Override public Instant instant() { throw new IllegalStateException("synthetic clock failure"); }
+        };
+        assertThrows(IllegalStateException.class, () -> AuditJournal.open(dir.toString(),
+                new AuditJournal.Policy(Duration.ofDays(30), 1000, 10000), null, failing, MAPPER));
         try (AuditJournal journal = open(dir)) {
             assertSealedIntact(dir, 1);
             journal.append(event("recovered-again"));

@@ -64,7 +64,11 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
-    record Policy(Duration retention, long segmentBytes, long totalBytes) { }
+    record Policy(Duration retention, long segmentBytes, long totalBytes) {
+        boolean isValid() {
+            return retention != null && retention.isPositive() && segmentBytes > 0 && totalBytes > 0;
+        }
+    }
 
     private record Segment(String id, long bytes, long events, String firstAt, String lastAt, String sha256) { }
 
@@ -97,6 +101,10 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                              ObjectMapper mapper) throws IOException {
         if (operatorLabel != null && !LABEL.matcher(operatorLabel).matches()) {
             throw new UnsafeJournalException("invalid_operator_label");
+        }
+        if (!policy.isValid()) {
+            // Checked before the lock or any file: a non-positive value would make retention delete everything.
+            throw new UnsafeJournalException("invalid_policy");
         }
         Path dir = prepareDirectory(directory);
         AuditJournal journal = new AuditJournal(dir, policy, operatorLabel, clock, mapper);
