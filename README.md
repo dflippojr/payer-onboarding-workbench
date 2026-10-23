@@ -28,7 +28,7 @@ Build and run the tests:
 ./mvnw verify
 ```
 
-Run the app (serves on http://localhost:8080 by default). Install the sibling modules once, then run `workbench-app` on its own; adding `-am` to `spring-boot:run` fails on the parent pom, which has no main class:
+Run the app (serves on http://localhost:8080 by default, listening on loopback only because the API has no authentication; `--server.address` changes that). Install the sibling modules once, then run `workbench-app` on its own; adding `-am` to `spring-boot:run` fails on the parent pom, which has no main class:
 
 ```sh
 ./mvnw install -DskipTests
@@ -362,7 +362,7 @@ INFO ... [] i.g.d.payerworkbench.mock.MockPayer : Northwind Health (synthetic): 
 
 While a run executes, its id is in the logging MDC (`runId`, shown in brackets on every log line, and `payer`). Each step logs one INFO line with the run id, payer, step, status and milliseconds. Request and response bodies are never logged. `OnboardingFlowTest` captures everything each of its tests logs and fails if the `Redactor` patterns would mask anything in it, or if a request or response body shows up.
 
-Spring Boot Actuator exposes `/actuator/health`, `/actuator/info` and `/actuator/prometheus`, and no other endpoint. The run metrics are tagged with `payer` and `environment`. No tag carries a run id, URL or anything else with high cardinality.
+Spring Boot Actuator exposes `/actuator/health`, `/actuator/info` and `/actuator/prometheus`, and no other endpoint. They share the API's port and so listen on loopback only. If you move them to a port of their own with `management.server.port`, also pass `--management.server.address=127.0.0.1`: that port does not use `server.address` and otherwise listens on every interface. (Spring Boot refuses `management.server.address` without a separate port, so it can't be the default.) The run metrics are tagged with `payer` and `environment`. No tag carries a run id, URL or anything else with high cardinality.
 
 | Metric | Type | Extra tags |
 |---|---|---|
