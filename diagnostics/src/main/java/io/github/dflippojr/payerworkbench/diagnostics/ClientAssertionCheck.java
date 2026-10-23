@@ -24,7 +24,9 @@ public final class ClientAssertionCheck implements DiagnosticCheck {
                 + ", exp=" + claims.exp() + ", iat=" + claims.iat() + ", jti=" + claims.jti() + ", kid=" + claims.kid()
                 + "\nexpected client id=" + obs.connection().clientId()
                 + ", token endpoint aud=" + obs.connection().tokenEndpoint();
-        String cause = claimProblem(obs, claims);
+        boolean issued = token != null && token.error() == null && token.accessTokenPresent()
+                && Support.tokenExchange(obs).map(e -> Support.isSuccess(e.status())).orElse(false);
+        String cause = claimProblem(obs, claims, issued);
         if (token != null && token.errorDescription() != null) {
             evidence += "\npayer error_description: " + token.errorDescription();
         }
@@ -38,15 +40,19 @@ public final class ClientAssertionCheck implements DiagnosticCheck {
                             + "exp at most five minutes after iat, and use a fresh jti for each request. "
                             + "For signature or kid errors, register the matching public JWKS with the payer."));
         }
-        if (token != null && token.error() == null && token.accessTokenPresent()
-                && Support.tokenExchange(obs).map(e -> Support.isSuccess(e.status())).orElse(false)) {
+        if (issued) {
             return List.of(new Finding(CHECK_ID, Severity.PASS, "Client assertion accepted",
                     "The token endpoint issued an access token for this signed client assertion.", evidence, null));
         }
         return List.of();
     }
 
-    private static String claimProblem(RunObservations obs, JwtClaims claims) {
+    /**
+     * A claim the client got wrong. The comparison with the payer's {@code Date} only explains a
+     * rejection: a payer that issued a token accepted the times within its own clock-skew leeway
+     * (RFC 7523 §3), and {@code auth.clock-skew} reports any offset beyond tolerance.
+     */
+    private static String claimProblem(RunObservations obs, JwtClaims claims, boolean issued) {
         if (!Objects.equals(obs.connection().clientId(), claims.iss())
                 || !Objects.equals(obs.connection().clientId(), claims.sub())) {
             return "iss and sub must equal the registered client id";
@@ -59,7 +65,7 @@ public final class ClientAssertionCheck implements DiagnosticCheck {
             return "exp/iat lifetime must be positive and at most 5 minutes";
         }
         var payerTime = Support.tokenExchange(obs).flatMap(Support::serverDate);
-        if (payerTime.isPresent() && (!claims.exp().isAfter(payerTime.get())
+        if (!issued && payerTime.isPresent() && (!claims.exp().isAfter(payerTime.get())
                 || claims.exp().isAfter(payerTime.get().plus(Duration.ofMinutes(5))))) {
             return "exp must be in the future and at most 5 minutes ahead of the payer clock";
         }
