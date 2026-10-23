@@ -30,7 +30,8 @@ import tools.jackson.databind.json.JsonMapper;
  * (random tokens, Basic {@code user:pass}, colon-split bearers, numeric secrets, PEM private keys,
  * values full of JSON escapes), raw or URL-encoded, places them where a payer echoes credentials
  * (headers, bodies, query strings, bodies cut off at any position in a JSON value), with or without
- * the whole text quoted inside a JSON string (also by a serializer that escapes {@code /}), and
+ * the whole text quoted inside a JSON string (also by a serializer that escapes {@code /} or
+ * {@code +}), and
  * asserts that no piece of the secret survives: through {@link Redactor} itself, and through every
  * text field of the run model, {@link StepResult} and {@link Finding} (#211).
  * {@code replay/test/leaks.test.mjs} runs the same generator against the leak scanner. Everything
@@ -97,10 +98,11 @@ class RedactorPropertyTest {
 
     /**
      * Whether the whole text is quoted inside a JSON string, and if so whether by a serializer that
-     * escapes {@code /} as {@code \/} (PHP's {@code json_encode}, for one), as a payer that echoes a
-     * token into an {@code error_description} may (#211).
+     * escapes {@code /} as {@code \/} (PHP's {@code json_encode}, for one), or {@code +} and {@code /}
+     * as six-character unicode escapes ({@code System.Text.Json} escapes {@code +}), as a payer that
+     * echoes a token into an {@code error_description} may (#211).
      */
-    enum Wrap { NONE, JSON, JSON_ESCAPED_SLASHES }
+    enum Wrap { NONE, JSON, JSON_ESCAPED_SLASHES, JSON_UNICODE_ESCAPED }
 
     /**
      * A generated secret: its text, and for a PEM block the base64 lines that are the secret
@@ -150,7 +152,26 @@ class RedactorPropertyTest {
         /** {@code text} as a JSON string, as the {@link #wrap} serializer writes it. */
         private String quote(String text) {
             String quoted = JSON.writeValueAsString(text);
-            return wrap == Wrap.JSON_ESCAPED_SLASHES ? quoted.replace("/", "\\/") : quoted;
+            return switch (wrap) {
+                case JSON_ESCAPED_SLASHES -> quoted.replace("/", "\\/");
+                case JSON_UNICODE_ESCAPED -> unicodeEscaped(quoted);
+                default -> quoted;
+            };
+        }
+
+        /** {@code +} as {@code System.Text.Json} escapes it, and {@code /} with lower-case hex. */
+        private static String unicodeEscaped(String text) {
+            return text.replace("+", "\\u002B").replace("/", "\\u002f");
+        }
+
+        /**
+         * {@code out} as the pieces are looked for in it: with the unicode escapes the wrap wrote, also
+         * escaped again, read back as {@code +} and {@code /}, so an escaped piece of the secret counts.
+         * (Escaped pieces would also match the escapes of ordinary text such as {@code https://}.)
+         */
+        String seen(String out) {
+            return wrap != Wrap.JSON_UNICODE_ESCAPED ? out : out + "\n"
+                    + out.replaceAll("\\\\++u002B", "+").replaceAll("\\\\++u002f", "/");
         }
 
         private List<String> keys(List<String> keys) {
@@ -213,7 +234,7 @@ class RedactorPropertyTest {
         /**
          * Every {@link #PIECE}-character run of the secret as placed: of the base64 lines of a raw
          * PEM block, otherwise of the whole (encoded) value, and with {@code /} escaped too where the
-         * wrap escapes it. A shorter secret is one piece.
+         * wrap escapes it. A shorter secret is one piece. See {@link #seen(String)} for unicode escapes.
          */
         List<String> pieces() {
             List<String> chunks = secret.shape() == Shape.PEM && encoding == Encoding.RAW ? secret.pemLines() : List.of(placed());
@@ -230,7 +251,7 @@ class RedactorPropertyTest {
 
     @Property(tries = 3000)
     void noGeneratedSecretSurvives(@ForAll("cases") Case c) {
-        String out = c.redacted();
+        String out = c.seen(c.redacted());
 
         for (String piece : c.pieces()) {
             assertFalse(out.contains(piece), () -> "'" + piece + "' survived in: " + out);
@@ -249,8 +270,8 @@ class RedactorPropertyTest {
      * Class-level check (#211): the run model redacts everything it holds, so the live run API, the
      * stored run and the reports agree. Each generated case goes into every text component of
      * {@link StepResult} and {@link Finding} (found by reflection, so a component added later is
-     * covered too) and into step details at every depth: a map value, a list entry, a record
-     * component and a recorded header. No piece of the secret may survive.
+     * covered too) and into step details at every depth: a map value and key, a list and array entry,
+     * a record component and a recorded header. No piece of the secret may survive.
      */
     @Property(tries = 1000)
     void noGeneratedSecretSurvivesInAStepOrFinding(@ForAll("cases") Case c) throws ReflectiveOperationException {
@@ -261,16 +282,20 @@ class RedactorPropertyTest {
             details.put("summary", text);
             details.put("cards", List.of(Map.of("source", text)));
             details.put("exchange", new Echo(text, List.of(text), Map.of("X-Debug-Echo", List.of(text))));
+            details.put("array", new Object[] {text, new String[] {text}});
+            details.put("keyed", Map.of(text, "value"));
         } else {
             text = "ok";
             String value = c.slot() == Slot.AUTHORIZATION_HEADER ? c.scheme() + " " + c.placed() : c.placed();
             String name = c.pick(c.slot() == Slot.AUTHORIZATION_HEADER ? AUTHORIZATION_HEADERS : CREDENTIAL_HEADERS);
             details.put("exchanges", List.of(Map.of("requestHeaders", Map.of(name, List.of(value)))));
         }
-        List<String> surfaces = List.of(construct(StepResult.class, text, details).toString(),
-                construct(Finding.class, text, details).toString());
+        StepResult step = construct(StepResult.class, text, details);
+        Finding finding = construct(Finding.class, text, details);
+        // The JSON form shows what an array holds, which its toString does not.
+        List<String> surfaces = List.of(step.toString(), finding.toString(), JSON.writeValueAsString(step.details()));
 
-        for (String surface : surfaces) {
+        for (String surface : surfaces.stream().map(c::seen).toList()) {
             for (String piece : c.pieces()) {
                 assertFalse(surface.contains(piece), () -> "'" + piece + "' survived in: " + surface);
             }

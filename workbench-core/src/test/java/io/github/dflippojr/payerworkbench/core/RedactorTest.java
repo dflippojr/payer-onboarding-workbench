@@ -8,11 +8,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -354,6 +358,39 @@ class RedactorTest {
                         "Proxy-Authorization", List.of("[REDACTED]", "Basic [REDACTED]")),
                 Redactor.redactTree(Map.of("access_token", List.of("x", "Basic dXNlcjpwYXNz"),
                         "Proxy-Authorization", List.of("x", "Basic dXNlcjpwYXNz"))));
+    }
+
+    @Test
+    void redactsMapKeysArraysOptionalsAndValuesOfOtherTypesInATree() {
+        String token = randomToken();
+        String echo = "Bearer " + token;
+        Map<Object, Object> tree = new LinkedHashMap<>();
+        tree.put("key: " + echo, "v");
+        tree.put("array", new String[] {echo});
+        tree.put("nested", new Object[] {List.of(echo), 7});
+        tree.put("queue", new ArrayDeque<>(List.of(echo)));
+        tree.put("optional", Optional.of(echo));
+        tree.put("builder", new StringBuilder(echo));
+        tree.put("node", JSON.readTree("{\"echo\":\"" + echo + "\"}"));
+        tree.put("at", Instant.EPOCH);
+        tree.put("took", Duration.ofSeconds(3));
+        tree.put("letter", 'x');
+
+        Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
+
+        assertEquals("v", out.get("key: Bearer [REDACTED]"));
+        assertEquals(List.of("Bearer [REDACTED]"), out.get("array"));
+        assertEquals(List.of(List.of("Bearer [REDACTED]"), 7), out.get("nested"));
+        assertEquals(List.of("Bearer [REDACTED]"), out.get("queue"));
+        assertEquals(Optional.of("Bearer [REDACTED]"), out.get("optional"));
+        assertEquals(Optional.empty(), Redactor.redactTree(Optional.empty()));
+        // Any other type becomes its redacted string form.
+        assertEquals("Bearer [REDACTED]", out.get("builder"));
+        assertEquals("{\"echo\":\"Bearer [REDACTED]\"}", out.get("node"));
+        assertEquals(Instant.EPOCH, out.get("at"));
+        assertEquals(Duration.ofSeconds(3), out.get("took"));
+        assertEquals('x', out.get("letter"));
+        assertFalse(String.valueOf(out).contains(token), String.valueOf(out));
     }
 
     private static String randomToken() {

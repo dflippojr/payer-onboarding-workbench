@@ -1,7 +1,8 @@
 // Seeded generator for the class-level leak check (#160): the same secret shapes and placements as
 // workbench-core's RedactorPropertyTest (random tokens, Basic user:pass, colon-split bearers,
 // numeric secrets, PEM private keys; raw or URL-encoded; in headers, bodies and query strings, with
-// or without the text quoted inside a JSON string, also by a serializer that escapes / as \/).
+// or without the text quoted inside a JSON string, also by a serializer that escapes / as \/ or + as
+// \u002B).
 // Everything is generated; nothing secret-shaped is committed.
 
 /** Characters of an RFC 6750 b64token, without the = padding. */
@@ -26,8 +27,18 @@ const PEM_LABELS = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'ENCRYPT
 const USER_CHARS = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(c => c !== ':').join('');
 const PASS_CHARS = `${Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('')}éüß€`;
 
-/** The text as it is, quoted inside a JSON string, or quoted by a serializer that escapes / (#211). */
-const WRAPS = ['NONE', 'JSON', 'JSON_ESCAPED_SLASHES'];
+/**
+ * The text as it is, quoted inside a JSON string, or quoted by a serializer that escapes / as \/, or +
+ * and / as unicode escapes, as System.Text.Json does + (#211).
+ */
+const WRAPS = ['NONE', 'JSON', 'JSON_ESCAPED_SLASHES', 'JSON_UNICODE_ESCAPED'];
+
+/** How each wrap's serializer escapes the quoted text, as in RedactorPropertyTest. */
+const ESCAPE = {
+  JSON: q => q,
+  JSON_ESCAPED_SLASHES: q => q.replaceAll('/', '\\/'),
+  JSON_UNICODE_ESCAPED: q => q.replaceAll('+', '\\u002B').replaceAll('/', '\\u002f'),
+};
 
 const TEXT_SLOTS = ['AUTH_TEXT', 'HEADERS_ECHO', 'JSON_FIELD', 'FORM_BODY', 'QUERY_STRING', 'PEM_TEXT'];
 const SLOTS = ['AUTHORIZATION_HEADER', 'CREDENTIAL_HEADER', ...TEXT_SLOTS];
@@ -146,7 +157,7 @@ export function build(c, value) {
   }
   if (c.wrap !== 'NONE') {
     const quoted = JSON.stringify(text);
-    text = `{"debug":${c.wrap === 'JSON_ESCAPED_SLASHES' ? quoted.replaceAll('/', '\\/') : quoted}}`;
+    text = `{"debug":${ESCAPE[c.wrap](quoted)}}`;
   }
   return { text, record: c.carrier === 'BODY' ? { responseBody: text } : { responseHeaders: { 'X-Debug-Echo': [text] } } };
 }
