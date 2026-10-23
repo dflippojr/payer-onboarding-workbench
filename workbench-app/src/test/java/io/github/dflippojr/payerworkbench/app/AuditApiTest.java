@@ -143,6 +143,35 @@ class AuditApiTest {
         }
     }
 
+    @Test
+    void decodedAndPathParameterVariantsAreAuditedLikeTheCanonicalPath(CapturedOutput output) throws Exception {
+        // Spring matches the decoded path with ;parameters removed from every segment, so the audit must too (#200).
+        List<String> posts = List.of("/api/runs;x=1", "/api/run%73", "/api;a/runs");
+        List<String> runs = new java.util.ArrayList<>();
+        for (String path : posts) {
+            var response = post(path, "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"faults\":[]}");
+            assertEquals(200, response.statusCode(), path);
+            runs.add(mapper.readTree(response.body()).path("runId").asText());
+        }
+        String run = runs.getFirst();
+        List<String> reads = List.of("/api/runs/" + run + "/report;x?format=md", "/api/runs/" + run + "/%72eport?format=md",
+                "/api/runs;x", "/api/run%73", "/api/runs/" + run + ";x");
+        for (String path : reads) { assertEquals(200, get(path).statusCode(), path); }
+        List<JsonNode> events = events(output, posts.size() + reads.size());
+        List<JsonNode> starts = action(events, "run.requested");
+        for (String id : runs) {
+            List<JsonNode> ends = action(events, "run.completed").stream().filter(e -> e.path("runId").asText().equals(id)).toList();
+            assertEquals(1, ends.size(), id);
+            assertEquals("success", ends.getFirst().path("outcome").asText());
+            assertEquals(1, starts.stream().filter(e -> e.path("requestId").equals(ends.getFirst().path("requestId"))).count(), id);
+        }
+        assertEquals(posts.size(), starts.size());
+        assertEquals(2, action(events, "report.rendered").stream().filter(e -> e.path("runId").asText().equals(run)).count());
+        assertEquals(2, action(events, "run_history.read").size());
+        assertEquals(1, action(events, "run.read").stream().filter(e -> e.path("runId").asText().equals(run)).count());
+        assertSafe(events);
+    }
+
     private String uncheckedRun(String faults) {
         try { return run(faults); } catch (Exception e) { throw new IllegalStateException(e); }
     }
@@ -151,8 +180,9 @@ class AuditApiTest {
         assertEquals(200, response.statusCode());
         return mapper.readTree(response.body()).path("runId").asText();
     }
-    private HttpResponse<String> post(String body) throws Exception {
-        return http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/runs"))
+    private HttpResponse<String> post(String body) throws Exception { return post("/api/runs", body); }
+    private HttpResponse<String> post(String path, String body) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
                 .header("Content-Type", "application/json").header("X-Actor-Id", SECRET)
                 .header("X-Request-Id", SECRET).header("X-Source", SECRET)
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
