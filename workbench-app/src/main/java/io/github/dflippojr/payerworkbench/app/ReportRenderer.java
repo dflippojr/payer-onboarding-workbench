@@ -102,7 +102,8 @@ public final class ReportRenderer {
             }
             md.append("  \n   ").append(inline(orDash(step.summary()))).append('\n');
             for (String exchange : step.exchanges()) {
-                md.append("   - `").append(exchange.replace("`", "'")).append("`\n");
+                md.append("   - `").append(LINE_BREAKS.matcher(exchange.replace("`", "'")).replaceAll(" "))
+                        .append("`\n");
             }
         }
         md.append("\n## Findings\n");
@@ -208,8 +209,11 @@ public final class ReportRenderer {
 
     /** Escaped wherever they appear: they open code spans, emphasis, links, images, HTML, entities, cells, math. */
     private static final String MARKUP = "\\`*[]<>&|~$#!";
-    /** Escaped where a line starts: they open a bullet list, a thematic break or a setext heading underline. */
-    private static final String LINE_MARKUP = "-+=";
+    /**
+     * Escaped where a line starts: they open a bullet list, a thematic break, a setext heading underline or a GFM
+     * table delimiter row, which needs no pipe, so {@code :-:} under a line makes it a table header on GitHub.
+     */
+    private static final String LINE_MARKUP = "-+=:";
     private static final Pattern LINE_BREAKS = Pattern.compile("\r\n|\r|\n");
     private static final Pattern ORDERED_LIST = Pattern.compile("\\d+[.)]");
 
