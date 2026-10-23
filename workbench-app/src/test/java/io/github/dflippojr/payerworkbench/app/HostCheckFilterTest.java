@@ -50,6 +50,12 @@ class HostCheckFilterTest {
     }
 
     @Test
+    void anEntryWithoutAHostNameFailsAtStartup() {
+        var e = assertThrows(IllegalArgumentException.class, () -> HostCheckFilter.allowedHosts("127.0.0.1", "a.test,[::1"));
+        assertTrue(e.getMessage().contains(HostCheckFilter.SETTING), e.getMessage());
+    }
+
+    @Test
     void hostNameDropsThePortAndCase() {
         assertEquals("localhost", HostCheckFilter.hostName("LocalHost:8080"));
         assertEquals("[::1]", HostCheckFilter.hostName("[::1]:8080"));

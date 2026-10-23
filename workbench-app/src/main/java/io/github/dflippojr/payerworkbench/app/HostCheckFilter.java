@@ -15,7 +15,6 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
@@ -52,8 +51,15 @@ class HostCheckFilter extends OncePerRequestFilter {
     /** The names a request may carry in {@code Host}, or {@code null} for {@code *}. */
     static Set<String> allowedHosts(String serverAddress, String allowedHosts) {
         Set<String> configured = new LinkedHashSet<>();
-        Arrays.stream(allowedHosts.split(",")).map(String::strip).filter(name -> !name.isEmpty())
-                .forEach(name -> configured.add(name.equals("*") ? name : hostName(name)));
+        for (String entry : allowedHosts.split(",")) {
+            String name = entry.strip().equals("*") ? "*" : hostName(entry.strip());
+            if (name == null) {
+                throw new IllegalArgumentException(SETTING + ": no host name in '" + entry.strip() + "'");
+            }
+            if (!name.isEmpty()) {
+                configured.add(name);
+            }
+        }
         if (configured.contains("*")) {
             if (configured.size() > 1) {
                 throw new IllegalArgumentException(SETTING + ": * turns the Host check off and can't be listed with names");
