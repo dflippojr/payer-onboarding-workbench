@@ -77,15 +77,15 @@ public final class ReportRenderer {
 
     public static String markdown(RunReport r) {
         StringBuilder md = new StringBuilder();
-        md.append("# ").append(inline(r.title())).append("\n\n");
+        md.append("# ").append(oneLine(r.title())).append("\n\n");
         md.append("> **").append(inline(r.disclaimer())).append("**\n\n");
         md.append("## Verdict: ").append(r.verdict().status()).append("\n\n");
         md.append(inline(r.verdict().headline())).append("\n\n");
         md.append("| | |\n|---|---|\n");
-        row(md, "Payer", r.payer().displayName() + " (`" + r.payer().payerId() + "`)");
+        cellRow(md, "Payer", oneLine(r.payer().displayName()) + cell(" (`" + r.payer().payerId() + "`)"));
         row(md, "Environment", r.environment());
-        row(md, "CRD IG version expected", orDash(r.igVersion()));
-        row(md, "CRD IG version advertised", orDash(r.advertisedIgVersion()));
+        cellRow(md, "CRD IG version expected", oneLine(orDash(r.igVersion())));
+        cellRow(md, "CRD IG version advertised", oneLine(orDash(r.advertisedIgVersion())));
         row(md, "Run", "`" + r.runId() + "`");
         row(md, "Correlation id (" + RequestIdClient.HEADER + ")", "`" + r.correlationId() + "`");
         row(md, "Run started", orDash(r.startedAt()));
@@ -96,7 +96,7 @@ public final class ReportRenderer {
         md.append("\n## Step timeline\n\n");
         int n = 1;
         for (RunReport.Step step : r.steps()) {
-            md.append(n++).append(". **").append(inline(step.title())).append("**: ").append(step.status());
+            md.append(n++).append(". **").append(oneLine(step.title())).append("**: ").append(step.status());
             if (!step.status().equals("skipped")) {
                 md.append(" · ").append(step.elapsedMs()).append(" ms");
             }
@@ -113,7 +113,7 @@ public final class ReportRenderer {
             }
             md.append("\n### ").append(severity).append(" (").append(group.size()).append(")\n");
             for (Finding f : group) {
-                md.append("\n#### ").append(inline(f.title())).append("\n\n");
+                md.append("\n#### ").append(oneLine(f.title())).append("\n\n");
                 md.append("Check: `").append(f.checkId()).append("`\n\n");
                 if (f.explanation() != null) {
                     md.append(inline(f.explanation())).append("\n\n");
@@ -134,7 +134,7 @@ public final class ReportRenderer {
 
     private static void mdFailingCall(StringBuilder md, FailingCall call) {
         md.append("\n## Failing call\n\n");
-        md.append("The last call of the **").append(inline(call.stepTitle())).append("** step. ")
+        md.append("The last call of the **").append(oneLine(call.stepTitle())).append("** step. ")
                 .append(FAILING_CALL_NOTE).append("\n\n");
         md.append("`").append(call.method().replace("`", "'")).append(' ').append(call.url().replace("`", "'"))
                 .append("` → ").append(callOutcome(call)).append("\n\n");
@@ -182,13 +182,80 @@ public final class ReportRenderer {
                 + "Replace each placeholder in angle brackets with your own credential.";
     }
 
+    /** A table row whose value is Markdown the workbench wrote. */
     private static void row(StringBuilder md, String label, String value) {
-        md.append("| ").append(label).append(" | ").append(value.replace("|", "\\|").replace("\n", " ")).append(" |\n");
+        cellRow(md, label, cell(value));
     }
 
-    /** One paragraph: line breaks kept as Markdown hard breaks, HTML tags shown literally. */
+    /** A table row whose value is already safe in a cell. */
+    private static void cellRow(StringBuilder md, String label, String cell) {
+        md.append("| ").append(label).append(" | ").append(cell).append(" |\n");
+    }
+
+    private static String cell(String markdown) {
+        return markdown.replace("|", "\\|").replace("\n", " ");
+    }
+
+    /** Payer text as one paragraph of literal text: each non-blank line on a line of its own, nothing read as markup. */
     private static String inline(String text) {
-        return text.strip().replace("<", "&lt;").replace("\r\n", "\n").replace("\n", "  \n");
+        return literal(text, "  \n", true);
+    }
+
+    /** Payer text as literal text on one line, for a heading or a table cell. */
+    private static String oneLine(String text) {
+        return literal(text, " ", false);
+    }
+
+    /** Escaped wherever they appear: they open code spans, emphasis, links, images, HTML, entities, cells, math. */
+    private static final String MARKUP = "\\`*[]<>&|~$#!";
+    /** Escaped where a line starts: they open a bullet list, a thematic break or a setext heading underline. */
+    private static final String LINE_MARKUP = "-+=";
+    private static final Pattern LINE_BREAKS = Pattern.compile("\r\n|\r|\n");
+    private static final Pattern ORDERED_LIST = Pattern.compile("\\d+[.)]");
+
+    /**
+     * Backslash-escapes the text so a CommonMark or GFM renderer shows it literally (#213). Blank lines are dropped,
+     * since one would end the paragraph or list item. {@code (} and {@code )} are markup only after a {@code ]}, which
+     * is escaped, or in an ordered list marker, and {@code _} is not emphasis inside a word, so those stay as they are.
+     */
+    private static String literal(String text, String lineBreak, boolean lineStarts) {
+        if (text == null) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(text.length() + 16);
+        for (String raw : LINE_BREAKS.split(text)) {
+            String line = raw.strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (!out.isEmpty()) {
+                out.append(lineBreak);
+            }
+            Matcher marker = ORDERED_LIST.matcher(line);
+            int markerEnd = lineStarts && marker.lookingAt() ? marker.end() - 1 : -1;
+            for (int i = 0; i < line.length(); i++) {
+                if (i == markerEnd || opensMarkup(line, i, lineStarts && i == 0)) {
+                    out.append('\\');
+                }
+                out.append(line.charAt(i));
+            }
+        }
+        return out.toString();
+    }
+
+    /** Whether the character at {@code i} could start markup; {@code ://} and {@code www.} make GFM link a bare URL. */
+    private static boolean opensMarkup(String line, int i, boolean lineStart) {
+        char c = line.charAt(i);
+        if (MARKUP.indexOf(c) >= 0 || (lineStart && LINE_MARKUP.indexOf(c) >= 0)) {
+            return true;
+        }
+        return switch (c) {
+            case '_' -> i == 0 || i + 1 == line.length()
+                    || !Character.isLetterOrDigit(line.charAt(i - 1)) || !Character.isLetterOrDigit(line.charAt(i + 1));
+            case ':' -> line.startsWith("//", i + 1);
+            case '.' -> i >= 3 && line.regionMatches(true, i - 3, "www", 0, 3);
+            default -> false;
+        };
     }
 
     /** A code fence longer than any run of backticks inside the evidence. */
