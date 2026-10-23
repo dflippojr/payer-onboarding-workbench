@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.app;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -38,7 +39,19 @@ class HostCheckFilterTest {
     @Test
     void allowedHostsAddsNamesWithoutTheirPorts() {
         assertEquals(Set.of("localhost", "127.0.0.1", "[::1]", "a.test", "b.test", "[fd00::2]"),
-                HostCheckFilter.allowedHosts("127.0.0.1", " a.test , B.Test:8080 ,, [FD00::2]:80"));
+                HostCheckFilter.allowedHosts("127.0.0.1", " a.test , B.Test:8080 , [FD00::2]:80"));
+    }
+
+    @Test
+    void anIpv6LiteralIsComparedInTheFormABrowserSends() {
+        assertTrue(HostCheckFilter.allowedHosts("2001:db8:0:0::5", "").contains("[2001:db8::5]"));
+        assertTrue(HostCheckFilter.allowedHosts("[2001:0DB8:0000:0:0:0:0:5]", "").contains("[2001:db8::5]"));
+        assertTrue(HostCheckFilter.allowedHosts("fd00:0:0:1:0:0:0:5", "").contains("[fd00:0:0:1::5]"));
+        assertTrue(HostCheckFilter.allowedHosts("2001:0:0:1:0:0:1:1", "").contains("[2001::1:0:0:1:1]"));
+        assertTrue(HostCheckFilter.allowedHosts("2001:db8:0:1:0:1:0:1", "").contains("[2001:db8:0:1:0:1:0:1]"));
+        assertTrue(HostCheckFilter.allowedHosts("0:0:0:0:0:0:0:1", "").contains("[::1]"));
+        assertTrue(HostCheckFilter.allowedHosts("127.0.0.1", "[2001:DB8:0:0::5]:80").contains("[2001:db8::5]"));
+        assertTrue(HostCheckFilter.allowedHosts("127.0.0.1", "2001:DB8:0:0::5").contains("[2001:db8::5]"));
     }
 
     @Test
@@ -53,6 +66,34 @@ class HostCheckFilterTest {
     void anEntryWithoutAHostNameFailsAtStartup() {
         var e = assertThrows(IllegalArgumentException.class, () -> HostCheckFilter.allowedHosts("127.0.0.1", "a.test,[::1"));
         assertTrue(e.getMessage().contains(HostCheckFilter.SETTING), e.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"http://workbench.test", "https://workbench.test", "HTTP://workbench.test:8080",
+            "workbench.test/", "workbench.test/api", "user@workbench.test", "localhost@attacker.example",
+            "*.workbench.test", "work*bench.test", "a.test,,b.test", "a.test,", ",a.test", " , ",
+            "work bench.test", "workbench.test\tx", "workbench_test", "workbench.test.", ".workbench.test",
+            "workbench..test", "workbench.test:", "workbench.test:http", "workbench.test:99999",
+            "workbench.test:80:80", "[::1]x", "[::1]:", "[]", "[zz::1]", "[fe80::1%eth0]", "[127.0.0.1]",
+            "[::1]:80:80", "workbench.test?x", "workbench.test#x"})
+    void anEntryThatIsNotAHostNameOrIpLiteralFailsAtStartup(String allowedHosts) {
+        var e = assertThrows(IllegalArgumentException.class, () -> HostCheckFilter.allowedHosts("127.0.0.1", allowedHosts));
+        assertTrue(e.getMessage().contains(HostCheckFilter.SETTING), e.getMessage());
+    }
+
+    @Test
+    void aUrlShapedEntryStopsTheApplicationFromStarting() {
+        new ApplicationContextRunner()
+                .withBean(HostCheckFilter.class)
+                .withPropertyValues(HostCheckFilter.SETTING + "=http://workbench.test")
+                .run(context -> {
+                    assertNotNull(context.getStartupFailure(), "started with a URL in " + HostCheckFilter.SETTING);
+                    Throwable cause = context.getStartupFailure();
+                    while (cause.getCause() != null) {
+                        cause = cause.getCause();
+                    }
+                    assertTrue(cause.getMessage().contains("'http://workbench.test'"), cause.getMessage());
+                });
     }
 
     @Test
