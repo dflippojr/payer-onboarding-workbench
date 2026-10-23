@@ -659,7 +659,8 @@ public class OnboardingRunner {
                 return callFailed("Token request", e);
             }
             return accepted ? Outcome.pass("Got a " + tokenResponse.tokenType() + " access token for client "
-                    + record.clientId() + " (expires in " + tokenResponse.expiresInSeconds() + " s; value hidden)")
+                    + record.clientId() + " (" + (tokenResponse.expiresInSeconds() == null ? "no usable expires_in"
+                            : "expires in " + tokenResponse.expiresInSeconds() + " s") + "; value hidden)")
                     : Outcome.fail("The SDK could not authenticate: " + failureMessage());
         }
 
@@ -681,8 +682,9 @@ public class OnboardingRunner {
                 }
                 start = end + 1;
             }
-            return new TokenResponseMetadata(accepted, text(json, "token_type"),
-                    json.hasNonNull("expires_in") ? json.get("expires_in").asLong() : null,
+            JsonNode expiresIn = json.hasNonNull("expires_in") ? json.get("expires_in") : null;
+            return new TokenResponseMetadata(accepted, text(json, "token_type"), ExpiresIn.seconds(expiresIn),
+                    expiresIn == null ? null : expiresIn.toString(),
                     scopes, notShown, text(error, "error"), text(error, "error_description"));
         }
 

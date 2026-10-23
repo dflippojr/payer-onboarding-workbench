@@ -78,11 +78,28 @@
       "id": "token-response/expires-in-string",
       "dimension": "token-response", "value": "expires-in-string",
       "auth": "OAUTH2_CLIENT_CREDENTIALS",
-      "behaviour": {"expiresInAsString": true},
-      "spec": "RFC 6749 §5.1",
-      "clause": "Parameter names and string values are included as JSON strings. Numerical values are included as JSON numbers. A string expires_in is not a lifetime a conforming client can read; the router SDK ignores it and never caches the token, the same consequence as a missing expires_in, which auth.token already warns about.",
-      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}},
-      "knownDefect": "#177"
+      "behaviour": {"expiresIn": "NUMERIC_STRING"},
+      "spec": "RFC 6749 §5.1; fhir-crd-router#105",
+      "clause": "Parameter names and string values are included as JSON strings. Numerical values are included as JSON numbers. A numeric string such as \"300\" is non-conforming, but the router SDK accepts a numeric-string expires_in, keeps the 24 h cap, and caches nothing else (owner decision on #177), so the lifetime is usable and auth.token passes with a note.",
+      "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+    {
+      "id": "token-response/expires-in-non-numeric-string",
+      "dimension": "token-response", "value": "expires-in-non-numeric-string",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"expiresIn": "NON_NUMERIC_STRING"},
+      "spec": "RFC 6749 §5.1; fhir-crd-router#105",
+      "clause": "Numerical values are included as JSON numbers. A string that is not a number of seconds (\"5 minutes\") is no lifetime at all: the router SDK caches nothing but a positive number or numeric string, so it treats the token as having no expires_in, which auth.token warns about.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
+    },
+    {
+      "id": "token-response/expires-in-fractional",
+      "dimension": "token-response", "value": "expires-in-fractional",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"expiresIn": "FRACTIONAL_NUMBER"},
+      "spec": "RFC 6749 §5.1; payer-onboarding-workbench#177",
+      "clause": "expires_in: The lifetime in seconds of the access token. A fraction (3599.9) is not the positive whole number of seconds #177 accepts, so auth.token warns; the router SDK reads a JSON number with Jackson's asLong(), which truncates it, so it caches the token for 3599 s, and the warning must say so.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
     },
     {
       "id": "token-response/extra-fields",

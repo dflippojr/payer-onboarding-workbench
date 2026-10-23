@@ -55,7 +55,7 @@ class PayerBehaviourTest {
 
     @Test
     void tokenResponseFieldsFollowTheBehaviour() throws Exception {
-        PayerBehaviour behaviour = PayerBehaviour.STANDARD.withTokenType("bearer").withExpiresInAsString(true)
+        PayerBehaviour behaviour = PayerBehaviour.STANDARD.withTokenType("bearer").withExpiresIn(PayerBehaviour.ExpiresIn.NUMERIC_STRING)
                 .withExtraTokenFields(true).withTokenContentType("application/json;charset=UTF-8");
         try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().behaviour(behaviour))) {
             HttpResponse<String> token = token(fixture);
@@ -68,6 +68,30 @@ class PayerBehaviourTest {
             assertEquals("example_value", body.path("example_parameter").asText());
             assertEquals("application/json;charset=UTF-8", token.headers().firstValue("Content-Type").orElseThrow());
             assertEquals("no-store", token.headers().firstValue("Cache-Control").orElseThrow());
+            assertEquals(3, fixture.orderSign(SyntheticData.standardOrders()).cards().size(), "the token still works");
+        }
+    }
+
+    @Test
+    void nonNumericExpiresInIsAStringThatIsNoNumber() throws Exception {
+        PayerBehaviour behaviour = PayerBehaviour.STANDARD.withExpiresIn(PayerBehaviour.ExpiresIn.NON_NUMERIC_STRING);
+        try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().behaviour(behaviour))) {
+            JsonNode body = MAPPER.readTree(token(fixture).body());
+
+            assertTrue(body.path("expires_in").isTextual());
+            assertEquals(PayerBehaviour.NON_NUMERIC_EXPIRES_IN, body.path("expires_in").asText());
+            assertEquals(3, fixture.orderSign(SyntheticData.standardOrders()).cards().size(), "the token still works");
+        }
+    }
+
+    @Test
+    void fractionalExpiresInIsANumberThatIsNoWholeNumber() throws Exception {
+        PayerBehaviour behaviour = PayerBehaviour.STANDARD.withExpiresIn(PayerBehaviour.ExpiresIn.FRACTIONAL_NUMBER);
+        try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().behaviour(behaviour))) {
+            JsonNode body = MAPPER.readTree(token(fixture).body());
+
+            assertTrue(body.path("expires_in").isFloatingPointNumber());
+            assertEquals("3599.9", body.path("expires_in").toString());
             assertEquals(3, fixture.orderSign(SyntheticData.standardOrders()).cards().size(), "the token still works");
         }
     }

@@ -8,15 +8,28 @@ import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * {@code auth.token}: the OAuth2 token endpoint issued a usable access token. Reports
  * rejected clients (401 / {@code invalid_client}), {@code invalid_scope}, other
- * token errors, an unreachable endpoint, and a missing {@code expires_in}.
+ * token errors, an unreachable endpoint, and a missing or unusable {@code expires_in}. A numeric-string
+ * {@code expires_in} passes with a note, as the router SDK accepts it (fhir-crd-router#105, #177); a
+ * fractional one warns, and says the SDK truncates and caches it.
  */
 public final class AuthTokenCheck implements DiagnosticCheck {
 
     public static final String CHECK_ID = "auth.token";
+
+    /** The router SDK's {@code MAX_CACHE_LIFETIME}: it caches no token for longer, whatever {@code expires_in} says. */
+    static final long SDK_MAX_CACHE_SECONDS = 24 * 60 * 60;
+
+    /** The router SDK's rule for {@code expires_in}, in the words of the decision on fhir-crd-router#105. */
+    static final String SDK_RULE = "The router SDK accepts a numeric-string expires_in, keeps the 24 h cap, "
+            + "and caches nothing else";
+
+    /** A JSON number with a fraction or exponent, which Jackson reads as a double. */
+    private static final Pattern JSON_FLOAT = Pattern.compile("-?[0-9]+(\\.[0-9]+([eE][+-]?[0-9]+)?|[eE][+-]?[0-9]+)");
 
     @Override
     public String id() {
@@ -36,7 +49,7 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                     + (token.errorDescription() == null ? "" : " (" + token.errorDescription() + ")")
                     + ", access_token present=" + token.accessTokenPresent()
                     + ", token_type=" + token.tokenType()
-                    + ", expires_in=" + token.expiresInSeconds()
+                    + ", expires_in=" + token.expiresInSent()
                     + ", scope=" + String.join(" ", token.scopes())
                     + (token.scopesNotShown() == 0 ? "" : " and " + token.scopesNotShown() + " more not shown");
         }
@@ -90,17 +103,59 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                             + "was issued."));
         }
         if (token.expiresInSeconds() == null) {
+            String sent = token.expiresInSent();
+            Long truncated = sdkTruncatedSeconds(sent);
+            String explanation;
+            if (sent == null) {
+                explanation = "An access token was issued, but the response does not say how long it lasts "
+                        + "(expires_in, in seconds). Without it a client cannot tell when to fetch a new token";
+            } else if (truncated == null) {
+                explanation = "An access token was issued, but its expires_in (" + sent + ") was present but not "
+                        + "usable: it is not a positive whole number of seconds, and RFC 6749 §5.1 requires a JSON "
+                        + "number. " + SDK_RULE + ", so it treats this response as having no expires_in and does "
+                        + "not cache the token. Without it a client cannot tell when to fetch a new token";
+            } else {
+                explanation = "An access token was issued, but its expires_in (" + sent + ") was present but not "
+                        + "usable: it is not a positive whole number of seconds. The router SDK reads a JSON number "
+                        + "with Jackson's asLong(), which truncates it to " + truncated + ", so it caches this token "
+                        + "for " + (truncated > SDK_MAX_CACHE_SECONDS
+                                ? "at most 24 h (" + SDK_MAX_CACHE_SECONDS + " seconds)" : truncated + " seconds")
+                        + ". A client that rejects a fraction cannot tell when to fetch a new token";
+            }
             return List.of(new Finding(CHECK_ID, Severity.WARN, "Token response lacks expires_in",
-                    "An access token was issued, but the response does not say how long it lasts "
-                            + "(expires_in, in seconds). Without it a client cannot tell when to fetch a new "
-                            + "token, and may keep using an expired one and get 401s mid-session.",
+                    explanation + ", and may keep using an expired one and get 401s mid-session.",
                     evidence,
-                    "Ask the payer to return expires_in, as SMART Backend Services requires; meanwhile "
-                            + "configure a conservative token lifetime (for example 5 minutes) in the client."));
+                    "Ask the payer to return expires_in as a whole JSON number of seconds, as RFC 6749 and SMART "
+                            + "Backend Services require; meanwhile configure a conservative token lifetime (for "
+                            + "example 5 minutes) in the client."));
         }
-        return List.of(new Finding(CHECK_ID, Severity.PASS, "Access token obtained",
-                "The token endpoint issued an access token with an expiry of " + token.expiresInSeconds()
-                        + " seconds.",
+        long seconds = token.expiresInSeconds();
+        StringBuilder explanation = new StringBuilder("The token endpoint issued an access token with an expiry of ")
+                .append(seconds).append(" seconds.");
+        if (token.expiresInSent() != null && token.expiresInSent().startsWith("\"")) {
+            explanation.append(" Its expires_in was sent as a JSON string (").append(token.expiresInSent())
+                    .append("), where RFC 6749 §5.1 requires a JSON number. ").append(SDK_RULE)
+                    .append(", so it caches this token for at most 24 h.");
+        }
+        if (seconds > SDK_MAX_CACHE_SECONDS) {
+            explanation.append(" That is more than 24 h: the router SDK caches a token for at most 24 h (")
+                    .append(SDK_MAX_CACHE_SECONDS).append(" seconds), not the ").append(seconds).append(" sent.");
+        }
+        return List.of(new Finding(CHECK_ID, Severity.PASS, "Access token obtained", explanation.toString(),
                 evidence, null));
+    }
+
+    /**
+     * The seconds the router SDK caches a fractional JSON {@code expires_in} for, before its 24 h cap, or
+     * {@code null} if it caches nothing. Jackson reads a fraction as a double, whose {@code canConvertToLong()}
+     * checks only the range and whose {@code asLong()} truncates; the SDK caches only a positive result.
+     */
+    static Long sdkTruncatedSeconds(String sent) {
+        if (sent == null || !JSON_FLOAT.matcher(sent).matches()) {
+            return null;
+        }
+        double value = Double.parseDouble(sent);
+        long seconds = (long) value;
+        return value <= Long.MAX_VALUE && seconds > 0 ? seconds : null;
     }
 }

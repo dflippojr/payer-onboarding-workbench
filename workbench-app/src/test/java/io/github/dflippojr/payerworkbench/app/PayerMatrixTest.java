@@ -6,12 +6,15 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
+import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import io.github.dflippojr.payerworkbench.diagnostics.AuthTokenCheck;
 import io.github.dflippojr.payerworkbench.mock.FabrikamPayer;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import io.github.dflippojr.payerworkbench.mock.NorthwindPayer;
 import io.github.dflippojr.payerworkbench.mock.PayerBehaviour;
 import io.github.dflippojr.payerworkbench.mock.TailspinPayer;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,7 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The payer-behaviour matrix (#169): every row of {@code payer-matrix.json} runs end to end through
@@ -76,6 +81,67 @@ class PayerMatrixTest {
                         + row.knownDefect() + " looks fixed: remove knownDefect from the row.\n" + explain(row, run));
             }
         }
+    }
+
+    /**
+     * The matrix compares severities only; this checks that the {@code expires_in} the runner hands the
+     * diagnostics still says how the payer sent it, so {@code auth.token} can tell a numeric string from a
+     * number and an unusable value from a missing one (#177).
+     */
+    @Test
+    void expiresInFindingsSayHowThePayerSentIt() throws Exception {
+        Finding numericString = authToken("token-response/expires-in-string");
+        assertEquals(Severity.PASS, numericString.severity());
+        assertTrue(numericString.explanation().contains("expiry of 300 seconds. Its expires_in was sent as a JSON "
+                + "string (\"300\"), where RFC 6749 §5.1 requires a JSON number. The router SDK accepts a "
+                + "numeric-string expires_in, keeps the 24 h cap, and caches nothing else"), numericString::explanation);
+        assertTrue(numericString.evidence().contains("expires_in=\"300\""), numericString::evidence);
+
+        Finding nonNumeric = authToken("token-response/expires-in-non-numeric-string");
+        assertEquals(Severity.WARN, nonNumeric.severity());
+        assertTrue(nonNumeric.explanation().contains("its expires_in (\"" + PayerBehaviour.NON_NUMERIC_EXPIRES_IN
+                + "\") was present but not usable"), nonNumeric::explanation);
+        assertTrue(nonNumeric.explanation().contains("does not cache the token"), nonNumeric::explanation);
+
+        // The router SDK's asLong() truncates a fraction and caches the token, so "does not cache" would be false.
+        Finding fractional = authToken("token-response/expires-in-fractional");
+        assertEquals(Severity.WARN, fractional.severity());
+        assertTrue(fractional.explanation().contains("its expires_in (3599.9) was present but not usable"),
+                fractional::explanation);
+        assertTrue(fractional.explanation().contains("which truncates it to 3599, so it caches this token "
+                + "for 3599 seconds."), fractional::explanation);
+        assertFalse(fractional.explanation().contains("does not cache"), fractional::explanation);
+    }
+
+    /** The authenticate step names the lifetime it read, and says so when there was none to read. */
+    @Test
+    void authenticateStepSaysWhenNoExpiresInIsUsable() throws Exception {
+        assertEquals("Got a Bearer access token for client " + CLIENT_ID + " (expires in 300 s; value hidden)",
+                authenticateSummary(run("token-response/expires-in-string")));
+        for (String rowId : List.of("token-response/expires-in-non-numeric-string", "token-response/expires-in-fractional")) {
+            assertEquals("Got a Bearer access token for client " + CLIENT_ID + " (no usable expires_in; value hidden)",
+                    authenticateSummary(run(rowId)), rowId);
+        }
+    }
+
+    private OnboardingRun run(String rowId) throws Exception {
+        PayerMatrix.Row row = rows().filter(r -> r.id().equals(rowId)).findFirst().orElseThrow();
+        try (Scenario scenario = new Scenario(row)) {
+            return runner.run(scenario.request());
+        }
+    }
+
+    private Finding authToken(String rowId) throws Exception {
+        return authToken(run(rowId));
+    }
+
+    private static Finding authToken(OnboardingRun run) {
+        return run.findings().stream().filter(f -> f.checkId().equals(AuthTokenCheck.CHECK_ID)).findFirst().orElseThrow();
+    }
+
+    private static String authenticateSummary(OnboardingRun run) {
+        return run.steps().stream().filter(s -> s.stepId().equals(OnboardingRunner.AUTHENTICATE)).findFirst()
+                .orElseThrow().summary();
     }
 
     /** What the matrix compares: the verdict, the first broken step, the named checks and the other host. */

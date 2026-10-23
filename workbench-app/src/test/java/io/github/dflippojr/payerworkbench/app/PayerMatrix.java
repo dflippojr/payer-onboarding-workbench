@@ -43,7 +43,7 @@ record PayerMatrix(List<String> dimensions, List<Row> rows) {
     }
 
     /** The {@link PayerBehaviour} fields a row changes; {@code null} keeps the standard value. */
-    record Behaviour(PayerBehaviour.AccessToken accessToken, String tokenType, Boolean expiresInAsString,
+    record Behaviour(PayerBehaviour.AccessToken accessToken, String tokenType, PayerBehaviour.ExpiresIn expiresIn,
                      Boolean extraTokenFields, String tokenContentType, Boolean tokenErrorWith200,
                      PayerBehaviour.HookAuthentication hookAuthentication, Long clockOffsetSeconds,
                      Redirect redirect, PayerBehaviour.Discovery discovery) {
@@ -56,7 +56,7 @@ record PayerMatrix(List<String> dimensions, List<Row> rows) {
             PayerBehaviour b = PayerBehaviour.STANDARD;
             if (accessToken != null) { b = b.withAccessToken(accessToken); }
             if (tokenType != null) { b = b.withTokenType(tokenType); }
-            if (expiresInAsString != null) { b = b.withExpiresInAsString(expiresInAsString); }
+            if (expiresIn != null) { b = b.withExpiresIn(expiresIn); }
             if (extraTokenFields != null) { b = b.withExtraTokenFields(extraTokenFields); }
             if (tokenContentType != null) { b = b.withTokenContentType(tokenContentType); }
             if (tokenErrorWith200 != null) { b = b.withTokenErrorWith200(tokenErrorWith200); }
