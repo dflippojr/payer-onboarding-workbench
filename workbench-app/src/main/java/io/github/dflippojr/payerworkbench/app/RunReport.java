@@ -10,9 +10,7 @@ import tools.jackson.databind.json.JsonMapper;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -133,7 +131,7 @@ public record RunReport(
     }
 
     private static Step step(StepResult step) {
-        Map<String, Object> details = asMap(sanitize(null, MAPPER.convertValue(step.details(), Map.class)));
+        Map<String, Object> details = asMap(Redactor.redactTree(MAPPER.convertValue(step.details(), Map.class)));
         List<String> exchanges = new ArrayList<>();
         if (details.get("exchanges") instanceof List<?> list) {
             for (Object x : list) {
@@ -155,41 +153,6 @@ public record RunReport(
                 + (responded ? "HTTP " + status : "no response")
                 + (e.get("latencyMs") == null ? "" : " · " + e.get("latencyMs") + " ms")
                 + (e.get("transportError") == null ? "" : " (" + e.get("transportError") + ")");
-    }
-
-    /** Masks secret-named fields and redacts every string, recursively, in a plain JSON-like value. */
-    static Object sanitize(String key, Object value) {
-        if (key != null && isSecretField(key)) {
-            return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            map.forEach((k, v) -> out.put(String.valueOf(k), sanitize(String.valueOf(k), v)));
-            return out;
-        }
-        if (value instanceof List<?> list) {
-            return list.stream().map(v -> sanitize(null, v)).toList();
-        }
-        if (value instanceof String s) {
-            return Redactor.redact(s);
-        }
-        return value;
-    }
-
-    private static boolean isSecretField(String key) {
-        return Redactor.isSecretField(key) || Redactor.isSensitiveHeader(key);
-    }
-
-    /** Keeps the scheme of an {@code Authorization}-style value so the report still says which was sent. */
-    private static Object maskField(String key, Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof String s && key.toLowerCase(Locale.ROOT).endsWith("authorization")) {
-            Map<String, List<String>> masked = Redactor.redactHeaders(Map.of("Authorization", List.of(s)));
-            return masked.get("Authorization").getFirst();
-        }
-        return Redactor.MASK;
     }
 
     private static String redact(String text) {

@@ -43,6 +43,8 @@ const leakedOutputs = {
   'embedded secret cut at an escaped quote': '{"result":"{\\"password\\":\\"[REDACTED]\\"ssTAIL\\"}"}',
   'secret object': '{"private_key":{"kty":"RSA","d":"PRIVATED"}}',
   'secret array': '{"access_token":["ARRSECRET"]}',
+  'slash-escaped token read as prose': '{"error_description":"rejected Bearer EchoTok\\/TOKENTAIL+x\\/y=="}',
+  'slash-escaped token tail after the mask': '{"error_description":"rejected Bearer [REDACTED]\\/TOKENTAIL"}',
 };
 for (const [name, text] of Object.entries(leakedOutputs)) {
   test(`flags what Redactor used to leave: ${name}`, () => {
@@ -78,7 +80,7 @@ test('accepts a recorded header list of masked values', () => {
 // seed; LEAKS_SEED=<seed> reproduces it.
 const SEED = Number(process.env.LEAKS_SEED ?? Math.floor(Math.random() * 2 ** 32));
 const CASES = generateCases(SEED, 3000);
-const describeCase = c => `seed ${SEED}: ${c.slot} ${c.secret.shape} ${c.encoding}${c.jsonWrap ? ' in JSON' : ''} (${c.carrier})`;
+const describeCase = c => `seed ${SEED}: ${c.slot} ${c.secret.shape} ${c.encoding}${c.wrap === 'NONE' ? '' : ` in ${c.wrap}`} (${c.carrier})`;
 
 /** Flagged in the slot's own text, as in a report, and in the recorded exchange, as in the bundle. */
 const flagged = ({ text, record }) => (text === null || findTextLeaks(text).length > 0)

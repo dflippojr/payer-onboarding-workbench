@@ -644,6 +644,14 @@ class CustomEndpointTest {
             assertEquals(200, report.statusCode());
             surfaces.add(report.body());
         }
+        // The live run and its report agree: the report's own redaction finds nothing left to mask.
+        var reported = mapper.readTree(surfaces.getLast());
+        for (int i = 0; i < run.path("steps").size(); i++) {
+            var live = run.path("steps").get(i);
+            var step = reported.path("steps").get(i);
+            assertEquals(live.path("summary"), step.path("summary"), live.path("stepId").asText());
+            assertEquals(live.path("details"), step.path("details"), live.path("stepId").asText());
+        }
         for (String surface : surfaces) {
             assertFalse(surface.contains(tokenPart), "the access token leaked");
             assertFalse(surface.contains(tokenPart.replace("/", "\\/")), "the access token leaked JSON-escaped");

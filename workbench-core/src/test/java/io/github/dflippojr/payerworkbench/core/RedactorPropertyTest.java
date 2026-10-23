@@ -1,14 +1,20 @@
 package io.github.dflippojr.payerworkbench.core;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.RecordComponent;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import net.jqwik.api.Arbitraries;
@@ -24,9 +30,11 @@ import tools.jackson.databind.json.JsonMapper;
  * (random tokens, Basic {@code user:pass}, colon-split bearers, numeric secrets, PEM private keys,
  * values full of JSON escapes), raw or URL-encoded, places them where a payer echoes credentials
  * (headers, bodies, query strings, bodies cut off at any position in a JSON value), with or without
- * the whole text quoted inside a JSON string, and asserts that no piece of the
- * secret survives. {@code replay/test/leaks.test.mjs} runs the same generator against the leak
- * scanner. Everything is generated; nothing secret-shaped is committed.
+ * the whole text quoted inside a JSON string (also by a serializer that escapes {@code /}), and
+ * asserts that no piece of the secret survives: through {@link Redactor} itself, and through every
+ * text field of the run model, {@link StepResult} and {@link Finding} (#211).
+ * {@code replay/test/leaks.test.mjs} runs the same generator against the leak scanner. Everything
+ * is generated; nothing secret-shaped is committed.
  */
 class RedactorPropertyTest {
 
@@ -88,6 +96,13 @@ class RedactorPropertyTest {
     enum Carrier { BODY, HEADER }
 
     /**
+     * Whether the whole text is quoted inside a JSON string, and if so whether by a serializer that
+     * escapes {@code /} as {@code \/} (PHP's {@code json_encode}, for one), as a payer that echoes a
+     * token into an {@code error_description} may (#211).
+     */
+    enum Wrap { NONE, JSON, JSON_ESCAPED_SLASHES }
+
+    /**
      * A generated secret: its text, and for a PEM block the base64 lines that are the secret
      * (Redactor keeps the armor lines so the key type stays readable).
      */
@@ -95,7 +110,7 @@ class RedactorPropertyTest {
     }
 
     record Case(Secret secret, Slot slot, Encoding encoding, int variant, String before, String after,
-                boolean jsonWrap, Carrier carrier, int cut) {
+                Wrap wrap, Carrier carrier, int cut) {
 
         String placed() {
             return encoding == Encoding.URL ? URLEncoder.encode(secret.value(), StandardCharsets.UTF_8) : secret.value();
@@ -125,7 +140,17 @@ class RedactorPropertyTest {
                 case PEM_TEXT -> before + placed() + after;
                 default -> throw new IllegalStateException(slot + " is not a text slot");
             };
-            return jsonWrap ? "{\"debug\":" + JSON.writeValueAsString(text) + "}" : text;
+            return wrap == Wrap.NONE ? text : "{\"debug\":" + quote(text) + "}";
+        }
+
+        boolean textSlot() {
+            return slot != Slot.AUTHORIZATION_HEADER && slot != Slot.CREDENTIAL_HEADER;
+        }
+
+        /** {@code text} as a JSON string, as the {@link #wrap} serializer writes it. */
+        private String quote(String text) {
+            String quoted = JSON.writeValueAsString(text);
+            return wrap == Wrap.JSON_ESCAPED_SLASHES ? quoted.replace("/", "\\/") : quoted;
         }
 
         private List<String> keys(List<String> keys) {
@@ -161,13 +186,13 @@ class RedactorPropertyTest {
             String value = jsonValue();
             String note = variant / 3 % 2 == 0 ? "" : "\n[not parsed: more JSON values than the limit]";
             String inner = field + value.substring(0, 1 + cut % (value.length() - 1));
-            if (!jsonWrap) {
+            if (wrap == Wrap.NONE) {
                 return inner + note;
             }
             if (variant / 6 % 2 == 0) {
-                return "{\"debug\":" + JSON.writeValueAsString(inner) + "}" + note;
+                return "{\"debug\":" + quote(inner) + "}" + note;
             }
-            String quoted = JSON.writeValueAsString(field + value);
+            String quoted = quote(field + value);
             int start = JSON.writeValueAsString(field).length() - 1 + (numberValue() ? 1 : 2);
             int end = quoted.length() - 1;
             return "{\"debug\":" + quoted.substring(0, start + cut % (end - start)) + note;
@@ -187,10 +212,14 @@ class RedactorPropertyTest {
 
         /**
          * Every {@link #PIECE}-character run of the secret as placed: of the base64 lines of a raw
-         * PEM block, otherwise of the whole (encoded) value. A shorter secret is one piece.
+         * PEM block, otherwise of the whole (encoded) value, and with {@code /} escaped too where the
+         * wrap escapes it. A shorter secret is one piece.
          */
         List<String> pieces() {
             List<String> chunks = secret.shape() == Shape.PEM && encoding == Encoding.RAW ? secret.pemLines() : List.of(placed());
+            if (wrap == Wrap.JSON_ESCAPED_SLASHES) {
+                chunks = Stream.concat(chunks.stream(), chunks.stream().map(c -> c.replace("/", "\\/"))).toList();
+            }
             return chunks.stream()
                     .flatMap(c -> c.length() <= PIECE
                             ? Stream.of(c)
@@ -209,6 +238,67 @@ class RedactorPropertyTest {
         assertTrue(out.contains(Redactor.MASK), () -> "no mask in: " + out);
     }
 
+    /** Identifiers the workbench sets itself, never text from the payer. */
+    private static final Set<String> NOT_PAYER_TEXT = Set.of("stepId", "checkId");
+
+    /** A typed value in step details, as {@code ExchangeView} or {@code RedactedConnection} is. */
+    record Echo(String body, List<String> notes, Map<String, List<String>> headers) {
+    }
+
+    /**
+     * Class-level check (#211): the run model redacts everything it holds, so the live run API, the
+     * stored run and the reports agree. Each generated case goes into every text component of
+     * {@link StepResult} and {@link Finding} (found by reflection, so a component added later is
+     * covered too) and into step details at every depth: a map value, a list entry, a record
+     * component and a recorded header. No piece of the secret may survive.
+     */
+    @Property(tries = 1000)
+    void noGeneratedSecretSurvivesInAStepOrFinding(@ForAll("cases") Case c) throws ReflectiveOperationException {
+        Map<String, Object> details = new LinkedHashMap<>();
+        String text;
+        if (c.textSlot()) {
+            text = c.text();
+            details.put("summary", text);
+            details.put("cards", List.of(Map.of("source", text)));
+            details.put("exchange", new Echo(text, List.of(text), Map.of("X-Debug-Echo", List.of(text))));
+        } else {
+            text = "ok";
+            String value = c.slot() == Slot.AUTHORIZATION_HEADER ? c.scheme() + " " + c.placed() : c.placed();
+            String name = c.pick(c.slot() == Slot.AUTHORIZATION_HEADER ? AUTHORIZATION_HEADERS : CREDENTIAL_HEADERS);
+            details.put("exchanges", List.of(Map.of("requestHeaders", Map.of(name, List.of(value)))));
+        }
+        List<String> surfaces = List.of(construct(StepResult.class, text, details).toString(),
+                construct(Finding.class, text, details).toString());
+
+        for (String surface : surfaces) {
+            for (String piece : c.pieces()) {
+                assertFalse(surface.contains(piece), () -> "'" + piece + "' survived in: " + surface);
+            }
+        }
+    }
+
+    /** A {@code type} whose every text component holds {@code text} and whose map holds {@code details}. */
+    private static <R extends Record> R construct(Class<R> type, String text, Map<String, Object> details)
+            throws ReflectiveOperationException {
+        RecordComponent[] components = type.getRecordComponents();
+        Object[] args = new Object[components.length];
+        for (int i = 0; i < components.length; i++) {
+            String name = components[i].getName();
+            Class<?> t = components[i].getType();
+            args[i] = NOT_PAYER_TEXT.contains(name) ? "synthetic-id"
+                    : t == String.class ? text
+                    : t == Map.class ? details
+                    : t == Instant.class ? Instant.EPOCH
+                    : t == Duration.class ? Duration.ZERO
+                    : t == boolean.class ? Boolean.FALSE
+                    : t == Severity.class ? Severity.FAIL
+                    : fail(type.getSimpleName() + "." + name + " is a " + t.getSimpleName()
+                            + "; give it a value here, with the secret if it can hold payer text");
+        }
+        return type.getDeclaredConstructor(Arrays.stream(components).map(RecordComponent::getType)
+                .toArray(Class<?>[]::new)).newInstance(args);
+    }
+
     @Provide
     Arbitrary<Case> cases() {
         return secrets().flatMap(secret -> Combinators.combine(
@@ -217,14 +307,14 @@ class RedactorPropertyTest {
                         Arbitraries.integers().between(0, 59),
                         Arbitraries.of(BEFORE),
                         Arbitraries.of(AFTER),
-                        Arbitraries.of(false, true),
+                        Arbitraries.of(Wrap.values()),
                         Arbitraries.of(Carrier.values()),
                         Arbitraries.integers().between(0, 1_000_000))
-                .as((slot, encoding, variant, before, after, jsonWrap, carrier, cut) -> new Case(secret, slot,
+                .as((slot, encoding, variant, before, after, wrap, carrier, cut) -> new Case(secret, slot,
                         // Outside a secret-named key, a PEM block is found by its armor, which URL encoding
                         // removes; URL encoding would remove the escapes of an escaped value.
                         slot == Slot.PEM_TEXT || secret.shape() == Shape.ESCAPED ? Encoding.RAW : encoding,
-                        variant, before, after, jsonWrap, carrier, cut)));
+                        variant, before, after, wrap, carrier, cut)));
     }
 
     private static List<Slot> slotsFor(Shape shape) {

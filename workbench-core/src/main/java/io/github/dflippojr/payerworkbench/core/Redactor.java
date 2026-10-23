@@ -1,5 +1,9 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.RecordComponent;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -7,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -48,11 +53,13 @@ public final class Redactor {
     /**
      * A scheme, its token68 part (group 2, which may be URL-encoded) and anything else up to the next
      * whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked
-     * whole.
+     * whole. Both parts read the JSON escape {@code \/} as the slash it stands for, also escaped again
+     * ({@code \\/}), so a token quoted by a serializer that escapes slashes ({@code tok\/en}) is
+     * masked whole too. Possessive quantifiers, as in {@link #JSON_FIELD}.
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)" + WORD_START + "(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
-                    + "([A-Za-z0-9\\-._~+/%]+=*)([^\\s\"',;\\\\]*)");
+                    + "((?:[A-Za-z0-9\\-._~+/%]++|\\\\++/)++=*)((?:[^\\s\"',;\\\\]++|\\\\++/)*+)");
 
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
@@ -279,6 +286,88 @@ public final class Redactor {
             out.put(name, safe);
         });
         return Collections.unmodifiableMap(out);
+    }
+
+    /**
+     * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
+     * and the value of every field named like a secret or a credential header is masked, recursively,
+     * or {@code null} if {@code value} is {@code null}. Maps keep their keys and iteration order; lists
+     * and sets are copied; a record is rebuilt through its canonical constructor from redacted
+     * components, so it keeps its type. Numbers, booleans, enums and other values are returned as they
+     * are. An {@code Authorization}-style field keeps its scheme ({@code Bearer [REDACTED]}).
+     */
+    public static Object redactTree(Object value) {
+        return redactTree(null, value);
+    }
+
+    private static Object redactTree(String key, Object value) {
+        if (key != null && isSecretKey(key)) {
+            return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
+        }
+        if (value instanceof String s) {
+            return redact(s);
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> out = new LinkedHashMap<>();
+            map.forEach((k, v) -> out.put(k, redactTree(String.valueOf(k), v)));
+            return Collections.unmodifiableMap(out);
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().map(v -> redactTree(null, v)).toList();
+        }
+        if (value instanceof Set<?> set) {
+            Set<Object> out = new LinkedHashSet<>();
+            set.forEach(v -> out.add(redactTree(null, v)));
+            return Collections.unmodifiableSet(out);
+        }
+        if (value instanceof Record record) {
+            return redactRecord(record);
+        }
+        return value;
+    }
+
+    private static boolean isSecretKey(String key) {
+        return isSecretField(key) || isSensitiveHeader(key);
+    }
+
+    /** Keeps the scheme of an {@code Authorization}-style value so it still says which was sent. */
+    private static Object maskField(String key, Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String s && key.toLowerCase(Locale.ROOT).endsWith("authorization")) {
+            return redactHeaderValue("Authorization", s);
+        }
+        return MASK;
+    }
+
+    /**
+     * Rebuilds a record from its redacted components. A secret-named component that cannot hold the
+     * mask (not a string) becomes {@code null}, or {@code 0} or {@code false} for a primitive.
+     */
+    private static Record redactRecord(Record record) {
+        RecordComponent[] components = record.getClass().getRecordComponents();
+        Object[] values = new Object[components.length];
+        Class<?>[] types = new Class<?>[components.length];
+        try {
+            for (int i = 0; i < components.length; i++) {
+                Method accessor = components[i].getAccessor();
+                accessor.trySetAccessible();
+                types[i] = components[i].getType();
+                values[i] = fitting(types[i], redactTree(components[i].getName(), accessor.invoke(record)));
+            }
+            Constructor<? extends Record> canonical = record.getClass().getDeclaredConstructor(types);
+            canonical.trySetAccessible();
+            return canonical.newInstance(values);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalArgumentException("Cannot redact a " + record.getClass().getName(), e);
+        }
+    }
+
+    /** {@code value} if a component of {@code type} can hold it, otherwise that type's empty value. */
+    private static Object fitting(Class<?> type, Object value) {
+        Object empty = type.isPrimitive() ? Array.get(Array.newInstance(type, 1), 0) : null;
+        return (empty == null ? type : empty.getClass()).isInstance(value) ? value : empty;
     }
 
     private static String redactHeaderValue(String name, String value) {

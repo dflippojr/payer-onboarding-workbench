@@ -10,8 +10,10 @@ import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -288,6 +290,51 @@ class RedactorTest {
     void leavesOrdinaryJsonFieldsAlone() {
         String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
         assertEquals(text, Redactor.redact(text));
+    }
+
+    @Test
+    void masksAJsonEscapedSlashTokenWhole() {
+        // A serializer that escapes "/" leaves the token's first part an all-letter word (#211).
+        assertEquals("{\"error_description\":\"rejected Bearer [REDACTED]\"}",
+                Redactor.redact("{\"error_description\":\"rejected Bearer EchoTok\\/abc+x\\/y==\"}"));
+        assertEquals("{\"debug\":\"Bearer [REDACTED]\"}", Redactor.redact("{\"debug\":\"Bearer abc:SE\\/CRET\"}"));
+        assertEquals("rejected Bearer [REDACTED]", Redactor.redact("rejected Bearer EchoTok\\\\/abc"));
+    }
+
+    record Echoed(String summary, String clientSecret, Integer apiKey, int password, List<String> notes) {
+    }
+
+    @Test
+    void redactsEveryStringOfATreeAndMasksSecretFields() {
+        String token = randomToken();
+        Map<Object, Object> tree = new LinkedHashMap<>();
+        tree.put("summary", "Echo: Bearer " + token);
+        tree.put("requestHeaders", Map.of("Authorization", List.of("Bearer " + token), "Cookie", List.of("c=" + token)));
+        tree.put("tags", new LinkedHashSet<>(List.of("Bearer " + token)));
+        tree.put("card", new Echoed("Bearer " + token, token, 918273645, 918273646, List.of("Bearer " + token)));
+        tree.put("count", 3);
+        tree.put(Severity.FAIL, 1L);
+        tree.put("missing", null);
+
+        Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
+
+        assertEquals(List.copyOf(tree.keySet()), List.copyOf(out.keySet()));
+        assertEquals("Echo: Bearer [REDACTED]", out.get("summary"));
+        assertEquals(Map.of("Authorization", List.of("Bearer [REDACTED]"), "Cookie", List.of("[REDACTED]")),
+                out.get("requestHeaders"));
+        assertEquals(Set.of("Bearer [REDACTED]"), out.get("tags"));
+        // A record keeps its type; a secret-named component that cannot hold the mask is emptied.
+        assertEquals(new Echoed("Bearer [REDACTED]", "[REDACTED]", null, 0, List.of("Bearer [REDACTED]")),
+                out.get("card"));
+        assertEquals(3, out.get("count"));
+        assertEquals(1L, out.get(Severity.FAIL));
+        assertTrue(out.containsKey("missing"));
+        assertNull(out.get("missing"));
+        assertNull(Redactor.redactTree(null));
+        assertEquals(Map.of("access_token", List.of("[REDACTED]", "[REDACTED]"),
+                        "Proxy-Authorization", List.of("[REDACTED]", "Basic [REDACTED]")),
+                Redactor.redactTree(Map.of("access_token", List.of("x", "Basic dXNlcjpwYXNz"),
+                        "Proxy-Authorization", List.of("x", "Basic dXNlcjpwYXNz"))));
     }
 
     private static String randomToken() {
