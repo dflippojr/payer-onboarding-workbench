@@ -172,6 +172,56 @@ class AuditApiTest {
         assertSafe(events);
     }
 
+    @Test
+    void headReadsAreAuditedLikeGet(CapturedOutput output) throws Exception {
+        // MVC sends HEAD to the @GetMapping handlers: the report is rendered and a 404 reveals a missing run (#206).
+        String run = run("[]");
+        HttpResponse<String> report = send("HEAD", "/api/runs/" + run + "/report?format=md");
+        assertEquals(200, report.statusCode());
+        assertTrue(report.headers().firstValue("Content-Disposition").orElseThrow().contains(run));
+        assertEquals("", report.body());
+        for (String path : List.of("/api/runs/" + run + "/report;x?format=md", "/api/runs/" + run + "/%72eport?format=md",
+                "/api/runs/" + run, "/api/runs/" + run + ";x", "/api/run%73")) {
+            assertEquals(200, send("HEAD", path).statusCode(), path);
+        }
+        assertEquals(404, send("HEAD", "/api/runs/" + SECRET).statusCode());
+        List<JsonNode> events = events(output, 8);
+        assertEquals(3, action(events, "report.rendered").stream().filter(e -> e.path("runId").asText().equals(run)
+                && e.path("metadata").path("reportFormat").asText().equals("md")).count());
+        List<JsonNode> reads = action(events, "run.read");
+        assertEquals(2, reads.stream().filter(e -> e.path("runId").asText().equals(run)
+                && e.path("outcome").asText().equals("success")).count());
+        JsonNode probe = reads.stream().filter(e -> e.path("metadata").path("httpStatus").asInt() == 404).findFirst().orElseThrow();
+        assertEquals("rejected", probe.path("outcome").asText());
+        assertEquals("not_found", probe.path("metadata").path("reasonCode").asText());
+        assertTrue(probe.path("targetId").isNull());
+        assertEquals(1, action(events, "run_history.read").size());
+        assertSafe(events);
+    }
+
+    @Test
+    void otherMethodsNeverReachTheRunReadHandlers(CapturedOutput output) throws Exception {
+        // A handler would answer an unknown id with 404; the same status for both ids shows none ran (#206).
+        String run = run("[]");
+        for (String id : List.of(run, SECRET)) {
+            for (String path : List.of("/api/runs/" + id, "/api/runs/" + id + "/report?format=md")) {
+                HttpResponse<String> options = send("OPTIONS", path);
+                assertEquals(200, options.statusCode(), path);
+                assertTrue(options.headers().firstValue("Allow").orElseThrow().contains("HEAD"), path);
+                assertTrue(options.headers().firstValue("Content-Disposition").isEmpty(), path);
+                assertEquals("", options.body(), path);
+                for (String method : List.of("PUT", "PATCH", "DELETE")) {
+                    assertEquals(405, send(method, path).statusCode(), method + " " + path);
+                }
+            }
+        }
+        assertEquals(200, get("/api/runs/" + run).statusCode()); // the last request, so its event follows any stray one
+        List<JsonNode> events = events(output, 2);
+        assertEquals(List.of("run.requested", "run.completed", "run.read"),
+                events.stream().map(e -> e.path("action").asText()).filter(a -> !a.equals("credential.resolved")).toList());
+        assertSafe(events);
+    }
+
     private String uncheckedRun(String faults) {
         try { return run(faults); } catch (Exception e) { throw new IllegalStateException(e); }
     }
@@ -190,6 +240,10 @@ class AuditApiTest {
     private HttpResponse<String> get(String path) throws Exception {
         return http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+    private HttpResponse<String> send(String method, String path) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .method(method, HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
     }
     private List<JsonNode> events(CapturedOutput output, int terminalCount) throws Exception {
         long deadline = System.nanoTime() + java.time.Duration.ofSeconds(3).toNanos();
