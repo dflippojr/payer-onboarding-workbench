@@ -30,9 +30,9 @@ import java.util.Set;
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
-class HostCheckFilter extends OncePerRequestFilter {
+public class HostCheckFilter extends OncePerRequestFilter {
 
-    static final String SETTING = "workbench.allowed-hosts";
+    public static final String SETTING = "workbench.allowed-hosts";
 
     private static final byte[] REFUSAL = ("""
             {"type":"about:blank","title":"Forbidden","status":403,"detail":"This workbench answers only to \
@@ -43,7 +43,7 @@ class HostCheckFilter extends OncePerRequestFilter {
     /** Lower-case host names without a port; {@code null} when the check is off. */
     private final Set<String> allowed;
 
-    HostCheckFilter(@Value("${server.address:}") String serverAddress,
+    public HostCheckFilter(@Value("${server.address:}") String serverAddress,
                     @Value("${" + SETTING + ":}") String allowedHosts) {
         this.allowed = allowedHosts(serverAddress, allowedHosts);
     }

@@ -97,6 +97,8 @@ class HostCheckTest {
                 .toList();
         assertTrue(filters.size() > 1, filters.toString());
         assertInstanceOf(HostCheckFilter.class, filters.get(0), filters.toString());
+        // The management-port copy belongs to actuator's child context only.
+        assertEquals(1, filters.stream().filter(HostCheckFilter.class::isInstance).count(), filters.toString());
     }
 
     record Response(int status, String raw) {
@@ -108,6 +110,11 @@ class HostCheckTest {
 
     /** One HTTP/1.x request with exactly the {@code Host} given (none when null, as HTTP/1.0 allows). */
     static Response send(int port, String method, String path, String host, String json) throws IOException {
+        return send(InetAddress.getLoopbackAddress(), port, method, path, host, json);
+    }
+
+    static Response send(InetAddress address, int port, String method, String path, String host, String json)
+            throws IOException {
         byte[] body = json == null ? new byte[0] : json.getBytes(StandardCharsets.UTF_8);
         StringBuilder head = new StringBuilder(method).append(' ').append(path)
                 .append(host == null ? " HTTP/1.0\r\n" : " HTTP/1.1\r\nHost: " + host + "\r\n");
@@ -116,7 +123,7 @@ class HostCheckTest {
             head.append("Content-Type: application/json\r\nContent-Length: ").append(body.length).append("\r\n");
         }
         head.append("\r\n");
-        try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
+        try (Socket socket = new Socket(address, port)) {
             socket.setSoTimeout(60_000);
             OutputStream out = socket.getOutputStream();
             out.write(head.toString().getBytes(StandardCharsets.US_ASCII));
