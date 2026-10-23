@@ -8,10 +8,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -288,6 +294,103 @@ class RedactorTest {
     void leavesOrdinaryJsonFieldsAlone() {
         String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
         assertEquals(text, Redactor.redact(text));
+    }
+
+    @Test
+    void masksAJsonEscapedSlashTokenWhole() {
+        // A serializer that escapes "/" leaves the token's first part an all-letter word (#211).
+        assertEquals("{\"error_description\":\"rejected Bearer [REDACTED]\"}",
+                Redactor.redact("{\"error_description\":\"rejected Bearer EchoTok\\/abc+x\\/y==\"}"));
+        assertEquals("{\"debug\":\"Bearer [REDACTED]\"}", Redactor.redact("{\"debug\":\"Bearer abc:SE\\/CRET\"}"));
+        assertEquals("rejected Bearer [REDACTED]", Redactor.redact("rejected Bearer EchoTok\\\\/abc"));
+    }
+
+    @Test
+    void masksAUnicodeEscapedTokenWhole() {
+        // .NET's System.Text.Json writes "+" as +; some serializers write "/" as / or "=" as =.
+        assertEquals("{\"error_description\":\"rejected Bearer [REDACTED]\"}", Redactor.redact(
+                "{\"error_description\":\"rejected Bearer SynthTokAAAA/BBBB\\u002BCCCCDDDDEEEE\\u002BFFFF==\"}"));
+        assertEquals("{\"error_description\":\"rejected Bearer [REDACTED]\"}",
+                Redactor.redact("{\"error_description\":\"rejected Bearer SynthTok\\u002FAAAABBBB\"}"));
+        // Escaped and unescaped mixed, lower-case hex, escaped padding, and escaped again in embedded JSON.
+        assertEquals("{\"debug\":\"Bearer [REDACTED]\"}", Redactor.redact(
+                "{\"debug\":\"Bearer Synth\\u002bTok/AAAA\\/BBBB+CC\\u002fDD\\u003D\\u003d\"}"));
+        assertEquals("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}",
+                Redactor.redact("{\"debug\":\"{\\\"e\\\":\\\"Bearer SynthTok\\\\u002BAAAA\\\\u002FBBBB\\\"}\"}"));
+        assertEquals("Basic [REDACTED]", Redactor.redact("Basic dXNlcjpw\\u002BYXNz"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abc:SE\\u002BCRET"));
+        // An escaped quote, space or backslash still ends the token.
+        assertEquals("Bearer [REDACTED]\\u0022 and Bearer [REDACTED]\\u0020more",
+                Redactor.redact("Bearer abc123\\u0022 and Bearer abc123\\u0020more"));
+    }
+
+    record Echoed(String summary, String clientSecret, Integer apiKey, int password, List<String> notes) {
+    }
+
+    @Test
+    void redactsEveryStringOfATreeAndMasksSecretFields() {
+        String token = randomToken();
+        Map<Object, Object> tree = new LinkedHashMap<>();
+        tree.put("summary", "Echo: Bearer " + token);
+        tree.put("requestHeaders", Map.of("Authorization", List.of("Bearer " + token), "Cookie", List.of("c=" + token)));
+        tree.put("tags", new LinkedHashSet<>(List.of("Bearer " + token)));
+        tree.put("card", new Echoed("Bearer " + token, token, 918273645, 918273646, List.of("Bearer " + token)));
+        tree.put("count", 3);
+        tree.put(Severity.FAIL, 1L);
+        tree.put("missing", null);
+
+        Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
+
+        assertEquals(List.copyOf(tree.keySet()), List.copyOf(out.keySet()));
+        assertEquals("Echo: Bearer [REDACTED]", out.get("summary"));
+        assertEquals(Map.of("Authorization", List.of("Bearer [REDACTED]"), "Cookie", List.of("[REDACTED]")),
+                out.get("requestHeaders"));
+        assertEquals(Set.of("Bearer [REDACTED]"), out.get("tags"));
+        // A record keeps its type; a secret-named component that cannot hold the mask is emptied.
+        assertEquals(new Echoed("Bearer [REDACTED]", "[REDACTED]", null, 0, List.of("Bearer [REDACTED]")),
+                out.get("card"));
+        assertEquals(3, out.get("count"));
+        assertEquals(1L, out.get(Severity.FAIL));
+        assertTrue(out.containsKey("missing"));
+        assertNull(out.get("missing"));
+        assertNull(Redactor.redactTree(null));
+        assertEquals(Map.of("access_token", List.of("[REDACTED]", "[REDACTED]"),
+                        "Proxy-Authorization", List.of("[REDACTED]", "Basic [REDACTED]")),
+                Redactor.redactTree(Map.of("access_token", List.of("x", "Basic dXNlcjpwYXNz"),
+                        "Proxy-Authorization", List.of("x", "Basic dXNlcjpwYXNz"))));
+    }
+
+    @Test
+    void redactsMapKeysArraysOptionalsAndValuesOfOtherTypesInATree() {
+        String token = randomToken();
+        String echo = "Bearer " + token;
+        Map<Object, Object> tree = new LinkedHashMap<>();
+        tree.put("key: " + echo, "v");
+        tree.put("array", new String[] {echo});
+        tree.put("nested", new Object[] {List.of(echo), 7});
+        tree.put("queue", new ArrayDeque<>(List.of(echo)));
+        tree.put("optional", Optional.of(echo));
+        tree.put("builder", new StringBuilder(echo));
+        tree.put("node", JSON.readTree("{\"echo\":\"" + echo + "\"}"));
+        tree.put("at", Instant.EPOCH);
+        tree.put("took", Duration.ofSeconds(3));
+        tree.put("letter", 'x');
+
+        Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
+
+        assertEquals("v", out.get("key: Bearer [REDACTED]"));
+        assertEquals(List.of("Bearer [REDACTED]"), out.get("array"));
+        assertEquals(List.of(List.of("Bearer [REDACTED]"), 7), out.get("nested"));
+        assertEquals(List.of("Bearer [REDACTED]"), out.get("queue"));
+        assertEquals(Optional.of("Bearer [REDACTED]"), out.get("optional"));
+        assertEquals(Optional.empty(), Redactor.redactTree(Optional.empty()));
+        // Any other type becomes its redacted string form.
+        assertEquals("Bearer [REDACTED]", out.get("builder"));
+        assertEquals("{\"echo\":\"Bearer [REDACTED]\"}", out.get("node"));
+        assertEquals(Instant.EPOCH, out.get("at"));
+        assertEquals(Duration.ofSeconds(3), out.get("took"));
+        assertEquals('x', out.get("letter"));
+        assertFalse(String.valueOf(out).contains(token), String.valueOf(out));
     }
 
     private static String randomToken() {

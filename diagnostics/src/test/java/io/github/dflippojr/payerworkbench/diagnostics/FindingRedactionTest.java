@@ -26,6 +26,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Proves that secrets the run handled (access token, client secret, private key,
@@ -92,6 +94,42 @@ class FindingRedactionTest {
             for (String secret : forbidden) {
                 assertFalse(all.contains(secret), () -> "secret leaked into finding " + f.checkId() + ": " + f.title());
             }
+        }
+    }
+
+    /**
+     * A payer whose serializer escapes token characters (.NET's System.Text.Json writes {@code +} as
+     * {@code +}) echoes the bearer token into a 401 body. The rejection finding quotes that body
+     * as evidence and the decoded {@code error_description} in its explanation; neither may keep any
+     * part of the token. The first part is all letters, which alone would pass as a prose word.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "<1>\\u002B<2>\\u002B<3>==",
+            "<1>\\u002F<2>\\u002F<3>",
+            "<1>/<2>\\u002B<3>\\/<4>+<5>\\u002f",
+            "<1>\\/<2>+<3>\\/<4>=="})
+    void escapedTokenEchoesNeverAppearInTheRejectionFinding(String shape) {
+        List<String> parts = new ArrayList<>(List.of("SynthTok"));
+        for (int i = 0; i < 4; i++) {
+            parts.add(UUID.randomUUID().toString().replace("-", "").substring(0, 12));
+        }
+        String token = shape;
+        for (int i = 0; i < parts.size(); i++) {
+            token = token.replace("<" + (i + 1) + ">", parts.get(i));
+        }
+        var run = healthy();
+        run.hooks = new ArrayList<>(List.of(orderSign(hook(401,
+                "{\"error\":\"invalid_token\",\"error_description\":\"rejected Bearer " + token + "\"}", 300))));
+
+        Finding rejected = new DiagnosticEngine().run(run.build()).stream()
+                .filter(f -> f.checkId().equals(HookRejectedCheck.CHECK_ID)).findFirst().orElseThrow();
+
+        assertTrue(rejected.evidence().contains("rejected Bearer " + Redactor.MASK + "\""), rejected::evidence);
+        assertTrue(rejected.explanation().contains("rejected Bearer " + Redactor.MASK), rejected::explanation);
+        for (String part : parts) {
+            assertFalse(rejected.evidence().contains(part), () -> "'" + part + "' survived in: " + rejected.evidence());
+            assertFalse(rejected.explanation().contains(part), () -> "'" + part + "' survived in: " + rejected.explanation());
         }
     }
 }

@@ -1,8 +1,9 @@
 // Seeded generator for the class-level leak check (#160): the same secret shapes and placements as
 // workbench-core's RedactorPropertyTest (random tokens, Basic user:pass, colon-split bearers,
 // numeric secrets, PEM private keys; raw or URL-encoded; in headers, bodies and query strings, with
-// or without the text quoted inside a JSON string). Everything is generated; nothing secret-shaped
-// is committed.
+// or without the text quoted inside a JSON string, also by a serializer that escapes / as \/ or + as
+// \u002B).
+// Everything is generated; nothing secret-shaped is committed.
 
 /** Characters of an RFC 6750 b64token, without the = padding. */
 const TOKEN_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/';
@@ -25,6 +26,19 @@ const AUTHORIZATION_HEADERS = ['Authorization', 'authorization', 'Proxy-Authoriz
 const PEM_LABELS = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'ENCRYPTED PRIVATE KEY', 'OPENSSH PRIVATE KEY'];
 const USER_CHARS = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(c => c !== ':').join('');
 const PASS_CHARS = `${Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('')}éüß€`;
+
+/**
+ * The text as it is, quoted inside a JSON string, or quoted by a serializer that escapes / as \/, or +
+ * and / as unicode escapes, as System.Text.Json does + (#211).
+ */
+const WRAPS = ['NONE', 'JSON', 'JSON_ESCAPED_SLASHES', 'JSON_UNICODE_ESCAPED'];
+
+/** How each wrap's serializer escapes the quoted text, as in RedactorPropertyTest. */
+const ESCAPE = {
+  JSON: q => q,
+  JSON_ESCAPED_SLASHES: q => q.replaceAll('/', '\\/'),
+  JSON_UNICODE_ESCAPED: q => q.replaceAll('+', '\\u002B').replaceAll('/', '\\u002f'),
+};
 
 const TEXT_SLOTS = ['AUTH_TEXT', 'HEADERS_ECHO', 'JSON_FIELD', 'FORM_BODY', 'QUERY_STRING', 'PEM_TEXT'];
 const SLOTS = ['AUTHORIZATION_HEADER', 'CREDENTIAL_HEADER', ...TEXT_SLOTS];
@@ -91,7 +105,7 @@ export function generateCases(seed, count) {
     // variant picks a key, header name, scheme spelling or body ending; cut, where a mask stops short.
     return {
       secret: s, slot, encoding, variant: r.int(0, 59), before: r.pick(BEFORE), after: r.pick(AFTER),
-      jsonWrap: r.bool(), carrier: r.pick(['BODY', 'HEADER']), cut: r.int(0, 1e6),
+      wrap: r.pick(WRAPS), carrier: r.pick(['BODY', 'HEADER']), cut: r.int(0, 1e6),
     };
   });
 }
@@ -141,6 +155,9 @@ export function build(c, value) {
       break;
     default: text = `${c.before}${value}${c.after}`;
   }
-  if (c.jsonWrap) text = `{"debug":${JSON.stringify(text)}}`;
+  if (c.wrap !== 'NONE') {
+    const quoted = JSON.stringify(text);
+    text = `{"debug":${ESCAPE[c.wrap](quoted)}}`;
+  }
   return { text, record: c.carrier === 'BODY' ? { responseBody: text } : { responseHeaders: { 'X-Debug-Echo': [text] } } };
 }

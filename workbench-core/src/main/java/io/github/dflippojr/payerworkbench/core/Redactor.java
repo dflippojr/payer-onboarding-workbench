@@ -1,19 +1,29 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.RecordComponent;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalAmount;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 /**
  * Masks credential material in strings and HTTP headers before they are stored,
@@ -46,13 +56,25 @@ public final class Redactor {
     private static final String WORD_START = "(?:\\b|(?<=\\\\[nrtbf]))";
 
     /**
+     * A JSON escape of a token68 character, also escaped again: {@code \/}, or a {@code \}{@code uXXXX}
+     * escape of a letter, digit or one of {@code -._~+/=}. Serializers write these inside a token
+     * ({@code System.Text.Json} escapes {@code +}, Gson {@code =}, PHP {@code /}).
+     */
+    private static final String ESCAPED_TOKEN_CHAR =
+            "\\\\++(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))";
+
+    /**
      * A scheme, its token68 part (group 2, which may be URL-encoded) and anything else up to the next
      * whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked
-     * whole.
+     * whole. Both parts read a JSON escape of a token character ({@link #ESCAPED_TOKEN_CHAR}) as the
+     * character it stands for, so a token quoted by a serializer that escapes some of its characters
+     * ({@code tok\/en}, {@code tok}{@code \}{@code u002Ben}) is masked whole too. Case-insensitive, so
+     * the escapes' hex digits may be either case. Possessive quantifiers, as in {@link #JSON_FIELD}.
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)" + WORD_START + "(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
-                    + "([A-Za-z0-9\\-._~+/%]+=*)([^\\s\"',;\\\\]*)");
+                    + "((?:[A-Za-z0-9\\-._~+/%]++|" + ESCAPED_TOKEN_CHAR + ")++=*)"
+                    + "((?:[^\\s\"',;\\\\]++|" + ESCAPED_TOKEN_CHAR + ")*+)");
 
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
@@ -279,6 +301,102 @@ public final class Redactor {
             out.put(name, safe);
         });
         return Collections.unmodifiableMap(out);
+    }
+
+    /**
+     * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
+     * and the value of every field named like a secret or a credential header is masked, recursively,
+     * or {@code null} if {@code value} is {@code null}. Maps keep their iteration order, and their string
+     * keys are redacted too; sets are copied, other collections and arrays become lists, and an
+     * {@link Optional} keeps its redacted value; a record is rebuilt through its canonical constructor
+     * from redacted components, so it keeps its type. Numbers, booleans, characters, enums, dates and
+     * durations are returned as they are. Any other value, such as a {@code StringBuilder} or a parsed
+     * JSON tree, becomes its redacted {@link String#valueOf(Object) string form}, so it cannot carry a
+     * secret through unredacted. An {@code Authorization}-style field keeps its scheme
+     * ({@code Bearer [REDACTED]}).
+     */
+    public static Object redactTree(Object value) {
+        return redactTree(null, value);
+    }
+
+    private static Object redactTree(String key, Object value) {
+        if (key != null && isSecretKey(key)) {
+            return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
+        }
+        if (value == null || value instanceof Number || value instanceof Boolean || value instanceof Character
+                || value instanceof Enum<?> || value instanceof TemporalAccessor || value instanceof TemporalAmount) {
+            return value;
+        }
+        if (value instanceof String s) {
+            return redact(s);
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> out = new LinkedHashMap<>();
+            map.forEach((k, v) -> out.put(k instanceof String s ? redact(s) : k, redactTree(String.valueOf(k), v)));
+            return Collections.unmodifiableMap(out);
+        }
+        if (value instanceof Set<?> set) {
+            Set<Object> out = new LinkedHashSet<>();
+            set.forEach(v -> out.add(redactTree(null, v)));
+            return Collections.unmodifiableSet(out);
+        }
+        if (value instanceof Collection<?> collection) {
+            return collection.stream().map(v -> redactTree(null, v)).toList();
+        }
+        if (value.getClass().isArray()) {
+            return IntStream.range(0, Array.getLength(value)).mapToObj(i -> redactTree(null, Array.get(value, i))).toList();
+        }
+        if (value instanceof Optional<?> optional) {
+            return optional.map(v -> redactTree(null, v));
+        }
+        if (value instanceof Record record) {
+            return redactRecord(record);
+        }
+        return redact(String.valueOf(value));
+    }
+
+    private static boolean isSecretKey(String key) {
+        return isSecretField(key) || isSensitiveHeader(key);
+    }
+
+    /** Keeps the scheme of an {@code Authorization}-style value so it still says which was sent. */
+    private static Object maskField(String key, Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String s && key.toLowerCase(Locale.ROOT).endsWith("authorization")) {
+            return redactHeaderValue("Authorization", s);
+        }
+        return MASK;
+    }
+
+    /**
+     * Rebuilds a record from its redacted components. A secret-named component that cannot hold the
+     * mask (not a string) becomes {@code null}, or {@code 0} or {@code false} for a primitive.
+     */
+    private static Record redactRecord(Record record) {
+        RecordComponent[] components = record.getClass().getRecordComponents();
+        Object[] values = new Object[components.length];
+        Class<?>[] types = new Class<?>[components.length];
+        try {
+            for (int i = 0; i < components.length; i++) {
+                Method accessor = components[i].getAccessor();
+                accessor.trySetAccessible();
+                types[i] = components[i].getType();
+                values[i] = fitting(types[i], redactTree(components[i].getName(), accessor.invoke(record)));
+            }
+            Constructor<? extends Record> canonical = record.getClass().getDeclaredConstructor(types);
+            canonical.trySetAccessible();
+            return canonical.newInstance(values);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalArgumentException("Cannot redact a " + record.getClass().getName(), e);
+        }
+    }
+
+    /** {@code value} if a component of {@code type} can hold it, otherwise that type's empty value. */
+    private static Object fitting(Class<?> type, Object value) {
+        Object empty = type.isPrimitive() ? Array.get(Array.newInstance(type, 1), 0) : null;
+        return (empty == null ? type : empty.getClass()).isInstance(value) ? value : empty;
     }
 
     private static String redactHeaderValue(String name, String value) {

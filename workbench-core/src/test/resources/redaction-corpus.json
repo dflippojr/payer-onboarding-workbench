@@ -39,7 +39,9 @@
     {"id": "json-object-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"private_key\":{\"kty\":\"RSA\",\"d\":\"FAKE-jwk-d-0041\"}}", "secrets": ["FAKE-jwk-d-0041"]},
     {"id": "json-array-secret", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"access_token\":[\"FAKE-array-token-0042\"]}", "secrets": ["FAKE-array-token-0042"]},
     {"id": "bearer-url-encoded", "rule": "AUTH_SCHEME", "input": "Authorization: Bearer %2FFAKE0043%3ASECRETPART0043", "secrets": ["FAKE0043", "SECRETPART0043"]},
-    {"id": "json-in-json-cut-off-before-quote", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"debug\":\"{\\\"client_secret\\\":\\\"FAKE-embedded-cut-0044\"}", "secrets": ["FAKE-embedded-cut-0044"]}
+    {"id": "json-in-json-cut-off-before-quote", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"debug\":\"{\\\"client_secret\\\":\\\"FAKE-embedded-cut-0044\"}", "secrets": ["FAKE-embedded-cut-0044"]},
+    {"id": "bearer-slash-escaped", "rule": "AUTH_SCHEME", "input": "{\"error\":\"invalid_token\",\"error_description\":\"rejected Bearer FakeTok\\/bearer-0045-not-real+x\\/y==\"}", "secrets": ["bearer-0045-not-real", "x\\/y=="]},
+    {"id": "bearer-unicode-escaped", "rule": "AUTH_SCHEME", "input": "{\"error\":\"invalid_token\",\"error_description\":\"rejected Bearer FakeTok\\u002Fbearer-0046-not-real\\u002Bx/y\\u003d\\u003d\"}", "secrets": ["bearer-0046-not-real", "x/y"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
