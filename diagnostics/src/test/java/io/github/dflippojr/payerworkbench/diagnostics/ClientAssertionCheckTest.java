@@ -53,9 +53,23 @@ class ClientAssertionCheckTest {
     }
     @Test void recordedExpiryComparedWithPayerClockFails() {
         JwtClaims expired = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.minusSeconds(1), NOW.minusSeconds(301), "jti", "kid", CLIENT_ID);
-        assertTrue(assertOnly(check.evaluate(run(expired, null)), Severity.FAIL).title().contains("payer clock"));
+        assertTrue(assertOnly(check.evaluate(run(expired, "invalid assertion")), Severity.FAIL).title().contains("payer clock"));
         JwtClaims future = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(301), NOW.plusSeconds(1), "jti", "kid", CLIENT_ID);
-        assertOnly(check.evaluate(run(future, null)), Severity.FAIL);
+        assertTrue(assertOnly(check.evaluate(run(future, "invalid assertion")), Severity.FAIL).title().contains("payer clock"));
+    }
+    /** RFC 7523 §3 allows clock skew: a payer that issued a token accepted the assertion, whatever its Date says. */
+    @ParameterizedTest @ValueSource(longs = {1, 30, 301, -301})
+    void issuedTokenWithPayerClockOffsetPasses(long payerBehindSeconds) {
+        var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(healthyClaims())
+                .exchange(token(200, null, TOKEN_OK_BODY, NOW.minusSeconds(payerBehindSeconds)))
+                .tokenResponse(okToken()).build();
+        assertEquals("Client assertion accepted", assertOnly(check.evaluate(obs), Severity.PASS).title());
+    }
+    @Test void invalidClientWithPayerClockBeyondToleranceFails() {
+        var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(healthyClaims())
+                .exchange(token(401, null, "{\"error\":\"invalid_client\"}", NOW.minusSeconds(120)))
+                .tokenResponse(tokenError("invalid_client", null)).build();
+        assertTrue(assertOnly(check.evaluate(obs), Severity.FAIL).title().contains("payer clock"));
     }
     @Test void payerExpiredAssertionFails() {
         assertTrue(assertOnly(check.evaluate(run(healthyClaims(), "exp expired")), Severity.FAIL).title().contains("exp expired"));
