@@ -59,11 +59,16 @@ public record PayerBehaviour(AccessToken accessToken, String tokenType, ExpiresI
         /** The same seconds as a JSON string, such as {@code "300"}; some identity providers do this. */
         NUMERIC_STRING,
         /** A JSON string that is not a number of seconds: {@value PayerBehaviour#NON_NUMERIC_EXPIRES_IN}. */
-        NON_NUMERIC_STRING
+        NON_NUMERIC_STRING,
+        /** A JSON number that is not a whole number of seconds: {@value PayerBehaviour#FRACTIONAL_EXPIRES_IN}. */
+        FRACTIONAL_NUMBER
     }
 
     /** The {@code expires_in} a {@link ExpiresIn#NON_NUMERIC_STRING} payer sends. */
     public static final String NON_NUMERIC_EXPIRES_IN = "5 minutes";
+
+    /** The {@code expires_in} a {@link ExpiresIn#FRACTIONAL_NUMBER} payer sends. */
+    public static final double FRACTIONAL_EXPIRES_IN = 3599.9;
 
     /** Length of a {@link AccessToken#VERY_LONG} token; large identity-provider tokens reach this size. */
     public static final int VERY_LONG_TOKEN_LENGTH = 8192;

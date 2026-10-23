@@ -15,6 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.JwtClaims;
@@ -76,7 +78,9 @@ class AuthChecksTest {
 
         @Test
         void unusableExpiresInWarnsThatItWasPresent() {
-            for (String sent : List.of("\"5 minutes\"", "\"1.5\"", "0", "-300", "true", "{}", "[300]")) {
+            // A fraction the SDK truncates to 0 or less, or that is beyond a long, is not cached either.
+            for (String sent : List.of("\"5 minutes\"", "\"1.5\"", "0", "-300", "true", "{}", "[300]", "[1.5]",
+                    "0.5", "0.9E-3", "-1.5", "1.0E19", "1.0E300", "9223372036854775808")) {
                 var run = healthy();
                 run.tokenResponse = expiresIn(null, sent);
                 Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
@@ -88,8 +92,88 @@ class AuthChecksTest {
                         + "cache the token. Without it a client cannot tell when to fetch a new token, and may keep "
                         + "using an expired one and get 401s mid-session.", f.explanation(), sent);
                 assertTrue(f.evidence().contains(", expires_in=" + sent + ", "), f::evidence);
-                assertTrue(f.suggestedFix().startsWith("Ask the payer to return expires_in as a JSON number"));
+                assertTrue(f.suggestedFix().startsWith("Ask the payer to return expires_in as a whole JSON number"));
             }
+        }
+
+        /** The router SDK reads a JSON number with Jackson's {@code asLong()}, which truncates a fraction and caches it. */
+        @Test
+        void fractionalExpiresInWarnsThatTheSdkTruncatesIt() {
+            var run = healthy();
+            run.tokenResponse = expiresIn(null, "3599.9");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertEquals("Token response lacks expires_in", f.title());
+            assertEquals("An access token was issued, but its expires_in (3599.9) was present but not usable: it is "
+                    + "not a positive whole number of seconds. The router SDK reads a JSON number with Jackson's "
+                    + "asLong(), which truncates it to 3599, so it caches this token for 3599 seconds. A "
+                    + "client that rejects or rounds a fraction may not know when to fetch a new token, and may keep "
+                    + "using an expired one and get 401s mid-session.", f.explanation());
+            assertTrue(f.evidence().contains(", expires_in=3599.9, "), f::evidence);
+            assertTrue(f.suggestedFix().startsWith("Ask the payer to return expires_in as a whole JSON number"));
+
+            run.tokenResponse = expiresIn(null, "1.5E0");
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.WARN).explanation()
+                    .contains("which truncates it to 1, so it caches this token for 1 seconds."));
+        }
+
+        /**
+         * Oracle for the WARN's claim about the SDK: {@code expiresInSeconds} from fhir-crd-router#151, copied
+         * as it is there, run on the same Jackson and the default {@code ObjectMapper} its token client uses.
+         */
+        @Test
+        void theWarnSaysWhatTheSdkCaches() throws Exception {
+            ObjectMapper mapper = new ObjectMapper();
+            var run = healthy();
+            for (String json : List.of("3599.9", "1.5", "0.5", "0.9e-3", "-1.5", "1e19", "1e300", "86400.5", "86401.5",
+                    "9.223372036854775807E18", "9223372036854775808", "0", "-300", "true", "\"1.5\"", "\"abc\"",
+                    "[1.5]", "{}")) {
+                JsonNode node = mapper.readTree(json);
+                long sdk = sdkExpiresInSeconds(node);
+                run.tokenResponse = expiresIn(null, node.toString());
+                String explanation = assertOnly(check.evaluate(run.build()), Severity.WARN).explanation();
+                if (sdk > 0) {
+                    assertTrue(explanation.contains("so it caches this token for " + (sdk > AuthTokenCheck.SDK_MAX_CACHE_SECONDS
+                            ? "at most 24 h (86400 seconds)." : sdk + " seconds.")), json + ": " + explanation);
+                } else {
+                    assertTrue(explanation.contains("does not cache the token"), json + ": " + explanation);
+                }
+            }
+        }
+
+        private static long sdkExpiresInSeconds(JsonNode expiresIn) {
+            if (expiresIn == null) {
+                return 0;
+            }
+            if (expiresIn.canConvertToLong()) {
+                return expiresIn.asLong();
+            }
+            if (expiresIn.isTextual()) {
+                try {
+                    return Long.parseLong(expiresIn.textValue().trim());
+                } catch (NumberFormatException e) {
+                    // "abc", "", "1.5", "1e3" or out of range: not cached, as for any other unusable value.
+                }
+            }
+            return 0;
+        }
+
+        @Test
+        void fractionalExpiresInAbove24HoursWarnsWithTheCap() {
+            var run = healthy();
+            run.tokenResponse = expiresIn(null, "86400.5");
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.WARN).explanation()
+                    .contains("which truncates it to 86400, so it caches this token for 86400 seconds."));
+
+            run.tokenResponse = expiresIn(null, "86401.5");
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.WARN).explanation()
+                    .contains("which truncates it to 86401, so it caches this token for at most 24 h (86400 "
+                            + "seconds)."));
+
+            // Jackson's canConvertToLong() admits a double up to (double) Long.MAX_VALUE, and asLong() saturates.
+            run.tokenResponse = expiresIn(null, "9.223372036854776E18");
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.WARN).explanation()
+                    .contains("which truncates it to 9223372036854775807, so it caches this token for at "
+                            + "most 24 h (86400 seconds)."));
         }
 
         @Test

@@ -572,6 +572,7 @@ public abstract class MockPayer implements AutoCloseable {
                 case NUMBER -> body.put("expires_in", expiresInSeconds);
                 case NUMERIC_STRING -> body.put("expires_in", String.valueOf(expiresInSeconds));
                 case NON_NUMERIC_STRING -> body.put("expires_in", PayerBehaviour.NON_NUMERIC_EXPIRES_IN);
+                case FRACTIONAL_NUMBER -> body.put("expires_in", PayerBehaviour.FRACTIONAL_EXPIRES_IN);
             }
             if (scope != null) {
                 body.put("scope", scope);

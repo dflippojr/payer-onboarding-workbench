@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -100,14 +101,47 @@ class PayerMatrixTest {
         assertEquals(Severity.WARN, nonNumeric.severity());
         assertTrue(nonNumeric.explanation().contains("its expires_in (\"" + PayerBehaviour.NON_NUMERIC_EXPIRES_IN
                 + "\") was present but not usable"), nonNumeric::explanation);
+        assertTrue(nonNumeric.explanation().contains("does not cache the token"), nonNumeric::explanation);
+
+        // The router SDK's asLong() truncates a fraction and caches the token, so "does not cache" would be false.
+        Finding fractional = authToken("token-response/expires-in-fractional");
+        assertEquals(Severity.WARN, fractional.severity());
+        assertTrue(fractional.explanation().contains("its expires_in (3599.9) was present but not usable"),
+                fractional::explanation);
+        assertTrue(fractional.explanation().contains("which truncates it to 3599, so it caches this token "
+                + "for 3599 seconds."), fractional::explanation);
+        assertFalse(fractional.explanation().contains("does not cache"), fractional::explanation);
+    }
+
+    /** The authenticate step names the lifetime it read, and says so when there was none to read. */
+    @Test
+    void authenticateStepSaysWhenNoExpiresInIsUsable() throws Exception {
+        assertEquals("Got a Bearer access token for client " + CLIENT_ID + " (expires in 300 s; value hidden)",
+                authenticateSummary(run("token-response/expires-in-string")));
+        for (String rowId : List.of("token-response/expires-in-non-numeric-string", "token-response/expires-in-fractional")) {
+            assertEquals("Got a Bearer access token for client " + CLIENT_ID + " (no usable expires_in; value hidden)",
+                    authenticateSummary(run(rowId)), rowId);
+        }
+    }
+
+    private OnboardingRun run(String rowId) throws Exception {
+        PayerMatrix.Row row = rows().filter(r -> r.id().equals(rowId)).findFirst().orElseThrow();
+        try (Scenario scenario = new Scenario(row)) {
+            return runner.run(scenario.request());
+        }
     }
 
     private Finding authToken(String rowId) throws Exception {
-        PayerMatrix.Row row = rows().filter(r -> r.id().equals(rowId)).findFirst().orElseThrow();
-        try (Scenario scenario = new Scenario(row)) {
-            return runner.run(scenario.request()).findings().stream()
-                    .filter(f -> f.checkId().equals(AuthTokenCheck.CHECK_ID)).findFirst().orElseThrow();
-        }
+        return authToken(run(rowId));
+    }
+
+    private static Finding authToken(OnboardingRun run) {
+        return run.findings().stream().filter(f -> f.checkId().equals(AuthTokenCheck.CHECK_ID)).findFirst().orElseThrow();
+    }
+
+    private static String authenticateSummary(OnboardingRun run) {
+        return run.steps().stream().filter(s -> s.stepId().equals(OnboardingRunner.AUTHENTICATE)).findFirst()
+                .orElseThrow().summary();
     }
 
     /** What the matrix compares: the verdict, the first broken step, the named checks and the other host. */

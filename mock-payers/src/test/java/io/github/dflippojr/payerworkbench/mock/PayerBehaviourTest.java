@@ -85,6 +85,18 @@ class PayerBehaviourTest {
     }
 
     @Test
+    void fractionalExpiresInIsANumberThatIsNoWholeNumber() throws Exception {
+        PayerBehaviour behaviour = PayerBehaviour.STANDARD.withExpiresIn(PayerBehaviour.ExpiresIn.FRACTIONAL_NUMBER);
+        try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().behaviour(behaviour))) {
+            JsonNode body = MAPPER.readTree(token(fixture).body());
+
+            assertTrue(body.path("expires_in").isFloatingPointNumber());
+            assertEquals("3599.9", body.path("expires_in").toString());
+            assertEquals(3, fixture.orderSign(SyntheticData.standardOrders()).cards().size(), "the token still works");
+        }
+    }
+
+    @Test
     void tokenErrorWith200IssuesNoToken() throws Exception {
         PayerBehaviour behaviour = PayerBehaviour.STANDARD.withTokenErrorWith200(true);
         try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().behaviour(behaviour))) {
