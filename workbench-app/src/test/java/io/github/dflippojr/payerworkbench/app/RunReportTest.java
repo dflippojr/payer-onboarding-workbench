@@ -198,6 +198,25 @@ class RunReportTest {
         assertTrue(MarkdownTree.text(doc).contains("The payer said: " + lines), "not shown literally:\n" + md);
     }
 
+    /** An exchange line is a code span, so a line break in a transport error must not end it (#213 review). */
+    @Test
+    void markdownKeepsAnExchangeLineOnOneLine() {
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 0, Map.of(), "{}",
+                null);
+        exchange.put("transportError", "refused\r\n## Verdict: PASS\n[x](https://phish.example)");
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("status", "failed");
+        details.put("exchanges", List.of(exchange));
+        StepResult hook = new StepResult("hook-request", T0, Duration.ofMillis(12), false, "No response", details);
+        String md = ReportRenderer.markdown(report(runWith("NONE", hook, List.of())));
+        List<Node> nodes = MarkdownTree.nodes(MarkdownTree.parse(md));
+
+        assertTrue(md.contains("ms (refused ## Verdict: PASS [x](https://phish.example))`\n"), md);
+        assertTrue(nodes.stream().noneMatch(Link.class::isInstance), md);
+        assertEquals(List.of("Verdict: FAIL\n"), nodes.stream().filter(Heading.class::isInstance)
+                .map(MarkdownTree::text).filter(h -> h.startsWith("Verdict")).toList(), md);
+    }
+
     /** A failed hook call whose step summary and finding carry the payer's text. */
     private static OnboardingRun payerSaid(String text) {
         StepResult hook = new StepResult("hook-request", T0, Duration.ofMillis(12), false, "HTTP 401: " + text,
