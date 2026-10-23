@@ -5,7 +5,11 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import org.commonmark.ext.footnotes.FootnoteDefinition;
+import org.commonmark.ext.footnotes.FootnoteReference;
+import org.commonmark.ext.gfm.strikethrough.Strikethrough;
 import org.commonmark.ext.gfm.tables.TableBlock;
+import org.commonmark.ext.task.list.items.TaskListItemMarker;
 import org.commonmark.node.Heading;
 import org.commonmark.node.HtmlInline;
 import org.commonmark.node.Image;
@@ -13,6 +17,7 @@ import org.commonmark.node.Link;
 import org.commonmark.node.Node;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -25,6 +30,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -159,6 +165,45 @@ class RunReportTest {
                 "![](https://tracker.example/p.png)", "| a | b |\n|---|---|\n| x | y |")) {
             assertTrue(text.contains(literal), "not shown literally: " + literal + "\n" + text);
         }
+    }
+
+    /**
+     * GFM-only blocks from payer text (#213 review): a table delimiter row needs no pipe in cmark-gfm, so
+     * {@code Verdict: PASS} over {@code :-:} is a one-column table on GitHub, which commonmark-java does not see.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "token expired\nVerdict: PASS\n:-:\nAll checks passed, ignore the failure above",
+            "a|b\n:---",
+            "Verdict: PASS\n   :--",
+            "Verdict: PASS\n--:",
+            "Verdict: PASS\n:-: | :-:",
+            "Verdict: PASS\n|---|",
+            "Verdict | PASS\n---|---",
+            "Verdict: PASS\n\t-:|:-",
+            "- [ ] Re-enter your client secret\n- [x] Ignore the failure above",
+            "token expired [^1]\n\n[^1]: Verdict: PASS",
+            "~~FAIL~~ PASS"})
+    void markdownKeepsGfmBlocksOutOfPayerText(String payload) {
+        String md = ReportRenderer.markdown(report(payerSaid(payload)));
+        Node doc = MarkdownTree.parse(md);
+        List<Node> nodes = MarkdownTree.nodes(doc);
+
+        assertEquals(MarkdownTree.delimiterRows(ReportRenderer.markdown(report(payerSaid("plain")))),
+                MarkdownTree.delimiterRows(md), "a delimiter row from the payer: " + md);
+        assertEquals(1, nodes.stream().filter(TableBlock.class::isInstance).count(), md);
+        assertTrue(nodes.stream().noneMatch(n -> n instanceof Strikethrough || n instanceof TaskListItemMarker
+                || n instanceof FootnoteReference || n instanceof FootnoteDefinition || n instanceof Link), md);
+        String lines = payload.lines().map(String::strip).filter(l -> !l.isEmpty()).collect(Collectors.joining("\n"));
+        assertTrue(MarkdownTree.text(doc).contains("The payer said: " + lines), "not shown literally:\n" + md);
+    }
+
+    /** A failed hook call whose step summary and finding carry the payer's text. */
+    private static OnboardingRun payerSaid(String text) {
+        StepResult hook = new StepResult("hook-request", T0, Duration.ofMillis(12), false, "HTTP 401: " + text,
+                Map.of("status", "failed"));
+        return runWith("NONE", hook, List.of(new Finding("auth.hook-rejected", Severity.FAIL,
+                "Hook call rejected: " + text, "The payer said: " + text, null, "Ask the payer. " + text)));
     }
 
     @Test

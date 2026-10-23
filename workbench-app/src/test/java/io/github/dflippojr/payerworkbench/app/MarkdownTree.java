@@ -1,7 +1,10 @@
 package io.github.dflippojr.payerworkbench.app;
 
+import org.commonmark.ext.footnotes.FootnotesExtension;
+import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
 import org.commonmark.ext.gfm.tables.TableCell;
 import org.commonmark.ext.gfm.tables.TablesExtension;
+import org.commonmark.ext.task.list.items.TaskListItemsExtension;
 import org.commonmark.node.Block;
 import org.commonmark.node.Code;
 import org.commonmark.node.FencedCodeBlock;
@@ -14,17 +17,35 @@ import org.commonmark.parser.Parser;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
-/** The Markdown report as a CommonMark parser with GFM tables sees it (#213). */
+/**
+ * The Markdown report as a CommonMark parser with GFM tables, strikethrough, task lists and footnotes sees it (#213).
+ * Not the autolink extension: it links URLs in text after escapes are resolved, so it links {@code https\://x}, which
+ * cmark-gfm, GitHub's renderer, leaves as text.
+ */
 final class MarkdownTree {
 
-    private static final Parser PARSER = Parser.builder().extensions(List.of(TablesExtension.create())).build();
+    private static final Parser PARSER = Parser.builder().extensions(List.of(TablesExtension.create(),
+            StrikethroughExtension.create(), TaskListItemsExtension.create(), FootnotesExtension.create())).build();
+    /**
+     * A GFM table delimiter row as cmark-gfm, GitHub's renderer, scans it: cells of {@code :?-+:?} split by pipes,
+     * with no pipe needed. commonmark-java's tables extension wants a pipe, so it misses {@code Verdict: PASS} over
+     * {@code :-:}, which GitHub renders as a one-column table.
+     */
+    private static final Pattern DELIMITER_ROW =
+            Pattern.compile("[ \\t]*\\|?[ \\t]*:?-+:?[ \\t]*(\\|[ \\t]*:?-+:?[ \\t]*)*\\|?[ \\t]*");
 
     private MarkdownTree() {
     }
 
     static Node parse(String markdown) {
         return PARSER.parse(markdown);
+    }
+
+    /** The lines a GFM renderer could read as a table's delimiter row, in document order. */
+    static List<String> delimiterRows(String markdown) {
+        return markdown.lines().filter(line -> DELIMITER_ROW.matcher(line).matches()).toList();
     }
 
     /** Every node, depth first. */

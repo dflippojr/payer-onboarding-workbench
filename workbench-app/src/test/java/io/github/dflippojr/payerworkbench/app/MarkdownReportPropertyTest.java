@@ -29,10 +29,12 @@ import org.commonmark.node.Paragraph;
  * Class-level check (#213): text from the payer cannot change the structure of the Markdown report.
  * Generated texts, built from the punctuation that starts CommonMark and GFM markup, line breaks
  * and blank lines, go into the payer display name, a step summary and a finding's title,
- * explanation and fix, one text each. Parsed with CommonMark and GFM tables, the report must have
- * exactly the nodes (headings, lists, tables, links, images, code, emphasis, HTML) of the same
- * report with a marker word in each field, and the node that shows each marker there must show the
- * field's text literally instead.
+ * explanation and fix, one text each. Parsed with CommonMark and GFM tables, strikethrough, task
+ * lists and footnotes, the report must have exactly the nodes (headings, lists, tables, links,
+ * images, code, emphasis, HTML) of the same report with a marker word in each field, and the node
+ * that shows each marker there must show the field's text literally instead. Its lines must also
+ * hold the same GFM table delimiter rows, which cmark-gfm finds without a pipe and commonmark-java
+ * does not.
  */
 class MarkdownReportPropertyTest {
 
@@ -44,15 +46,23 @@ class MarkdownReportPropertyTest {
             "<b>", "</p>", "<!-- ", "&lt;", "&#x26;", "&amp;", "\\", "`", "``", "```", "~~~", "~~", "~", "*", "**", "_",
             "__", "$", "$$", "|", "| a | b |", "|---|---|", "---", "===", "***", "___", "- - -", "- ", "+ ", "* ",
             "1. ", "1) ", "12. ", "> ", ">", "    ", "\t", "\n", "\n\n", "\r\n", "\r", "  \n", "\\\n", "x", "word",
-            "2.0.1", ":", "!", "=", "-", "+", "\"", "'");
+            "2.0.1", ":", "!", "=", "-", "+", "\"", "'", ":-:", ":--", "--:", "-:", ":-", " :---: ", "-|-", "|:-",
+            "- [ ] ", "- [x] ", "[^1]: ");
+    /** Line and paragraph separators, controls, zero-width and bidi characters, odd spaces, a BOM, an astral char. */
+    private static final char[] UNICODE = {'\u000b', '\u000c', '\u0085', '\u00a0', '\u0301', '\u200b', '\u200d',
+            '\u2028', '\u2029', '\u202e', '\u2066', '\u3000', '\ufeff', '\ud83d', '\ude00'};
 
     @Provide
     Arbitrary<String> payerText() {
         Arbitrary<String> chars = Arbitraries.strings().withCharRange(' ', '~').withChars('\n', '\r', '\t')
                 .ofMinLength(1).ofMaxLength(4);
+        // NUL is left out: CommonMark shows it as U+FFFD, which changes the text but not the structure.
+        Arbitrary<String> unicode = Arbitraries.strings().withCharRange('\u0001', '\ud7ff').withChars(UNICODE)
+                .ofMinLength(1).ofMaxLength(3);
         return Arbitraries.frequencyOf(
                         Tuple.of(3, Arbitraries.of(FRAGMENTS)),
-                        Tuple.of(1, chars))
+                        Tuple.of(1, chars),
+                        Tuple.of(1, unicode))
                 .list().ofMinSize(1).ofMaxSize(14)
                 .map(parts -> String.join("", parts))
                 .filter(text -> !text.isBlank());
@@ -76,6 +86,8 @@ class MarkdownReportPropertyTest {
 
         assertEquals(MarkdownTree.shape(plainDoc), MarkdownTree.shape(doc),
                 () -> "payer text changed the report's structure:\n" + md);
+        assertEquals(MarkdownTree.delimiterRows(ReportRenderer.markdown(plain)), MarkdownTree.delimiterRows(md),
+                () -> "payer text added a GFM table delimiter row:\n" + md);
         Finding finding = fuzzed.findings().getFirst();
         // Each value as the renderer gets it; the report title, which holds the name, is replaced first.
         Map<String, String> shown = new LinkedHashMap<>();
