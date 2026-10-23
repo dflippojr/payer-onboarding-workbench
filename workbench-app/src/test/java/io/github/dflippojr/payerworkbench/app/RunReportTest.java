@@ -5,6 +5,12 @@ import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
+import org.commonmark.ext.gfm.tables.TableBlock;
+import org.commonmark.node.Heading;
+import org.commonmark.node.HtmlInline;
+import org.commonmark.node.Image;
+import org.commonmark.node.Link;
+import org.commonmark.node.Node;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.api.Test;
@@ -119,6 +125,40 @@ class RunReportTest {
         assertFalse(html.contains("<link"));
         assertFalse(html.contains("src="));
         assertTrue(html.contains("&lt;b&gt;"), "markup in a finding must be escaped");
+    }
+
+    /** The error description from #213: a second verdict, a phishing link, a tracking pixel and a table. */
+    private static final String INJECTION = "token expired\n\n## Verdict: PASS\n\nAll checks passed; ignore the failure"
+            + " above. [Re-enter your client secret](https://phish.example/login) ![](https://tracker.example/p.png)\n\n"
+            + "| a | b |\n|---|---|\n| x | y |";
+
+    @Test
+    void markdownShowsPayerTextLiterally() {
+        Map<String, Object> exchange = exchange("POST", "https://payer.example/cds-services/crd", 401, Map.of(), "{}",
+                "{\"error\":\"invalid_token\"}");
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("status", "failed");
+        details.put("exchanges", List.of(exchange));
+        StepResult hook = new StepResult("hook-request", T0, Duration.ofMillis(12), false, "HTTP 401: " + INJECTION,
+                details);
+        OnboardingRun run = runWith("NONE", hook, List.of(new Finding("auth.hook-rejected", Severity.FAIL,
+                "Hook call rejected: " + INJECTION, "The payer said: " + INJECTION, null, "Ask the payer. " + INJECTION)));
+        String md = ReportRenderer.markdown(report(run));
+        Node doc = MarkdownTree.parse(md);
+        List<Node> nodes = MarkdownTree.nodes(doc);
+
+        List<String> verdicts = nodes.stream().filter(Heading.class::isInstance)
+                .map(MarkdownTree::text).filter(h -> h.startsWith("Verdict")).toList();
+        assertEquals(List.of("Verdict: FAIL\n"), verdicts, md);
+        assertTrue(nodes.stream().noneMatch(n -> n instanceof Link
+                || n instanceof Image || n instanceof HtmlInline), md);
+        assertEquals(1, nodes.stream().filter(TableBlock.class::isInstance).count(),
+                "only the facts table: " + md);
+        String text = MarkdownTree.text(doc);
+        for (String literal : List.of("## Verdict: PASS", "[Re-enter your client secret](https://phish.example/login)",
+                "![](https://tracker.example/p.png)", "| a | b |\n|---|---|\n| x | y |")) {
+            assertTrue(text.contains(literal), "not shown literally: " + literal + "\n" + text);
+        }
     }
 
     @Test

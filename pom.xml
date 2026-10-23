@@ -39,6 +39,8 @@
     <fhir-crd-router.version>0.1.0-SNAPSHOT</fhir-crd-router.version>
     <!-- Property-based tests (RedactorPropertyTest); runs on the JUnit Platform beside Jupiter. -->
     <jqwik.version>1.10.2</jqwik.version>
+    <!-- CommonMark parser that judges the Markdown report's structure in tests (RunReportTest, #213). -->
+    <commonmark.version>0.30.0</commonmark.version>
     <!-- SonarCloud (see .github/workflows/sonar.yml). Each module's JaCoCo XML report is picked up from its default path. -->
     <sonar.organization>dflippojr</sonar.organization>
     <sonar.projectKey>dflippojr_payer-onboarding-workbench</sonar.projectKey>
@@ -84,6 +86,16 @@
         <groupId>net.jqwik</groupId>
         <artifactId>jqwik</artifactId>
         <version>${jqwik.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark</artifactId>
+        <version>${commonmark.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.commonmark</groupId>
+        <artifactId>commonmark-ext-gfm-tables</artifactId>
+        <version>${commonmark.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
