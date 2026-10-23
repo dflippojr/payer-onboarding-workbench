@@ -301,6 +301,25 @@ class RedactorTest {
         assertEquals("rejected Bearer [REDACTED]", Redactor.redact("rejected Bearer EchoTok\\\\/abc"));
     }
 
+    @Test
+    void masksAUnicodeEscapedTokenWhole() {
+        // .NET's System.Text.Json writes "+" as +; some serializers write "/" as / or "=" as =.
+        assertEquals("{\"error_description\":\"rejected Bearer [REDACTED]\"}", Redactor.redact(
+                "{\"error_description\":\"rejected Bearer SynthTokAAAA/BBBB\\u002BCCCCDDDDEEEE\\u002BFFFF==\"}"));
+        assertEquals("{\"error_description\":\"rejected Bearer [REDACTED]\"}",
+                Redactor.redact("{\"error_description\":\"rejected Bearer SynthTok\\u002FAAAABBBB\"}"));
+        // Escaped and unescaped mixed, lower-case hex, escaped padding, and escaped again in embedded JSON.
+        assertEquals("{\"debug\":\"Bearer [REDACTED]\"}", Redactor.redact(
+                "{\"debug\":\"Bearer Synth\\u002bTok/AAAA\\/BBBB+CC\\u002fDD\\u003D\\u003d\"}"));
+        assertEquals("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}",
+                Redactor.redact("{\"debug\":\"{\\\"e\\\":\\\"Bearer SynthTok\\\\u002BAAAA\\\\u002FBBBB\\\"}\"}"));
+        assertEquals("Basic [REDACTED]", Redactor.redact("Basic dXNlcjpw\\u002BYXNz"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer abc:SE\\u002BCRET"));
+        // An escaped quote, space or backslash still ends the token.
+        assertEquals("Bearer [REDACTED]\\u0022 and Bearer [REDACTED]\\u0020more",
+                Redactor.redact("Bearer abc123\\u0022 and Bearer abc123\\u0020more"));
+    }
+
     record Echoed(String summary, String clientSecret, Integer apiKey, int password, List<String> notes) {
     }
 
