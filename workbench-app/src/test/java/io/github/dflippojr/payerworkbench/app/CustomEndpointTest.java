@@ -579,6 +579,79 @@ class CustomEndpointTest {
         }
     }
 
+    @ParameterizedTest
+    @CsvSource({"200", "401"})
+    void credentialsThePayerEchoesIntoCardsAndErrorsAreMaskedOnEverySurface(int hookStatus) throws Exception {
+        // A payer that echoes what it received: the token request's Basic pair into a card's source label
+        // and the hook call's Bearer token into its summary, or into a 401 error_description with "\/" (#211).
+        String secret = secret();
+        String tokenPart = secret();
+        String accessToken = "EchoTok/" + tokenPart + "+x/y==";
+        String basic = Base64.getEncoder().encodeToString(("payer-workbench:" + secret).getBytes(StandardCharsets.UTF_8));
+        AtomicReference<String> basicReceived = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/echo/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            basicReceived.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            respond(exchange, "{\"access_token\":\"" + accessToken.replace("/", "\\/")
+                    + "\",\"token_type\":\"Bearer\",\"expires_in\":300}");
+        });
+        server.createContext("/echo/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, """
+                        {"services":[{"hook":"order-sign","id":"crd-order-sign","prefetch":{}}]}""");
+                return;
+            }
+            exchange.getRequestBody().readAllBytes();
+            String bearer = String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")).replace("/", "\\/");
+            String body = hookStatus == 200
+                    ? "{\"cards\":[{\"summary\":\"Echo: " + bearer + "\",\"indicator\":\"info\","
+                            + "\"source\":{\"label\":\"echo " + basicReceived.get() + "\"}}]}"
+                    : "{\"error\":\"invalid_token\",\"error_description\":\"rejected " + bearer + "\"}";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(hookStatus, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/echo";
+        String body = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", Map.of(
+                "baseUrl", base, "authType", "OAUTH2_CLIENT_CREDENTIALS", "clientId", "payer-workbench",
+                "tokenEndpoint", base + "/token", "igVersion", igVersion, "credential", secret)));
+
+        HttpResponse<String> posted = send("POST", "/api/runs", body);
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        assertEquals("Basic " + basic, basicReceived.get(), "the token request carried the Basic pair");
+        var run = mapper.readTree(posted.body());
+        if (hookStatus == 200) {
+            var card = run.path("steps").get(4).path("details").path("cards").get(0);
+            assertEquals("Echo: Bearer [REDACTED]", card.path("summary").asText(), card.toString());
+            assertEquals("echo Basic [REDACTED]", card.path("source").asText(), card.toString());
+        } else {
+            var rejected = java.util.stream.StreamSupport.stream(run.path("findings").spliterator(), false)
+                    .filter(f -> f.path("checkId").asText().equals("auth.hook-rejected")).findFirst().orElseThrow();
+            assertTrue(rejected.path("explanation").asText().contains("Reason: rejected Bearer [REDACTED]."),
+                    rejected.toString());
+        }
+        String runId = run.path("runId").asText();
+        List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body(),
+                send("GET", "/api/runs", null).body()));
+        for (String format : List.of("md", "html", "json")) {
+            HttpResponse<String> report = send("GET", "/api/runs/" + runId + "/report?format=" + format, null);
+            assertEquals(200, report.statusCode());
+            surfaces.add(report.body());
+        }
+        for (String surface : surfaces) {
+            assertFalse(surface.contains(tokenPart), "the access token leaked");
+            assertFalse(surface.contains(tokenPart.replace("/", "\\/")), "the access token leaked JSON-escaped");
+            assertFalse(surface.contains(basic), "the Basic pair leaked");
+            assertFalse(surface.contains(secret), "the client secret leaked");
+        }
+    }
+
     @Test
     void aRunPastTheConcurrencyLimitIsRefusedWith503() throws Exception {
         // Every permitted custom run waits in its hook call, so one more is refused instead of queued.
