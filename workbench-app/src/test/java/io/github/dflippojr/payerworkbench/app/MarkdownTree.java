@@ -34,7 +34,7 @@ final class MarkdownTree {
      * {@code :-:}, which GitHub renders as a one-column table.
      */
     private static final Pattern DELIMITER_ROW =
-            Pattern.compile("[ \\t]*\\|?[ \\t]*:?-+:?[ \\t]*(\\|[ \\t]*:?-+:?[ \\t]*)*\\|?[ \\t]*");
+            Pattern.compile("[ \\t]*+\\|?+[ \\t]*+:?+-++:?+[ \\t]*+(?:\\|[ \\t]*+:?+-++:?+[ \\t]*+)*+\\|?+[ \\t]*+");
 
     private MarkdownTree() {
     }
