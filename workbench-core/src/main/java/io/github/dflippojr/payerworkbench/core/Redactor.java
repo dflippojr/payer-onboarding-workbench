@@ -8,17 +8,22 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalAmount;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 /**
  * Masks credential material in strings and HTTP headers before they are stored,
@@ -51,15 +56,25 @@ public final class Redactor {
     private static final String WORD_START = "(?:\\b|(?<=\\\\[nrtbf]))";
 
     /**
+     * A JSON escape of a token68 character, also escaped again: {@code \/}, or a {@code \}{@code uXXXX}
+     * escape of a letter, digit or one of {@code -._~+/=}. Serializers write these inside a token
+     * ({@code System.Text.Json} escapes {@code +}, Gson {@code =}, PHP {@code /}).
+     */
+    private static final String ESCAPED_TOKEN_CHAR =
+            "\\\\++(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))";
+
+    /**
      * A scheme, its token68 part (group 2, which may be URL-encoded) and anything else up to the next
      * whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked
-     * whole. Both parts read the JSON escape {@code \/} as the slash it stands for, also escaped again
-     * ({@code \\/}), so a token quoted by a serializer that escapes slashes ({@code tok\/en}) is
-     * masked whole too. Possessive quantifiers, as in {@link #JSON_FIELD}.
+     * whole. Both parts read a JSON escape of a token character ({@link #ESCAPED_TOKEN_CHAR}) as the
+     * character it stands for, so a token quoted by a serializer that escapes some of its characters
+     * ({@code tok\/en}, {@code tok}{@code \}{@code u002Ben}) is masked whole too. Case-insensitive, so
+     * the escapes' hex digits may be either case. Possessive quantifiers, as in {@link #JSON_FIELD}.
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)" + WORD_START + "(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
-                    + "((?:[A-Za-z0-9\\-._~+/%]++|\\\\++/)++=*)((?:[^\\s\"',;\\\\]++|\\\\++/)*+)");
+                    + "((?:[A-Za-z0-9\\-._~+/%]++|" + ESCAPED_TOKEN_CHAR + ")++=*)"
+                    + "((?:[^\\s\"',;\\\\]++|" + ESCAPED_TOKEN_CHAR + ")*+)");
 
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
@@ -291,10 +306,14 @@ public final class Redactor {
     /**
      * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
      * and the value of every field named like a secret or a credential header is masked, recursively,
-     * or {@code null} if {@code value} is {@code null}. Maps keep their keys and iteration order; lists
-     * and sets are copied; a record is rebuilt through its canonical constructor from redacted
-     * components, so it keeps its type. Numbers, booleans, enums and other values are returned as they
-     * are. An {@code Authorization}-style field keeps its scheme ({@code Bearer [REDACTED]}).
+     * or {@code null} if {@code value} is {@code null}. Maps keep their iteration order, and their string
+     * keys are redacted too; sets are copied, other collections and arrays become lists, and an
+     * {@link Optional} keeps its redacted value; a record is rebuilt through its canonical constructor
+     * from redacted components, so it keeps its type. Numbers, booleans, characters, enums, dates and
+     * durations are returned as they are. Any other value, such as a {@code StringBuilder} or a parsed
+     * JSON tree, becomes its redacted {@link String#valueOf(Object) string form}, so it cannot carry a
+     * secret through unredacted. An {@code Authorization}-style field keeps its scheme
+     * ({@code Bearer [REDACTED]}).
      */
     public static Object redactTree(Object value) {
         return redactTree(null, value);
@@ -304,26 +323,36 @@ public final class Redactor {
         if (key != null && isSecretKey(key)) {
             return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
         }
+        if (value == null || value instanceof Number || value instanceof Boolean || value instanceof Character
+                || value instanceof Enum<?> || value instanceof TemporalAccessor || value instanceof TemporalAmount) {
+            return value;
+        }
         if (value instanceof String s) {
             return redact(s);
         }
         if (value instanceof Map<?, ?> map) {
             Map<Object, Object> out = new LinkedHashMap<>();
-            map.forEach((k, v) -> out.put(k, redactTree(String.valueOf(k), v)));
+            map.forEach((k, v) -> out.put(k instanceof String s ? redact(s) : k, redactTree(String.valueOf(k), v)));
             return Collections.unmodifiableMap(out);
-        }
-        if (value instanceof List<?> list) {
-            return list.stream().map(v -> redactTree(null, v)).toList();
         }
         if (value instanceof Set<?> set) {
             Set<Object> out = new LinkedHashSet<>();
             set.forEach(v -> out.add(redactTree(null, v)));
             return Collections.unmodifiableSet(out);
         }
+        if (value instanceof Collection<?> collection) {
+            return collection.stream().map(v -> redactTree(null, v)).toList();
+        }
+        if (value.getClass().isArray()) {
+            return IntStream.range(0, Array.getLength(value)).mapToObj(i -> redactTree(null, Array.get(value, i))).toList();
+        }
+        if (value instanceof Optional<?> optional) {
+            return optional.map(v -> redactTree(null, v));
+        }
         if (value instanceof Record record) {
             return redactRecord(record);
         }
-        return value;
+        return redact(String.valueOf(value));
     }
 
     private static boolean isSecretKey(String key) {

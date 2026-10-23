@@ -51,6 +51,12 @@ const isMaskedFormValue = v => v === '' || v === MASK
 /** A word boundary, or right after a JSON escape such as \n inside a JSON string, as in Redactor. */
 const WORD_START = String.raw`(?:\b|(?<=\\[nrtbf]))`;
 
+/**
+ * A JSON escape of a token character, as in Redactor: \/ or the \u escape of a letter, digit or one of
+ * -._~+/= (System.Text.Json escapes +), also escaped again. Used with the i flag.
+ */
+const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))`;
+
 /** A JSON value Redactor masks for a secret field: a string, or a number, true or false. */
 const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
@@ -64,16 +70,16 @@ const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
   { name: 'PEM block', re: /-----BEGIN [A-Z0-9 ]*-----/g },
   // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
-  // backslash, as in Redactor; the JSON escape \/ is a slash, not a backslash, also escaped again (\\/)
-  // in a recorded body (#211).
+  // backslash, as in Redactor; a JSON escape of a token character (\/, \u002B) is that character, not a
+  // backslash, also escaped again (\\/) in a recorded body (#211).
   {
     name: 'Bearer/Basic credential',
-    re: new RegExp(String.raw`${WORD_START}(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|\\+/)+=*)((?:[^\s"',;\\]|\\+/)*)`, 'gi'),
+    re: new RegExp(String.raw`${WORD_START}(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`, 'gi'),
     ok: isAuthProse,
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
-  // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART).
-  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${WORD_START}(?:Bearer|Basic)\s+\[REDACTED\](?:[^\s"',;\\]|\\+/)`, 'gi') },
+  // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART, Bearer [REDACTED]\u002BPART).
+  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${WORD_START}(?:Bearer|Basic)\s+\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
