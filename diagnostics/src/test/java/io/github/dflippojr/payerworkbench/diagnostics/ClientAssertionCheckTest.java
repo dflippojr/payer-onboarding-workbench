@@ -80,12 +80,18 @@ class ClientAssertionCheckTest {
         assertTrue(f.evidence().contains("jti=unique"));
     }
     @Test void missingJtiFails() {
-        assertOnly(check.evaluate(run(claims(CLIENT_ID, CLIENT_ID, TOKEN_URL, 300, null), null)), Severity.FAIL);
+        assertTrue(assertOnly(check.evaluate(run(claims(CLIENT_ID, CLIENT_ID, TOKEN_URL, 300, null), null)), Severity.FAIL)
+                .title().contains("jti is required"));
     }
     @Test void rejectedWithoutDescriptionFails() {
         var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(healthyClaims())
                 .tokenResponse(tokenError("invalid_client", null)).build();
         assertOnly(check.evaluate(obs), Severity.FAIL);
+    }
+    @Test void tokenMetadataWithoutSuccessfulExchangeIsNotAccepted() {
+        var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(healthyClaims())
+                .exchange(token(500, null, TOKEN_OK_BODY, NOW)).tokenResponse(okToken()).build();
+        assertTrue(check.evaluate(obs).isEmpty());
     }
     @Test void unrelatedFailureDoesNotClaimAssertionAccepted() {
         var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(healthyClaims())
