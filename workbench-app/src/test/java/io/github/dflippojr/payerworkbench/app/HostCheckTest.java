@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.web.servlet.AbstractFilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletContextInitializerBeans;
+import org.springframework.test.annotation.DirtiesContext;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -29,10 +30,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * DNS rebinding (#201): a web page whose name the attacker rebinds to 127.0.0.1 reaches the workbench with
  * the attacker's name in {@code Host}. A raw socket sends it, because the JDK client won't set {@code Host}.
  * Custom endpoints are on, as in the README's local opt-in, because that is where rebinding turns the
- * workbench into a loopback port scanner.
+ * workbench into a loopback port scanner. The context is its own, so no other class's runs are in the store.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "workbench.custom-endpoints.enabled=true")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.BEFORE_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class HostCheckTest {
 
@@ -51,6 +53,7 @@ class HostCheckTest {
         String loopbackScan = """
                 {"sampleId":"order-sign-hospital-bed","customEndpoint":{"baseUrl":"http://127.0.0.1:%d/api/runs","authType":"NONE"}}"""
                 .formatted(port);
+        assertTrue(store.list().isEmpty(), "the store has runs before the test");
         for (Response response : new Response[] {
                 send(port, "GET", "/api/runs", host, null),
                 send(port, "POST", "/api/runs", host, SYNTHETIC_RUN),
