@@ -224,6 +224,7 @@ JSON object after the `audit ` log message marker. Each HTTP request gets a serv
 UUID; produced runs keep their existing outbound run ID. Callers are always `anonymous`
 with a null actor ID and source `http`, regardless of supplied identity/correlation headers.
 `report.rendered` records server rendering, not proof of saving or publishing a report.
+A HEAD request to a read route runs the same handler as GET and is audited the same way.
 An HTTP 200 `run.completed` can have a diagnostic verdict of `FAIL`.
 
 Capture the existing log destination yourself, for example after building:

@@ -73,9 +73,12 @@ public class AuditRequestFilter extends OncePerRequestFilter {
 
     private static String action(String method, List<String> path) {
         if (path.size() < 4 || !path.subList(0, 4).equals(RUNS)) { return null; }
-        if (path.size() == 4) { return method.equals("POST") ? "run.completed" : method.equals("GET") ? "run_history.read" : null; }
+        // MVC sends HEAD to the @GetMapping handlers and only drops the body, so HEAD reads like GET (#206).
+        boolean read = method.equals("GET") || method.equals("HEAD");
+        if (path.size() == 4) { return method.equals("POST") ? "run.completed" : read ? "run_history.read" : null; }
         // Elements alternate separator and segment, so index 5 is the run id unless the path has an empty segment.
-        if (!method.equals("GET") || path.size() < 6 || path.get(5).equals("/")) { return null; }
+        // A segment of only ;parameters matches as "", which no {id} route accepts.
+        if (!read || path.size() < 6 || path.get(5).equals("/") || path.get(5).isEmpty()) { return null; }
         if (path.size() == 6) { return "run.read"; }
         return path.size() == 8 && path.get(6).equals("/") && path.get(7).equals("report") ? "report.rendered" : null;
     }

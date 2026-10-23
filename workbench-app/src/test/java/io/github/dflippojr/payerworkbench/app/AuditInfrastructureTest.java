@@ -91,25 +91,40 @@ class AuditInfrastructureTest {
         for (String uri : List.of("/api/runs", "/api/runs;x=1", "/api/run%73", "/api;a/runs", "/%61pi/runs;a;b=c")) {
             cases.put("POST " + uri, "run.requested,run.completed");
         }
-        for (String uri : List.of("/api/runs", "/api/runs;x", "/api/run%73")) { cases.put("GET " + uri, "run_history.read"); }
-        for (String uri : List.of("/api/runs/abc", "/api/runs/abc;x", "/api;a/runs/abc")) { cases.put("GET " + uri, "run.read"); }
-        for (String uri : List.of("/api/runs/abc/report", "/api/runs/abc/report;x", "/api/runs/abc/%72eport")) {
-            cases.put("GET " + uri, "report.rendered");
+        // MVC sends HEAD to the @GetMapping handlers and only drops the body, so HEAD is audited like GET (#206).
+        for (String method : List.of("GET", "HEAD")) {
+            for (String uri : List.of("/api/runs", "/api/runs;x", "/api/run%73")) { cases.put(method + " " + uri, "run_history.read"); }
+            for (String uri : List.of("/api/runs/abc", "/api/runs/abc;x", "/api;a/runs/abc", "/api/runs/%61bc")) {
+                cases.put(method + " " + uri, "run.read");
+            }
+            for (String uri : List.of("/api/runs/abc/report", "/api/runs/abc/report;x", "/api/runs/abc/%72eport")) {
+                cases.put(method + " " + uri, "report.rendered");
+            }
+            // A segment that is only ;parameters matches as empty, which no {id} route accepts (#206).
+            for (String uri : List.of("/api/runs/", "//api/runs", "/api//runs", "/api/runs//report", "/api/runs/abc/",
+                    "/api/runs/;", "/api/runs/;x=1", "/api/runs/;/report", "/api/runs/abc/reports", "/api/runs/abc/report/x",
+                    "/api/runsx", "/apix/runs", "/api/payers", "/")) {
+                cases.put(method + " " + uri, "");
+            }
         }
-        for (String uri : List.of("/api/runs/", "//api/runs", "/api//runs", "/api/runs//report", "/api/runs/abc/",
-                "/api/runs/abc/reports", "/api/runs/abc/report/x", "/api/runsx", "/apix/runs", "/api/payers", "/")) {
-            cases.put("GET " + uri, "");
+        cases.put("POST /api/runs/abc", "");
+        for (String method : List.of("DELETE", "PUT", "PATCH", "OPTIONS", "TRACE")) {
+            for (String uri : List.of("/api/runs", "/api/runs/abc", "/api/runs/abc/report")) { cases.put(method + " " + uri, ""); }
         }
-        cases.put("POST /api/runs/abc", ""); cases.put("DELETE /api/runs", ""); cases.put("DELETE /api/runs/abc", "");
+        List<String> mismatches = new ArrayList<>();
         for (var entry : cases.entrySet()) {
             List<AuditEvent> events = new ArrayList<>();
             AuditRequestFilter filter = new AuditRequestFilter(new AuditLog(events::add,
                     Clock.fixed(NOW, ZoneOffset.UTC), new SimpleMeterRegistry()));
             String[] request = entry.getKey().split(" ");
             filter.doFilter(new MockHttpServletRequest(request[0], request[1]), new MockHttpServletResponse(), (q, r) -> { });
-            assertEquals(entry.getValue(), String.join(",", events.stream().map(AuditEvent::action).toList()), entry.getKey());
-            if (entry.getValue().equals("run_history.read")) { assertEquals("run_history", events.getFirst().targetType()); }
+            String actual = String.join(",", events.stream().map(AuditEvent::action).toList());
+            if (!actual.equals(entry.getValue())) { mismatches.add(entry.getKey() + " -> [" + actual + "]"); }
+            if (entry.getValue().equals("run_history.read") && !events.isEmpty()) {
+                assertEquals("run_history", events.getFirst().targetType(), entry.getKey());
+            }
         }
+        assertEquals(List.of(), mismatches); // every wrong row at once
         MockHttpServletRequest nested = new MockHttpServletRequest("POST", "/app/api;a/run%73");
         nested.setContextPath("/app");
         List<AuditEvent> events = new ArrayList<>();
