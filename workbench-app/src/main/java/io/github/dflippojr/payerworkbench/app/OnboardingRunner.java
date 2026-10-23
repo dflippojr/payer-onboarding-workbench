@@ -659,7 +659,8 @@ public class OnboardingRunner {
                 return callFailed("Token request", e);
             }
             return accepted ? Outcome.pass("Got a " + tokenResponse.tokenType() + " access token for client "
-                    + record.clientId() + " (expires in " + tokenResponse.expiresInSeconds() + " s; value hidden)")
+                    + record.clientId() + " (" + (tokenResponse.expiresInSeconds() == null ? "no usable expires_in"
+                            : "expires in " + tokenResponse.expiresInSeconds() + " s") + "; value hidden)")
                     : Outcome.fail("The SDK could not authenticate: " + failureMessage());
         }
 

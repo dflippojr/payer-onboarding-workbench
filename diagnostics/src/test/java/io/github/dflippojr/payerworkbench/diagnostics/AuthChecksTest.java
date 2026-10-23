@@ -106,8 +106,8 @@ class AuthChecksTest {
             assertEquals("An access token was issued, but its expires_in (3599.9) was present but not usable: it is "
                     + "not a positive whole number of seconds. The router SDK reads a JSON number with Jackson's "
                     + "asLong(), which truncates it to 3599, so it caches this token for 3599 seconds. A "
-                    + "client that rejects or rounds a fraction may not know when to fetch a new token, and may keep "
-                    + "using an expired one and get 401s mid-session.", f.explanation());
+                    + "client that rejects a fraction cannot tell when to fetch a new token, and may keep using an "
+                    + "expired one and get 401s mid-session.", f.explanation());
             assertTrue(f.evidence().contains(", expires_in=3599.9, "), f::evidence);
             assertTrue(f.suggestedFix().startsWith("Ask the payer to return expires_in as a whole JSON number"));
 
