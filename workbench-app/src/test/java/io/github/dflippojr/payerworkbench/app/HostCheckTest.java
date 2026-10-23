@@ -6,9 +6,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.web.servlet.AbstractFilterRegistrationBean;
+import org.springframework.boot.web.servlet.ServletContextInitializerBeans;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -19,6 +22,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -79,6 +83,17 @@ class HostCheckTest {
     @Order(3)
     void missingHostIsRefused() throws Exception {
         assertEquals(403, send(port, "GET", "/api/runs", null, null).status());
+    }
+
+    @Test
+    void runsBeforeEveryOtherFilter(@Autowired ListableBeanFactory beans) {
+        // The order the embedded server registers filters in, audit and observation filters included.
+        var filters = new ServletContextInitializerBeans(beans).stream()
+                .filter(AbstractFilterRegistrationBean.class::isInstance)
+                .map(registration -> ((AbstractFilterRegistrationBean<?>) registration).getFilter())
+                .toList();
+        assertTrue(filters.size() > 1, filters.toString());
+        assertInstanceOf(HostCheckFilter.class, filters.get(0), filters.toString());
     }
 
     record Response(int status, String raw) {
