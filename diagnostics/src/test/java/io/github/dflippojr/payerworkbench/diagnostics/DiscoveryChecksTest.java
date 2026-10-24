@@ -126,8 +126,18 @@ class DiscoveryChecksTest {
                     + "\"prefetch\":{}}]}");
             Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
             assertEquals("services[0] is not a JSON object", f.title());
-            assertTrue(f.evidence().contains("services[0]: null"), f::evidence);
-            assertTrue(f.evidence().startsWith("advertised services: crd-order-sign -> order-sign"), f::evidence);
+            assertEquals("not objects: services[0]: null; advertised services: crd-order-sign -> order-sign",
+                    f.evidence());
+        }
+
+        @Test
+        void entriesThatAreNotObjectsStayNamedBesideLongServiceIds() {
+            var run = healthy();
+            String service = "{\"hook\":\"order-sign\",\"id\":\"" + "a".repeat(1024) + "\"},";
+            run.discovery = discovery(200, "{\"services\":[" + service.repeat(8) + "null,".repeat(5) + "null]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().startsWith("not objects: services[8]: null, services[9]: null, services[10]: null, "
+                    + "services[11]: null, services[12]: null, services[13]: null; advertised services: "), f::evidence);
         }
 
         @Test
@@ -159,7 +169,8 @@ class DiscoveryChecksTest {
             run.discovery = discovery(200, "{\"services\":[" + "null,".repeat(99) + "null]}");
             Finding f = assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
             assertEquals("100 entries in services are not JSON objects", f.title());
-            assertTrue(f.evidence().endsWith(", and " + (100 - CappedLines.MAX) + " more"), f::evidence);
+            assertTrue(f.evidence().endsWith(", and " + (100 - CappedLines.MAX) + " more; advertised services: none"),
+                    f::evidence);
         }
 
         @Test

@@ -85,7 +85,9 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
         }
         String evidence = "advertised services: " + (lines.isEmpty() ? "none" : lines.join(", "));
         if (notObjects > 0) {
-            return List.of(notObjects(named, notObjects, evidence + "; not objects: " + notObjectLines.join(", ")));
+            // First, so the advertised services, which can be long, never push the named entries past the
+            // finding's evidence limit.
+            return List.of(notObjects(named, notObjects, "not objects: " + notObjectLines.join(", ") + "; " + evidence));
         }
 
         Set<String> crd = new TreeSet<>(advertised);
