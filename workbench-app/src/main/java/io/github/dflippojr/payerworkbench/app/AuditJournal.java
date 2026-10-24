@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.github.dflippojr.payerworkbench.core.AuditSink;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -64,9 +66,17 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
+    /** Largest accepted {@code segment-bytes}; bigger segments take too long to seal at rotation. */
+    static final long MAX_SEGMENT_BYTES = 1L << 30;
+    /** Longest line {@link #seal} parses; a longer one is kept and hashed but not counted as an event. */
+    private static final int MAX_LINE_BYTES = 16 * 1024 * 1024;
+    /** Largest manifest read at start; a bigger one is unreadable, never loaded whole. */
+    static final int MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
+
     record Policy(Duration retention, long segmentBytes, long totalBytes) {
         boolean isValid() {
-            return retention != null && retention.isPositive() && segmentBytes > 0 && totalBytes > 0;
+            return retention != null && retention.isPositive() && segmentBytes > 0
+                    && segmentBytes <= MAX_SEGMENT_BYTES && totalBytes > 0;
         }
     }
 
@@ -253,7 +263,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         Path manifest = dir.resolve(MANIFEST);
         if (Files.exists(manifest)) {
             try {
-                JsonNode root = mapper.readTree(Files.readAllBytes(manifest));
+                JsonNode root = mapper.readTree(readBounded(manifest, MAX_MANIFEST_BYTES));
                 if (root == null || root.path("version").asInt() != MANIFEST_VERSION) {
                     throw new IOException();
                 }
@@ -292,6 +302,17 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         closed.sort((a, b) -> a.id().compareTo(b.id()));
         if (sealed || !Files.exists(manifest)) {
             writeManifest();
+        }
+    }
+
+    /** Reads a small file whole; one over {@code max} bytes is refused after reading at most one byte more. */
+    static byte[] readBounded(Path file, int max) throws IOException {
+        try (InputStream in = Files.newInputStream(file)) {
+            byte[] bytes = in.readNBytes(max + 1);
+            if (bytes.length > max) {
+                throw new IOException("file_too_large");
+            }
+            return bytes;
         }
     }
 
@@ -372,34 +393,69 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         retention();
     }
 
+    /** Streams the segment, so a leftover file of any size is sealed without holding it in memory. */
     private Segment seal(String id) throws IOException {
-        byte[] bytes = Files.readAllBytes(dir.resolve(id + ".jsonl"));
-        long events = 0;
-        String first = null;
-        String last = null;
-        int start = 0;
-        for (int i = 0; i <= bytes.length; i++) {
-            if (i == bytes.length || bytes[i] == '\n') {
-                if (i > start) {
-                    try {
-                        String at = mapper.readTree(bytes, start, i - start).path("occurredAt").asText(null);
-                        if (at != null) {
-                            events++;
-                            first = first == null || at.compareTo(first) < 0 ? at : first;
-                            last = last == null || at.compareTo(last) > 0 ? at : last;
-                        }
-                    } catch (IOException | RuntimeException ignored) {
-                        // damaged line: stays in the file, is not counted
-                    }
-                }
-                start = i + 1;
-            }
-        }
+        MessageDigest digest;
         try {
-            return new Segment(id, bytes.length, events, first, last,
-                    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
+            digest = MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable");
+        }
+        Tally tally = new Tally();
+        long bytes = 0;
+        byte[] chunk = new byte[64 * 1024];
+        try (InputStream in = Files.newInputStream(dir.resolve(id + ".jsonl"))) {
+            for (int n; (n = in.read(chunk)) > 0; ) {
+                digest.update(chunk, 0, n);
+                bytes += n;
+                int start = 0;
+                for (int i = 0; i < n; i++) {
+                    if (chunk[i] == '\n') {
+                        tally.add(chunk, start, i - start);
+                        tally.endLine();
+                        start = i + 1;
+                    }
+                }
+                tally.add(chunk, start, n - start);
+            }
+        }
+        tally.endLine();
+        return new Segment(id, bytes, tally.events, tally.first, tally.last,
+                HexFormat.of().formatHex(digest.digest()));
+    }
+
+    /** Line-by-line event count and time range of a segment being sealed. */
+    private final class Tally {
+        private final ByteArrayOutputStream line = new ByteArrayOutputStream();
+        private boolean overlong;
+        long events;
+        String first;
+        String last;
+
+        void add(byte[] bytes, int offset, int length) {
+            if (overlong || line.size() + length > MAX_LINE_BYTES) {
+                overlong = true;
+                line.reset();
+            } else {
+                line.write(bytes, offset, length);
+            }
+        }
+
+        void endLine() {
+            if (!overlong && line.size() > 0) {
+                try {
+                    String at = mapper.readTree(line.toByteArray()).path("occurredAt").asText(null);
+                    if (at != null) {
+                        events++;
+                        first = first == null || at.compareTo(first) < 0 ? at : first;
+                        last = last == null || at.compareTo(last) > 0 ? at : last;
+                    }
+                } catch (IOException | RuntimeException ignored) {
+                    // damaged line: stays in the file, is not counted
+                }
+            }
+            line.reset();
+            overlong = false;
         }
     }
 
