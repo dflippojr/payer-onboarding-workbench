@@ -14,6 +14,7 @@ import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -188,7 +189,26 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
+    /**
+     * Runs at each {@link Stage} of {@link #prepareDirectory}, and at {@code CREATED} once per directory it
+     * makes; replaceable so a test can swap a link there.
+     */
+    @FunctionalInterface
+    interface Interleave {
+        enum Stage { BEFORE_CREATE, CREATED, AFTER_CREATE }
+
+        void at(Stage stage, Path dir) throws IOException;
+    }
+
     static Path prepareDirectory(String directory) throws IOException {
+        return prepareDirectory(directory, (stage, dir) -> { });
+    }
+
+    /**
+     * Returns the checked real path. Every later operation uses it, so re-pointing a link on the configured
+     * path after open cannot move writes or retention deletes somewhere the guard never judged.
+     */
+    static Path prepareDirectory(String directory, Interleave interleave) throws IOException {
         Path dir;
         try {
             dir = Path.of(directory);
@@ -202,28 +222,70 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         if (Files.isSymbolicLink(dir)) {
             throw new UnsafeJournalException("path_is_link");
         }
+        rejectCheckout(dir);
+        // A symlinked ancestor can land a lexically clean path inside a checkout, so judge the real path too.
+        Path existing = dir;
+        while (existing != null && !Files.exists(existing)) {
+            existing = existing.getParent();
+        }
+        if (existing == null) {
+            // The root itself is missing: an absent drive or an unreachable share.
+            throw new UnsafeJournalException("invalid_path");
+        }
+        Path base = existing.toRealPath();
+        rejectCheckout(base);
+        interleave.at(Interleave.Stage.BEFORE_CREATE, dir);
+        // Build on the checked ancestor, so re-pointing a link on the configured path cannot redirect creation.
+        Path rest = existing.relativize(dir);
+        Path target = base.resolve(rest);
+        boolean posix = Files.getFileStore(base).supportsFileAttributeView("posix");
+        if (Files.exists(target)) {
+            if (!Files.isDirectory(target)) {
+                throw new UnsafeJournalException("not_a_directory");
+            }
+        } else {
+            Path level = base;
+            for (Path name : rest) {
+                level = level.resolve(name);
+                boolean leaf = level.equals(target);
+                try {
+                    if (leaf && posix) {
+                        Files.createDirectory(level,
+                                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+                    } else {
+                        Files.createDirectory(level);
+                    }
+                } catch (FileAlreadyExistsException e) {
+                    if (leaf) {
+                        throw e;
+                    }
+                    // made by someone else since the walk above
+                    continue;
+                }
+                interleave.at(Interleave.Stage.CREATED, level);
+            }
+            if (!posix) {
+                restrictAcl(target);
+            }
+        }
+        interleave.at(Interleave.Stage.AFTER_CREATE, target);
+        // An ancestor swapped for a link while the directory was created is caught here. A refusal deletes
+        // nothing: Java has no portable remove-only-a-directory call, so cleanup could delete a file swapped in
+        // at a path made here. Only a race is refused at this point, and it leaves at most empty directories.
+        Path real = target.toRealPath();
+        rejectCheckout(real);
+        if (!ownerOnly(real, posix)) {
+            throw new UnsafeJournalException("directory_not_owner_only");
+        }
+        return real;
+    }
+
+    private static void rejectCheckout(Path dir) throws UnsafeJournalException {
         for (Path p = dir; p != null; p = p.getParent()) {
             if (Files.exists(p.resolve(".git")) || Files.exists(p.resolve("pom.xml"))) {
                 throw new UnsafeJournalException("inside_checkout");
             }
         }
-        boolean posix = Files.getFileStore(dir.getRoot()).supportsFileAttributeView("posix");
-        if (Files.exists(dir)) {
-            if (!Files.isDirectory(dir)) {
-                throw new UnsafeJournalException("not_a_directory");
-            }
-        } else if (posix) {
-            Files.createDirectories(dir.getParent());
-            Files.createDirectory(dir,
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-        } else {
-            Files.createDirectories(dir);
-            restrictAcl(dir);
-        }
-        if (!ownerOnly(dir, posix)) {
-            throw new UnsafeJournalException("directory_not_owner_only");
-        }
-        return dir;
     }
 
     private static void restrictAcl(Path dir) throws IOException {

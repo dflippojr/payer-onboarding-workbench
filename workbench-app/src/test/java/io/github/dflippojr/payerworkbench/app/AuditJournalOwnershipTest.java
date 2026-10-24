@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.DisposableBean;
@@ -119,6 +121,243 @@ class AuditJournalOwnershipTest {
             assertEquals(1, segments.get(1).path("events").asInt());
             reopened.append(event("parent-reopened"));
         }
+    }
+
+    private Path link(Path link, Path target) throws IOException {
+        try {
+            return Files.createSymbolicLink(link, target);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "symbolic links unavailable");
+            return link;
+        }
+    }
+
+    private static String verdict(Path dir) {
+        try {
+            AuditJournal.prepareDirectory(dir.toString());
+            return "accepted";
+        } catch (IOException e) {
+            return e.getMessage();
+        }
+    }
+
+    @Test
+    void symlinkedParentIntoACheckoutIsRefusedAndLeavesNoFiles() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path audit = Files.createDirectories(checkout.resolve(".tmp/audit"));
+        Path alias = link(Files.createDirectory(tmp.resolve("scratch")).resolve("alias"), audit);
+
+        IOException refused = assertThrows(IOException.class, () -> open(alias.resolve("j1")));
+        assertEquals("inside_checkout", refused.getMessage());
+        try (var left = Files.list(audit)) {
+            assertEquals(List.of(), left.toList());
+        }
+    }
+
+    @Test
+    void symlinkedParentOutsideAnyCheckoutIsAccepted() throws Exception {
+        Path real = Files.createDirectory(tmp.resolve("outside"));
+        Path alias = link(tmp.resolve("outside-alias"), real);
+        try (AuditJournal journal = open(alias.resolve("j1"))) {
+            journal.append(event("through-alias"));
+        }
+        assertTrue(Files.exists(real.resolve("j1").resolve(AuditJournal.MANIFEST)));
+        assertEquals(real.toRealPath().resolve("j1"), AuditJournal.prepareDirectory(alias.resolve("j1").toString()));
+    }
+
+    @Test
+    void relinkingTheAliasAfterOpenCannotMoveWritesOrDeletesIntoACheckout() throws Exception {
+        Path outside = Files.createDirectory(tmp.resolve("release-1"));
+        Path checkout = Files.createDirectories(tmp.resolve("relinked"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path decoys = Files.createDirectory(checkout.resolve("j1"));
+        Files.writeString(decoys.resolve("audit-000001.jsonl"), "decoy\n");
+        Path current = link(tmp.resolve("current"), outside);
+        // Every append rotates, and the size cap expires closed segments by name at each rotation.
+        var policy = new AuditJournal.Policy(Duration.ofDays(30), 1, 1);
+        try (AuditJournal journal = AuditJournal.open(current.resolve("j1").toString(), policy, null,
+                Clock.systemUTC(), MAPPER)) {
+            journal.append(event("before-relink"));
+            Files.delete(current);
+            link(current, checkout);
+            journal.append(event("after-relink"));
+            journal.append(event("after-rotation"));
+        }
+        try (var left = Files.list(decoys)) {
+            assertEquals(List.of(decoys.resolve("audit-000001.jsonl")), left.toList());
+        }
+        assertEquals("decoy\n", Files.readString(decoys.resolve("audit-000001.jsonl")));
+        assertTrue(Files.exists(outside.resolve("j1").resolve(AuditJournal.MANIFEST)));
+    }
+
+    @Test
+    void ancestorSwappedIntoACheckoutDuringCreationIsRefusedAndCleanupNeverReachesIntoIt() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("raced"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-race"));
+        link(tmp.resolve("probe"), scratch);
+        Path parent = scratch.resolve("parent");
+
+        // Both directories are made outside any checkout; the race then moves them in behind a link.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.move(parent, checkout.resolve("parent"));
+                Files.createSymbolicLink(parent, checkout.resolve("parent"));
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        // A refusal deletes nothing, so every platform leaves the moved pair where the mover put it.
+        try (var left = Files.list(checkout)) {
+            assertEquals(List.of(checkout.resolve("parent"), checkout.resolve("pom.xml")), left.sorted().toList());
+        }
+        assertTrue(Files.isDirectory(checkout.resolve("parent/j1")));
+    }
+
+    @Test
+    void levelSwappedForALinkRightAfterItIsMadeCannotGetACheckoutDirectoryRemoved() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("swap-checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path theirs = Files.createDirectory(checkout.resolve("parent"));
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-swap"));
+        link(tmp.resolve("probe-swap"), scratch);
+        Path parent = scratch.resolve("parent");
+
+        // Right after parent is made, it becomes a link to the checkout's own empty directory of that name.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.CREATED && dir.getFileName().toString().equals("parent")) {
+                Files.delete(parent);
+                Files.createSymbolicLink(parent, theirs);
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertTrue(Files.isDirectory(theirs));
+    }
+
+    @Test
+    void aliasRepointedBeforeCreationCannotRedirectCreationOrCleanup() throws Exception {
+        Path outside = Files.createDirectory(tmp.resolve("before-1"));
+        Path checkout = Files.createDirectories(tmp.resolve("before-checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path theirs = Files.createDirectory(checkout.resolve("parent"));
+        Path current = link(tmp.resolve("before-current"), outside);
+
+        // The guard judged outside; a re-point after that must not create in, or clean up, the checkout.
+        Path dir = AuditJournal.prepareDirectory(current.resolve("parent/j1").toString(), (stage, d) -> {
+            if (stage == AuditJournal.Interleave.Stage.BEFORE_CREATE) {
+                Files.delete(current);
+                Files.createSymbolicLink(current, checkout);
+            }
+        });
+        assertEquals(outside.toRealPath().resolve("parent/j1"), dir);
+        assertTrue(Files.isDirectory(theirs));
+        try (var left = Files.list(theirs)) {
+            assertEquals(List.of(), left.toList());
+        }
+    }
+
+    @Test
+    void cleanupAfterARefusalNeverRemovesDirectoriesItDidNotMake() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("theirs-checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path theirs = Files.createDirectories(checkout.resolve("parent/j1"));
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-theirs"));
+        link(tmp.resolve("probe-theirs"), scratch);
+        Path parent = scratch.resolve("parent");
+
+        // The directories this opener made move away; empty look-alikes in a checkout take their place.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.move(parent, tmp.resolve("moved-away"));
+                Files.createSymbolicLink(parent, checkout.resolve("parent"));
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertTrue(Files.isDirectory(theirs));
+    }
+
+    @Test
+    void aRefusalAfterCreationDeletesNothing() throws Exception {
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-stay"));
+        Path parent = scratch.resolve("parent");
+
+        // The made directories stay where they were made; their parent becomes a checkout. No links needed.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.writeString(parent.resolve("pom.xml"), "<project/>");
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertTrue(Files.isDirectory(parent.resolve("j1")));
+    }
+
+    @Test
+    void cleanupAfterARefusalNeverDeletesAFileLeftAtAPathItMade() throws Exception {
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-file"));
+        Path parent = scratch.resolve("parent");
+
+        // The made pair moves away; a checkout with a file of the leaf's name takes its place. No links needed.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.move(parent, tmp.resolve("moved-file"));
+                Files.createDirectory(parent);
+                Files.writeString(parent.resolve("pom.xml"), "<project/>");
+                Files.writeString(parent.resolve("j1"), "theirs");
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertEquals("theirs", Files.readString(parent.resolve("j1")));
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void missingRootIsRefusedWithAReason() throws Exception {
+        Path absent = null;
+        for (char drive = 'Z'; drive >= 'D' && absent == null; drive--) {
+            Path root = Path.of(drive + ":\\");
+            absent = Files.exists(root) ? null : root;
+        }
+        assumeTrue(absent != null, "every drive letter is in use");
+        String journal = absent.resolve("nodrive").resolve("j1").toString();
+        assertEquals("invalid_path", assertThrows(IOException.class,
+                () -> AuditJournal.prepareDirectory(journal)).getMessage());
+    }
+
+    /** Class-level check: the checkout guard judges where a path lands, so no alias changes its verdict. */
+    @Test
+    void checkoutVerdictIsTheSameThroughEveryAlias() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("repo"));
+        Files.createDirectory(checkout.resolve(".git"));
+        Path deep = Files.createDirectories(checkout.resolve("a/b"));
+        Path outside = Files.createDirectory(tmp.resolve("elsewhere"));
+        Path aliases = Files.createDirectory(tmp.resolve("aliases"));
+        Path chained = link(aliases.resolve("chain"), link(aliases.resolve("to-deep"), deep));
+        List<Path[]> shapes = List.of(
+                new Path[] {checkout, link(aliases.resolve("to-root"), checkout)},
+                new Path[] {deep, aliases.resolve("to-deep")},
+                new Path[] {deep, chained},
+                new Path[] {deep.resolve("c"), link(aliases.resolve("to-a"), checkout.resolve("a"))
+                        .resolve("b/c")},
+                new Path[] {outside, link(aliases.resolve("to-outside"), outside)});
+        int n = 0;
+        for (Path[] shape : shapes) {
+            String direct = verdict(shape[0].resolve("direct-" + n));
+            String aliased = verdict(shape[1].resolve("aliased-" + n));
+            assertEquals(direct, aliased, "alias " + shape[1] + " of " + shape[0]);
+            n++;
+        }
+        assertEquals("accepted", verdict(outside.resolve("again")));
+        assertEquals("inside_checkout", verdict(deep.resolve("again")));
     }
 
     @Test
