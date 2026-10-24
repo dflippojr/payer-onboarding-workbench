@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -136,6 +138,76 @@ class PayerLockTest {
     }
 
     @Test
+    void aNegativeSlowResponseDelayIsRefusedBeforeARunStarts(CapturedOutput output) throws Exception {
+        int remembered = mapper.readTree(get("/api/runs").body()).size();
+
+        Answer negative = post(slow(NORTHWIND_ID, -1)).get(30, TimeUnit.SECONDS);
+
+        assertEquals(400, negative.status(), negative.toString());
+        assertEquals("slowResponseDelayMs must be between 0 and 3000 (workbench.request-timeout plus 1 s)",
+                mapper.readTree(negative.response().body()).path("detail").asText());
+        assertEquals(remembered, mapper.readTree(get("/api/runs").body()).size(), "a refused run is not remembered");
+        assertRefusedBeforeARun(output);
+    }
+
+    @Test
+    void aNegativeSlowResponseDelayIsRefusedAtOnceWhileAnotherRunHoldsThePayer(CapturedOutput output) throws Exception {
+        CompletableFuture<Answer> holder = post(slow(FABRIKAM_ID, CAP_MS));
+        awaitSlowResponseOn(FABRIKAM_ID);
+
+        Answer negative = post(slow(FABRIKAM_ID, -1)).get(30, TimeUnit.SECONDS);
+
+        assertEquals(400, negative.status(), negative.toString());
+        assertTrue(negative.elapsed().compareTo(WAIT) < 0, "refused only after waiting for the payer: " + negative.elapsed());
+        Answer held = holder.get(30, TimeUnit.SECONDS);
+        assertEquals(200, held.status(), held.toString());
+        assertRefusedBeforeARun(output);
+    }
+
+    /**
+     * Class-level check (#210): no delay outside {@code 0 .. request-timeout + 1 s} reaches the payer's fault setup.
+     * A bound checked on one side only lets the other side's values start a run and fail inside the setup, so the
+     * extremes of both sides are tried.
+     */
+    @ParameterizedTest
+    @ValueSource(longs = {Long.MIN_VALUE, -1_000_000, -1, CAP_MS + 1, Long.MAX_VALUE})
+    void aSlowResponseDelayOutsideTheRangeNeverReachesThePayer(long delayMs, CapturedOutput output) throws Exception {
+        Answer refused = post(slow(NORTHWIND_ID, delayMs)).get(30, TimeUnit.SECONDS);
+
+        assertEquals(400, refused.status(), refused.toString());
+        assertRefusedBeforeARun(output);
+    }
+
+    @Test
+    void aZeroSlowResponseDelayIsAccepted() throws Exception {
+        Answer zero = post(slow(NORTHWIND_ID, 0)).get(30, TimeUnit.SECONDS);
+
+        assertEquals(200, zero.status(), zero.toString());
+    }
+
+    /**
+     * Every refused request has one terminal event with reason {@code invalid_slow_response_delay} and no run id, and
+     * no fault event carries its request id: the payer's faults were never set for it.
+     */
+    private void assertRefusedBeforeARun(CapturedOutput output) {
+        List<JsonNode> refused = runCompleted(output).stream()
+                .filter(e -> e.path("metadata").path("httpStatus").asInt() == 400).toList();
+        assertFalse(refused.isEmpty(), output::getAll);
+        for (JsonNode event : refused) {
+            assertEquals("invalid_slow_response_delay", event.path("metadata").path("reasonCode").asText(), event::toString);
+            assertTrue(event.path("runId").isNull(), event::toString);
+        }
+        List<String> requests = refused.stream().map(e -> e.path("requestId").asText()).toList();
+        for (JsonNode event : faultRunEvents(output)) {
+            assertFalse(requests.contains(event.path("requestId").asText()), "a refused request set the faults: " + event);
+        }
+    }
+
+    private List<JsonNode> faultRunEvents(CapturedOutput output) {
+        return auditEvents(output).stream().filter(e -> e.path("action").asText().startsWith("fault.run_")).toList();
+    }
+
+    @Test
     void theDefaultDelayFitsUnderTheDefaultCap() {
         WorkbenchProperties defaults = new WorkbenchProperties(null, null, null, null, null);
         assertEquals(Duration.ofSeconds(16), defaults.maxSlowResponseDelay());
@@ -198,12 +270,15 @@ class PayerLockTest {
     }
 
     private List<JsonNode> runCompleted(CapturedOutput output) {
+        return auditEvents(output).stream().filter(e -> e.path("action").asText().equals("run.completed")).toList();
+    }
+
+    private List<JsonNode> auditEvents(CapturedOutput output) {
         return output.getAll().lines().filter(l -> l.contains(" : audit "))
                 .map(l -> {
                     try { return mapper.readTree(l.substring(l.indexOf(" : audit ") + 9)); }
                     catch (Exception e) { throw new AssertionError("Invalid audit JSON", e); }
                 })
-                .filter(e -> e.path("action").asText().equals("run.completed"))
                 .toList();
     }
 }
