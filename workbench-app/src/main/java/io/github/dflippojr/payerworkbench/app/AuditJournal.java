@@ -211,8 +211,17 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             Files.createDirectories(dir);
             restrictAcl(dir);
         }
+        // An ancestor swapped for a link while the directory was created is caught here.
+        recheckRealPath(dir, created);
+        if (!ownerOnly(dir, posix)) {
+            throw new UnsafeJournalException("directory_not_owner_only");
+        }
+        return dir;
+    }
+
+    /** Refuse a directory whose real path is inside a checkout, removing it if this opener created it. */
+    static void recheckRealPath(Path dir, boolean created) throws IOException {
         try {
-            // An ancestor swapped for a link while the directory was created is caught here.
             rejectCheckout(dir.toRealPath());
         } catch (UnsafeJournalException e) {
             if (created) {
@@ -220,10 +229,6 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             }
             throw e;
         }
-        if (!ownerOnly(dir, posix)) {
-            throw new UnsafeJournalException("directory_not_owner_only");
-        }
-        return dir;
     }
 
     private static void rejectCheckout(Path dir) throws UnsafeJournalException {

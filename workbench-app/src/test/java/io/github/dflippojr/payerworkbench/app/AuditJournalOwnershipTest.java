@@ -163,6 +163,23 @@ class AuditJournalOwnershipTest {
         assertTrue(Files.exists(real.resolve("j1").resolve(AuditJournal.MANIFEST)));
     }
 
+    @Test
+    void realPathRecheckRemovesOnlyADirectoryThisOpenerCreated() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("swapped"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path made = Files.createDirectory(checkout.resolve("made"));
+        Path found = Files.createDirectory(checkout.resolve("found"));
+
+        assertEquals("inside_checkout", assertThrows(IOException.class,
+                () -> AuditJournal.recheckRealPath(made, true)).getMessage());
+        assertFalse(Files.exists(made));
+        assertEquals("inside_checkout", assertThrows(IOException.class,
+                () -> AuditJournal.recheckRealPath(found, false)).getMessage());
+        assertTrue(Files.isDirectory(found));
+        AuditJournal.recheckRealPath(Files.createDirectory(tmp.resolve("clean")), true);
+        assertTrue(Files.isDirectory(tmp.resolve("clean")));
+    }
+
     /** Class-level check: the checkout guard judges where a path lands, so no alias changes its verdict. */
     @Test
     void checkoutVerdictIsTheSameThroughEveryAlias() throws Exception {
