@@ -93,6 +93,17 @@ async function journalSegments(dir, manifest) {
   return [...new Set([...listed, ...present])].sort();
 }
 
+// The SHA-256 of a file's raw bytes and its last byte. Chunks keep memory bounded however large the segment is.
+async function digest(path) {
+  const hash = createHash('sha256');
+  let last = null;
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+    if (chunk.length) last = chunk[chunk.length - 1];
+  }
+  return { sha256: hash.digest('hex'), last };
+}
+
 // Checksums catch accidental damage and missing or truncated files, not a rewrite by the machine owner.
 // Output names segments and statuses only, never event content.
 export async function verify(dir, write) {
@@ -104,14 +115,16 @@ export async function verify(dir, write) {
     let status = 'ok';
     if (!entry) status = 'unsealed';
     else {
-      let bytes = null;
-      try { bytes = await readFile(join(dir, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (bytes === null) status = 'missing';
-      else if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) status = 'checksum_mismatch';
-      else if (bytes.length > 0 && bytes[bytes.length - 1] !== 0x0a) status = 'truncated';
+      const path = join(dir, file);
+      let sealed = null;
+      try { sealed = await digest(path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (sealed === null) status = 'missing';
+      else if (sealed.sha256 !== entry.sha256) status = 'checksum_mismatch';
+      else if (sealed.last !== null && sealed.last !== 0x0a) status = 'truncated';
       else {
         let events = 0;
-        for (const line of bytes.toString('utf8').split('\n').filter(Boolean)) {
+        for await (const line of fileLines(path)) {
+          if (!line) continue;
           try { if (JSON.parse(line).eventId) events++; else status = 'malformed'; } catch { status = 'malformed'; }
         }
         if (status === 'ok' && events !== entry.events) status = 'event_count_mismatch';
