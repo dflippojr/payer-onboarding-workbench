@@ -377,6 +377,8 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         long events = 0;
         String first = null;
         String last = null;
+        Instant firstInstant = null;
+        Instant lastInstant = null;
         int start = 0;
         for (int i = 0; i <= bytes.length; i++) {
             if (i == bytes.length || bytes[i] == '\n') {
@@ -384,9 +386,17 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                     try {
                         String at = mapper.readTree(bytes, start, i - start).path("occurredAt").asText(null);
                         if (at != null) {
+                            // Compare instants: ISO text misorders a whole second against its fraction ('.' < 'Z').
+                            Instant instant = Instant.parse(at);
                             events++;
-                            first = first == null || at.compareTo(first) < 0 ? at : first;
-                            last = last == null || at.compareTo(last) > 0 ? at : last;
+                            if (firstInstant == null || instant.isBefore(firstInstant)) {
+                                first = at;
+                                firstInstant = instant;
+                            }
+                            if (lastInstant == null || instant.isAfter(lastInstant)) {
+                                last = at;
+                                lastInstant = instant;
+                            }
                         }
                     } catch (IOException | RuntimeException ignored) {
                         // damaged line: stays in the file, is not counted
