@@ -301,6 +301,112 @@ class AuditJournalTest {
     }
 
     @Test
+    void segmentBytesAboveTheCapIsRefusedBeforeAnyFileIsTouched() throws Exception {
+        Path dir = tmp.resolve("journal");
+        seedTwoClosedSegments(dir);
+        java.util.Map<String, String> before = fingerprint(dir);
+        long oneGiB = 1L << 30;
+
+        for (long segmentBytes : new long[] {oneGiB + 1, Integer.MAX_VALUE + 1L, Long.MAX_VALUE}) {
+            AuditJournal.Policy policy = new AuditJournal.Policy(DEFAULT.retention(), segmentBytes,
+                    DEFAULT.totalBytes());
+            IOException refused = assertThrows(AuditJournal.UnsafeJournalException.class,
+                    () -> open(dir, policy, NOW.plus(Duration.ofDays(1))), policy::toString);
+            assertEquals("invalid_policy", refused.getMessage());
+            assertEquals(before, fingerprint(dir), "segments and manifest unchanged after " + policy);
+        }
+        Path fresh = tmp.resolve("never-created");
+        assertThrows(AuditJournal.UnsafeJournalException.class, () -> open(fresh,
+                new AuditJournal.Policy(DEFAULT.retention(), oneGiB + 1, DEFAULT.totalBytes()), NOW));
+        assertFalse(Files.exists(fresh), "a refused policy creates no directory");
+
+        open(tmp.resolve("at-cap"), new AuditJournal.Policy(DEFAULT.retention(), oneGiB, DEFAULT.totalBytes()),
+                NOW).append(event(NOW, "at-cap"));
+    }
+
+    /**
+     * Skips unless the temp store honours sparse files: a probe with a 256 MiB hole must not use up the hole.
+     * The store must also have room for {@code size} twice, so a store that fills holes anyway cannot be filled.
+     */
+    private void assumeSparseFiles(long size) throws IOException {
+        var store = Files.getFileStore(tmp);
+        org.junit.jupiter.api.Assumptions.assumeTrue(store.getUsableSpace() > 2 * size, "room for a non-sparse copy");
+        long hole = 256L * 1024 * 1024;
+        Path probe = tmp.resolve("sparse-probe");
+        long before = store.getUsableSpace();
+        try (var channel = java.nio.channels.FileChannel.open(probe, java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.SPARSE)) {
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] {1}), hole);
+            channel.force(true);
+        }
+        long used = before - store.getUsableSpace();
+        Files.delete(probe);
+        org.junit.jupiter.api.Assumptions.assumeTrue(used < hole / 2,
+                "sparse files unsupported: a " + hole + "-byte hole used " + used + " bytes");
+    }
+
+    @Test
+    void leftoverSegmentOfTwoGiBOrMoreIsSealedWithoutAnError() throws Exception {
+        long size = 2_200_000_000L;
+        assumeSparseFiles(size);
+        Path dir = tmp.resolve("journal");
+        open(dir, DEFAULT, NOW).append(event(NOW, "before"));
+        resources.removeLast().close();
+        Path big = dir.resolve("audit-000002.jsonl");
+        try (var channel = java.nio.channels.FileChannel.open(big, java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.SPARSE)) {
+            channel.write(java.nio.ByteBuffer.wrap(("\n" + MAPPER.writeValueAsString(event(NOW, "tail")) + "\n")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)), size);
+        }
+        long bigBytes = Files.size(big);
+
+        AuditJournal journal;
+        try {
+            journal = open(dir, new AuditJournal.Policy(DEFAULT.retention(), DEFAULT.segmentBytes(), 4 * size), NOW);
+        } catch (Error e) {
+            throw new AssertionError("open threw " + e.getClass().getSimpleName() + " instead of failing open", e);
+        }
+        journal.append(event(NOW, "after"));
+
+        JsonNode sealed = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST))).path("segments")
+                .get(1);
+        assertEquals("audit-000002", sealed.path("id").asText());
+        assertEquals(bigBytes, sealed.path("bytes").asLong());
+        assertEquals(1, sealed.path("events").asLong(), "the zero run is one damaged line; the tail is counted");
+        assertEquals(64, sealed.path("sha256").asText().length());
+    }
+
+    @Test
+    void manifestOfTwoGiBOrMoreIsUnreadableWithoutAnError() throws Exception {
+        long size = 2_200_000_000L;
+        assumeSparseFiles(size);
+        Path dir = tmp.resolve("journal");
+        open(dir, DEFAULT, NOW).append(event(NOW, "before"));
+        resources.removeLast().close();
+        Path manifest = dir.resolve(AuditJournal.MANIFEST);
+        try (var channel = java.nio.channels.FileChannel.open(manifest, java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.StandardOpenOption.SPARSE)) {
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] {' '}), size);
+        }
+
+        IOException refused;
+        try {
+            refused = assertThrows(AuditJournal.UnsafeJournalException.class, () -> open(dir, DEFAULT, NOW));
+        } catch (Error e) {
+            throw new AssertionError("open threw " + e.getClass().getSimpleName() + " instead of failing open", e);
+        }
+        assertEquals("manifest_unreadable", refused.getMessage());
+    }
+
+    @Test
+    void readBoundedReadsAtMostOneByteOverTheLimit() throws Exception {
+        Path file = Files.write(tmp.resolve("f"), new byte[] {1, 2, 3});
+        assertArrayEquals(new byte[] {1, 2, 3}, AuditJournal.readBounded(file, 3));
+        assertEquals("file_too_large",
+                assertThrows(IOException.class, () -> AuditJournal.readBounded(file, 2)).getMessage());
+    }
+
+    @Test
     void worldAccessibleExistingDirectoryIsNotAProtectedJournal() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 Files.getFileStore(tmp).supportsFileAttributeView("posix"));
@@ -500,6 +606,78 @@ class AuditJournalTest {
         assertEquals("2026-10-08T12:00:09Z", segment.path("lastAt").asText());
         journal.append(event(NOW.plusSeconds(61), "next"));
         assertTrue(Files.exists(dir.resolve("audit-000005.jsonl")), "numbering continues after what was found");
+    }
+
+    /** Two segments from an earlier run, one event each, no manifest: audit-999999 is followed by audit-1000000. */
+    private static void seedPastSixDigits(Path dir) throws IOException {
+        Files.writeString(dir.resolve("audit-999999.jsonl"), MAPPER.writeValueAsString(event(NOW, "old")) + "\n");
+        Files.writeString(dir.resolve("audit-1000000.jsonl"),
+                MAPPER.writeValueAsString(event(NOW.plusSeconds(1), "new")) + "\n");
+    }
+
+    private static List<String> manifestIds(Path dir) throws IOException {
+        List<String> ids = new java.util.ArrayList<>();
+        for (JsonNode s : MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST))).path("segments")) {
+            ids.add(s.path("id").asText());
+        }
+        return ids;
+    }
+
+    @Test
+    void segmentsPastSixDigitsAreAdoptedInNumericOrderAndAppendsContinueThere() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("wide").toString());
+        seedPastSixDigits(dir);
+
+        open(dir, DEFAULT, NOW.plusSeconds(60)).append(event(NOW.plusSeconds(61), "next"));
+
+        assertTrue(Files.exists(dir.resolve("audit-1000001.jsonl")), "numbering continues past six digits");
+        assertEquals(List.of("audit-999999", "audit-1000000"), manifestIds(dir), "adopted by number, not by text");
+    }
+
+    @Test
+    void sizeRetentionExpiresTheOldestSegmentPastSixDigitsFirst() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("wide-size").toString());
+        seedPastSixDigits(dir);
+        long newer = Files.size(dir.resolve("audit-1000000.jsonl"));
+        // Room for the newer segment alone, so the pass must expire audit-999999, the older one.
+        AuditJournal.Policy capped = new AuditJournal.Policy(Duration.ofDays(30), 10L * 1024 * 1024, newer + 1);
+
+        open(dir, capped, NOW.plusSeconds(60)).append(event(NOW.plusSeconds(61), "next"));
+
+        assertFalse(Files.exists(dir.resolve("audit-999999.jsonl")), "the oldest segment expires first");
+        assertTrue(Files.exists(dir.resolve("audit-1000000.jsonl")));
+        assertTrue(allText(dir).contains("\"reasonCode\":\"size_cap\""));
+    }
+
+    // Class check: the writer's audit-%06d names and the recogniser agree at every width, so no segment goes unseen.
+    @Test
+    void everyDigitWidthTheWriterNamesIsAdoptedInNumericOrder() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("widths").toString());
+        List<Integer> numbers = List.of(9, 999998, 999999, 1000000, 1000001, 9999999, 10000000);
+        for (int n : numbers) {
+            Files.writeString(dir.resolve(String.format("audit-%06d.jsonl", n)),
+                    MAPPER.writeValueAsString(event(NOW, "w" + n)) + "\n");
+        }
+
+        open(dir, DEFAULT, NOW.plusSeconds(60)).append(event(NOW.plusSeconds(61), "next"));
+
+        assertEquals(numbers.stream().map(n -> String.format("audit-%06d", n)).toList(), manifestIds(dir));
+        assertTrue(Files.exists(dir.resolve("audit-10000001.jsonl")), "numbering continues past the widest name");
+    }
+
+    @Test
+    void manifestBoundsOrderAWholeSecondBeforeItsFractionOfThatSecond() throws Exception {
+        Path dir = tmp.resolve("journal");
+        AuditJournal journal = open(dir, DEFAULT, NOW);
+        journal.append(event(NOW, "whole"));
+        journal.append(event(NOW.plusMillis(500), "fraction"));
+        journal.close();
+        open(dir, DEFAULT, NOW.plusSeconds(10)).close();
+
+        JsonNode segment = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)))
+                .path("segments").get(0);
+        assertEquals("2026-10-08T12:00:00Z", segment.path("firstAt").asText());
+        assertEquals("2026-10-08T12:00:00.500Z", segment.path("lastAt").asText());
     }
 
     @Test

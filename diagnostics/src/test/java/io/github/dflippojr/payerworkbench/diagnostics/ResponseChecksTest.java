@@ -199,6 +199,27 @@ class ResponseChecksTest {
             assertTrue(f.evidence().contains("cards[0].selectionBehavior is missing"), f::evidence);
         }
 
+        @ParameterizedTest(name = "suggestions {0}")
+        @CsvSource(delimiter = '|', value = {
+                "{\"a\":{}}|cards[0].suggestions is not an array",
+                "\"Save\"|cards[0].suggestions is not an array",
+                "[{\"label\":\"Save\",\"actions\":{\"a\":{}}}]|cards[0].suggestions[0].actions is not an array",
+                "[{\"label\":\"Save\",\"actions\":\"update\"}]|cards[0].suggestions[0].actions is not an array"})
+        void suggestionsAndActionsMustBeLists(String suggestions, String problem) {
+            var run = healthy().hookBody("{\"cards\":[{\"summary\":\"a\",\"indicator\":\"info\","
+                    + "\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\",\"suggestions\":" + suggestions + "}]}");
+            assertEquals(problem,
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+        }
+
+        @Test
+        void nullActionsOnASuggestionIsAbsent() {
+            var run = healthy().hookBody("{\"cards\":[{\"summary\":\"a\",\"indicator\":\"info\","
+                    + "\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\","
+                    + "\"suggestions\":[{\"label\":\"Save\",\"actions\":null}]}]}");
+            assertOnly(check.evaluate(run.build()), Severity.PASS);
+        }
+
         @Test
         void errorStatusFails() {
             var run = healthy();
