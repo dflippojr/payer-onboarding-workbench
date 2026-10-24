@@ -2,18 +2,19 @@
 // The timeout turns a regression to an unbounded cleanup wait into a failed test instead of a hung job.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import * as url from 'node:url';
 import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
-import { findAppJar, root as repoRoot } from './workbench-lifecycle.mjs';
 
+const repoRoot = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(new URL('./workbench-lifecycle.mjs', import.meta.url), 'utf8');
+// realRoot runs the lifecycle module with its real fs against a repository root of the caller's choosing.
 async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-1.jar',
   'workbench-app-0.jar.original'], log = 'started on port 43210',
-  buildResult = { status: 0 }, spawnError, synchronousError, afterDelay } = {}) {
+  buildResult = { status: 0 }, spawnError, synchronousError, afterDelay, realRoot } = {}) {
   const child = new EventEmitter();
   Object.assign(child, { pid: 12345, exitCode: null, signalCode: null, kills: 0, signals: [], unrefs: 0 });
   child.kill = signal => { child.kills++; child.signals.push(signal); return true; };
@@ -50,7 +51,8 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-1.
       },
     },
     'node:fs': {
-      existsSync: () => true, readdirSync: () => [...jars], readFileSync: () => log,
+      existsSync: realRoot ? existsSync : () => true,
+      readdirSync: realRoot ? readdirSync : () => [...jars], readFileSync: () => log,
       openSync(...args) { calls.opens.push(args); return 42; },
       closeSync(fd) { calls.closes.push(fd); },
     },
@@ -61,7 +63,11 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-1.
     } },
   };
   const module = new SourceTextModule(source, { context,
-    initializeImportMeta(meta) { meta.url = new URL('./workbench-lifecycle.mjs', import.meta.url).href; } });
+    initializeImportMeta(meta) {
+      meta.url = realRoot
+        ? url.pathToFileURL(path.join(realRoot, 'scripts', 'workbench-lifecycle.mjs')).href
+        : new URL('./workbench-lifecycle.mjs', import.meta.url).href;
+    } });
   await module.link(specifier => {
     const values = modules[specifier];
     return new SyntheticModule(Object.keys(values), function () {
@@ -136,6 +142,28 @@ for (const skip of ['DEMO_SKIP_BUILD', 'EXPORT_SKIP_BUILD']) {
     assert.throws(() => built.create(skip).build(),
       error => jars.every(jar => error.message.includes(jar)) && error.message.includes('./mvnw clean package'));
     assert.equal(built.calls.builds.length, 1);
+  });
+}
+
+// The lifecycle module reads <root>/workbench-app/target with the real fs: the repository root is a temp directory.
+for (const skip of ['DEMO_SKIP_BUILD', 'EXPORT_SKIP_BUILD']) {
+  test(`${skip} fails two jars in a real temp target and names both, with and without a build`, async () => {
+    const realRoot = mkdtempSync(path.join(tmpdir(), 'lifecycle-root-'));
+    try {
+      const target = path.join(realRoot, 'workbench-app', 'target');
+      mkdirSync(target, { recursive: true });
+      const jars = ['workbench-app-0.1.0-SNAPSHOT.jar', 'workbench-app-0.2.0-SNAPSHOT.jar'];
+      for (const jar of jars) writeFileSync(path.join(target, jar), '');
+      const named = error => jars.every(jar => error.message.includes(jar)) && error.message.includes('./mvnw clean package');
+      const skipped = await fixture({ env: { [skip]: '1' }, realRoot });
+      assert.throws(() => skipped.create(skip).build(), named);
+      assert.equal(skipped.calls.builds.length, 0);
+      const built = await fixture({ realRoot });
+      assert.throws(() => built.create(skip).build(), named);
+      assert.equal(built.calls.builds.length, 1);
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
   });
 }
 
@@ -496,7 +524,9 @@ for (const env of [{}, { JAVA_HOME: path.resolve('jdk') }]) {
 }
 
 // findAppJar reads the real filesystem; the fixture above stubs the lifecycle module's imports only.
-test('findAppJar on a real directory: missing, none, one, and two jars named in order', () => {
+test('findAppJar on a real directory: missing, none, one, and two jars named in order', async () => {
+  // Imported inside the test: a module without findAppJar then fails only this test, not the file.
+  const { findAppJar } = await import('./workbench-lifecycle.mjs');
   const dir = mkdtempSync(path.join(tmpdir(), 'app-jar-'));
   const hint = 'run without DEMO_SKIP_BUILD';
   try {
