@@ -570,7 +570,10 @@ public abstract class MockPayer implements AutoCloseable {
         if (behaviour.tokenErrorWith200()) {
             body = error("invalid_client", "Client authentication failed");
         } else {
-            body = mapper.createObjectNode().put("access_token", accessToken).put("token_type", behaviour.tokenType());
+            body = mapper.createObjectNode().put("access_token", accessToken);
+            if (behaviour.tokenType() != null) {
+                body.put("token_type", behaviour.tokenType());
+            }
             switch (behaviour.expiresIn()) {
                 case NUMBER -> body.put("expires_in", expiresInSeconds);
                 case NUMERIC_STRING -> body.put("expires_in", String.valueOf(expiresInSeconds));

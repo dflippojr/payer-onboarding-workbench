@@ -26,6 +26,7 @@ import io.github.dflippojr.payerworkbench.mock.Fault;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -158,6 +159,20 @@ class CheckReachabilityTest {
             assertTrue(hookExchanged(run), () -> checkId + " reported nothing under " + row.passes().name()
                     + " without a successful hook exchange, so there was no hook response to judge");
         }
+    }
+
+    /**
+     * {@code auth.token} also fires as a WARN, not a FAIL, for a token_type the router SDK cannot use (#218), so the
+     * table's FAIL scenario does not cover it. Each such row must reach the runner and draw exactly that WARN.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"token-response/token-type-missing", "token-response/token-type-dpop",
+            "token-response/token-type-mac"})
+    void authTokenWarnsThroughTheRunnerForATokenTypeTheSdkCannotUse(String rowId) throws Exception {
+        List<Finding> findings = findings(matrix(rowId).run(runner), AuthTokenCheck.CHECK_ID);
+
+        assertEquals(List.of(Severity.WARN), findings.stream().map(Finding::severity).toList(),
+                () -> rowId + " did not draw the auth.token WARN: " + findings);
     }
 
     /** Whether the run completed the hook request, the step that a silent check judges. */

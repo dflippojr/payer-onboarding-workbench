@@ -10,7 +10,7 @@ import java.util.Objects;
  * by default. Unlike a {@link Fault}, a behaviour is fixed for the payer's lifetime.
  *
  * @param accessToken       what the token endpoint issues as {@code access_token}
- * @param tokenType         the {@code token_type} value, case kept as given
+ * @param tokenType         the {@code token_type} value, case kept as given; {@code null} leaves it out of the response
  * @param expiresIn         the JSON type and form of {@code expires_in}
  * @param extraTokenFields  add response fields the client does not know
  * @param tokenContentType  the token response's {@code Content-Type}
@@ -30,7 +30,6 @@ public record PayerBehaviour(AccessToken accessToken, String tokenType, ExpiresI
 
     public PayerBehaviour {
         Objects.requireNonNull(accessToken, "accessToken");
-        Objects.requireNonNull(tokenType, "tokenType");
         Objects.requireNonNull(expiresIn, "expiresIn");
         Objects.requireNonNull(tokenContentType, "tokenContentType");
         Objects.requireNonNull(hookAuthentication, "hookAuthentication");
