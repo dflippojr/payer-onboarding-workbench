@@ -162,6 +162,12 @@ test('a real malformed line still exits nonzero beside a gap warning, without ec
   } finally { rmSync(directory, { recursive: true }); }
 });
 
+test('a line with the audit marker is malformed even when its message is a gap warning', async () => {
+  let gaps = 0;
+  assert.equal(await review(['INFO logger : audit ' + GAP], {}, () => assert.fail('no event'), () => gaps++), 1);
+  assert.equal(gaps, 0);
+});
+
 // Class check: a constant message the app logs that mentions an audit must never be read as an event line,
 // so a new warning cannot make the reader report a damaged capture.
 test('every constant audit message in the app and mock payers is read without a malformed count', async () => {
