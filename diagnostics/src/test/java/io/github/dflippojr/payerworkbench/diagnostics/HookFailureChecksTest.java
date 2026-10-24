@@ -149,7 +149,8 @@ class HookFailureChecksTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"Thursday, 01-Oct-26 12:00:30 PST", "Thursday, 01-Oct-26 12:00:30",
-        "Friday, 01-Oct-26 12:00:30 GMT", "Thu Oct 32 12:00:30 2026"})
+        "Friday, 01-Oct-26 12:00:30 GMT", "Thu Oct 32 12:00:30 2026", "Friday, 29-Feb-25 12:00:30 GMT",
+        "Fri Feb 29 12:00:30 2025"})
     void malformedHttpDateIsStillNotUsable(String retry) {
         var finding = Fixtures.assertOnly(new RateLimitCheck().evaluate(run(429,
                 Map.of("Retry-After", List.of(retry)), "{}").build()), Severity.FAIL);

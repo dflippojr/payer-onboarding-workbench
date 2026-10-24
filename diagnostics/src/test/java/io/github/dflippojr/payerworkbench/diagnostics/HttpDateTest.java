@@ -44,10 +44,24 @@ class HttpDateTest {
                 HttpDate.parse("Saturday, 01-Oct-77 12:00:00 GMT", NOW));
     }
 
+    @Test
+    void yearThatIsPastTheFiftyYearEdgeInItsLaterMonthsTakesThePreviousCentury() {
+        // 31 Dec 2076 is after 1 Oct 2076, the most 50 years after NOW, so the year is 1976. Friday is 1976's weekday.
+        assertEquals(Optional.of(Instant.parse("1976-12-31T12:00:00Z")),
+                HttpDate.parse("Friday, 31-Dec-76 12:00:00 GMT", NOW));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Friday, 29-Feb-25 12:00:00 GMT", "Fri, 29 Feb 2025 12:00:00 GMT",
+        "Fri Feb 29 12:00:00 2025"})
+    void dayThatDoesNotExistIsMalformedNotRounded(String value) {
+        assertEquals(Optional.empty(), HttpDate.parse(value, NOW), value);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"", "not a date", "Thu, 01 Oct 2026 12:00:30 PST", "Thu Oct 1 12:00:30",
-        "Thu Oct 32 12:00:30 2026", "Friday, 01-Oct-26 12:00:30 GMT", "Thursday, 01-Oct-26 12:00:30",
-        "Thursday, 32-Oct-26 12:00:30 GMT"})
+        "Thu Oct 32 12:00:30 2026", "Fri Oct  1 12:00:30 2026", "Friday, 01-Oct-26 12:00:30 GMT",
+        "Thursday, 01-Oct-26 12:00:30", "Thursday, 32-Oct-26 12:00:30 GMT"})
     void unreadableValueNamesNoInstant(String value) {
         assertEquals(Optional.empty(), HttpDate.parse(value, NOW), value);
     }
