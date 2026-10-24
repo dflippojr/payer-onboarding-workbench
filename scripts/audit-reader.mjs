@@ -129,12 +129,17 @@ export async function verify(dir, write) {
 const MAX_LINE = 16 * 1024 * 1024;
 const TRUNCATED = '\u0000';
 
-// The lines of a file, read in chunks so memory stays bounded however long the file is.
-async function* fileLines(path) {
+// The lines of a file, read in chunks so memory stays bounded however long the file is. Journal segments end lines with
+// \n only. A capture log is split like readline: \n, \r and \r\n each end a line, even when \r\n spans two chunks.
+async function* fileLines(path, capture = false) {
+  const ends = capture ? /\r\n|\r|\n/ : '\n';
   let text = '';
   let cut = false;
-  for await (const chunk of createReadStream(path, { encoding: 'utf8' })) {
-    const parts = chunk.split('\n');
+  let afterCR = false;
+  for await (let chunk of createReadStream(path, { encoding: 'utf8' })) {
+    if (afterCR && chunk.startsWith('\n')) chunk = chunk.slice(1);
+    afterCR = capture && chunk.endsWith('\r');
+    const parts = chunk.split(ends);
     for (let i = 0; i < parts.length; i++) {
       if (i > 0) {
         yield lineText(text, cut);
@@ -149,7 +154,7 @@ async function* fileLines(path) {
   yield lineText(text, cut);
 }
 
-// A capture log may have CRLF line ends; the line is the text before the carriage return.
+// A segment line keeps no trailing carriage return, as JSON.parse ignored it before.
 function lineText(text, cut) {
   if (cut) return text + TRUNCATED;
   return text.endsWith('\r') ? text.slice(0, -1) : text;
@@ -176,7 +181,7 @@ async function main() {
       }
       return;
     }
-    const lines = isDir ? journalLines(filters.file) : fileLines(filters.file);
+    const lines = isDir ? journalLines(filters.file) : fileLines(filters.file, true);
     let gaps = 0;
     const malformed = await review(lines, filters, line => process.stdout.write(line + '\n'), () => gaps++);
     if (malformed) {
