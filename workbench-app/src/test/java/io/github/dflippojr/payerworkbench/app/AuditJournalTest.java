@@ -502,6 +502,63 @@ class AuditJournalTest {
         assertTrue(Files.exists(dir.resolve("audit-000005.jsonl")), "numbering continues after what was found");
     }
 
+    /** Two segments from an earlier run, one event each, no manifest: audit-999999 is followed by audit-1000000. */
+    private static void seedPastSixDigits(Path dir) throws IOException {
+        Files.writeString(dir.resolve("audit-999999.jsonl"), MAPPER.writeValueAsString(event(NOW, "old")) + "\n");
+        Files.writeString(dir.resolve("audit-1000000.jsonl"),
+                MAPPER.writeValueAsString(event(NOW.plusSeconds(1), "new")) + "\n");
+    }
+
+    private static List<String> manifestIds(Path dir) throws IOException {
+        List<String> ids = new java.util.ArrayList<>();
+        for (JsonNode s : MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST))).path("segments")) {
+            ids.add(s.path("id").asText());
+        }
+        return ids;
+    }
+
+    @Test
+    void segmentsPastSixDigitsAreAdoptedInNumericOrderAndAppendsContinueThere() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("wide").toString());
+        seedPastSixDigits(dir);
+
+        open(dir, DEFAULT, NOW.plusSeconds(60)).append(event(NOW.plusSeconds(61), "next"));
+
+        assertTrue(Files.exists(dir.resolve("audit-1000001.jsonl")), "numbering continues past six digits");
+        assertEquals(List.of("audit-999999", "audit-1000000"), manifestIds(dir), "adopted by number, not by text");
+    }
+
+    @Test
+    void sizeRetentionExpiresTheOldestSegmentPastSixDigitsFirst() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("wide-size").toString());
+        seedPastSixDigits(dir);
+        long newer = Files.size(dir.resolve("audit-1000000.jsonl"));
+        // Room for the newer segment alone, so the pass must expire audit-999999, the older one.
+        AuditJournal.Policy capped = new AuditJournal.Policy(Duration.ofDays(30), 10L * 1024 * 1024, newer + 1);
+
+        open(dir, capped, NOW.plusSeconds(60)).append(event(NOW.plusSeconds(61), "next"));
+
+        assertFalse(Files.exists(dir.resolve("audit-999999.jsonl")), "the oldest segment expires first");
+        assertTrue(Files.exists(dir.resolve("audit-1000000.jsonl")));
+        assertTrue(allText(dir).contains("\"reasonCode\":\"size_cap\""));
+    }
+
+    // Class check: the writer's audit-%06d names and the recogniser agree at every width, so no segment goes unseen.
+    @Test
+    void everyDigitWidthTheWriterNamesIsAdoptedInNumericOrder() throws Exception {
+        Path dir = AuditJournal.prepareDirectory(tmp.resolve("widths").toString());
+        List<Integer> numbers = List.of(9, 999998, 999999, 1000000, 1000001, 9999999, 10000000);
+        for (int n : numbers) {
+            Files.writeString(dir.resolve(String.format("audit-%06d.jsonl", n)),
+                    MAPPER.writeValueAsString(event(NOW, "w" + n)) + "\n");
+        }
+
+        open(dir, DEFAULT, NOW.plusSeconds(60)).append(event(NOW.plusSeconds(61), "next"));
+
+        assertEquals(numbers.stream().map(n -> String.format("audit-%06d", n)).toList(), manifestIds(dir));
+        assertTrue(Files.exists(dir.resolve("audit-10000001.jsonl")), "numbering continues past the widest name");
+    }
+
     @Test
     void manifestBoundsOrderAWholeSecondBeforeItsFractionOfThatSecond() throws Exception {
         Path dir = tmp.resolve("journal");

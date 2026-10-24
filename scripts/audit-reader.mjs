@@ -74,7 +74,7 @@ export async function review(lines, filters, output, onGap = () => {}) {
   return malformed;
 }
 
-const SEGMENT = /^audit-\d{6}\.jsonl$/;
+const SEGMENT = /^audit-\d{6,}\.jsonl$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 async function loadManifest(dir) {
@@ -86,11 +86,16 @@ async function loadManifest(dir) {
   return manifest;
 }
 
+// The sequence number in a segment name. Compared as BigInt, so a name of any width sorts by value: as text,
+// audit-1000000 would come before audit-999999.
+const sequence = file => BigInt(file.slice('audit-'.length, -'.jsonl'.length));
+const bySequence = (a, b) => (sequence(a) < sequence(b) ? -1 : sequence(a) > sequence(b) ? 1 : 0);
+
 // Segment files in order: everything the manifest lists, then files it does not (open or crashed).
 async function journalSegments(dir, manifest) {
   const listed = manifest.segments.map(s => s.file);
   const present = (await readdir(dir)).filter(n => SEGMENT.test(n));
-  return [...new Set([...listed, ...present])].sort();
+  return [...new Set([...listed, ...present])].sort(bySequence);
 }
 
 // The SHA-256 of a file's raw bytes and its last byte. Chunks keep memory bounded however large the segment is.

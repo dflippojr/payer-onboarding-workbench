@@ -289,3 +289,42 @@ test('a capture with lone carriage-return line ends reads like readline did, CRL
     assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse), [event(), event('run-two')]);
   } finally { rmSync(directory, { recursive: true }); }
 });
+
+// A journal segment is named audit-%06d with the sequence number, so audit-1000000 follows audit-999999. As text,
+// audit-1000000 sorts first, so the reader must order segments by number.
+function writeSegment(dir, id, events) {
+  const text = events.map(e => JSON.stringify(e)).join('\n') + '\n';
+  writeFileSync(join(dir, `${id}.jsonl`), text);
+  return { id, file: `${id}.jsonl`, bytes: Buffer.byteLength(text), events: events.length,
+    sha256: createHash('sha256').update(text).digest('hex') };
+}
+test('segments past audit-999999 are verified and reviewed in numeric order', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-wide-'));
+  try {
+    // The manifest lists audit-999999 only, as after the app restarts on the old build; audit-1000000 is unsealed.
+    const sealed = writeSegment(dir, 'audit-999999', [event('run-old', 'run.requested', '2026-10-08T12:00:00Z')]);
+    writeSegment(dir, 'audit-1000000', [event('run-new', 'run.completed', '2026-10-08T12:00:01Z')]);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, operatorLabel: null, segments: [sealed] }));
+    const verified = cli(dir, '--verify');
+    assert.equal(verified.status, 0, verified.stderr);
+    assert.deepEqual(verified.stdout.trim().split('\n').map(row => JSON.parse(row)),
+      [{ segment: 'audit-999999', status: 'ok' }, { segment: 'audit-1000000', status: 'unsealed' }]);
+    const reviewed = cli(dir);
+    assert.equal(reviewed.status, 0, reviewed.stderr);
+    assert.deepEqual(reviewed.stdout.trim().split('\n').map(row => JSON.parse(row).runId), ['run-old', 'run-new']);
+  } finally { rmSync(dir, { recursive: true }); }
+});
+// Class check: a sequence number of any width is found and ordered by its value, so a digit-count pattern or a text sort
+// cannot hide a segment again.
+test('class check: segments of every digit width verify and review in numeric order', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-widths-'));
+  try {
+    const numbers = [...new Set([1, 9, 999998, 999999, 1000000, 1000001, 9999999, 10000000, 2147483647,
+      ...Array.from({ length: 40 }, (_, i) => 1 + ((i * 2654435761) % 2147483646))])].sort((a, b) => a - b);
+    const id = n => `audit-${String(n).padStart(6, '0')}`;
+    for (const n of numbers) writeSegment(dir, id(n), [event(`run-${n}`)]);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, operatorLabel: null, segments: [] }));
+    assert.deepEqual(cli(dir, '--verify').stdout.trim().split('\n').map(row => JSON.parse(row).segment), numbers.map(id));
+    assert.deepEqual(cli(dir).stdout.trim().split('\n').map(row => JSON.parse(row).runId), numbers.map(n => `run-${n}`));
+  } finally { rmSync(dir, { recursive: true }); }
+});
