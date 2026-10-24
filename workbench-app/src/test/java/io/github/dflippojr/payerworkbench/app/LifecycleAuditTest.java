@@ -3,6 +3,8 @@ package io.github.dflippojr.payerworkbench.app;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.github.dflippojr.payerworkbench.mock.Fault;
+import io.github.dflippojr.payerworkbench.mock.FaultSettings;
+import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import io.github.dflippojr.payerworkbench.samples.SampleCatalog;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -16,6 +18,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
@@ -27,6 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.spy;
 
@@ -184,9 +189,24 @@ class LifecycleAuditTest {
     void exceptionalRunStillRecordsResetAndRejectedSetupChangesNothing() throws Exception {
         SyntheticPayers payers = new SyntheticPayers(log);
         try {
+            // A negative delay is refused before the payer is held, so no setup and no reset is recorded (#210).
             OnboardingRunner runner = runner(payers);
             assertThrows(IllegalArgumentException.class,
                     () -> runner.run(request(List.of(Fault.SLOW_RESPONSE.id()), -1L)));
+            assertTrue(action("fault.run_setup").isEmpty());
+            assertTrue(action("fault.run_reset").isEmpty());
+
+            // A setup the payer refuses changes nothing: it is recorded as rejected, then the reset shows nothing changed.
+            // The first change() call is the setup and throws; the reset's change() calls the real method.
+            events.clear();
+            SyntheticPayers refusing = spy(payers);
+            MockPayer refusedPayer = spy(payers.payer(NORTHWIND_ID).orElseThrow());
+            FaultSettings faults = spy(refusedPayer.faults());
+            doReturn(faults).when(refusedPayer).faults();
+            doThrow(new IllegalArgumentException("refused")).doCallRealMethod().when(faults).change(any());
+            doReturn(Optional.of(refusedPayer)).when(refusing).payer(NORTHWIND_ID);
+            assertThrows(IllegalArgumentException.class,
+                    () -> runner(refusing).run(request(List.of(Fault.SLOW_RESPONSE.id()), 25L)));
             AuditEvent setup = action("fault.run_setup").getFirst();
             assertEquals("rejected", setup.outcome());
             assertEquals("setup_failed", setup.metadata().reasonCode());
