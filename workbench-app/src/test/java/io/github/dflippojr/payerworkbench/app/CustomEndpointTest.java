@@ -2,6 +2,8 @@ package io.github.dflippojr.payerworkbench.app;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import io.github.dflippojr.fhircrdrouter.client.CdsHooksClient;
+import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
 import io.github.dflippojr.fhircrdrouter.client.auth.PemKeys;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
@@ -51,9 +53,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
 /**
@@ -535,14 +539,13 @@ class CustomEndpointTest {
             bodies.add("{\"cards\":[],\"systemActions\":[" + v + "]}");
             for (String field : List.of("summary", "detail", "indicator", "source", "suggestions", "links",
                     "selectionBehavior", "uuid", "overrideReasons")) {
-                bodies.add("{\"cards\":[" + card.replace("{\"summary\"", "{\"" + field + "\":" + v + ",\"summary\"") + "]}");
+                bodies.add("{\"cards\":[" + withField(card, field, v) + "]}");
             }
             for (String field : List.of("type", "description", "resource", "resourceId")) {
-                bodies.add("{\"cards\":[],\"systemActions\":["
-                        + action.replace("{\"type\"", "{\"" + field + "\":" + v + ",\"type\"") + "]}");
+                bodies.add("{\"cards\":[],\"systemActions\":[" + withField(action, field, v) + "]}");
             }
-            bodies.add("{\"cards\":[{\"summary\":\"s\",\"indicator\":\"info\",\"source\":{\"label\":\"l\"},"
-                    + "\"selectionBehavior\":\"any\",\"suggestions\":[{\"label\":\"x\",\"actions\":[" + v + "]}]}]}");
+            bodies.add("{\"cards\":[" + withField(withField(card, "selectionBehavior", "\"any\""), "suggestions",
+                    "[{\"label\":\"x\",\"actions\":[" + v + "]}]") + "]}");
         }
         AtomicReference<String> body = new AtomicReference<>();
         String baseUrl = hookServer(body);
@@ -553,12 +556,39 @@ class CustomEndpointTest {
             List<?> exchanges = (List<?>) run.steps().get(3).details().get("exchanges");
             boolean kept = run.steps().get(2).ok() && run.steps().get(3).ok() && exchanges != null
                     && exchanges.size() == 1 && ((ExchangeView) exchanges.getFirst()).status() == 200;
-            boolean unexpected = run.steps().stream().anyMatch(s -> s.summary().contains("Unexpected error"));
+            // ": null" is what a message-less exception's getMessage() would print.
+            boolean unexpected = run.steps().stream().anyMatch(s -> s.summary().contains("Unexpected error")
+                    || s.summary().endsWith(": null"));
             if (!kept || unexpected) {
                 broken.add(b + " -> " + statuses(run) + " " + run.steps().stream().map(StepResult::summary).toList());
             }
         }
         assertEquals(List.of(), broken);
+    }
+
+    /** An SDK exception without a message is named by its class, not printed as "null" (#208). */
+    @Test
+    void aMessagelessSdkExceptionIsNamedByItsClass() throws Exception {
+        String baseUrl = hookServer(new AtomicReference<>("{\"cards\":[]}"));
+        try (var construction = mockConstruction(CdsHooksClient.class, (client, context) -> {
+            when(client.discoverServices(any()))
+                    .thenReturn(List.of(new CdsServiceDescriptor("order-sign", "t", "d", "crd-order-sign", Map.of())));
+            when(client.callHook(any(), any(), any())).thenThrow(new IllegalStateException());
+        })) {
+            OnboardingRun run = runner.run(custom(baseUrl, AuthType.NONE, null, null, null));
+
+            assertEquals(1, construction.constructed().size());
+            assertTrue(run.steps().get(2).ok(), run.steps().get(2)::summary);
+            assertFalse(run.steps().get(3).ok());
+            assertEquals("IllegalStateException", run.steps().get(3).summary());
+        }
+    }
+
+    /** {@code object} with {@code field} set to (or replaced by) the JSON value {@code value}. */
+    private String withField(String object, String field, String value) throws Exception {
+        var node = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(object);
+        node.set(field, mapper.readTree(value));
+        return mapper.writeValueAsString(node);
     }
 
     /** A no-auth CDS Hooks server under /x that advertises order-sign and answers it with {@code body}. */
