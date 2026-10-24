@@ -31,6 +31,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -50,7 +51,8 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     static final String MANIFEST = "manifest.json";
     static final String WRITER_LOCK = ".writer.lock";
     static final int MANIFEST_VERSION = 1;
-    private static final Pattern SEGMENT_FILE = Pattern.compile("audit-(\\d{6})\\.jsonl");
+    // Written as audit-%06d; a sequence past 999999 has seven or more digits, and order is by value, not by text.
+    private static final Pattern SEGMENT_FILE = Pattern.compile("audit-(\\d{6,})\\.jsonl");
     private static final Pattern LABEL = Pattern.compile("[A-Za-z0-9._-]{1,64}");
     private static final Duration RETENTION_CHECK = Duration.ofHours(1);
     private static final Set<Object> WRITERS = ConcurrentHashMap.newKeySet();
@@ -78,7 +80,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     private final Clock clock;
     private final ObjectMapper mapper;
     private final List<Segment> closed = new ArrayList<>();
-    private int nextSeq = 1;
+    private long nextSeq = 1;
     private FileChannel channel;
     private FileChannel lockChannel;
     private FileLock writerLock;
@@ -281,7 +283,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                 }
             }
         }
-        files.sort(null);
+        files.sort(Comparator.comparingLong(AuditJournal::seq));
         boolean sealed = false;
         for (String id : files) {
             if (closed.stream().noneMatch(s -> s.id().equals(id))) {
@@ -289,14 +291,14 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                 sealed = true;
             }
         }
-        closed.sort((a, b) -> a.id().compareTo(b.id()));
+        closed.sort(Comparator.comparingLong(s -> seq(s.id())));
         if (sealed || !Files.exists(manifest)) {
             writeManifest();
         }
     }
 
-    private static int seq(String id) {
-        return Integer.parseInt(id.substring("audit-".length()));
+    private static long seq(String id) {
+        return Long.parseLong(id.substring("audit-".length()));
     }
 
     @Override
