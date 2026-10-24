@@ -14,6 +14,7 @@ import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
 import io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformation;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
