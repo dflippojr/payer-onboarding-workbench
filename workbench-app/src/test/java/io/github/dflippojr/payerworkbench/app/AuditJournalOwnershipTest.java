@@ -201,11 +201,14 @@ class AuditJournalOwnershipTest {
         Files.writeString(busy.resolveSibling("other"), "not ours");
         Path found = Files.createDirectory(checkout.resolve("found"));
 
-        assertEquals("inside_checkout", assertThrows(IOException.class, () -> AuditJournal.recheckRealPath(made,
-                Set.of(AuditJournal.ownershipKey(made), AuditJournal.ownershipKey(made.getParent())))).getMessage());
+        Set<Object> madeKeys = Set.of(AuditJournal.ownershipKey(made), AuditJournal.ownershipKey(made.getParent()));
+        Set<Object> busyKeys = Set.of(AuditJournal.ownershipKey(busy), AuditJournal.ownershipKey(busy.getParent()));
+
+        assertEquals("inside_checkout", assertThrows(IOException.class,
+                () -> AuditJournal.recheckRealPath(made, madeKeys)).getMessage());
         assertFalse(Files.exists(checkout.resolve("made")));
-        assertEquals("inside_checkout", assertThrows(IOException.class, () -> AuditJournal.recheckRealPath(busy,
-                Set.of(AuditJournal.ownershipKey(busy), AuditJournal.ownershipKey(busy.getParent())))).getMessage());
+        assertEquals("inside_checkout", assertThrows(IOException.class,
+                () -> AuditJournal.recheckRealPath(busy, busyKeys)).getMessage());
         assertFalse(Files.exists(busy));
         assertTrue(Files.exists(busy.resolveSibling("other")));
         assertEquals("inside_checkout", assertThrows(IOException.class,
@@ -225,13 +228,14 @@ class AuditJournalOwnershipTest {
         Path parent = scratch.resolve("parent");
 
         // Both directories are made outside any checkout; the race then moves them in behind a link.
-        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(
-                parent.resolve("j1").toString(), (stage, dir) -> {
-                    if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
-                        Files.move(parent, checkout.resolve("parent"));
-                        Files.createSymbolicLink(parent, checkout.resolve("parent"));
-                    }
-                }));
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.move(parent, checkout.resolve("parent"));
+                Files.createSymbolicLink(parent, checkout.resolve("parent"));
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
         assertEquals("inside_checkout", refused.getMessage());
         try (var left = Files.list(checkout)) {
             assertEquals(List.of(checkout.resolve("pom.xml")), left.toList());
@@ -270,13 +274,14 @@ class AuditJournalOwnershipTest {
         Path parent = scratch.resolve("parent");
 
         // The directories this opener made move away; empty look-alikes in a checkout take their place.
-        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(
-                parent.resolve("j1").toString(), (stage, dir) -> {
-                    if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
-                        Files.move(parent, tmp.resolve("moved-away"));
-                        Files.createSymbolicLink(parent, checkout.resolve("parent"));
-                    }
-                }));
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.move(parent, tmp.resolve("moved-away"));
+                Files.createSymbolicLink(parent, checkout.resolve("parent"));
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
         assertEquals("inside_checkout", refused.getMessage());
         assertTrue(Files.isDirectory(theirs));
     }
