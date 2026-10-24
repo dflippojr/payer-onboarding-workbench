@@ -302,6 +302,8 @@ class CustomEndpointTest {
         assertEquals("failed", mapper.readTree(response.body()).path("steps").get(2).path("details").path("status").asText());
         assertFalse(response.body().contains(planted));
         assertFalse(output.getAll().contains(planted));
+        // The key never parsed, so no token request went out and the payer did not answer.
+        assertTrue(response.body().contains("failed with no payer response to diagnose"), response::body);
     }
 
     @Test
@@ -447,6 +449,8 @@ class CustomEndpointTest {
         assertEquals("The payer advertises a service id of 5000 characters for order-sign, longer than the 1024 "
                 + "the workbench puts in a URL", discovery.summary());
         assertEquals("skipped", run.steps().get(2).details().get("status"));
+        assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals(OnboardingRunner.STEP_FAILED_CHECK)
+                && f.title().equals("Discovery failed after the payer answered")), run.findings()::toString);
     }
 
     @Test
@@ -876,6 +880,29 @@ class CustomEndpointTest {
                 .orElseThrow();
         assertEquals(io.github.dflippojr.payerworkbench.core.Severity.FAIL, finding.severity());
         assertTrue(finding.title().startsWith(named + " "), finding::title);
+        assertEquals("skipped", run.steps().get(2).details().get("status"));
+    }
+
+    /** A service object the client library cannot read fails Discovery without saying the payer never answered. */
+    @Test
+    void aServiceWithAMistypedPrefetchFailsDiscoveryAfterThePayerAnswered() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/typed/cds-services", exchange -> respond(exchange,
+                "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\",\"prefetch\":\"x\"}]}"));
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/typed",
+                AuthType.NONE, null, null, null));
+
+        StepResult discovery = run.steps().get(1);
+        assertFalse(discovery.ok());
+        assertEquals("The client library could not read the payer's discovery document: a service's hook, id, "
+                + "title or description is not a string, or its prefetch is not an object of query strings",
+                discovery.summary());
+        var failed = run.findings().stream().filter(f -> f.checkId().equals(OnboardingRunner.STEP_FAILED_CHECK))
+                .findFirst().orElseThrow();
+        assertEquals("Discovery failed after the payer answered", failed.title());
         assertEquals("skipped", run.steps().get(2).details().get("status"));
     }
 
