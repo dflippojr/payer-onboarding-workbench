@@ -18,7 +18,8 @@ import java.util.Set;
  * {@code indicator}, {@code source.label}) and a valid {@code indicator}
  * ({@code info}, {@code warning} or {@code critical}). A card with suggestions also needs a
  * {@code selectionBehavior} of {@code at-most-one} or {@code any} (CDS Hooks 2.0 Card; HL7 tools invariant
- * {@code cds-resp-6}). {@code systemActions}, when present, must be a list of objects. Authentication and
+ * {@code cds-resp-6}). {@code systemActions}, and a card's {@code suggestions} and each suggestion's
+ * {@code actions}, when present, must be lists; each system action must be an object. Authentication and
  * throttling errors that dedicated checks explain are left to those checks.
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
@@ -132,6 +133,17 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         } else if (!source.path("label").isTextual() || source.path("label").asText().isBlank()) {
             problems.add(path + ".source.label is missing");
         }
+        JsonNode suggestions = card.path("suggestions");
+        if (isPresent(suggestions) && !suggestions.isArray()) {
+            problems.add(path + ".suggestions is not an array");
+        } else if (suggestions.isArray()) {
+            for (int s = 0; s < suggestions.size(); s++) {
+                JsonNode actions = suggestions.get(s).path("actions");
+                if (isPresent(actions) && !actions.isArray()) {
+                    problems.add(path + ".suggestions[" + s + "].actions is not an array");
+                }
+            }
+        }
         // A JSON null is an absent value: the CRD reference server writes every unset field as null.
         JsonNode behavior = card.path("selectionBehavior");
         boolean absent = behavior.isMissingNode() || behavior.isNull();
@@ -140,6 +152,11 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         } else if (absent && card.path("suggestions").isArray() && !card.path("suggestions").isEmpty()) {
             problems.add(path + ".selectionBehavior is missing (required when the card has suggestions)");
         }
+    }
+
+    /** False for a missing node or a JSON null, which CDS Hooks reads as an absent value. */
+    private static boolean isPresent(JsonNode node) {
+        return !node.isMissingNode() && !node.isNull();
     }
 
     private static Finding fail(String label, String problems, HttpExchange exchange) {
