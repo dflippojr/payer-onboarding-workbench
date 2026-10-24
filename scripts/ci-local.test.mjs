@@ -230,23 +230,25 @@ test('the gate job always runs and needs every other job', () => {
   assert.deepEqual([...workflow.gate.needs].sort(), Object.keys(workflow).filter(id => id !== 'gate').sort());
 });
 
-test('a failure skips later steps but still runs always steps, and is reported', () => {
+test('a failure skips later steps but still runs always steps, and is reported', async () => {
   const ran = [];
-  const failed = runSteps([
+  const { failed, exitCode } = await runSteps([
     { name: 'one', run: 'a' }, { name: 'two', run: 'b' }, { name: 'three', run: 'c' },
     { name: 'stop', run: 'd', always: true }, { name: 'four', run: 'e' },
   ], run => { ran.push(run); return run === 'b' ? 2 : 0; }, () => {});
   assert.equal(failed, 'two');
+  assert.equal(exitCode, 1, 'a failed run exits non-zero');
   assert.deepEqual(ran, ['a', 'b', 'd']);
 });
 
-test('a failing always step after an earlier failure keeps the first failure', () => {
-  const failed = runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 1, () => {});
+test('a failing always step after an earlier failure keeps the first failure', async () => {
+  const { failed } = await runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 1, () => {});
   assert.equal(failed, 'a');
 });
 
-test('every step passing reports no failure', () => {
-  assert.equal(runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 0, () => {}), null);
+test('every step passing reports no failure', async () => {
+  assert.deepEqual(await runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 0, () => {}),
+    { failed: null, exitCode: 0 });
 });
 
 // Ctrl+C reaches every process in the foreground group, so the runner and the step it is
