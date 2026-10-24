@@ -45,9 +45,9 @@ public final class CoverageInformationCheck implements DiagnosticCheck {
         String prefix = serviceId + ": ";
         collectActions(json.path("systemActions"), prefix + "systemActions", results);
         JsonNode cards = json.path("cards");
-        for (int c = 0; c < cards.size(); c++) {
+        for (int c = 0; cards.isArray() && c < cards.size(); c++) {
             JsonNode suggestions = cards.get(c).path("suggestions");
-            for (int s = 0; s < suggestions.size(); s++) {
+            for (int s = 0; suggestions.isArray() && s < suggestions.size(); s++) {
                 collectActions(suggestions.get(s).path("actions"),
                         prefix + "cards[" + c + "].suggestions[" + s + "].actions", results);
             }
@@ -79,7 +79,7 @@ public final class CoverageInformationCheck implements DiagnosticCheck {
     }
 
     private static void collectActions(JsonNode actions, String path, List<Result> results) {
-        for (int i = 0; i < actions.size(); i++) {
+        for (int i = 0; actions.isArray() && i < actions.size(); i++) {
             collect(actions.get(i).path("resource"), path + "[" + i + "].resource", "unknown resource", results);
         }
     }
