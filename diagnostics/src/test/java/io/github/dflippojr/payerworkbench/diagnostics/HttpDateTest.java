@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.diagnostics;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
@@ -49,6 +50,18 @@ class HttpDateTest {
         // 31 Dec 2076 is after 1 Oct 2076, the most 50 years after NOW, so the year is 1976. Friday is 1976's weekday.
         assertEquals(Optional.of(Instant.parse("1976-12-31T12:00:00Z")),
                 HttpDate.parse("Friday, 31-Dec-76 12:00:00 GMT", NOW));
+    }
+
+    @Test
+    void rfc850ReadsEveryDayAroundTheFiftyYearEdgeAsTheRfcDoes() {
+        // A timestamp up to NOW plus 50 years is read as written; one later than that is read a century back.
+        LocalDateTime edge = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).plusYears(50);
+        for (LocalDateTime day = edge.minusDays(400); day.isBefore(edge.plusDays(400)); day = day.plusDays(1)) {
+            Instant named = day.isAfter(edge)
+                    ? day.minusYears(100).toInstant(ZoneOffset.UTC)
+                    : day.toInstant(ZoneOffset.UTC);
+            assertEquals(Optional.of(named), HttpDate.parse(rfc850(named), NOW), named.toString());
+        }
     }
 
     @ParameterizedTest
