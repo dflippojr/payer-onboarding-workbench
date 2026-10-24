@@ -279,13 +279,15 @@ to rolling JSON-lines segments there. Stdout logging continues unchanged as the 
 |---|---|---|
 | `workbench.audit.journal-dir` | unset (journal off) | Absolute directory outside any source checkout |
 | `workbench.audit.retention` | `30d` | Closed segments whose newest event is older than this are deleted; must be positive |
-| `workbench.audit.segment-bytes` | `10485760` (10 MiB) | A segment is closed before it would pass this size; must be positive |
+| `workbench.audit.segment-bytes` | `10485760` (10 MiB) | A segment is closed before it would pass this size; must be positive and at most `1073741824` (1 GiB) |
 | `workbench.audit.total-bytes` | `104857600` (100 MiB) | When all segments exceed this, the oldest closed ones are deleted first, so the size cap can shorten the 30 days; must be positive |
 | `workbench.audit.operator-label` | unset | Optional `[A-Za-z0-9._-]` label written to the manifest to name the deployment |
 
 A zero or negative `retention`, `segment-bytes` or `total-bytes` (a typo such as `-30d` or `0d`)
 never turns retention into a full wipe: the journal is left **unavailable**, exactly like a rejected
-location below, and no segment or the manifest is read, changed or deleted.
+location below, and no segment or the manifest is read, changed or deleted. A `segment-bytes` above
+1 GiB is refused the same way. A leftover segment of any size (even 2 GiB or more) is sealed by
+streaming it, so it never stops the application from starting.
 
 - **Location and access.** The directory is created owner-only (mode `0700`, or an ACL for the
   owner on Windows). An existing directory that group/others (or other Windows principals) can access,
