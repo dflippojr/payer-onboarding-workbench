@@ -324,11 +324,31 @@ class AuditJournalTest {
                 NOW).append(event(NOW, "at-cap"));
     }
 
+    /**
+     * Skips unless the temp store honours sparse files: a probe with a 256 MiB hole must not use up the hole.
+     * The store must also have room for {@code size} twice, so a store that fills holes anyway cannot be filled.
+     */
+    private void assumeSparseFiles(long size) throws IOException {
+        var store = Files.getFileStore(tmp);
+        org.junit.jupiter.api.Assumptions.assumeTrue(store.getUsableSpace() > 2 * size, "room for a non-sparse copy");
+        long hole = 256L * 1024 * 1024;
+        Path probe = tmp.resolve("sparse-probe");
+        long before = store.getUsableSpace();
+        try (var channel = java.nio.channels.FileChannel.open(probe, java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.SPARSE)) {
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] {1}), hole);
+            channel.force(true);
+        }
+        long used = before - store.getUsableSpace();
+        Files.delete(probe);
+        org.junit.jupiter.api.Assumptions.assumeTrue(used < hole / 2,
+                "sparse files unsupported: a " + hole + "-byte hole used " + used + " bytes");
+    }
+
     @Test
     void leftoverSegmentOfTwoGiBOrMoreIsSealedWithoutAnError() throws Exception {
         long size = 2_200_000_000L;
-        org.junit.jupiter.api.Assumptions.assumeTrue(Files.getFileStore(tmp).getUsableSpace() > 2 * size,
-                "room for the segment even where sparse files are unsupported");
+        assumeSparseFiles(size);
         Path dir = tmp.resolve("journal");
         open(dir, DEFAULT, NOW).append(event(NOW, "before"));
         resources.removeLast().close();
@@ -359,8 +379,7 @@ class AuditJournalTest {
     @Test
     void manifestOfTwoGiBOrMoreIsUnreadableWithoutAnError() throws Exception {
         long size = 2_200_000_000L;
-        org.junit.jupiter.api.Assumptions.assumeTrue(Files.getFileStore(tmp).getUsableSpace() > 2 * size,
-                "room for the manifest even where sparse files are unsupported");
+        assumeSparseFiles(size);
         Path dir = tmp.resolve("journal");
         open(dir, DEFAULT, NOW).append(event(NOW, "before"));
         resources.removeLast().close();
