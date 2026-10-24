@@ -10,6 +10,7 @@ import java.util.Base64;
 import net.jqwik.api.Arbitraries;
 import net.jqwik.api.Arbitrary;
 import net.jqwik.api.Combinators;
+import net.jqwik.api.Example;
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
@@ -31,11 +32,18 @@ class MalformedEncodingPropertyTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final HttpClient HTTP = HttpClient.newHttpClient();
 
+    /**
+     * Text with one malformed escape. A truncated escape ({@code %}, {@code %1}, {@code %4}) is only malformed at
+     * the end of the text, so it is generated there; anywhere else the next characters could complete it.
+     */
     @Provide
     Arbitrary<String> malformedEncoding() {
         Arbitrary<String> safe = Arbitraries.strings().withChars("abcXYZ019-_.~").ofMaxLength(6);
-        Arbitrary<String> badEscape = Arbitraries.of("%", "%z", "%1", "%zz", "%G0", "%0g", "%%41", "%-1", "%+1", "% 1", "%4");
-        return Combinators.combine(safe, badEscape, safe).as((before, escape, after) -> before + escape + after);
+        Arbitrary<String> badEscape = Arbitraries.of("%z", "%zz", "%G0", "%0g", "%%41", "%-1", "%+1", "% 1");
+        Arbitrary<String> truncated = Arbitraries.of("%", "%1", "%4");
+        Arbitrary<String> inside = Combinators.combine(safe, badEscape, safe).as((before, escape, after) -> before + escape + after);
+        Arbitrary<String> atEnd = Combinators.combine(safe, truncated).as((before, escape) -> before + escape);
+        return Arbitraries.oneOf(inside, atEnd);
     }
 
     @Property(tries = 30)
@@ -73,6 +81,15 @@ class MalformedEncodingPropertyTest {
     void malformedQueryParameterIsInvalidRequest(@ForAll("malformedEncoding") String encoded) {
         MockPayer.HttpError error = assertThrows(MockPayer.HttpError.class,
                 () -> MockPayer.Request.formParameters("delayMs=" + encoded));
+
+        assertEquals(400, error.status());
+    }
+
+    /** URLDecoder decodes {@code %+1} as 0x01, so only the RFC 3986 check rejects it: pinned here, not left to chance. */
+    @Example
+    void signedHexEscapeIsRejectedLikeAnyOtherMalformedEscape() {
+        MockPayer.HttpError error = assertThrows(MockPayer.HttpError.class,
+                () -> MockPayer.Request.formParameters("delayMs=%+1"));
 
         assertEquals(400, error.status());
     }
