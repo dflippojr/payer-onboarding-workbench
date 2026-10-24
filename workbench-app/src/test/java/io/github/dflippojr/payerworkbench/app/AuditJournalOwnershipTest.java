@@ -220,7 +220,7 @@ class AuditJournalOwnershipTest {
     }
 
     @Test
-    void ancestorSwappedIntoACheckoutDuringCreationIsRefusedAndLeavesNoDirectories() throws Exception {
+    void ancestorSwappedIntoACheckoutDuringCreationIsRefusedAndCleanupNeverReachesIntoIt() throws Exception {
         Path checkout = Files.createDirectories(tmp.resolve("raced"));
         Files.writeString(checkout.resolve("pom.xml"), "<project/>");
         Path scratch = Files.createDirectory(tmp.resolve("scratch-race"));
@@ -237,9 +237,33 @@ class AuditJournalOwnershipTest {
         String journal = parent.resolve("j1").toString();
         IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
         assertEquals("inside_checkout", refused.getMessage());
+        // Cleanup removes only what is still where it was made, so every platform leaves the moved pair as is.
         try (var left = Files.list(checkout)) {
-            assertEquals(List.of(checkout.resolve("pom.xml")), left.toList());
+            assertEquals(List.of(checkout.resolve("parent"), checkout.resolve("pom.xml")), left.sorted().toList());
         }
+        assertTrue(Files.isDirectory(checkout.resolve("parent/j1")));
+    }
+
+    @Test
+    void levelSwappedForALinkRightAfterItIsMadeCannotGetACheckoutDirectoryRemoved() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("swap-checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path theirs = Files.createDirectory(checkout.resolve("parent"));
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-swap"));
+        link(tmp.resolve("probe-swap"), scratch);
+        Path parent = scratch.resolve("parent");
+
+        // Right after parent is made, it becomes a link to the checkout's own empty directory of that name.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.CREATED && dir.getFileName().toString().equals("parent")) {
+                Files.delete(parent);
+                Files.createSymbolicLink(parent, theirs);
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertTrue(Files.isDirectory(theirs));
     }
 
     @Test

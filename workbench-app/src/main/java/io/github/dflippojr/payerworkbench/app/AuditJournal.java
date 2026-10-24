@@ -190,10 +190,13 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
-    /** Runs at each {@link Stage} of {@link #prepareDirectory}; replaceable so a test can swap a link there. */
+    /**
+     * Runs at each {@link Stage} of {@link #prepareDirectory}, and at {@code CREATED} once per directory it
+     * makes; replaceable so a test can swap a link there.
+     */
     @FunctionalInterface
     interface Interleave {
-        enum Stage { BEFORE_CREATE, AFTER_CREATE }
+        enum Stage { BEFORE_CREATE, CREATED, AFTER_CREATE }
 
         void at(Stage stage, Path dir) throws IOException;
     }
@@ -262,6 +265,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                     // made by someone else since the walk above; not ours to remove
                     continue;
                 }
+                interleave.at(Interleave.Stage.CREATED, level);
                 made.add(ownershipKey(level));
             }
             if (!posix) {
