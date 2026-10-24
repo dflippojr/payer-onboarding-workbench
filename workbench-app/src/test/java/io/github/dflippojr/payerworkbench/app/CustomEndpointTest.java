@@ -842,6 +842,43 @@ class CustomEndpointTest {
         return statuses;
     }
 
+    /**
+     * #214: a discovery document whose services list holds entries that are not objects fails
+     * Discovery in plain language, with a discovery.services finding that names each such entry,
+     * and no raw Java exception reaches a step, finding or report.
+     */
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "{\"services\":[null,{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\",\"prefetch\":{}}]} | services[0]",
+            "{\"services\":[1,\"x\",{}]} | services[0], services[1]"})
+    void discoveryEntriesThatAreNotObjectsAreNamedWithoutAJavaException(String document, String named)
+            throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/odd/cds-services", exchange -> respond(exchange, document));
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/odd",
+                AuthType.NONE, null, null, null));
+
+        StepResult discovery = run.steps().get(1);
+        assertFalse(discovery.ok());
+        assertEquals("The payer's discovery document lists services that are not CDS service objects; "
+                + "see the discovery.services finding", discovery.summary());
+        for (StepResult step : run.steps()) {
+            assertFalse(step.summary().contains("Exception"), step::summary);
+        }
+        String report = mapper.writeValueAsString(run.findings()) + ReportRenderer.markdown(
+                RunReport.of(run, null, null, java.time.Instant.now(), "test"));
+        assertFalse(report.contains("Exception"), report);
+        assertFalse(report.contains("no payer response"), report);
+        var finding = run.findings().stream().filter(f -> f.checkId().equals("discovery.services")).findFirst()
+                .orElseThrow();
+        assertEquals(io.github.dflippojr.payerworkbench.core.Severity.FAIL, finding.severity());
+        assertTrue(finding.title().startsWith(named + " "), finding::title);
+        assertEquals("skipped", run.steps().get(2).details().get("status"));
+    }
+
     /** A payer-advertised service id that is not URL-safe fails at discovery, with a finding that names it. */
     @Test
     void unusableServiceIdFailsAtDiscoveryWithAFinding() throws Exception {
