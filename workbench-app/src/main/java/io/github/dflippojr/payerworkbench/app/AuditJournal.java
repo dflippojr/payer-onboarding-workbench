@@ -190,11 +190,14 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         if (Files.isSymbolicLink(dir)) {
             throw new UnsafeJournalException("path_is_link");
         }
-        for (Path p = dir; p != null; p = p.getParent()) {
-            if (Files.exists(p.resolve(".git")) || Files.exists(p.resolve("pom.xml"))) {
-                throw new UnsafeJournalException("inside_checkout");
-            }
+        rejectCheckout(dir);
+        // A symlinked ancestor can land a lexically clean path inside a checkout, so judge the real path too.
+        Path existing = dir;
+        while (!Files.exists(existing)) {
+            existing = existing.getParent();
         }
+        rejectCheckout(existing.toRealPath());
+        boolean created = !Files.exists(dir);
         boolean posix = Files.getFileStore(dir.getRoot()).supportsFileAttributeView("posix");
         if (Files.exists(dir)) {
             if (!Files.isDirectory(dir)) {
@@ -208,10 +211,27 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             Files.createDirectories(dir);
             restrictAcl(dir);
         }
+        try {
+            // An ancestor swapped for a link while the directory was created is caught here.
+            rejectCheckout(dir.toRealPath());
+        } catch (UnsafeJournalException e) {
+            if (created) {
+                Files.deleteIfExists(dir);
+            }
+            throw e;
+        }
         if (!ownerOnly(dir, posix)) {
             throw new UnsafeJournalException("directory_not_owner_only");
         }
         return dir;
+    }
+
+    private static void rejectCheckout(Path dir) throws UnsafeJournalException {
+        for (Path p = dir; p != null; p = p.getParent()) {
+            if (Files.exists(p.resolve(".git")) || Files.exists(p.resolve("pom.xml"))) {
+                throw new UnsafeJournalException("inside_checkout");
+            }
+        }
     }
 
     private static void restrictAcl(Path dir) throws IOException {
