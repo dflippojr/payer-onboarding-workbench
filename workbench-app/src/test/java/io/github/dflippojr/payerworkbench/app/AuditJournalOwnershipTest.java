@@ -121,6 +121,75 @@ class AuditJournalOwnershipTest {
         }
     }
 
+    private Path link(Path link, Path target) throws IOException {
+        try {
+            return Files.createSymbolicLink(link, target);
+        } catch (IOException | UnsupportedOperationException e) {
+            assumeTrue(false, "symbolic links unavailable");
+            return link;
+        }
+    }
+
+    private static String verdict(Path dir) {
+        try {
+            AuditJournal.prepareDirectory(dir.toString());
+            return "accepted";
+        } catch (IOException e) {
+            return e.getMessage();
+        }
+    }
+
+    @Test
+    void symlinkedParentIntoACheckoutIsRefusedAndLeavesNoFiles() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path audit = Files.createDirectories(checkout.resolve(".tmp/audit"));
+        Path alias = link(Files.createDirectory(tmp.resolve("scratch")).resolve("alias"), audit);
+
+        IOException refused = assertThrows(IOException.class, () -> open(alias.resolve("j1")));
+        assertEquals("inside_checkout", refused.getMessage());
+        try (var left = Files.list(audit)) {
+            assertEquals(List.of(), left.toList());
+        }
+    }
+
+    @Test
+    void symlinkedParentOutsideAnyCheckoutIsAccepted() throws Exception {
+        Path real = Files.createDirectory(tmp.resolve("outside"));
+        Path alias = link(tmp.resolve("outside-alias"), real);
+        try (AuditJournal journal = open(alias.resolve("j1"))) {
+            journal.append(event("through-alias"));
+        }
+        assertTrue(Files.exists(real.resolve("j1").resolve(AuditJournal.MANIFEST)));
+    }
+
+    /** Class-level check: the checkout guard judges where a path lands, so no alias changes its verdict. */
+    @Test
+    void checkoutVerdictIsTheSameThroughEveryAlias() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("repo"));
+        Files.createDirectory(checkout.resolve(".git"));
+        Path deep = Files.createDirectories(checkout.resolve("a/b"));
+        Path outside = Files.createDirectory(tmp.resolve("elsewhere"));
+        Path aliases = Files.createDirectory(tmp.resolve("aliases"));
+        Path chained = link(aliases.resolve("chain"), link(aliases.resolve("to-deep"), deep));
+        List<Path[]> shapes = List.of(
+                new Path[] {checkout, link(aliases.resolve("to-root"), checkout)},
+                new Path[] {deep, aliases.resolve("to-deep")},
+                new Path[] {deep, chained},
+                new Path[] {deep.resolve("c"), link(aliases.resolve("to-a"), checkout.resolve("a"))
+                        .resolve("b/c")},
+                new Path[] {outside, link(aliases.resolve("to-outside"), outside)});
+        int n = 0;
+        for (Path[] shape : shapes) {
+            String direct = verdict(shape[0].resolve("direct-" + n));
+            String aliased = verdict(shape[1].resolve("aliased-" + n));
+            assertEquals(direct, aliased, "alias " + shape[1] + " of " + shape[0]);
+            n++;
+        }
+        assertEquals("accepted", verdict(outside.resolve("again")));
+        assertEquals("inside_checkout", verdict(deep.resolve("again")));
+    }
+
     @Test
     void aliasedPathIsRejectedWithoutReleasingTheOwnersLock() throws Exception {
         Path real = Files.createDirectory(tmp.resolve("real"));
