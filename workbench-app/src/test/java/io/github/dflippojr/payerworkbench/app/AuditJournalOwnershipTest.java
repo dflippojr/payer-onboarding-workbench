@@ -192,33 +192,6 @@ class AuditJournalOwnershipTest {
     }
 
     @Test
-    void realPathRecheckRemovesOnlyEmptyDirectoriesThisOpenerMade() throws Exception {
-        Path checkout = Files.createDirectories(tmp.resolve("swapped"));
-        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
-        Path made = Files.createDirectories(checkout.resolve("made/inner")).toRealPath();
-        Path busy = Files.createDirectories(checkout.resolve("busy/inner")).toRealPath();
-        Files.writeString(busy.resolveSibling("other"), "not ours");
-        Path found = Files.createDirectory(checkout.resolve("found"));
-
-        List<Path> madePaths = List.of(made.getParent(), made);
-        List<Path> busyPaths = List.of(busy.getParent(), busy);
-
-        assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(made, madePaths)).getMessage());
-        assertFalse(Files.exists(checkout.resolve("made")));
-        assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(busy, busyPaths)).getMessage());
-        assertFalse(Files.exists(busy));
-        assertTrue(Files.exists(busy.resolveSibling("other")));
-        assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(found, List.of())).getMessage());
-        assertTrue(Files.isDirectory(found));
-        Path clean = Files.createDirectory(tmp.resolve("clean"));
-        assertEquals(clean.toRealPath(), AuditJournal.recheckRealPath(clean, List.of(clean.toRealPath())));
-        assertTrue(Files.isDirectory(clean));
-    }
-
-    @Test
     void ancestorSwappedIntoACheckoutDuringCreationIsRefusedAndCleanupNeverReachesIntoIt() throws Exception {
         Path checkout = Files.createDirectories(tmp.resolve("raced"));
         Files.writeString(checkout.resolve("pom.xml"), "<project/>");
@@ -236,7 +209,7 @@ class AuditJournalOwnershipTest {
         String journal = parent.resolve("j1").toString();
         IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
         assertEquals("inside_checkout", refused.getMessage());
-        // Cleanup removes only what is still where it was made, so every platform leaves the moved pair as is.
+        // A refusal deletes nothing, so every platform leaves the moved pair where the mover put it.
         try (var left = Files.list(checkout)) {
             assertEquals(List.of(checkout.resolve("parent"), checkout.resolve("pom.xml")), left.sorted().toList());
         }
@@ -323,7 +296,6 @@ class AuditJournalOwnershipTest {
         String journal = parent.resolve("j1").toString();
         IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
         assertEquals("inside_checkout", refused.getMessage());
-        // Java cannot remove only-a-directory atomically, so cleanup could delete a file swapped in; there is none.
         assertTrue(Files.isDirectory(parent.resolve("j1")));
     }
 

@@ -16,7 +16,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -240,8 +239,6 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         Path rest = existing.relativize(dir);
         Path target = base.resolve(rest);
         boolean posix = Files.getFileStore(base).supportsFileAttributeView("posix");
-        // Paths this opener made, outermost first; built on the real base, so each is its own real path.
-        List<Path> made = new ArrayList<>();
         if (Files.exists(target)) {
             if (!Files.isDirectory(target)) {
                 throw new UnsafeJournalException("not_a_directory");
@@ -262,10 +259,9 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                     if (leaf) {
                         throw e;
                     }
-                    // made by someone else since the walk above; not ours to remove
+                    // made by someone else since the walk above
                     continue;
                 }
-                made.add(level);
                 interleave.at(Interleave.Stage.CREATED, level);
             }
             if (!posix) {
@@ -273,46 +269,15 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             }
         }
         interleave.at(Interleave.Stage.AFTER_CREATE, target);
-        // An ancestor swapped for a link while the directory was created is caught here.
-        Path real = recheckRealPath(target, made);
+        // An ancestor swapped for a link while the directory was created is caught here. A refusal deletes
+        // nothing: Java has no portable remove-only-a-directory call, so cleanup could delete a file swapped in
+        // at a path made here. Only a race is refused at this point, and it leaves at most empty directories.
+        Path real = target.toRealPath();
+        rejectCheckout(real);
         if (!ownerOnly(real, posix)) {
             throw new UnsafeJournalException("directory_not_owner_only");
         }
         return real;
-    }
-
-    /**
-     * Resolves {@code dir} once and refuses it if that real path is inside a checkout, first removing the
-     * directories this opener {@code made} that are still where it made them.
-     */
-    static Path recheckRealPath(Path dir, List<Path> made) throws IOException {
-        Path real = dir.toRealPath();
-        try {
-            rejectCheckout(real);
-        } catch (UnsafeJournalException e) {
-            removeMade(made);
-            throw e;
-        }
-        return real;
-    }
-
-    /**
-     * Removes the {@code made} paths innermost first, while each is still a directory that resolves to itself
-     * and is empty. Judged by path, not file key (Windows has none): a directory moved elsewhere, or a link or
-     * file now in its place, is left alone, so cleanup never acts through a link and behaves the same on every
-     * platform.
-     */
-    private static void removeMade(List<Path> made) {
-        try {
-            for (Path p : made.reversed()) {
-                if (!Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS) || !p.toRealPath().equals(p)) {
-                    return;
-                }
-                Files.delete(p);
-            }
-        } catch (IOException notEmptyOrGone) {
-            // something else is in it now; leave it and everything above it
-        }
     }
 
     private static void rejectCheckout(Path dir) throws UnsafeJournalException {
