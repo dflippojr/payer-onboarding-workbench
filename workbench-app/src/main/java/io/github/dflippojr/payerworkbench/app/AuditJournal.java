@@ -35,7 +35,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -240,8 +239,8 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         Path rest = existing.relativize(dir);
         Path target = base.resolve(rest);
         boolean posix = Files.getFileStore(base).supportsFileAttributeView("posix");
-        // Identities of the directories this opener made, so a refusal removes those and nothing else.
-        Set<Object> made = new HashSet<>();
+        // Paths this opener made, outermost first; built on the real base, so each is its own real path.
+        List<Path> made = new ArrayList<>();
         if (Files.exists(target)) {
             if (!Files.isDirectory(target)) {
                 throw new UnsafeJournalException("not_a_directory");
@@ -265,8 +264,8 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                     // made by someone else since the walk above; not ours to remove
                     continue;
                 }
+                made.add(level);
                 interleave.at(Interleave.Stage.CREATED, level);
-                made.add(ownershipKey(level));
             }
             if (!posix) {
                 restrictAcl(target);
@@ -283,23 +282,30 @@ final class AuditJournal implements AuditSink, AutoCloseable {
 
     /**
      * Resolves {@code dir} once and refuses it if that real path is inside a checkout, first removing the
-     * directories on it that this opener {@code made}.
+     * directories this opener {@code made} that are still where it made them.
      */
-    static Path recheckRealPath(Path dir, Set<Object> made) throws IOException {
+    static Path recheckRealPath(Path dir, List<Path> made) throws IOException {
         Path real = dir.toRealPath();
         try {
             rejectCheckout(real);
         } catch (UnsafeJournalException e) {
-            removeMade(real, made);
+            removeMade(made);
             throw e;
         }
         return real;
     }
 
-    /** Removes {@code real} and then each parent, while it is one this opener made and is still empty. */
-    private static void removeMade(Path real, Set<Object> made) {
+    /**
+     * Removes the {@code made} paths innermost first, while each still resolves to itself and is empty. Judged
+     * by path, not file key (Windows has none): a directory moved elsewhere, or a link now in its place, is
+     * left alone, so cleanup never acts through a link and behaves the same on every platform.
+     */
+    private static void removeMade(List<Path> made) {
         try {
-            for (Path p = real; p != null && made.contains(ownershipKey(p)); p = p.getParent()) {
+            for (Path p : made.reversed()) {
+                if (!p.toRealPath().equals(p)) {
+                    return;
+                }
                 Files.delete(p);
             }
         } catch (IOException notEmptyOrGone) {

@@ -17,7 +17,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -196,26 +195,26 @@ class AuditJournalOwnershipTest {
     void realPathRecheckRemovesOnlyEmptyDirectoriesThisOpenerMade() throws Exception {
         Path checkout = Files.createDirectories(tmp.resolve("swapped"));
         Files.writeString(checkout.resolve("pom.xml"), "<project/>");
-        Path made = Files.createDirectories(checkout.resolve("made/inner"));
-        Path busy = Files.createDirectories(checkout.resolve("busy/inner"));
+        Path made = Files.createDirectories(checkout.resolve("made/inner")).toRealPath();
+        Path busy = Files.createDirectories(checkout.resolve("busy/inner")).toRealPath();
         Files.writeString(busy.resolveSibling("other"), "not ours");
         Path found = Files.createDirectory(checkout.resolve("found"));
 
-        Set<Object> madeKeys = Set.of(AuditJournal.ownershipKey(made), AuditJournal.ownershipKey(made.getParent()));
-        Set<Object> busyKeys = Set.of(AuditJournal.ownershipKey(busy), AuditJournal.ownershipKey(busy.getParent()));
+        List<Path> madePaths = List.of(made.getParent(), made);
+        List<Path> busyPaths = List.of(busy.getParent(), busy);
 
         assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(made, madeKeys)).getMessage());
+                () -> AuditJournal.recheckRealPath(made, madePaths)).getMessage());
         assertFalse(Files.exists(checkout.resolve("made")));
         assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(busy, busyKeys)).getMessage());
+                () -> AuditJournal.recheckRealPath(busy, busyPaths)).getMessage());
         assertFalse(Files.exists(busy));
         assertTrue(Files.exists(busy.resolveSibling("other")));
         assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(found, Set.of())).getMessage());
+                () -> AuditJournal.recheckRealPath(found, List.of())).getMessage());
         assertTrue(Files.isDirectory(found));
         Path clean = Files.createDirectory(tmp.resolve("clean"));
-        assertEquals(clean.toRealPath(), AuditJournal.recheckRealPath(clean, Set.of(AuditJournal.ownershipKey(clean))));
+        assertEquals(clean.toRealPath(), AuditJournal.recheckRealPath(clean, List.of(clean.toRealPath())));
         assertTrue(Files.isDirectory(clean));
     }
 
