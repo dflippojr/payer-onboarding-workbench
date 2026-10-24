@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, copyFileSync, appendFileSync, readFileSync, mkdirSync, chmodSync, truncateSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, copyFileSync, appendFileSync, readFileSync, mkdirSync, chmodSync, truncateSync, openSync, writeSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -223,6 +223,33 @@ test('a segment over the string limit streams: its events print and its sparse p
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout, JSON.stringify(event()) + '\n');
     }
+  } finally { rmSync(dir, { recursive: true }); }
+});
+
+// verify hashes and checks every line of a sealed segment, so a segment over the string limit must stream there too. Each
+// line is about 15 KiB, under the line limit, so every line is an event and the segment holds 40,000 of them.
+test('verify streams a sealed segment over the string limit: a valid one passes and one changed byte fails', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-big-sealed-'));
+  try {
+    const file = 'audit-000001.jsonl';
+    const block = (JSON.stringify({ ...event(), note: 'x'.repeat(15 * 1024) }) + '\n').repeat(1000);
+    const hash = createHash('sha256');
+    for (let i = 0; i < 40; i++) {
+      appendFileSync(join(dir, file), block);
+      hash.update(block);
+    }
+    const sealed = { id: 'audit-000001', file, bytes: 40 * Buffer.byteLength(block), events: 40_000, sha256: hash.digest('hex') };
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, segments: [sealed] }));
+
+    const valid = cli(dir, '--verify');
+    assert.equal(valid.status, 0, valid.stderr);
+    assert.equal(valid.stdout, '{"segment":"audit-000001","status":"ok"}\n');
+
+    const fd = openSync(join(dir, file), 'r+');
+    try { writeSync(fd, 'y', 300_000_000); } finally { closeSync(fd); }
+    const tampered = cli(dir, '--verify');
+    assert.equal(tampered.status, 1);
+    assert.equal(tampered.stdout, '{"segment":"audit-000001","status":"checksum_mismatch"}\n');
   } finally { rmSync(dir, { recursive: true }); }
 });
 
