@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, copyFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, copyFileSync, appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { options, review } from './audit-reader.mjs';
 
@@ -130,4 +131,59 @@ test('verify rejects a manifest that names other files and a non-directory', () 
     assert.equal(cli(dir, '--verify').status, 1);
     assert.equal(cli(join(dir, 'audit-000001.jsonl'), '--verify').status, 1);
   } finally { rmSync(dir, { recursive: true }); }
+});
+
+// The app's own warnings after a lost event: the logger's line for a constant message, not an event.
+const GAP = 'Audit event write failed; audit trail has a gap';
+const JOURNAL_GAP = 'Audit journal unavailable; durable audit trail is not being written';
+const warning = message => '2026-10-23T06:00:00.000-04:00  WARN 1 --- [main] [] i.g.d.payerworkbench.app.AuditLog : ' + message;
+
+test('the app\'s gap warnings are reported on stderr, not counted as malformed lines', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-gap-'));
+  try {
+    const file = join(directory, 'capture.log');
+    writeFileSync(file, [line(event()), warning(GAP), warning(JOURNAL_GAP), line(event('run-two'))].join('\n') + '\n');
+    const result = cli(file);
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, 'Audit gap warnings: 2\n');
+    assert.equal(result.stdout.trim().split('\n').length, 2);
+  } finally { rmSync(directory, { recursive: true }); }
+});
+
+test('a real malformed line still exits nonzero beside a gap warning, without echo', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-gap-'));
+  try {
+    const file = join(directory, 'capture.log');
+    writeFileSync(file, [warning(GAP), 'INFO logger : audit SYNTHETIC_SECRET', line(event())].join('\n') + '\n');
+    const result = cli(file);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, 'Malformed audit lines: 1\nAudit gap warnings: 1\n');
+    assert.ok(!result.stderr.includes('SYNTHETIC_SECRET'));
+  } finally { rmSync(directory, { recursive: true }); }
+});
+
+test('a line with the audit marker is malformed even when its message is a gap warning', async () => {
+  let gaps = 0;
+  assert.equal(await review(['INFO logger : audit ' + GAP], {}, () => assert.fail('no event'), () => gaps++), 1);
+  assert.equal(gaps, 0);
+});
+
+// Class check: a constant message the app logs that mentions an audit must never be read as an event line,
+// so a new warning cannot make the reader report a damaged capture.
+test('every constant audit message in the app and mock payers is read without a malformed count', async () => {
+  const repo = fileURLToPath(new URL('../', import.meta.url));
+  const messages = new Set();
+  for (const module of ['workbench-app', 'mock-payers']) {
+    const root = join(repo, module, 'src/main/java');
+    for (const name of readdirSync(root, { recursive: true }).filter(n => n.endsWith('.java'))) {
+      const source = readFileSync(join(root, name), 'utf8');
+      for (const [, literal] of source.matchAll(/"((?:[^"\\\n]|\\.)*)"/g)) {
+        if (/audit /i.test(literal) && !literal.startsWith('audit {')) messages.add(literal);
+      }
+    }
+  }
+  assert.ok(messages.has(GAP) && messages.has(JOURNAL_GAP), 'the scan finds both known gap warnings');
+  for (const message of messages) {
+    assert.equal(await review([warning(message)], {}, () => assert.fail('a log message is not an event')), 0, message);
+  }
 });

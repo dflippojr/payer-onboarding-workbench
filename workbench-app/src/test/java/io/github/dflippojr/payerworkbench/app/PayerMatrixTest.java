@@ -124,6 +124,13 @@ class PayerMatrixTest {
         }
     }
 
+    /** A token response with no token_type says so, rather than naming the type "null" (#218). */
+    @Test
+    void authenticateStepSaysWhenTheTokenTypeIsMissing() throws Exception {
+        assertEquals("Got an access token with no token_type for client " + CLIENT_ID + " (expires in 300 s; value hidden)",
+                authenticateSummary(run("token-response/token-type-missing")));
+    }
+
     private OnboardingRun run(String rowId) throws Exception {
         PayerMatrix.Row row = rows().filter(r -> r.id().equals(rowId)).findFirst().orElseThrow();
         try (Scenario scenario = new Scenario(row)) {

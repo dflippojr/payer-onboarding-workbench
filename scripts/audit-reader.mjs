@@ -40,12 +40,23 @@ export function options(args) {
   return result;
 }
 
-export async function review(lines, filters, output) {
+// The app's constant warnings after a lost event or journal. They carry no event, so they are counted apart
+// from malformed lines and leave the exit status alone: the capture is complete, and the gap is in the app.
+const GAP_WARNINGS = [
+  'Audit event write failed; audit trail has a gap',
+  'Audit journal unavailable; durable audit trail is not being written',
+];
+
+export async function review(lines, filters, output, onGap = () => {}) {
   let malformed = 0;
   for await (const line of lines) {
-    // A log capture carries the `audit ` marker; a journal segment is bare JSON lines.
-    const marker = line.startsWith('{') ? { index: 0, 0: '' } : /(?:^|\s)audit /.exec(line);
-    if (!marker) continue;
+    // A log capture carries the `audit ` marker at the start of the logged message; a journal segment is bare JSON.
+    const marker = line.startsWith('{') ? { index: 0, 0: '' } : /(?:^|:\s)audit /.exec(line);
+    if (!marker) {
+      // A gap warning is the whole logged message after the logger's separator.
+      if (GAP_WARNINGS.some(warning => line.endsWith(': ' + warning))) onGap();
+      continue;
+    }
     let event;
     let time;
     try {
@@ -137,11 +148,13 @@ async function main() {
     }
     const lines = isDir ? journalLines(filters.file)
       : createInterface({ input: createReadStream(filters.file), crlfDelay: Infinity });
-    const malformed = await review(lines, filters, line => process.stdout.write(line + '\n'));
+    let gaps = 0;
+    const malformed = await review(lines, filters, line => process.stdout.write(line + '\n'), () => gaps++);
     if (malformed) {
       process.stderr.write(`Malformed audit lines: ${malformed}\n`);
       process.exitCode = 1;
     }
+    if (gaps) process.stderr.write(`Audit gap warnings: ${gaps}\n`);
   } catch {
     process.stderr.write('Audit reader failed: check arguments and captured log file or journal directory\n');
     process.exitCode = 1;

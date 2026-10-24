@@ -6,8 +6,6 @@ import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -85,14 +83,7 @@ final class Support {
 
     /** The payer's clock, from the response {@code Date} header. */
     static Optional<Instant> serverDate(HttpExchange exchange) {
-        return header(exchange.responseHeaders(), "Date").flatMap(value -> {
-            try {
-                return Optional.of(ZonedDateTime.parse(value.strip(), DateTimeFormatter.RFC_1123_DATE_TIME)
-                        .toInstant());
-            } catch (Exception e) {
-                return Optional.empty();
-            }
-        });
+        return header(exchange.responseHeaders(), "Date").flatMap(value -> HttpDate.parse(value, Instant.now()));
     }
 
     /** The last exchange sent to the connection's token endpoint, if any. */

@@ -2,7 +2,7 @@
   "description": "Payer-behaviour matrix (#169). Each row is one legal or illegal payer behaviour, run end to end through OnboardingRunner by PayerMatrixTest. The expected verdict and findings come from the cited spec clause, not from what the workbench currently reports. A row the workbench gets wrong today names its issue in knownDefect; the test then requires the mismatch, so fixing the defect fails the row until the marker is removed.",
   "legend": {
     "auth": "The connection's authType. NONE and OAUTH2_CLIENT_CREDENTIALS run against NorthwindPayer, CDS_HOOKS_JWT against FabrikamPayer, OAUTH2_PRIVATE_KEY_JWT against TailspinPayer, each configured with this row's PayerBehaviour.",
-    "behaviour": "PayerBehaviour fields; anything left out keeps the standard behaviour. clockOffsetSeconds moves the payer's clock and its Date header. redirect.to is same-host (a path on the same payer) or other-host (a second loopback server that counts what reaches it).",
+    "behaviour": "PayerBehaviour fields; anything left out keeps the standard behaviour; tokenType OMITTED leaves token_type out of the response. clockOffsetSeconds moves the payer's clock and its Date header. redirect.to is same-host (a path on the same payer) or other-host (a second loopback server that counts what reaches it).",
     "expect.verdict": "RunVerdict status: PASS, PASS_WITH_WARNINGS or FAIL.",
     "expect.findings": "Check id to the most severe finding expected from that check (FAIL > WARN > INFO > PASS), or ABSENT when the check must report nothing.",
     "expect.brokeAt": "The first failed step, when the row expects one.",
@@ -73,6 +73,33 @@
       "spec": "RFC 6749 §5.1",
       "clause": "token_type: REQUIRED. The type of the token issued as described in Section 7.1. Value is case insensitive.",
       "expect": {"verdict": "PASS", "findings": {"auth.token": "PASS"}}
+    },
+    {
+      "id": "token-response/token-type-missing",
+      "dimension": "token-response", "value": "token-type-missing",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenType": "OMITTED"},
+      "spec": "RFC 6749 §5.1; RFC 6749 §7.1",
+      "clause": "token_type: REQUIRED. A response without it leaves the client unable to tell what type the token is. §7.1: The client MUST NOT use an access token if it does not understand the token type. The router SDK sends every token as Bearer, so auth.token warns that the type is missing.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
+    },
+    {
+      "id": "token-response/token-type-dpop",
+      "dimension": "token-response", "value": "token-type-DPoP",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenType": "DPoP"},
+      "spec": "RFC 6749 §7.1; RFC 9449",
+      "clause": "§7.1: The client MUST NOT use an access token if it does not understand the token type. A DPoP-bound token needs a proof on each request, which the router SDK does not send: it sends every token as Bearer. auth.token warns that the type is not Bearer.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
+    },
+    {
+      "id": "token-response/token-type-mac",
+      "dimension": "token-response", "value": "token-type-mac",
+      "auth": "OAUTH2_CLIENT_CREDENTIALS",
+      "behaviour": {"tokenType": "mac"},
+      "spec": "RFC 6749 §7.1",
+      "clause": "§7.1: The client MUST NOT use an access token if it does not understand the token type. A mac token is signed per request, which the router SDK does not do: it sends every token as Bearer. auth.token warns that the type is not Bearer.",
+      "expect": {"verdict": "PASS_WITH_WARNINGS", "findings": {"auth.token": "WARN"}}
     },
     {
       "id": "token-response/expires-in-string",

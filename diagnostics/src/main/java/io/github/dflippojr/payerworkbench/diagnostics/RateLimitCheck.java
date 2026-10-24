@@ -7,11 +7,10 @@ import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.time.Duration;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /** Explains throttled hook calls without retrying them. */
 public final class RateLimitCheck implements DiagnosticCheck {
@@ -55,14 +54,13 @@ public final class RateLimitCheck implements DiagnosticCheck {
                 return "Retry-After exceeds the supported seconds range; confirm the delay with the payer.";
             }
         }
-        try {
-            var until = ZonedDateTime.parse(retry, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
-            return Support.serverDate(exchange)
-                    .map(now -> "Wait at least " + Math.max(0, Duration.between(now, until).getSeconds())
-                            + " seconds (until " + until + ", relative to the payer's Date header).")
-                    .orElse("Wait until " + until + "; no valid payer Date header was supplied.");
-        } catch (DateTimeParseException ignored) {
+        Optional<Instant> until = HttpDate.parse(retry, Instant.now());
+        if (until.isEmpty()) {
             return "No usable Retry-After delay was supplied; confirm the retry window with the payer.";
         }
+        return Support.serverDate(exchange)
+                .map(now -> "Wait at least " + Math.max(0, Duration.between(now, until.get()).getSeconds())
+                        + " seconds (until " + until.get() + ", relative to the payer's Date header).")
+                .orElse("Wait until " + until.get() + "; no valid payer Date header was supplied.");
     }
 }

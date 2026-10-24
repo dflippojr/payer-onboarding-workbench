@@ -6,9 +6,9 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { vendor } from './vendor-into-site.mjs';
 
@@ -252,4 +252,42 @@ test('vendor rejects links in the extracted tree before removing stale target ru
   assert.equal(readFileSync(join(target, 'manifest.json'), 'utf8'), manifest('9c386b11a911'));
   assert.equal(readFileSync(join(target, 'runs', 'stale.json'), 'utf8'), 'keep this run');
   assert.ok(!existsSync(join(target, 'runs', 'private.json')));
+});
+
+// A name that starts with two dots is still a name inside the bundle: "..foo" is a child folder.
+test('vendor refuses a folder inside the bundle whose name starts with ..', () => {
+  const dist = site(PUBLISHED);
+  for (const name of ['sub', '..foo', '...']) {
+    assert.throws(() => vendor(dist, join(dist, name)), /Refusing to vendor into/, name);
+    assert.ok(!existsSync(join(dist, name)), `${name} must not be written`);
+  }
+  const sibling = join(dist, '..', 'sibling-of-bundle');
+  assert.equal(vendor(dist, sibling), 1);
+  assert.equal(readFileSync(join(sibling, 'manifest.json'), 'utf8'), manifest(PUBLISHED));
+});
+
+// Every string of up to `max` characters drawn from `alphabet`, shortest first.
+function everyName(alphabet, max) {
+  const names = [];
+  let level = [''];
+  for (let length = 1; length <= max; length++) {
+    level = level.flatMap(prefix => [...alphabet].map(c => prefix + c));
+    names.push(...level);
+  }
+  return names;
+}
+
+// Property over every name of up to four characters from ".", "a" and "-" (so "...", "..a" and
+// "a.." are all covered): a folder directly inside the bundle is refused and nothing is written
+// there, and a folder directly beside the bundle is accepted.
+test('vendor refuses every child folder of the bundle and accepts every sibling, whatever the name', () => {
+  const dist = site(PUBLISHED);
+  const names = everyName(['.', 'a', '-'], 4).filter(name => name !== '.' && name !== '..');
+  for (const name of names) {
+    assert.throws(() => vendor(dist, join(dist, name)), /Refusing to vendor into/, `child ${name}`);
+  }
+  assert.deepEqual(readdirSync(dist), ['manifest.json']);
+  for (const name of names) {
+    assert.equal(vendor(dist, resolve(dist, '..', name)), 1, `sibling ${name}`);
+  }
 });
