@@ -17,9 +17,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.DisposableBean;
@@ -161,6 +164,7 @@ class AuditJournalOwnershipTest {
             journal.append(event("through-alias"));
         }
         assertTrue(Files.exists(real.resolve("j1").resolve(AuditJournal.MANIFEST)));
+        assertEquals(real.toRealPath().resolve("j1"), AuditJournal.prepareDirectory(alias.resolve("j1").toString()));
     }
 
     @Test
@@ -189,20 +193,61 @@ class AuditJournalOwnershipTest {
     }
 
     @Test
-    void realPathRecheckRemovesOnlyADirectoryThisOpenerCreated() throws Exception {
+    void realPathRecheckRemovesOnlyEmptyDirectoriesThisOpenerMade() throws Exception {
         Path checkout = Files.createDirectories(tmp.resolve("swapped"));
         Files.writeString(checkout.resolve("pom.xml"), "<project/>");
-        Path made = Files.createDirectory(checkout.resolve("made"));
+        Path made = Files.createDirectories(checkout.resolve("made/inner"));
+        Path busy = Files.createDirectories(checkout.resolve("busy/inner"));
+        Files.writeString(busy.resolveSibling("other"), "not ours");
         Path found = Files.createDirectory(checkout.resolve("found"));
 
+        assertEquals("inside_checkout", assertThrows(IOException.class, () -> AuditJournal.recheckRealPath(made,
+                Set.of(AuditJournal.ownershipKey(made), AuditJournal.ownershipKey(made.getParent())))).getMessage());
+        assertFalse(Files.exists(checkout.resolve("made")));
+        assertEquals("inside_checkout", assertThrows(IOException.class, () -> AuditJournal.recheckRealPath(busy,
+                Set.of(AuditJournal.ownershipKey(busy), AuditJournal.ownershipKey(busy.getParent())))).getMessage());
+        assertFalse(Files.exists(busy));
+        assertTrue(Files.exists(busy.resolveSibling("other")));
         assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(made, true)).getMessage());
-        assertFalse(Files.exists(made));
-        assertEquals("inside_checkout", assertThrows(IOException.class,
-                () -> AuditJournal.recheckRealPath(found, false)).getMessage());
+                () -> AuditJournal.recheckRealPath(found, Set.of())).getMessage());
         assertTrue(Files.isDirectory(found));
-        AuditJournal.recheckRealPath(Files.createDirectory(tmp.resolve("clean")), true);
-        assertTrue(Files.isDirectory(tmp.resolve("clean")));
+        Path clean = Files.createDirectory(tmp.resolve("clean"));
+        assertEquals(clean.toRealPath(), AuditJournal.recheckRealPath(clean, Set.of(AuditJournal.ownershipKey(clean))));
+        assertTrue(Files.isDirectory(clean));
+    }
+
+    @Test
+    void ancestorSwappedIntoACheckoutDuringCreationIsRefusedAndLeavesNoDirectories() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("raced"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-race"));
+        link(tmp.resolve("probe"), scratch);
+        Path parent = scratch.resolve("parent");
+
+        // Both directories are made outside any checkout; the race then moves them in behind a link.
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(
+                parent.resolve("j1").toString(), made -> {
+                    Files.move(parent, checkout.resolve("parent"));
+                    Files.createSymbolicLink(parent, checkout.resolve("parent"));
+                }));
+        assertEquals("inside_checkout", refused.getMessage());
+        try (var left = Files.list(checkout)) {
+            assertEquals(List.of(checkout.resolve("pom.xml")), left.toList());
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void missingRootIsRefusedWithAReason() throws Exception {
+        Path absent = null;
+        for (char drive = 'Z'; drive >= 'D' && absent == null; drive--) {
+            Path root = Path.of(drive + ":\\");
+            absent = Files.exists(root) ? null : root;
+        }
+        assumeTrue(absent != null, "every drive letter is in use");
+        String journal = absent.resolve("nodrive").resolve("j1").toString();
+        assertEquals("invalid_path", assertThrows(IOException.class,
+                () -> AuditJournal.prepareDirectory(journal)).getMessage());
     }
 
     /** Class-level check: the checkout guard judges where a path lands, so no alias changes its verdict. */

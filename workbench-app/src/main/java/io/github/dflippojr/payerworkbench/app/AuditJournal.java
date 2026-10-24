@@ -34,6 +34,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -188,7 +189,21 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
+    /** Runs between creating the directory and its real-path recheck; replaceable so a test can swap an ancestor. */
+    @FunctionalInterface
+    interface AfterCreate {
+        void run(Path dir) throws IOException;
+    }
+
     static Path prepareDirectory(String directory) throws IOException {
+        return prepareDirectory(directory, dir -> { });
+    }
+
+    /**
+     * Returns the checked real path. Every later operation uses it, so re-pointing a link on the configured
+     * path after open cannot move writes or retention deletes somewhere the guard never judged.
+     */
+    static Path prepareDirectory(String directory, AfterCreate afterCreate) throws IOException {
         Path dir;
         try {
             dir = Path.of(directory);
@@ -205,11 +220,15 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         rejectCheckout(dir);
         // A symlinked ancestor can land a lexically clean path inside a checkout, so judge the real path too.
         Path existing = dir;
-        while (!Files.exists(existing)) {
+        while (existing != null && !Files.exists(existing)) {
             existing = existing.getParent();
         }
+        if (existing == null) {
+            // The root itself is missing: an absent drive or an unreachable share.
+            throw new UnsafeJournalException("invalid_path");
+        }
         rejectCheckout(existing.toRealPath());
-        boolean created = !Files.exists(dir);
+        int levels = dir.getNameCount() - existing.getNameCount();
         boolean posix = Files.getFileStore(dir.getRoot()).supportsFileAttributeView("posix");
         if (Files.exists(dir)) {
             if (!Files.isDirectory(dir)) {
@@ -223,23 +242,44 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             Files.createDirectories(dir);
             restrictAcl(dir);
         }
+        // Identities of the directories this opener made, so a refusal removes those and nothing else.
+        Set<Object> made = new HashSet<>();
+        Path level = dir;
+        for (int i = 0; i < levels; i++, level = level.getParent()) {
+            made.add(ownershipKey(level));
+        }
+        afterCreate.run(dir);
         // An ancestor swapped for a link while the directory was created is caught here.
-        recheckRealPath(dir, created);
-        if (!ownerOnly(dir, posix)) {
+        Path real = recheckRealPath(dir, made);
+        if (!ownerOnly(real, posix)) {
             throw new UnsafeJournalException("directory_not_owner_only");
         }
-        return dir;
+        return real;
     }
 
-    /** Refuse a directory whose real path is inside a checkout, removing it if this opener created it. */
-    static void recheckRealPath(Path dir, boolean created) throws IOException {
+    /**
+     * Resolves {@code dir} once and refuses it if that real path is inside a checkout, first removing the
+     * directories on it that this opener {@code made}.
+     */
+    static Path recheckRealPath(Path dir, Set<Object> made) throws IOException {
+        Path real = dir.toRealPath();
         try {
-            rejectCheckout(dir.toRealPath());
+            rejectCheckout(real);
         } catch (UnsafeJournalException e) {
-            if (created) {
-                Files.deleteIfExists(dir);
-            }
+            removeMade(real, made);
             throw e;
+        }
+        return real;
+    }
+
+    /** Removes {@code real} and then each parent, while it is one this opener made and is still empty. */
+    private static void removeMade(Path real, Set<Object> made) {
+        try {
+            for (Path p = real; p != null && made.contains(ownershipKey(p)); p = p.getParent()) {
+                Files.delete(p);
+            }
+        } catch (IOException notEmptyOrGone) {
+            // something else is in it now; leave it and everything above it
         }
     }
 
