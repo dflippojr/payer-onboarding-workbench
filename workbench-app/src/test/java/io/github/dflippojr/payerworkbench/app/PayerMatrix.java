@@ -21,6 +21,9 @@ record PayerMatrix(List<String> dimensions, List<Row> rows) {
 
     static final String RESOURCE = "/payer-matrix.json";
 
+    /** The {@code tokenType} a row gives to leave {@code token_type} out of the token response. */
+    static final String TOKEN_TYPE_OMITTED = "OMITTED";
+
     static PayerMatrix load() {
         try (InputStream in = PayerMatrix.class.getResourceAsStream(RESOURCE)) {
             if (in == null) {
@@ -55,7 +58,7 @@ record PayerMatrix(List<String> dimensions, List<Row> rows) {
         PayerBehaviour toPayerBehaviour(String otherHost, String tokenPath) {
             PayerBehaviour b = PayerBehaviour.STANDARD;
             if (accessToken != null) { b = b.withAccessToken(accessToken); }
-            if (tokenType != null) { b = b.withTokenType(tokenType); }
+            if (tokenType != null) { b = b.withTokenType(TOKEN_TYPE_OMITTED.equals(tokenType) ? null : tokenType); }
             if (expiresIn != null) { b = b.withExpiresIn(expiresIn); }
             if (extraTokenFields != null) { b = b.withExtraTokenFields(extraTokenFields); }
             if (tokenContentType != null) { b = b.withTokenContentType(tokenContentType); }
