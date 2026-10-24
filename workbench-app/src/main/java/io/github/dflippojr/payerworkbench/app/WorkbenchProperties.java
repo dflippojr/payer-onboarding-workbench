@@ -135,10 +135,25 @@ public record WorkbenchProperties(
         audit = audit == null ? new Audit(null, null, null, null, null) : audit;
         customEndpoints = customEndpoints == null ? new CustomEndpoints(false) : customEndpoints;
         slowResponseDelay = slowResponseDelay == null ? Duration.ofSeconds(11) : slowResponseDelay;
+        if (slowResponseDelay.isNegative()) {
+            throw new IllegalArgumentException("workbench.slow-response-delay must not be negative");
+        }
         latencyWarn = latencyWarn == null ? Duration.ofSeconds(5) : latencyWarn;
+        if (latencyWarn.isNegative()) {
+            throw new IllegalArgumentException("workbench.latency-warn must not be negative");
+        }
         latencyFail = latencyFail == null ? Duration.ofSeconds(10) : latencyFail;
+        if (latencyFail.isNegative()) {
+            throw new IllegalArgumentException("workbench.latency-fail must not be negative");
+        }
         requestTimeout = requestTimeout == null ? DEFAULT_REQUEST_TIMEOUT : requestTimeout;
+        if (!requestTimeout.isPositive()) {
+            throw new IllegalArgumentException("workbench.request-timeout must be positive");
+        }
         maxRuns = maxRuns == null ? 200 : maxRuns;
+        if (maxRuns <= 0) {
+            throw new IllegalArgumentException("workbench.max-runs must be positive");
+        }
         maxResponseBytes = maxResponseBytes == null ? DEFAULT_MAX_RESPONSE_BYTES : maxResponseBytes;
         if (maxResponseBytes <= 0 || maxResponseBytes > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("workbench.max-response-bytes must be between 1 and " + Integer.MAX_VALUE);
