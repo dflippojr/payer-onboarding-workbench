@@ -503,6 +503,21 @@ class AuditJournalTest {
     }
 
     @Test
+    void manifestBoundsOrderAWholeSecondBeforeItsFractionOfThatSecond() throws Exception {
+        Path dir = tmp.resolve("journal");
+        AuditJournal journal = open(dir, DEFAULT, NOW);
+        journal.append(event(NOW, "whole"));
+        journal.append(event(NOW.plusMillis(500), "fraction"));
+        journal.close();
+        open(dir, DEFAULT, NOW.plusSeconds(10)).close();
+
+        JsonNode segment = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)))
+                .path("segments").get(0);
+        assertEquals("2026-10-08T12:00:00Z", segment.path("firstAt").asText());
+        assertEquals("2026-10-08T12:00:00.500Z", segment.path("lastAt").asText());
+    }
+
+    @Test
     void retentionAlsoRunsHourlyInsideALongRunningProcess() throws Exception {
         Path dir = tmp.resolve("long");
         MutableClock clock = new MutableClock(NOW);
