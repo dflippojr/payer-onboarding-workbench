@@ -18,6 +18,7 @@ import java.util.Base64;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -112,6 +113,33 @@ class NorthwindPayerTest {
 
             assertEquals(400, response.statusCode());
             assertEquals("unsupported_grant_type", MAPPER.readTree(response.body()).path("error").asText());
+        }
+    }
+
+    @Test
+    void malformedPercentEncodingInBasicCredentialsIsInvalidClientNotServerError() throws Exception {
+        try (PayerFixture fixture = PayerFixture.northwind()) {
+            String credentials = Base64.getEncoder().encodeToString("%zz:secret".getBytes(StandardCharsets.UTF_8));
+
+            HttpResponse<String> response = fixture.raw("POST", NorthwindPayer.TOKEN_PATH, "grant_type=client_credentials",
+                    "Content-Type", "application/x-www-form-urlencoded", "Authorization", "Basic " + credentials);
+
+            assertEquals(401, response.statusCode(), response.body());
+            assertEquals("invalid_client", MAPPER.readTree(response.body()).path("error").asText());
+            assertFalse(response.body().contains("java."), response.body());
+        }
+    }
+
+    @Test
+    void malformedPercentEncodingInTokenBodyIsInvalidRequestNotServerError() throws Exception {
+        try (PayerFixture fixture = PayerFixture.northwind()) {
+            HttpResponse<String> response = fixture.raw("POST", NorthwindPayer.TOKEN_PATH,
+                    "grant_type=client_credentials&x=%zz",
+                    "Content-Type", "application/x-www-form-urlencoded", "Authorization", basic(fixture));
+
+            assertEquals(400, response.statusCode(), response.body());
+            assertEquals("invalid_request", MAPPER.readTree(response.body()).path("error").asText());
+            assertFalse(response.body().contains("java."), response.body());
         }
     }
 
