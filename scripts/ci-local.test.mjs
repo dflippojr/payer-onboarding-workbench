@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { root, runSteps, steps } from './ci-local.mjs';
 
 // Just enough YAML for ci.yml: jobs, needs, if, and each step's name, if and run
@@ -229,23 +230,82 @@ test('the gate job always runs and needs every other job', () => {
   assert.deepEqual([...workflow.gate.needs].sort(), Object.keys(workflow).filter(id => id !== 'gate').sort());
 });
 
-test('a failure skips later steps but still runs always steps, and is reported', () => {
+test('a failure skips later steps but still runs always steps, and is reported', async () => {
   const ran = [];
-  const failed = runSteps([
+  const { failed, exitCode } = await runSteps([
     { name: 'one', run: 'a' }, { name: 'two', run: 'b' }, { name: 'three', run: 'c' },
     { name: 'stop', run: 'd', always: true }, { name: 'four', run: 'e' },
   ], run => { ran.push(run); return run === 'b' ? 2 : 0; }, () => {});
   assert.equal(failed, 'two');
+  assert.equal(exitCode, 1, 'a failed run exits non-zero');
   assert.deepEqual(ran, ['a', 'b', 'd']);
 });
 
-test('a failing always step after an earlier failure keeps the first failure', () => {
-  const failed = runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 1, () => {});
+test('a failing always step after an earlier failure keeps the first failure', async () => {
+  const { failed } = await runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 1, () => {});
   assert.equal(failed, 'a');
 });
 
-test('every step passing reports no failure', () => {
-  assert.equal(runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 0, () => {}), null);
+test('every step passing reports no failure', async () => {
+  assert.deepEqual(await runSteps([{ run: 'a' }, { run: 'b', always: true }], () => 0, () => {}),
+    { failed: null, exitCode: 0 });
+});
+
+// Ctrl+C reaches every process in the foreground group, so the runner and the step it is
+// running both get the signal. Start the runner in its own group, send the signal to the group
+// once a step prints its marker, and report how the runner ended. Windows has no process groups.
+// Each command prints its marker with shell arithmetic, so the marker shows up in the output only
+// when the command runs, never in the runner's own log line that echoes the command.
+function interruptRun(list, signal, marker) {
+  const code = [
+    `import { runSteps } from ${JSON.stringify(pathToFileURL(join(root, 'scripts', 'ci-local.mjs')).href)};`,
+    `const { exitCode } = await runSteps(${JSON.stringify(list)});`,
+    'process.exitCode = exitCode;',
+  ].join('\n');
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', code],
+      { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', sent = false;
+    const onOutput = chunk => {
+      out += chunk;
+      if (!sent && out.includes(marker)) {
+        sent = true;
+        process.kill(-child.pid, signal);
+      }
+    };
+    child.stdout.on('data', onOutput);
+    child.stderr.on('data', onOutput);
+    child.on('error', reject);
+    child.on('close', (status, killedBy) => resolve({ status, killedBy, out }));
+  });
+}
+
+test('SIGINT during a step still runs the always steps, then exits 130', { skip: process.platform === 'win32' }, async () => {
+  const result = await interruptRun([
+    { name: 'long step', run: 'echo STEP-$((6*7)); sleep 30' },
+    { name: 'stop', run: 'echo ALWAYS-STEP-$((6*7))', always: true },
+  ], 'SIGINT', 'STEP-42');
+  assert.match(result.out, /^ALWAYS-STEP-42$/m, result.out);
+  assert.equal(result.killedBy, null, 'the runner must exit with its own status, not die by the signal');
+  assert.equal(result.status, 130);
+});
+
+test('SIGINT or SIGTERM at any step skips the rest, runs every always step, and exits 130 or 143', { skip: process.platform === 'win32' }, async () => {
+  for (const [signal, exitCode] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    const result = await interruptRun([
+      { name: 'before', run: 'echo BEFORE-$((1+1))' },
+      { name: 'interrupted', run: 'echo INTERRUPTED-$((3+4)); sleep 30' },
+      { name: 'skipped', run: 'echo SKIPPED-$((5+6))' },
+      { name: 'always one', run: 'echo ALWAYS-ONE-$((7+8))', always: true },
+      { name: 'always two', run: 'echo ALWAYS-TWO-$((9+1))', always: true },
+    ], signal, 'INTERRUPTED-7');
+    assert.match(result.out, /^BEFORE-2$/m, signal);
+    assert.doesNotMatch(result.out, /SKIPPED-11/, signal);
+    assert.match(result.out, /^ALWAYS-ONE-15$/m, signal);
+    assert.match(result.out, /^ALWAYS-TWO-10$/m, signal);
+    assert.equal(result.killedBy, null, `${signal}: the runner must exit with its own status`);
+    assert.equal(result.status, exitCode, signal);
+  }
 });
 
 test('the parser reads block runs, quoted names and job-level settings', () => {
