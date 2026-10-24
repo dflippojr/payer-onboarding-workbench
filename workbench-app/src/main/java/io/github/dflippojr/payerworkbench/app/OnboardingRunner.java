@@ -251,18 +251,20 @@ public class OnboardingRunner {
     }
 
     /**
-     * Refuses a {@code slowResponseDelayMs} past {@link WorkbenchProperties#maxSlowResponseDelay()}: the
-     * workbench gives up on the hook call at {@code workbench.request-timeout}, but the mock payer would keep
-     * sleeping for the whole delay.
+     * Refuses a {@code slowResponseDelayMs} outside 0 to {@link WorkbenchProperties#maxSlowResponseDelay()}. Above the
+     * maximum, the workbench gives up on the hook call at {@code workbench.request-timeout} but the mock payer would
+     * keep sleeping for the whole delay. A negative delay reaches the mock payer's fault setup, which refuses it only
+     * after the payer lock and once a run id exists (#210), so both bounds are checked here, before any run starts.
      */
     private void checkSlowResponseDelay(RunRequest request) {
+        Long delay = request.slowResponseDelayMs();
         long max = properties.maxSlowResponseDelay().toMillis();
-        if (request.slowResponseDelayMs() != null && request.slowResponseDelayMs() > max) {
-            AuditContext audit = AuditContext.current();
-            if (audit != null) { audit.reasonCode = "invalid_slow_response_delay"; }
-            throw new IllegalArgumentException("slowResponseDelayMs must be at most " + max
-                    + " (workbench.request-timeout plus 1 s)");
-        }
+        if (delay == null || (delay >= 0 && delay <= max)) { return; }
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.reasonCode = "invalid_slow_response_delay"; }
+        throw new IllegalArgumentException(delay < 0
+                ? "slowResponseDelayMs must be between 0 and " + max + " (workbench.request-timeout plus 1 s)"
+                : "slowResponseDelayMs must be at most " + max + " (workbench.request-timeout plus 1 s)");
     }
 
     /** The payer was still held when the wait ended, or the wait was interrupted: no run is started. */
