@@ -72,7 +72,8 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
             JsonNode service = services.get(i);
             if (!service.isObject()) {
                 notObjects++;
-                if (named.size() < MAX_NAMED) {
+                // One past the most a title names, so the title can tell when it must only count.
+                if (named.size() <= MAX_NAMED) {
                     named.add("services[" + i + "]");
                 }
                 notObjectLines.add("services[" + i + "]: " + service.getNodeType().name().toLowerCase(Locale.ROOT));
@@ -127,8 +128,8 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
     }
 
     private static Finding notObjects(List<String> named, int count, String evidence) {
-        String title = count == 1 ? named.getFirst() + " is not a JSON object"
-                : count <= MAX_NAMED ? String.join(", ", named) + " are not JSON objects"
+        String title = named.size() == 1 ? named.getFirst() + " is not a JSON object"
+                : named.size() <= MAX_NAMED ? String.join(", ", named) + " are not JSON objects"
                 : count + " entries in services are not JSON objects";
         return new Finding(CHECK_ID, Severity.FAIL, title,
                 "CDS Hooks Discovery says services is an array of service objects, each with a hook, an id and "

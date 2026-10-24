@@ -71,6 +71,7 @@ class DiscoveryChecksTest {
         void advertisedRequiredHookPasses() {
             Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(healthy().build()), Severity.PASS);
             assertTrue(f.title().contains("order-sign"));
+            assertEquals("Discovery lists CRD services, including every required hook.", f.explanation());
         }
 
         @Test
@@ -139,6 +140,17 @@ class DiscoveryChecksTest {
                     + "services[4]: boolean"), f::evidence);
             assertFalse(f.evidence().contains("services[2]"), f::evidence);
             assertTrue(f.suggestedFix().contains("JSON object"), f::suggestedFix);
+        }
+
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+                "5 | services[0], services[1], services[2], services[3], services[4] are not JSON objects",
+                "6 | 6 entries in services are not JSON objects"})
+        void aTitleNamesUpToFiveEntriesThatAreNotObjects(int count, String title) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[" + String.join(",", java.util.Collections.nCopies(count, "0"))
+                    + "]}");
+            assertEquals(title, assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL).title());
         }
 
         @Test
