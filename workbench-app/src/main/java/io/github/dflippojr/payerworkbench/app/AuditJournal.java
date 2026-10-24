@@ -14,6 +14,7 @@ import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -229,31 +230,47 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             // The root itself is missing: an absent drive or an unreachable share.
             throw new UnsafeJournalException("invalid_path");
         }
-        rejectCheckout(existing.toRealPath());
+        Path base = existing.toRealPath();
+        rejectCheckout(base);
         interleave.at(Interleave.Stage.BEFORE_CREATE, dir);
-        int levels = dir.getNameCount() - existing.getNameCount();
-        boolean posix = Files.getFileStore(dir.getRoot()).supportsFileAttributeView("posix");
-        if (Files.exists(dir)) {
-            if (!Files.isDirectory(dir)) {
-                throw new UnsafeJournalException("not_a_directory");
-            }
-        } else if (posix) {
-            Files.createDirectories(dir.getParent());
-            Files.createDirectory(dir,
-                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-        } else {
-            Files.createDirectories(dir);
-            restrictAcl(dir);
-        }
+        // Build on the checked ancestor, so re-pointing a link on the configured path cannot redirect creation.
+        Path rest = existing.relativize(dir);
+        Path target = base.resolve(rest);
+        boolean posix = Files.getFileStore(base).supportsFileAttributeView("posix");
         // Identities of the directories this opener made, so a refusal removes those and nothing else.
         Set<Object> made = new HashSet<>();
-        Path level = dir;
-        for (int i = 0; i < levels; i++, level = level.getParent()) {
-            made.add(ownershipKey(level));
+        if (Files.exists(target)) {
+            if (!Files.isDirectory(target)) {
+                throw new UnsafeJournalException("not_a_directory");
+            }
+        } else {
+            Path level = base;
+            for (Path name : rest) {
+                level = level.resolve(name);
+                boolean leaf = level.equals(target);
+                try {
+                    if (leaf && posix) {
+                        Files.createDirectory(level,
+                                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+                    } else {
+                        Files.createDirectory(level);
+                    }
+                } catch (FileAlreadyExistsException e) {
+                    if (leaf) {
+                        throw e;
+                    }
+                    // made by someone else since the walk above; not ours to remove
+                    continue;
+                }
+                made.add(ownershipKey(level));
+            }
+            if (!posix) {
+                restrictAcl(target);
+            }
         }
-        interleave.at(Interleave.Stage.AFTER_CREATE, dir);
+        interleave.at(Interleave.Stage.AFTER_CREATE, target);
         // An ancestor swapped for a link while the directory was created is caught here.
-        Path real = recheckRealPath(dir, made);
+        Path real = recheckRealPath(target, made);
         if (!ownerOnly(real, posix)) {
             throw new UnsafeJournalException("directory_not_owner_only");
         }
