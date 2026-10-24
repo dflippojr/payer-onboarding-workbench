@@ -310,6 +310,26 @@ class AuditJournalOwnershipTest {
     }
 
     @Test
+    void cleanupAfterARefusalNeverDeletesAFileLeftAtAPathItMade() throws Exception {
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-file"));
+        Path parent = scratch.resolve("parent");
+
+        // The made pair moves away; a checkout with a file of the leaf's name takes its place. No links needed.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.move(parent, tmp.resolve("moved-file"));
+                Files.createDirectory(parent);
+                Files.writeString(parent.resolve("pom.xml"), "<project/>");
+                Files.writeString(parent.resolve("j1"), "theirs");
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertEquals("theirs", Files.readString(parent.resolve("j1")));
+    }
+
+    @Test
     @EnabledOnOs(OS.WINDOWS)
     void missingRootIsRefusedWithAReason() throws Exception {
         Path absent = null;
