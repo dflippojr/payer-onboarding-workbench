@@ -2,15 +2,17 @@
 // The timeout turns a regression to an unbounded cleanup wait into a failed test instead of a hung job.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { test } from 'node:test';
 import * as url from 'node:url';
 import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
+import { findAppJar, root as repoRoot } from './workbench-lifecycle.mjs';
 
 const source = readFileSync(new URL('./workbench-lifecycle.mjs', import.meta.url), 'utf8');
-async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-2.jar',
-  'workbench-app-1.jar', 'workbench-app-0.jar.original'], log = 'started on port 43210',
+async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-1.jar',
+  'workbench-app-0.jar.original'], log = 'started on port 43210',
   buildResult = { status: 0 }, spawnError, synchronousError, afterDelay } = {}) {
   const child = new EventEmitter();
   Object.assign(child, { pid: 12345, exitCode: null, signalCode: null, kills: 0, signals: [], unrefs: 0 });
@@ -48,7 +50,7 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-2.
       },
     },
     'node:fs': {
-      readdirSync: () => [...jars], readFileSync: () => log,
+      existsSync: () => true, readdirSync: () => [...jars], readFileSync: () => log,
       openSync(...args) { calls.opens.push(args); return 42; },
       closeSync(fd) { calls.closes.push(fd); },
     },
@@ -82,7 +84,7 @@ test('import is inert; creation installs signals but does not build or spawn', a
 });
 
 for (const platform of ['linux', 'win32']) {
-  test(`build and Java resolution on ${platform}; sorted jar and descriptor ownership`, async () => {
+  test(`build and Java resolution on ${platform}; one app jar and descriptor ownership`, async () => {
     const f = await fixture({ platform, env: { JAVA_HOME: path.resolve('jdk') } });
     const app = f.create('DEMO_SKIP_BUILD');
     const jar = app.build();
@@ -492,3 +494,41 @@ for (const env of [{}, { JAVA_HOME: path.resolve('jdk') }]) {
     assert.equal(posix.calls.logs.some(line => /launcher shim/.test(line)), false);
   });
 }
+
+// findAppJar reads the real filesystem; the fixture above stubs the lifecycle module's imports only.
+test('findAppJar on a real directory: missing, none, one, and two jars named in order', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'app-jar-'));
+  const hint = 'run without DEMO_SKIP_BUILD';
+  try {
+    assert.throws(() => findAppJar(path.join(dir, 'missing'), hint), { message: `No workbench-app jar; ${hint}` });
+    writeFileSync(path.join(dir, 'workbench-app-0.jar.original'), '');
+    assert.throws(() => findAppJar(dir, hint), { message: `No workbench-app jar; ${hint}` });
+    writeFileSync(path.join(dir, 'workbench-app-0.2.0-SNAPSHOT.jar'), '');
+    assert.equal(findAppJar(dir, hint), path.join(dir, 'workbench-app-0.2.0-SNAPSHOT.jar'));
+    writeFileSync(path.join(dir, 'workbench-app-0.1.0-SNAPSHOT.jar'), '');
+    assert.throws(() => findAppJar(dir, hint), error => error.message.includes(
+      '(workbench-app-0.1.0-SNAPSHOT.jar, workbench-app-0.2.0-SNAPSHOT.jar)')
+      && error.message.includes('./mvnw clean package'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Class-level check for the escaped defect: a script that picks its own app jar can skip the
+// one-jar guard and drift from it. Only the helper may spell the jar pattern, in any code file.
+test('only findAppJar names the workbench-app jar pattern', () => {
+  const codeFile = /\.(m?js|cjs|ts|sh|ps1|cmd)$/;
+  const jarPattern = /workbench-app-(\.\*|\*)\\?\.jar/;
+  const found = [];
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (codeFile.test(entry.name) && !/\.test\.mjs$/.test(entry.name)
+        && jarPattern.test(readFileSync(file, 'utf8'))) found.push(path.relative(repoRoot, file));
+    }
+  };
+  walk(path.join(repoRoot, 'scripts'));
+  walk(path.join(repoRoot, '.claude'));
+  assert.deepEqual(found, [path.join('scripts', 'workbench-lifecycle.mjs')]);
+});

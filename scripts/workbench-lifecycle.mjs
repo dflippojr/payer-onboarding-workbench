@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, openSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -8,6 +8,19 @@ export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Allow 5 s for SIGTERM, then at most 5 s to observe SIGKILL's exit.
 const STOP_GRACE_MS = 5000;
 const STOP_FORCE_MS = 5000;
+
+// The only app-jar lookup. A second jar is a stale build left by a version bump without clean,
+// and picking the first one would start the old code.
+export function findAppJar(target, noJarHint) {
+  const jars = existsSync(target)
+    ? readdirSync(target).filter(name => /^workbench-app-.*\.jar$/.test(name)).sort() : [];
+  if (jars.length > 1) {
+    throw new Error(`Found ${jars.length} workbench-app jars in ${target} (${jars.join(', ')}); `
+      + 'run ./mvnw clean package so only the current build remains');
+  }
+  if (jars.length === 0) throw new Error(`No workbench-app jar; ${noJarHint}`);
+  return join(target, jars[0]);
+}
 
 function prepareStop(child) {
   let resolveStop, rejectStop, timer, forcing = false, settled = false;
@@ -78,10 +91,7 @@ export function createWorkbench(skipBuild) {
       if (result.error) throw result.error;
       if (result.status !== 0) throw new Error(`Build failed with exit code ${result.status}`);
     }
-    const target = join(root, 'workbench-app', 'target');
-    const jar = readdirSync(target).sort().find(name => /^workbench-app-.*\.jar$/.test(name));
-    if (!jar) throw new Error(`No workbench-app jar; run without ${skipBuild}`);
-    return join(target, jar);
+    return findAppJar(join(root, 'workbench-app', 'target'), `run without ${skipBuild}`);
   }
   function stop() {
     if (!stopping && app?.pid && app.exitCode === null && app.signalCode === null) {
