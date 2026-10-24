@@ -493,9 +493,9 @@ class CustomEndpointTest {
     /** A null card or system action is the payer's mistake, reported at Parse response (#208). */
     @ParameterizedTest(name = "{0}")
     @CsvSource(delimiter = '|', value = {
-            "{\"cards\":[null]}|cards[0] is not a JSON object",
-            "{\"cards\":[],\"systemActions\":[null]}|systemActions[0] is not a JSON object"})
-    void aNullEntryFailsAtParseResponseWithTheHookExchangeKept(String body, String problem) throws Exception {
+            "{\"cards\":[null]}|cards[0] is not a JSON object|card 1",
+            "{\"cards\":[],\"systemActions\":[null]}|systemActions[0] is not a JSON object|system action 1"})
+    void aNullEntryFailsAtParseResponseWithTheHookExchangeKept(String body, String problem, String entry) throws Exception {
         OnboardingRun run = runner.run(custom(hookServer(new AtomicReference<>(body)), AuthType.NONE, null, null, null));
 
         assertEquals("No authentication configured; the hook call is sent without credentials",
@@ -507,6 +507,7 @@ class CustomEndpointTest {
         assertEquals(1, exchanges.size());
         assertEquals(200, ((ExchangeView) exchanges.getFirst()).status());
         assertFalse(run.steps().get(4).ok(), run.steps().get(4)::summary);
+        assertEquals("The hook response's " + entry + " is not a JSON object", run.steps().get(4).summary());
         assertEquals(OnboardingRunner.PARSE_RESPONSE, RunVerdict.of(run).brokeAt());
         var schema = run.findings().stream().filter(f -> f.checkId().equals("response.schema")).toList();
         assertEquals(1, schema.size(), schema::toString);
