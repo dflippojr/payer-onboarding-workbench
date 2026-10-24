@@ -123,6 +123,20 @@ for (const skip of ['DEMO_SKIP_BUILD', 'EXPORT_SKIP_BUILD']) {
   });
 }
 
+for (const skip of ['DEMO_SKIP_BUILD', 'EXPORT_SKIP_BUILD']) {
+  test(`${skip} refuses two app jars (a stale build beside the new one) and names both`, async () => {
+    const jars = ['workbench-app-0.1.0-SNAPSHOT.jar', 'workbench-app-0.2.0-SNAPSHOT.jar'];
+    const skipped = await fixture({ env: { [skip]: '1' }, jars });
+    assert.throws(() => skipped.create(skip).build(),
+      error => jars.every(jar => error.message.includes(jar)) && error.message.includes('./mvnw clean package'));
+    assert.equal(skipped.calls.builds.length, 0);
+    const built = await fixture({ jars });
+    assert.throws(() => built.create(skip).build(),
+      error => jars.every(jar => error.message.includes(jar)) && error.message.includes('./mvnw clean package'));
+    assert.equal(built.calls.builds.length, 1);
+  });
+}
+
 test('Maven spawn and nonzero status failures retain their errors', async () => {
   const error = new Error('wrapper missing');
   const f = await fixture({ buildResult: { error } });
