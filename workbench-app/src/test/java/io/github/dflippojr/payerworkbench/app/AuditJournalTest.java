@@ -301,6 +301,62 @@ class AuditJournalTest {
     }
 
     @Test
+    void segmentBytesAboveTheCapIsRefusedBeforeAnyFileIsTouched() throws Exception {
+        Path dir = tmp.resolve("journal");
+        seedTwoClosedSegments(dir);
+        java.util.Map<String, String> before = fingerprint(dir);
+        long oneGiB = 1L << 30;
+
+        for (long segmentBytes : new long[] {oneGiB + 1, Integer.MAX_VALUE + 1L, Long.MAX_VALUE}) {
+            AuditJournal.Policy policy = new AuditJournal.Policy(DEFAULT.retention(), segmentBytes,
+                    DEFAULT.totalBytes());
+            IOException refused = assertThrows(AuditJournal.UnsafeJournalException.class,
+                    () -> open(dir, policy, NOW.plus(Duration.ofDays(1))), policy::toString);
+            assertEquals("invalid_policy", refused.getMessage());
+            assertEquals(before, fingerprint(dir), "segments and manifest unchanged after " + policy);
+        }
+        Path fresh = tmp.resolve("never-created");
+        assertThrows(AuditJournal.UnsafeJournalException.class, () -> open(fresh,
+                new AuditJournal.Policy(DEFAULT.retention(), oneGiB + 1, DEFAULT.totalBytes()), NOW));
+        assertFalse(Files.exists(fresh), "a refused policy creates no directory");
+
+        open(tmp.resolve("at-cap"), new AuditJournal.Policy(DEFAULT.retention(), oneGiB, DEFAULT.totalBytes()),
+                NOW).append(event(NOW, "at-cap"));
+    }
+
+    @Test
+    void leftoverSegmentOfTwoGiBOrMoreIsSealedWithoutAnError() throws Exception {
+        long size = 2_200_000_000L;
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.getFileStore(tmp).getUsableSpace() > 2 * size,
+                "room for the segment even where sparse files are unsupported");
+        Path dir = tmp.resolve("journal");
+        open(dir, DEFAULT, NOW).append(event(NOW, "before"));
+        resources.removeLast().close();
+        Path big = dir.resolve("audit-000002.jsonl");
+        try (var channel = java.nio.channels.FileChannel.open(big, java.nio.file.StandardOpenOption.CREATE_NEW,
+                java.nio.file.StandardOpenOption.WRITE, java.nio.file.StandardOpenOption.SPARSE)) {
+            channel.write(java.nio.ByteBuffer.wrap(("\n" + MAPPER.writeValueAsString(event(NOW, "tail")) + "\n")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)), size);
+        }
+        long bigBytes = Files.size(big);
+
+        AuditJournal journal;
+        try {
+            journal = open(dir, new AuditJournal.Policy(DEFAULT.retention(), DEFAULT.segmentBytes(), 4 * size), NOW);
+        } catch (Error e) {
+            throw new AssertionError("open threw " + e.getClass().getSimpleName() + " instead of failing open", e);
+        }
+        journal.append(event(NOW, "after"));
+
+        JsonNode sealed = MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST))).path("segments")
+                .get(1);
+        assertEquals("audit-000002", sealed.path("id").asText());
+        assertEquals(bigBytes, sealed.path("bytes").asLong());
+        assertEquals(1, sealed.path("events").asLong(), "the zero run is one damaged line; the tail is counted");
+        assertEquals(64, sealed.path("sha256").asText().length());
+    }
+
+    @Test
     void worldAccessibleExistingDirectoryIsNotAProtectedJournal() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 Files.getFileStore(tmp).supportsFileAttributeView("posix"));
