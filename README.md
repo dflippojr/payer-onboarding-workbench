@@ -248,6 +248,10 @@ as JSON lines. UTC `--since`/`--until` boundaries are inclusive, including nanos
 A run filter selects credential/terminal/report events; the initial request event has no
 run ID yet, so correlate it using the terminal's request ID in the unfiltered capture.
 Malformed audit lines produce a count on stderr and a nonzero exit without echoing contents.
+The app's own gap warnings (`Audit event write failed; audit trail has a gap` and `Audit journal
+unavailable; durable audit trail is not being written`) are not malformed lines. The reader counts
+them on stderr as `Audit gap warnings: N` and still exits 0: the capture is complete, and the gap
+is in what the app failed to write.
 Review makes no server calls and writes no files. Restrict access to captures using the
 OS owner's permissions; the reader provides no additional authentication.
 
