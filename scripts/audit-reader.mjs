@@ -50,13 +50,13 @@ const GAP_WARNINGS = [
 export async function review(lines, filters, output, onGap = () => {}) {
   let malformed = 0;
   for await (const line of lines) {
-    if (GAP_WARNINGS.some(warning => line.endsWith(warning))) {
-      onGap();
-      continue;
-    }
     // A log capture carries the `audit ` marker at the start of the logged message; a journal segment is bare JSON.
     const marker = line.startsWith('{') ? { index: 0, 0: '' } : /(?:^|:\s)audit /.exec(line);
-    if (!marker) continue;
+    if (!marker) {
+      // A gap warning is the whole logged message after the logger's separator.
+      if (GAP_WARNINGS.some(warning => line.endsWith(': ' + warning))) onGap();
+      continue;
+    }
     let event;
     let time;
     try {
