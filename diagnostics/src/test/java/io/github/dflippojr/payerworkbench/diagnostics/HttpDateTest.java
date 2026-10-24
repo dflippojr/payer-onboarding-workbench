@@ -71,6 +71,13 @@ class HttpDateTest {
         }
     }
 
+    @Test
+    void leapDayWithNoLeapYearInTheWindowIsMalformed() {
+        // With NOW in 2150 the window ends in 2200, and neither 2200 nor 2100 is a leap year, so no year fits.
+        assertEquals(Optional.empty(),
+                HttpDate.parse("Tuesday, 29-Feb-00 12:00:00 GMT", Instant.parse("2150-01-01T12:00:00Z")));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"Friday, 29-Feb-25 12:00:00 GMT", "Fri, 29 Feb 2025 12:00:00 GMT",
         "Fri Feb 29 12:00:00 2025"})
