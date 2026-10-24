@@ -245,6 +245,47 @@ class RunReportTest {
                 Arguments.of("<https://phish.example>", "\\<https\\://phish.example\\>"));
     }
 
+    /**
+     * GFM links an email address in text, and {@code mailto:} and {@code xmpp:} forms, after escapes and character
+     * references are resolved, so no escape stops it; each {@code @} of payer text is a code span instead, which
+     * splits the address (#213 owner decision). The copied text stays exact. Payer backticks are escaped, so they
+     * cannot close the span.
+     */
+    @ParameterizedTest
+    @MethodSource("emailAddresses")
+    void markdownKeepsEmailAddressesInPayerTextUnlinked(String payload, String escaped) {
+        String md = ReportRenderer.markdown(report(payerSaid(payload)));
+        Node doc = MarkdownTree.parse(md);
+
+        assertTrue(md.contains("The payer said: " + escaped), "not escaped as " + escaped + ":\n" + md);
+        assertEquals(MarkdownTree.autolinks(ReportRenderer.markdown(report(payerSaid("plain")))),
+                MarkdownTree.autolinks(md), "an email address from the payer: " + md);
+        assertTrue(MarkdownTree.nodes(doc).stream().noneMatch(Link.class::isInstance), md);
+        String lines = payload.lines().map(String::strip).filter(l -> !l.isEmpty()).collect(Collectors.joining("\n"));
+        assertTrue(MarkdownTree.text(doc).contains("The payer said: " + lines), "not shown literally:\n" + md);
+    }
+
+    /** Payer text with an email address, and how the report must write it. */
+    static Stream<Arguments> emailAddresses() {
+        return Stream.of(
+                Arguments.of("support@phish.example", "support`@`phish.example"),
+                Arguments.of("(support@phish.example)", "(support`@`phish.example)"),
+                Arguments.of("expired.support@phish.example", "expired.support`@`phish.example"),
+                Arguments.of("token expired\nsupport@phish.example", "token expired  \nsupport`@`phish.example"),
+                Arguments.of("mailto:support@phish.example", "mailto:support`@`phish.example"),
+                Arguments.of("MAILTO:support@phish.example", "MAILTO:support`@`phish.example"),
+                Arguments.of("xmpp:support@phish.example/resource", "xmpp:support`@`phish.example/resource"),
+                Arguments.of("seesupport@phish.example", "seesupport`@`phish.example"),
+                Arguments.of("a.b+c-d_e@phish.example", "a.b+c-d_e`@`phish.example"),
+                Arguments.of("\\support@phish.example", "\\\\support`@`phish.example"),
+                Arguments.of("a@phish.example, b@phish.example", "a`@`phish.example, b`@`phish.example"),
+                Arguments.of("a@@phish.example", "a`@@`phish.example"),
+                Arguments.of("`support@phish.example`", "\\`support`@`phish.example\\`"),
+                Arguments.of("support`@`phish.example", "support\\``@`\\`phish.example"),
+                Arguments.of("``@``phish.example", "\\`\\``@`\\`\\`phish.example"),
+                Arguments.of("support&#64;phish.example", "support\\&\\#64;phish.example"));
+    }
+
     /** An exchange line is a code span, so a line break in a transport error must not end it (#213 review). */
     @Test
     void markdownKeepsAnExchangeLineOnOneLine() {

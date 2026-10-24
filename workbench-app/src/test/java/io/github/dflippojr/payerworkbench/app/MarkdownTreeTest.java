@@ -34,4 +34,24 @@ class MarkdownTreeTest {
     void autolinksPassOverWhatCmarkGfmLeavesAsText(String markdown) {
         assertEquals(0, MarkdownTree.autolinks(markdown).size(), markdown);
     }
+
+    /** cmark-gfm links an email address after escapes and character references are resolved (#213 owner decision). */
+    @ParameterizedTest
+    @ValueSource(strings = {"support@a.example", "(support@a.example)", "token expired  \nsupport@a.example",
+            "mailto:support@a.example", "MAILTO:support@a.example", "xmpp:support@a.example/resource",
+            "seesupport@a.example", "a.b+c-d_e@a.example", "\\support@a.example", "support\\@a\\.example",
+            "a\\_b@a.example", "support@a_b.example", "support@.example", "support@a.e", "mailto:@a.example",
+            "a@b@c.example", "support&#64;a.example", "support&#x40;a.example", "support&commat;a.example",
+            "support@a&#46;example", "support@a&period;example"})
+    void autolinksFindEmailAddressesCmarkGfmLinks(String markdown) {
+        assertEquals(1, MarkdownTree.autolinks(markdown).size(), markdown);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"support`@`a.example", "\\`support`@`a.example\\`", "a`@`b`@`c.example", "\\``@`\\`",
+            "support\\\\@a.example", "support@a\\\\.example", "support\\&#64;a.example", "a@@b.example",
+            "@a.example", "support@a", "support@a.", "support @a.example", "support@ a.example", "support@a .example"})
+    void autolinksPassOverEmailAddressesCmarkGfmLeavesAsText(String markdown) {
+        assertEquals(0, MarkdownTree.autolinks(markdown).size(), markdown);
+    }
 }

@@ -45,7 +45,19 @@ final class MarkdownTree {
      * only in lower case, at a line start or after a space or one of {@code *_~(}. An escaped {@code \://} or
      * {@code \.} breaks the match, as it breaks the link.
      */
-    private static final Pattern AUTOLINK = Pattern.compile("(?i)(?<![a-z])(?:https?|ftp)://|(?<![a-z0-9])www\\.");
+    private static final String URL = "(?<![a-z])(?:https?|ftp)://|(?<![a-z0-9])www\\.";
+    /**
+     * Where cmark-gfm's extended email autolinks, {@code mailto:} and {@code xmpp:} included, have their {@code @}: a
+     * local-part character ({@code [A-Za-z0-9.+_-]}, or the {@code :} of {@code mailto:}), the {@code @}, then
+     * domain characters up to a {@code .} with a letter or digit after it. cmark-gfm links the text after escapes and
+     * character references are resolved, so {@code \@}, {@code \.}, {@code \_}, {@code &#64;} and {@code &#46;} still
+     * match; an escaped backslash or an inline node such as a code span next to the {@code @} breaks the match, as it
+     * breaks the link. A little wider than cmark-gfm, which also wants the domain to end in a letter and allows the
+     * {@code :} only in {@code mailto:} or {@code xmpp:}.
+     */
+    private static final String EMAIL = "[a-z0-9.+_:-](?:\\\\?@|&#0*+64;|&#x0*+40;|&commat;)(?:[a-z0-9_-]|\\\\[_-])*+"
+            + "(?:\\\\?\\.|&#0*+46;|&#x0*+2e;|&period;)[a-z0-9]";
+    private static final Pattern AUTOLINK = Pattern.compile("(?i)" + URL + "|" + EMAIL);
 
     private MarkdownTree() {
     }
@@ -59,7 +71,7 @@ final class MarkdownTree {
         return markdown.lines().filter(line -> DELIMITER_ROW.matcher(line).matches()).toList();
     }
 
-    /** The line of each bare URL a GFM renderer could autolink, once per URL, in document order. */
+    /** The line of each bare URL or email address a GFM renderer could autolink, once per link, in document order. */
     static List<String> autolinks(String markdown) {
         return markdown.lines().flatMap(line -> AUTOLINK.matcher(line).results().map(m -> line)).toList();
     }
@@ -71,10 +83,14 @@ final class MarkdownTree {
         return out;
     }
 
-    /** Node kinds in document order, without text and line breaks; a heading carries its level. */
+    /**
+     * Node kinds in document order, without text, line breaks and the code span that shows each run of {@code @} in
+     * payer text (#213 owner decision); a heading carries its level.
+     */
     static List<String> shape(Node root) {
         return nodes(root).stream()
-                .filter(n -> !(n instanceof Text || n instanceof HardLineBreak || n instanceof SoftLineBreak))
+                .filter(n -> !(n instanceof Text || n instanceof HardLineBreak || n instanceof SoftLineBreak
+                        || n instanceof Code c && c.getLiteral().matches("@++")))
                 .map(n -> n instanceof Heading h ? "Heading" + h.getLevel() : n.getClass().getSimpleName())
                 .toList();
     }
