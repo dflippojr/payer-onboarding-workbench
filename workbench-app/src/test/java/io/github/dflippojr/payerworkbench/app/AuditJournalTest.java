@@ -357,6 +357,37 @@ class AuditJournalTest {
     }
 
     @Test
+    void manifestOfTwoGiBOrMoreIsUnreadableWithoutAnError() throws Exception {
+        long size = 2_200_000_000L;
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.getFileStore(tmp).getUsableSpace() > 2 * size,
+                "room for the manifest even where sparse files are unsupported");
+        Path dir = tmp.resolve("journal");
+        open(dir, DEFAULT, NOW).append(event(NOW, "before"));
+        resources.removeLast().close();
+        Path manifest = dir.resolve(AuditJournal.MANIFEST);
+        try (var channel = java.nio.channels.FileChannel.open(manifest, java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.StandardOpenOption.SPARSE)) {
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] {' '}), size);
+        }
+
+        IOException refused;
+        try {
+            refused = assertThrows(AuditJournal.UnsafeJournalException.class, () -> open(dir, DEFAULT, NOW));
+        } catch (Error e) {
+            throw new AssertionError("open threw " + e.getClass().getSimpleName() + " instead of failing open", e);
+        }
+        assertEquals("manifest_unreadable", refused.getMessage());
+    }
+
+    @Test
+    void readBoundedReadsAtMostOneByteOverTheLimit() throws Exception {
+        Path file = Files.write(tmp.resolve("f"), new byte[] {1, 2, 3});
+        assertArrayEquals(new byte[] {1, 2, 3}, AuditJournal.readBounded(file, 3));
+        assertEquals("file_too_large",
+                assertThrows(IOException.class, () -> AuditJournal.readBounded(file, 2)).getMessage());
+    }
+
+    @Test
     void worldAccessibleExistingDirectoryIsNotAProtectedJournal() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(
                 Files.getFileStore(tmp).supportsFileAttributeView("posix"));
