@@ -12,12 +12,17 @@ import org.junit.jupiter.api.Test;
 import java.net.URLEncoder;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -116,6 +121,48 @@ class NorthwindPayerTest {
     }
 
     @Test
+    void uncaughtRuntimeExceptionIsAServerErrorThatNamesNoJavaClass() throws Exception {
+        try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().clock(new BrokenClock()))) {
+            HttpResponse<String> response = fixture.raw("POST", NorthwindPayer.TOKEN_PATH,
+                    "grant_type=client_credentials",
+                    "Content-Type", "application/x-www-form-urlencoded", "Authorization", basic(fixture));
+
+            assertEquals(500, response.statusCode(), response.body());
+            assertEquals("server_error", MAPPER.readTree(response.body()).path("error").asText());
+            assertEquals("Unexpected error", MAPPER.readTree(response.body()).path("error_description").asText());
+            assertFalse(response.body().contains("java."), response.body());
+            assertFalse(response.body().contains("IllegalStateException"), response.body());
+        }
+    }
+
+    @Test
+    void malformedPercentEncodingInBasicCredentialsIsInvalidClientNotServerError() throws Exception {
+        try (PayerFixture fixture = PayerFixture.northwind()) {
+            String credentials = Base64.getEncoder().encodeToString("%zz:secret".getBytes(StandardCharsets.UTF_8));
+
+            HttpResponse<String> response = fixture.raw("POST", NorthwindPayer.TOKEN_PATH, "grant_type=client_credentials",
+                    "Content-Type", "application/x-www-form-urlencoded", "Authorization", "Basic " + credentials);
+
+            assertEquals(401, response.statusCode(), response.body());
+            assertEquals("invalid_client", MAPPER.readTree(response.body()).path("error").asText());
+            assertFalse(response.body().contains("java."), response.body());
+        }
+    }
+
+    @Test
+    void malformedPercentEncodingInTokenBodyIsInvalidRequestNotServerError() throws Exception {
+        try (PayerFixture fixture = PayerFixture.northwind()) {
+            HttpResponse<String> response = fixture.raw("POST", NorthwindPayer.TOKEN_PATH,
+                    "grant_type=client_credentials&x=%zz",
+                    "Content-Type", "application/x-www-form-urlencoded", "Authorization", basic(fixture));
+
+            assertEquals(400, response.statusCode(), response.body());
+            assertEquals("invalid_request", MAPPER.readTree(response.body()).path("error").asText());
+            assertFalse(response.body().contains("java."), response.body());
+        }
+    }
+
+    @Test
     void tokensExpireAndTheClientRecoversByFetchingANewOne() throws Exception {
         TestKeys.MutableClock clock = new TestKeys.MutableClock();
         try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().clock(clock))) {
@@ -156,6 +203,25 @@ class NorthwindPayerTest {
     private static String hookBody() throws Exception {
         return MAPPER.writeValueAsString(CdsHookRequest.of(SyntheticData.orderSign(SyntheticData.standardOrders()),
                 PayerFixture.northwindPrefetch()));
+    }
+
+    /** A clock whose reads throw, so the next token request fails with an exception the mock does not expect. */
+    private static final class BrokenClock extends Clock {
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            throw new IllegalStateException("clock is broken");
+        }
     }
 
     private static String basic(PayerFixture fixture) {
