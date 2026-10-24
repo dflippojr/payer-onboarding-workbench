@@ -2,12 +2,13 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { findAppJar } from './workbench-lifecycle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const stateDir = join(root, '.ui-test');
@@ -79,13 +80,11 @@ async function serve() {
     state = { token, control: 'http://127.0.0.1:' + control.address().port,
       baseURL: null, ready: false, pid: null, supervisorPid: process.pid, data, log };
     writeFileSync(handle, JSON.stringify(state), { mode: 0o600, flag: 'wx' });
-    const target = join(root, 'workbench-app', 'target');
-    const jars = readdirSync(target).filter(name => /^workbench-app-.*\.jar$/.test(name));
-    if (jars.length !== 1) throw new Error('Build first: ./mvnw verify (exactly one app jar required)');
+    const jar = findAppJar(join(root, 'workbench-app', 'target'), 'run ./mvnw verify first');
     const java = env.JAVA_HOME ? join(env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
     const fd = openSync(log, 'w');
     try {
-      app = spawn(java, ['-Xmx512m', '-Djava.io.tmpdir=' + data, '-jar', join(target, jars[0]),
+      app = spawn(java, ['-Xmx512m', '-Djava.io.tmpdir=' + data, '-jar', jar,
         '--spring.config.location=classpath:/application.properties', '--server.address=127.0.0.1', '--server.port=0',
         '--workbench.custom-endpoints.enabled=false', '--workbench.audit.journal-dir=' + join(data, 'audit'),
         '--workbench.audit.operator-label=ui-pass'], { cwd: data, env, stdio: ['ignore', fd, fd], windowsHide: true });
