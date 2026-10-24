@@ -249,3 +249,16 @@ test('a CRLF capture reads the same as an LF one, including its gap warnings', (
     assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse), [event()]);
   } finally { rmSync(directory, { recursive: true }); }
 });
+test('a capture with lone carriage-return line ends reads like readline did, CRLF across a chunk edge included', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-cr-'));
+  try {
+    const file = join(directory, 'capture.log');
+    // The filler puts the \r of its CRLF on the last byte of the first 64 KiB read chunk and the \n on the next. The empty
+    // line a split there would add is not an audit line, so this only proves the events on either side still read.
+    writeFileSync(file, 'x'.repeat(64 * 1024 - 1) + '\r\n' + [line(event()), warning(GAP), line(event('run-two'))].join('\r') + '\r');
+    const result = cli(file);
+    assert.equal(result.stderr, 'Audit gap warnings: 1\n');
+    assert.equal(result.status, 0);
+    assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse), [event(), event('run-two')]);
+  } finally { rmSync(directory, { recursive: true }); }
+});
