@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, copyFileSync, appendFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, copyFileSync, appendFileSync, readFileSync, mkdirSync, chmodSync, truncateSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -186,4 +186,79 @@ test('every constant audit message in the app and mock payers is read without a 
   for (const message of messages) {
     assert.equal(await review([warning(message)], {}, () => assert.fail('a log message is not an event')), 0, message);
   }
+});
+
+// A segment that exists but cannot be read fails the run in both modes. Only a missing segment is skipped.
+const canChmod = process.platform !== 'win32' && process.getuid() !== 0;
+const unreadable = [
+  { fault: 'a directory named as a segment', make: file => { rmSync(file); mkdirSync(file); }, skip: false },
+  { fault: 'a segment without read permission', make: file => chmodSync(file, 0o000), skip: !canChmod },
+];
+for (const { fault, make, skip } of unreadable) {
+  // Class check: any read failure other than a missing file is an error, so a catch-all cannot skip a segment.
+  test(`class check: ${fault} fails the review and verify, and is never reported as missing`, { skip }, () => {
+    const dir = makeJournal();
+    try {
+      make(join(dir, 'audit-000002.jsonl'));
+      const reviewed = cli(dir);
+      assert.equal(reviewed.status, 1);
+      assert.match(reviewed.stderr, /Audit reader failed/);
+      const verified = cli(dir, '--verify');
+      assert.equal(verified.status, 1);
+      assert.ok(!verified.stdout.includes('"segment":"audit-000002","status":"missing"'));
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+}
+
+// Node cannot hold a string past about 512 MiB, so a segment that large must stream. A sparse file needs Linux here.
+test('a segment over the string limit streams: its events print and its sparse padding is not an event', { skip: process.platform !== 'linux' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-sparse-'));
+  try {
+    const segment = join(dir, 'audit-000001.jsonl');
+    writeFileSync(segment, JSON.stringify(event()) + '\n');
+    truncateSync(segment, 600_000_000);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, segments: [] }));
+    for (const target of [dir, segment]) {
+      const result = cli(target);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, JSON.stringify(event()) + '\n');
+    }
+  } finally { rmSync(dir, { recursive: true }); }
+});
+
+test('an event line too long to hold whole counts as malformed, never as the event read from its prefix', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-long-'));
+  try {
+    const file = join(directory, 'capture.log');
+    writeFileSync(file, line(event()) + ' '.repeat(17 * 1024 * 1024) + '\n');
+    const result = cli(file);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, 'Malformed audit lines: 1\n');
+    assert.equal(result.stdout, '');
+  } finally { rmSync(directory, { recursive: true }); }
+});
+
+test('a CRLF capture reads the same as an LF one, including its gap warnings', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-crlf-'));
+  try {
+    const file = join(directory, 'capture.log');
+    writeFileSync(file, [line(event()), warning(GAP)].join('\r\n') + '\r\n');
+    const result = cli(file);
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, 'Audit gap warnings: 1\n');
+    assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse), [event()]);
+  } finally { rmSync(directory, { recursive: true }); }
+});
+test('a capture with lone carriage-return line ends reads like readline did, CRLF across a chunk edge included', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-cr-'));
+  try {
+    const file = join(directory, 'capture.log');
+    // The filler puts the \r of its CRLF on the last byte of the first 64 KiB read chunk and the \n on the next. The empty
+    // line a split there would add is not an audit line, so this only proves the events on either side still read.
+    writeFileSync(file, 'x'.repeat(64 * 1024 - 1) + '\r\n' + [line(event()), warning(GAP), line(event('run-two'))].join('\r') + '\r');
+    const result = cli(file);
+    assert.equal(result.stderr, 'Audit gap warnings: 1\n');
+    assert.equal(result.status, 0);
+    assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse), [event(), event('run-two')]);
+  } finally { rmSync(directory, { recursive: true }); }
 });
