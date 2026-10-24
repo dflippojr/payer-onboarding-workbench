@@ -11,7 +11,6 @@ import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
-import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformation;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
@@ -630,8 +629,10 @@ public class OnboardingRunner {
             // TOKEN and HOOK events into their separate timeline steps below.
             try {
                 response = client.callHook(record, serviceId, loaded.request());
-            } catch (RouterException | IllegalArgumentException e) {
+            } catch (RuntimeException e) {
                 // IllegalArgumentException: the SDK could not build the request URL, so nothing was sent.
+                // Anything else may come from reading an answered response, such as the NullPointerException
+                // a null card raises (#208); the recorded exchange below still goes to the later steps.
                 callFailure = e;
             }
             List<PayerExchange> hooks = recorder.events(PayerCallPhase.HOOK);
@@ -721,8 +722,25 @@ public class OnboardingRunner {
                     + exchange.latency().toMillis() + " ms");
         }
 
+        /** Names a {@code field} that is not a list of objects, such as "card 1 is not a JSON object". */
+        private static String listProblem(JsonNode json, String field, String name) {
+            JsonNode list = json.path(field);
+            if (!list.isArray()) {
+                return list.isMissingNode() || list.isNull() ? null : field + " is not an array";
+            }
+            for (int i = 0; i < list.size(); i++) {
+                if (!list.get(i).isObject()) {
+                    return name + " " + (i + 1) + " is not a JSON object";
+                }
+            }
+            return null;
+        }
+
         private String failureMessage() {
-            return callFailure == null ? "No HTTP exchange observed" : callFailure.getMessage();
+            if (callFailure == null) {
+                return "No HTTP exchange observed";
+            }
+            return callFailure.getMessage() == null ? callFailure.getClass().getSimpleName() : callFailure.getMessage();
         }
 
         private List<ExchangeView> exchangeViews(PayerCallPhase phase) {
@@ -752,6 +770,11 @@ public class OnboardingRunner {
             }
             if (!json.path("cards").isArray()) {
                 return Outcome.fail("The hook response has no cards array");
+            }
+            String problem = Optional.ofNullable(listProblem(json, "cards", "card"))
+                    .orElseGet(() -> listProblem(json, "systemActions", "system action"));
+            if (problem != null) {
+                return Outcome.fail("The hook response's " + problem);
             }
             if (response == null) {
                 return Outcome.fail("The client library could not read the response: " + failureMessage());

@@ -136,6 +136,31 @@ class ResponseChecksTest {
         }
 
         @Test
+        void nullCardFails() {
+            var run = healthy().hookBody("{\"cards\":[null]}");
+            assertEquals("cards[0] is not a JSON object",
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+        }
+
+        @ParameterizedTest(name = "systemActions {0}")
+        @CsvSource(delimiter = '|', value = {
+                "[null]|systemActions[0] is not a JSON object",
+                "[{\"type\":\"update\"},7]|systemActions[1] is not a JSON object",
+                "{}|\"systemActions\" is not an array"})
+        void malformedSystemActionsFail(String actions, String problem) {
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":" + actions + "}");
+            assertEquals(problem,
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+        }
+
+        @Test
+        void nullSystemActionsIsAbsent() {
+            // The CRD reference server writes every unset field as null.
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":null}");
+            assertOnly(check.evaluate(run.build()), Severity.PASS);
+        }
+
+        @Test
         void longSummaryWarns() {
             var run = healthy().hookBody("{\"cards\":[{\"summary\":\"" + "x".repeat(141)
                     + "\",\"indicator\":\"info\",\"source\":{\"label\":\"Synthetic Health Plan\"}}]}");
