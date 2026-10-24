@@ -310,6 +310,24 @@ class AuditJournalOwnershipTest {
     }
 
     @Test
+    void aRefusalAfterCreationDeletesNothing() throws Exception {
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-stay"));
+        Path parent = scratch.resolve("parent");
+
+        // The made directories stay where they were made; their parent becomes a checkout. No links needed.
+        AuditJournal.Interleave race = (stage, dir) -> {
+            if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                Files.writeString(parent.resolve("pom.xml"), "<project/>");
+            }
+        };
+        String journal = parent.resolve("j1").toString();
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(journal, race));
+        assertEquals("inside_checkout", refused.getMessage());
+        // Java cannot remove only-a-directory atomically, so cleanup could delete a file swapped in; there is none.
+        assertTrue(Files.isDirectory(parent.resolve("j1")));
+    }
+
+    @Test
     void cleanupAfterARefusalNeverDeletesAFileLeftAtAPathItMade() throws Exception {
         Path scratch = Files.createDirectory(tmp.resolve("scratch-file"));
         Path parent = scratch.resolve("parent");
