@@ -164,6 +164,31 @@ class AuditJournalOwnershipTest {
     }
 
     @Test
+    void relinkingTheAliasAfterOpenCannotMoveWritesOrDeletesIntoACheckout() throws Exception {
+        Path outside = Files.createDirectory(tmp.resolve("release-1"));
+        Path checkout = Files.createDirectories(tmp.resolve("relinked"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path decoys = Files.createDirectory(checkout.resolve("j1"));
+        Files.writeString(decoys.resolve("audit-000001.jsonl"), "decoy\n");
+        Path current = link(tmp.resolve("current"), outside);
+        // Every append rotates, and the size cap expires closed segments by name at each rotation.
+        var policy = new AuditJournal.Policy(Duration.ofDays(30), 1, 1);
+        try (AuditJournal journal = AuditJournal.open(current.resolve("j1").toString(), policy, null,
+                Clock.systemUTC(), MAPPER)) {
+            journal.append(event("before-relink"));
+            Files.delete(current);
+            link(current, checkout);
+            journal.append(event("after-relink"));
+            journal.append(event("after-rotation"));
+        }
+        try (var left = Files.list(decoys)) {
+            assertEquals(List.of(decoys.resolve("audit-000001.jsonl")), left.toList());
+        }
+        assertEquals("decoy\n", Files.readString(decoys.resolve("audit-000001.jsonl")));
+        assertTrue(Files.exists(outside.resolve("j1").resolve(AuditJournal.MANIFEST)));
+    }
+
+    @Test
     void realPathRecheckRemovesOnlyADirectoryThisOpenerCreated() throws Exception {
         Path checkout = Files.createDirectories(tmp.resolve("swapped"));
         Files.writeString(checkout.resolve("pom.xml"), "<project/>");
