@@ -490,6 +490,92 @@ class CustomEndpointTest {
         assertEquals("PASS", RunVerdict.of(run).status(), run.findings().toString());
     }
 
+    /** A null card or system action is the payer's mistake, reported at Parse response (#208). */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "{\"cards\":[null]}|cards[0] is not a JSON object",
+            "{\"cards\":[],\"systemActions\":[null]}|systemActions[0] is not a JSON object"})
+    void aNullEntryFailsAtParseResponseWithTheHookExchangeKept(String body, String problem) throws Exception {
+        OnboardingRun run = runner.run(custom(hookServer(new AtomicReference<>(body)), AuthType.NONE, null, null, null));
+
+        assertEquals("No authentication configured; the hook call is sent without credentials",
+                run.steps().get(2).summary(), run.steps().toString());
+        assertTrue(run.steps().get(2).ok());
+        StepResult hook = run.steps().get(3);
+        assertTrue(hook.ok(), hook::summary);
+        List<?> exchanges = (List<?>) hook.details().get("exchanges");
+        assertEquals(1, exchanges.size());
+        assertEquals(200, ((ExchangeView) exchanges.getFirst()).status());
+        assertFalse(run.steps().get(4).ok(), run.steps().get(4)::summary);
+        assertEquals(OnboardingRunner.PARSE_RESPONSE, RunVerdict.of(run).brokeAt());
+        var schema = run.findings().stream().filter(f -> f.checkId().equals("response.schema")).toList();
+        assertEquals(1, schema.size(), schema::toString);
+        assertEquals(io.github.dflippojr.payerworkbench.core.Severity.FAIL, schema.getFirst().severity());
+        assertTrue(schema.getFirst().evidence().startsWith(problem + "\n"), schema.getFirst()::evidence);
+        assertTrue(run.findings().stream().noneMatch(f -> f.checkId().equals("run.step-failed")), run.findings()::toString);
+    }
+
+    /**
+     * Class-level check (#208): whatever the client library throws while it reads a hook response,
+     * the run keeps the payer's HTTP 200 exchange, Authenticate and Send sample hook request pass,
+     * and no step reports an unexpected error. Every top-level, card and system action field is set
+     * to a value of each wrong JSON type, and each list gets one entry of each wrong type.
+     */
+    @Test
+    void noMalformedHookBodyIsChargedToAnEarlierStep() throws Exception {
+        List<String> wrong = List.of("null", "7", "true", "\"x\"", "[]", "{}", "[null]", "[7]", "{\"a\":null}");
+        String card = "{\"summary\":\"s\",\"indicator\":\"info\",\"source\":{\"label\":\"l\"}}";
+        String action = "{\"type\":\"update\",\"description\":\"d\",\"resource\":{\"resourceType\":\"ServiceRequest\"}}";
+        java.util.Set<String> bodies = new java.util.LinkedHashSet<>(List.of("null", "[]", "7", "\"x\"", "{}"));
+        for (String v : wrong) {
+            bodies.add("{\"cards\":" + v + "}");
+            bodies.add("{\"cards\":[" + v + "]}");
+            bodies.add("{\"cards\":[],\"systemActions\":" + v + "}");
+            bodies.add("{\"cards\":[],\"systemActions\":[" + v + "]}");
+            for (String field : List.of("summary", "detail", "indicator", "source", "suggestions", "links",
+                    "selectionBehavior", "uuid", "overrideReasons")) {
+                bodies.add("{\"cards\":[" + card.replace("{\"summary\"", "{\"" + field + "\":" + v + ",\"summary\"") + "]}");
+            }
+            for (String field : List.of("type", "description", "resource", "resourceId")) {
+                bodies.add("{\"cards\":[],\"systemActions\":["
+                        + action.replace("{\"type\"", "{\"" + field + "\":" + v + ",\"type\"") + "]}");
+            }
+            bodies.add("{\"cards\":[{\"summary\":\"s\",\"indicator\":\"info\",\"source\":{\"label\":\"l\"},"
+                    + "\"selectionBehavior\":\"any\",\"suggestions\":[{\"label\":\"x\",\"actions\":[" + v + "]}]}]}");
+        }
+        AtomicReference<String> body = new AtomicReference<>();
+        String baseUrl = hookServer(body);
+        List<String> broken = new ArrayList<>();
+        for (String b : bodies) {
+            body.set(b);
+            OnboardingRun run = runner.run(custom(baseUrl, AuthType.NONE, null, null, null));
+            List<?> exchanges = (List<?>) run.steps().get(3).details().get("exchanges");
+            boolean kept = run.steps().get(2).ok() && run.steps().get(3).ok() && exchanges != null
+                    && exchanges.size() == 1 && ((ExchangeView) exchanges.getFirst()).status() == 200;
+            boolean unexpected = run.steps().stream().anyMatch(s -> s.summary().contains("Unexpected error"));
+            if (!kept || unexpected) {
+                broken.add(b + " -> " + statuses(run) + " " + run.steps().stream().map(StepResult::summary).toList());
+            }
+        }
+        assertEquals(List.of(), broken);
+    }
+
+    /** A no-auth CDS Hooks server under /x that advertises order-sign and answers it with {@code body}. */
+    private String hookServer(AtomicReference<String> body) throws java.io.IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/x/cds-services", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            if (exchange.getRequestMethod().equals("GET")) {
+                respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\",\"prefetch\":{}}]}");
+            } else {
+                respond(exchange, body.get());
+            }
+        });
+        server.start();
+        return "http://127.0.0.1:" + server.getAddress().getPort() + "/x";
+    }
+
     @Test
     void smartJwtAccessTokenIsNotMistakenForTheClientAssertion(CapturedOutput output) throws Exception {
         // Most real SMART servers issue a JWT access token; the hook call then carries it as Bearer.
