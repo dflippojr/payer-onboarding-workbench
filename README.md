@@ -329,7 +329,9 @@ node scripts/audit-reader.mjs /var/lib/workbench-audit --action audit.retention
 node scripts/audit-reader.mjs /var/lib/workbench-audit --verify
 ```
 
-  Review accepts a journal directory as well as a log capture and takes the same filters. `--verify`
+  Review accepts a journal directory as well as a log capture and takes the same filters. It reads each segment
+  line by line at any size; a segment that exists but cannot be read fails the review with a nonzero exit, and
+  only a missing segment is skipped. `--verify`
   prints one `{"segment":...,"status":...}` line per segment: `ok`, `missing`, `checksum_mismatch`,
   `truncated`, `malformed`, `event_count_mismatch`, or `unsealed` (a segment the manifest does not
   list yet, such as the one being written or left by a crash; not a failure). It exits nonzero on any

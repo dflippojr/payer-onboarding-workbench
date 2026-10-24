@@ -4,7 +4,6 @@ import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 // Preserve Java Instant nanoseconds when applying inclusive boundaries.
@@ -75,7 +74,7 @@ export async function review(lines, filters, output, onGap = () => {}) {
   return malformed;
 }
 
-const SEGMENT = /^audit-\d{6}\.jsonl$/;
+const SEGMENT = /^audit-\d{6,}\.jsonl$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 async function loadManifest(dir) {
@@ -87,11 +86,27 @@ async function loadManifest(dir) {
   return manifest;
 }
 
+// The sequence number in a segment name. Compared as BigInt, so a name of any width sorts by value: as text,
+// audit-1000000 would come before audit-999999.
+const sequence = file => BigInt(file.slice('audit-'.length, -'.jsonl'.length));
+const bySequence = (a, b) => (sequence(a) < sequence(b) ? -1 : sequence(a) > sequence(b) ? 1 : 0);
+
 // Segment files in order: everything the manifest lists, then files it does not (open or crashed).
 async function journalSegments(dir, manifest) {
   const listed = manifest.segments.map(s => s.file);
   const present = (await readdir(dir)).filter(n => SEGMENT.test(n));
-  return [...new Set([...listed, ...present])].sort();
+  return [...new Set([...listed, ...present])].sort(bySequence);
+}
+
+// The SHA-256 of a file's raw bytes and its last byte. Chunks keep memory bounded however large the segment is.
+async function digest(path) {
+  const hash = createHash('sha256');
+  let last = null;
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+    if (chunk.length) last = chunk[chunk.length - 1];
+  }
+  return { sha256: hash.digest('hex'), last };
 }
 
 // Checksums catch accidental damage and missing or truncated files, not a rewrite by the machine owner.
@@ -105,14 +120,16 @@ export async function verify(dir, write) {
     let status = 'ok';
     if (!entry) status = 'unsealed';
     else {
-      let bytes;
-      try { bytes = await readFile(join(dir, file)); } catch { bytes = null; }
-      if (bytes === null) status = 'missing';
-      else if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) status = 'checksum_mismatch';
-      else if (bytes.length > 0 && bytes[bytes.length - 1] !== 0x0a) status = 'truncated';
+      const path = join(dir, file);
+      let sealed = null;
+      try { sealed = await digest(path); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (sealed === null) status = 'missing';
+      else if (sealed.sha256 !== entry.sha256) status = 'checksum_mismatch';
+      else if (sealed.last !== null && sealed.last !== 0x0a) status = 'truncated';
       else {
         let events = 0;
-        for (const line of bytes.toString('utf8').split('\n').filter(Boolean)) {
+        for await (const line of fileLines(path)) {
+          if (!line) continue;
           try { if (JSON.parse(line).eventId) events++; else status = 'malformed'; } catch { status = 'malformed'; }
         }
         if (status === 'ok' && events !== entry.events) status = 'event_count_mismatch';
@@ -124,12 +141,48 @@ export async function verify(dir, write) {
   return problems;
 }
 
+// A line past MAX_LINE characters keeps only its first MAX_LINE characters, then TRUNCATED. Node cannot hold a string
+// past about 512 MiB, and a segment can be larger than that. TRUNCATED is not JSON whitespace, so a cut line never
+// parses as an event: an event line too long to hold counts as malformed.
+const MAX_LINE = 16 * 1024 * 1024;
+const TRUNCATED = '\u0000';
+
+// The lines of a file, read in chunks so memory stays bounded however long the file is. Journal segments end lines with
+// \n only. A capture log is split like readline: \n, \r and \r\n each end a line, even when \r\n spans two chunks.
+async function* fileLines(path, capture = false) {
+  const ends = capture ? /\r\n|\r|\n/ : '\n';
+  let text = '';
+  let cut = false;
+  let afterCR = false;
+  for await (let chunk of createReadStream(path, { encoding: 'utf8' })) {
+    if (afterCR && chunk.startsWith('\n')) chunk = chunk.slice(1);
+    afterCR = capture && chunk.endsWith('\r');
+    const parts = chunk.split(ends);
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        yield lineText(text, cut);
+        text = '';
+        cut = false;
+      }
+      const room = MAX_LINE - text.length;
+      if (parts[i].length > room) cut = true;
+      text += parts[i].slice(0, room);
+    }
+  }
+  yield lineText(text, cut);
+}
+
+// A segment line keeps no trailing carriage return, as JSON.parse ignored it before.
+function lineText(text, cut) {
+  if (cut) return text + TRUNCATED;
+  return text.endsWith('\r') ? text.slice(0, -1) : text;
+}
+
+// Only a missing segment is skipped, because --verify reports it as `missing`. Any other read error ends the review.
 async function* journalLines(dir) {
   const manifest = await loadManifest(dir);
   for (const file of await journalSegments(dir, manifest)) {
-    let bytes;
-    try { bytes = await readFile(join(dir, file), 'utf8'); } catch { continue; } // --verify reports a missing segment
-    yield* bytes.split('\n');
+    try { yield* fileLines(join(dir, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 }
 
@@ -146,8 +199,7 @@ async function main() {
       }
       return;
     }
-    const lines = isDir ? journalLines(filters.file)
-      : createInterface({ input: createReadStream(filters.file), crlfDelay: Infinity });
+    const lines = isDir ? journalLines(filters.file) : fileLines(filters.file, true);
     let gaps = 0;
     const malformed = await review(lines, filters, line => process.stdout.write(line + '\n'), () => gaps++);
     if (malformed) {

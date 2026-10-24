@@ -49,18 +49,18 @@ public final class CoverageLocationCheck implements DiagnosticCheck {
                 continue;
             }
             JsonNode actions = json.path("systemActions");
-            for (int i = 0; i < actions.size(); i++) {
+            for (int i = 0; actions.isArray() && i < actions.size(); i++) {
                 String path = hook.serviceId() + ": systemActions[" + i + "]";
                 if (classify(actions.get(i).path("resource"), path, misplaced)) {
                     inSystemActions.add(path);
                 }
             }
             JsonNode cards = json.path("cards");
-            for (int c = 0; c < cards.size(); c++) {
+            for (int c = 0; cards.isArray() && c < cards.size(); c++) {
                 JsonNode suggestions = cards.get(c).path("suggestions");
-                for (int s = 0; s < suggestions.size(); s++) {
+                for (int s = 0; suggestions.isArray() && s < suggestions.size(); s++) {
                     JsonNode suggestionActions = suggestions.get(s).path("actions");
-                    for (int a = 0; a < suggestionActions.size(); a++) {
+                    for (int a = 0; suggestionActions.isArray() && a < suggestionActions.size(); a++) {
                         String path = hook.serviceId() + ": cards[" + c + "].suggestions[" + s + "].actions[" + a + "]";
                         if (classify(suggestionActions.get(a).path("resource"), path, misplaced)) {
                             inSuggestions.add(path);
