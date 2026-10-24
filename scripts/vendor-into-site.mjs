@@ -12,7 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
@@ -23,7 +23,7 @@ export const BUNDLE_ASSET = 'replay-bundle.tar.gz';
 
 const inside = (child, parent) => {
   const rel = relative(parent, child);
-  return !rel.startsWith('..') && !isAbsolute(rel);
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 };
 
 /** Copies every file under dist into target, after removing the target's runs/*.json. Returns the file count. */
