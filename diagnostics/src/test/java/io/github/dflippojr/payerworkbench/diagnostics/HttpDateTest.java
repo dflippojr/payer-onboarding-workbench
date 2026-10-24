@@ -53,6 +53,13 @@ class HttpDateTest {
     }
 
     @Test
+    void leapDayOfACenturyYearIsReadInTheCenturyThatHasOne() {
+        // With NOW in 2050 the 50-year edge is in 2100, which has no 29 February, so "00" is 2000, a leap year.
+        assertEquals(Optional.of(Instant.parse("2000-02-29T12:00:00Z")),
+                HttpDate.parse("Tuesday, 29-Feb-00 12:00:00 GMT", Instant.parse("2050-01-01T12:00:00Z")));
+    }
+
+    @Test
     void rfc850ReadsEveryDayAroundTheFiftyYearEdgeAsTheRfcDoes() {
         // A timestamp up to NOW plus 50 years is read as written; one later than that is read a century back.
         LocalDateTime edge = LocalDateTime.ofInstant(NOW, ZoneOffset.UTC).plusYears(50);
