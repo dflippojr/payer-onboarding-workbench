@@ -216,11 +216,15 @@ public final class ReportRenderer {
     private static final String LINE_MARKUP = "-+=:";
     private static final Pattern LINE_BREAKS = Pattern.compile("\r\n|\r|\n");
     private static final Pattern ORDERED_LIST = Pattern.compile("\\d+[.)]");
+    private static final Pattern AT_SIGNS = Pattern.compile("@++");
 
     /**
      * Backslash-escapes the text so a CommonMark or GFM renderer shows it literally (#213). Blank lines are dropped,
      * since one would end the paragraph or list item. {@code (} and {@code )} are markup only after a {@code ]}, which
      * is escaped, or in an ordered list marker, and {@code _} is not emphasis inside a word, so those stay as they are.
+     * Each run of {@code @} is a code span instead: GFM links an email address, {@code mailto:} or {@code xmpp:} after
+     * escapes are resolved, so a backslash cannot stop it, but a code span splits the address and the copied text stays
+     * exact (#213 owner decision). Payer backticks are escaped, so they cannot close the span.
      */
     private static String literal(String text, String lineBreak, boolean lineStarts) {
         if (text == null) {
@@ -244,7 +248,7 @@ public final class ReportRenderer {
                 out.append(line.charAt(i));
             }
         }
-        return out.toString();
+        return AT_SIGNS.matcher(out).replaceAll("`$0`");
     }
 
     /** Whether the character at {@code i} could start markup; {@code ://} and {@code www.} make GFM link a bare URL. */
