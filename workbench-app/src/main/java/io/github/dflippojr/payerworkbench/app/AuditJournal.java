@@ -189,21 +189,23 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
-    /** Runs between creating the directory and its real-path recheck; replaceable so a test can swap an ancestor. */
+    /** Runs at each {@link Stage} of {@link #prepareDirectory}; replaceable so a test can swap a link there. */
     @FunctionalInterface
-    interface AfterCreate {
-        void run(Path dir) throws IOException;
+    interface Interleave {
+        enum Stage { BEFORE_CREATE, AFTER_CREATE }
+
+        void at(Stage stage, Path dir) throws IOException;
     }
 
     static Path prepareDirectory(String directory) throws IOException {
-        return prepareDirectory(directory, dir -> { });
+        return prepareDirectory(directory, (stage, dir) -> { });
     }
 
     /**
      * Returns the checked real path. Every later operation uses it, so re-pointing a link on the configured
      * path after open cannot move writes or retention deletes somewhere the guard never judged.
      */
-    static Path prepareDirectory(String directory, AfterCreate afterCreate) throws IOException {
+    static Path prepareDirectory(String directory, Interleave interleave) throws IOException {
         Path dir;
         try {
             dir = Path.of(directory);
@@ -228,6 +230,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
             throw new UnsafeJournalException("invalid_path");
         }
         rejectCheckout(existing.toRealPath());
+        interleave.at(Interleave.Stage.BEFORE_CREATE, dir);
         int levels = dir.getNameCount() - existing.getNameCount();
         boolean posix = Files.getFileStore(dir.getRoot()).supportsFileAttributeView("posix");
         if (Files.exists(dir)) {
@@ -248,7 +251,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         for (int i = 0; i < levels; i++, level = level.getParent()) {
             made.add(ownershipKey(level));
         }
-        afterCreate.run(dir);
+        interleave.at(Interleave.Stage.AFTER_CREATE, dir);
         // An ancestor swapped for a link while the directory was created is caught here.
         Path real = recheckRealPath(dir, made);
         if (!ownerOnly(real, posix)) {

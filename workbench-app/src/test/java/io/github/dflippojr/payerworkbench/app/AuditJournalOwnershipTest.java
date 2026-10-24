@@ -226,14 +226,59 @@ class AuditJournalOwnershipTest {
 
         // Both directories are made outside any checkout; the race then moves them in behind a link.
         IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(
-                parent.resolve("j1").toString(), made -> {
-                    Files.move(parent, checkout.resolve("parent"));
-                    Files.createSymbolicLink(parent, checkout.resolve("parent"));
+                parent.resolve("j1").toString(), (stage, dir) -> {
+                    if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                        Files.move(parent, checkout.resolve("parent"));
+                        Files.createSymbolicLink(parent, checkout.resolve("parent"));
+                    }
                 }));
         assertEquals("inside_checkout", refused.getMessage());
         try (var left = Files.list(checkout)) {
             assertEquals(List.of(checkout.resolve("pom.xml")), left.toList());
         }
+    }
+
+    @Test
+    void aliasRepointedBeforeCreationCannotRedirectCreationOrCleanup() throws Exception {
+        Path outside = Files.createDirectory(tmp.resolve("before-1"));
+        Path checkout = Files.createDirectories(tmp.resolve("before-checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path theirs = Files.createDirectory(checkout.resolve("parent"));
+        Path current = link(tmp.resolve("before-current"), outside);
+
+        // The guard judged outside; a re-point after that must not create in, or clean up, the checkout.
+        Path dir = AuditJournal.prepareDirectory(current.resolve("parent/j1").toString(), (stage, d) -> {
+            if (stage == AuditJournal.Interleave.Stage.BEFORE_CREATE) {
+                Files.delete(current);
+                Files.createSymbolicLink(current, checkout);
+            }
+        });
+        assertEquals(outside.toRealPath().resolve("parent/j1"), dir);
+        assertTrue(Files.isDirectory(theirs));
+        try (var left = Files.list(theirs)) {
+            assertEquals(List.of(), left.toList());
+        }
+    }
+
+    @Test
+    void cleanupAfterARefusalNeverRemovesDirectoriesItDidNotMake() throws Exception {
+        Path checkout = Files.createDirectories(tmp.resolve("theirs-checkout"));
+        Files.writeString(checkout.resolve("pom.xml"), "<project/>");
+        Path theirs = Files.createDirectories(checkout.resolve("parent/j1"));
+        Path scratch = Files.createDirectory(tmp.resolve("scratch-theirs"));
+        link(tmp.resolve("probe-theirs"), scratch);
+        Path parent = scratch.resolve("parent");
+
+        // The directories this opener made move away; empty look-alikes in a checkout take their place.
+        IOException refused = assertThrows(IOException.class, () -> AuditJournal.prepareDirectory(
+                parent.resolve("j1").toString(), (stage, dir) -> {
+                    if (stage == AuditJournal.Interleave.Stage.AFTER_CREATE) {
+                        Files.move(parent, tmp.resolve("moved-away"));
+                        Files.createSymbolicLink(parent, checkout.resolve("parent"));
+                    }
+                }));
+        assertEquals("inside_checkout", refused.getMessage());
+        assertTrue(Files.isDirectory(theirs));
     }
 
     @Test
