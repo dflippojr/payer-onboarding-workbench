@@ -78,20 +78,31 @@ class MalformedEncodingPropertyTest {
     }
 
     @Property(tries = 100)
-    void malformedQueryParameterIsInvalidRequest(@ForAll("malformedEncoding") String encoded) {
-        MockPayer.HttpError error = assertThrows(MockPayer.HttpError.class,
-                () -> MockPayer.Request.formParameters("delayMs=" + encoded));
-
-        assertEquals(400, error.status());
+    void malformedQueryParameterIsInvalidRequest(@ForAll("malformedEncoding") String encoded) throws Exception {
+        assertInvalidRequest(assertThrows(MockPayer.HttpError.class,
+                () -> MockPayer.Request.formParameters("delayMs=" + encoded)));
     }
 
     /** URLDecoder decodes {@code %+1} as 0x01, so only the RFC 3986 check rejects it: pinned here, not left to chance. */
     @Example
-    void signedHexEscapeIsRejectedLikeAnyOtherMalformedEscape() {
-        MockPayer.HttpError error = assertThrows(MockPayer.HttpError.class,
-                () -> MockPayer.Request.formParameters("delayMs=%+1"));
+    void signedHexEscapeIsRejectedLikeAnyOtherMalformedEscape() throws Exception {
+        assertInvalidRequest(assertThrows(MockPayer.HttpError.class,
+                () -> MockPayer.Request.formParameters("delayMs=%+1")));
+    }
 
+    /** A pair with no {@code =} is a name with an empty value, and a malformed name is rejected too. */
+    @Example
+    void pairWithoutEqualsIsANameWithAnEmptyValue() throws Exception {
+        assertEquals("", MockPayer.Request.formParameters("flag").get("flag"));
+        assertInvalidRequest(assertThrows(MockPayer.HttpError.class, () -> MockPayer.Request.formParameters("%zz")));
+    }
+
+    /** The 400 a malformed escape gets: the fixed code, the status, and no Java class name in the body. */
+    private static void assertInvalidRequest(MockPayer.HttpError error) throws Exception {
         assertEquals(400, error.status());
+        String body = error.response(MAPPER).body();
+        assertEquals("invalid_request", MAPPER.readTree(body).path("error").asText(), body);
+        assertFalse(body.contains("java."), body);
     }
 
     private static void assertClientError(HttpResponse<String> response, int status, String error) throws Exception {
