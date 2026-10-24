@@ -304,6 +304,10 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         if (shutdown) {
             throw new UncheckedIOException("Audit journal write failed", new IOException("journal_closed"));
         }
+        // FileChannel is interruptible: with the caller's interrupt flag set (a request thread at shutdown, a
+        // run whose payer-lock wait was interrupted) write and force close the channel and throw. Write with
+        // the flag cleared and hand it back afterwards.
+        boolean interrupted = Thread.interrupted();
         try {
             byte[] line = (mapper.writeValueAsString(event) + "\n").getBytes(StandardCharsets.UTF_8);
             maybeRetention();
@@ -311,6 +315,10 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         } catch (IOException | RuntimeException e) {
             abandonActive();
             throw new UncheckedIOException("Audit journal write failed", new IOException("write_failed"));
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
