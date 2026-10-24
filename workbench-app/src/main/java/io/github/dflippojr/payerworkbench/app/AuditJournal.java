@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -296,14 +297,15 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     }
 
     /**
-     * Removes the {@code made} paths innermost first, while each still resolves to itself and is empty. Judged
-     * by path, not file key (Windows has none): a directory moved elsewhere, or a link now in its place, is
-     * left alone, so cleanup never acts through a link and behaves the same on every platform.
+     * Removes the {@code made} paths innermost first, while each is still a directory that resolves to itself
+     * and is empty. Judged by path, not file key (Windows has none): a directory moved elsewhere, or a link or
+     * file now in its place, is left alone, so cleanup never acts through a link and behaves the same on every
+     * platform.
      */
     private static void removeMade(List<Path> made) {
         try {
             for (Path p : made.reversed()) {
-                if (!p.toRealPath().equals(p)) {
+                if (!Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS) || !p.toRealPath().equals(p)) {
                     return;
                 }
                 Files.delete(p);
