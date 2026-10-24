@@ -98,7 +98,7 @@ class AuthChecksTest {
         @Test
         void onlyBearerInAnySpellingPasses() {
             Random random = new Random(218L);
-            String alphabet = "BEARbear DPoMAC\t-_é";
+            String alphabet = "BEARbear DPoMAC\t-_é ";
             for (int i = 0; i < 2_000; i++) {
                 StringBuilder type = new StringBuilder();
                 for (int length = random.nextInt(9); length > 0; length--) {
@@ -108,7 +108,7 @@ class AuthChecksTest {
                 var run = healthy();
                 run.tokenResponse = new TokenResponseMetadata(true, value, 300L, List.of("system/*.read"), null, null);
                 Finding f = assertOnly(check.evaluate(run.build()));
-                boolean bearer = value.trim().equalsIgnoreCase("bearer");
+                boolean bearer = value.strip().equalsIgnoreCase("bearer");
                 assertEquals(bearer ? Severity.PASS : Severity.WARN, f.severity(), () -> "token_type \"" + value + "\"");
             }
         }

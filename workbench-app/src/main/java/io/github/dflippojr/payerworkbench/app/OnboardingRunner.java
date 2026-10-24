@@ -658,10 +658,16 @@ public class OnboardingRunner {
             if (callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN) {
                 return callFailed("Token request", e);
             }
-            return accepted ? Outcome.pass("Got a " + tokenResponse.tokenType() + " access token for client "
+            return accepted ? Outcome.pass("Got " + tokenKind(tokenResponse.tokenType()) + " for client "
                     + record.clientId() + " (" + (tokenResponse.expiresInSeconds() == null ? "no usable expires_in"
                             : "expires in " + tokenResponse.expiresInSeconds() + " s") + "; value hidden)")
                     : Outcome.fail("The SDK could not authenticate: " + failureMessage());
+        }
+
+        /** The token as the Authenticate summary names it: its type, or that the response named none (#218). */
+        private static String tokenKind(String tokenType) {
+            return tokenType == null || tokenType.isBlank() ? "an access token with no token_type"
+                    : "a " + tokenType + " access token";
         }
 
         private TokenResponseMetadata tokenMetadata(PayerExchange event, boolean accepted) {

@@ -582,7 +582,7 @@ Standalone payers use plain HTTP by default. Add `--tls` to any standalone launc
 Faults break a payer. A `PayerBehaviour` instead varies it the way real payers legitimately differ. Pass one to any payer's builder (`NorthwindPayer.builder().behaviour(...)`); it is fixed for the payer's lifetime, and `PayerBehaviour.STANDARD` (the default) changes nothing. It covers:
 
 - the access-token format: opaque, JWT signed RS256 or ES256, a JWT whose `aud` names another server, or an 8 KiB token;
-- the token response: `token_type` case, `expires_in` as a string, extra fields, the `Content-Type`, or HTTP 200 with an OAuth `error` body;
+- the token response: `token_type` case, a missing `token_type` or one the SDK cannot use (DPoP, mac), `expires_in` as a string, extra fields, the `Content-Type`, or HTTP 200 with an OAuth `error` body;
 - hook authentication: enforced, or ignored entirely;
 - the payer's clock, which also moves its `Date` header;
 - a 307/308 redirect on one endpoint;
