@@ -237,3 +237,15 @@ test('an event line too long to hold whole counts as malformed, never as the eve
     assert.equal(result.stdout, '');
   } finally { rmSync(directory, { recursive: true }); }
 });
+
+test('a CRLF capture reads the same as an LF one, including its gap warnings', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'audit-crlf-'));
+  try {
+    const file = join(directory, 'capture.log');
+    writeFileSync(file, [line(event()), warning(GAP)].join('\r\n') + '\r\n');
+    const result = cli(file);
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, 'Audit gap warnings: 1\n');
+    assert.deepEqual(result.stdout.trim().split('\n').map(JSON.parse), [event()]);
+  } finally { rmSync(directory, { recursive: true }); }
+});

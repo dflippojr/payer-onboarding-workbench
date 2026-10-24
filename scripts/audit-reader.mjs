@@ -4,7 +4,6 @@ import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 // Preserve Java Instant nanoseconds when applying inclusive boundaries.
@@ -105,8 +104,8 @@ export async function verify(dir, write) {
     let status = 'ok';
     if (!entry) status = 'unsealed';
     else {
-      let bytes;
-      try { bytes = await readFile(join(dir, file)); } catch { bytes = null; }
+      let bytes = null;
+      try { bytes = await readFile(join(dir, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       if (bytes === null) status = 'missing';
       else if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) status = 'checksum_mismatch';
       else if (bytes.length > 0 && bytes[bytes.length - 1] !== 0x0a) status = 'truncated';
@@ -124,12 +123,43 @@ export async function verify(dir, write) {
   return problems;
 }
 
+// A line past MAX_LINE characters keeps only its first MAX_LINE characters, then TRUNCATED. Node cannot hold a string
+// past about 512 MiB, and a segment can be larger than that. TRUNCATED is not JSON whitespace, so a cut line never
+// parses as an event: an event line too long to hold counts as malformed.
+const MAX_LINE = 16 * 1024 * 1024;
+const TRUNCATED = '\u0000';
+
+// The lines of a file, read in chunks so memory stays bounded however long the file is.
+async function* fileLines(path) {
+  let text = '';
+  let cut = false;
+  for await (const chunk of createReadStream(path, { encoding: 'utf8' })) {
+    const parts = chunk.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        yield lineText(text, cut);
+        text = '';
+        cut = false;
+      }
+      const room = MAX_LINE - text.length;
+      if (parts[i].length > room) cut = true;
+      text += parts[i].slice(0, room);
+    }
+  }
+  yield lineText(text, cut);
+}
+
+// A capture log may have CRLF line ends; the line is the text before the carriage return.
+function lineText(text, cut) {
+  if (cut) return text + TRUNCATED;
+  return text.endsWith('\r') ? text.slice(0, -1) : text;
+}
+
+// Only a missing segment is skipped, because --verify reports it as `missing`. Any other read error ends the review.
 async function* journalLines(dir) {
   const manifest = await loadManifest(dir);
   for (const file of await journalSegments(dir, manifest)) {
-    let bytes;
-    try { bytes = await readFile(join(dir, file), 'utf8'); } catch { continue; } // --verify reports a missing segment
-    yield* bytes.split('\n');
+    try { yield* fileLines(join(dir, file)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 }
 
@@ -146,8 +176,7 @@ async function main() {
       }
       return;
     }
-    const lines = isDir ? journalLines(filters.file)
-      : createInterface({ input: createReadStream(filters.file), crlfDelay: Infinity });
+    const lines = isDir ? journalLines(filters.file) : fileLines(filters.file);
     let gaps = 0;
     const malformed = await review(lines, filters, line => process.stdout.write(line + '\n'), () => gaps++);
     if (malformed) {
