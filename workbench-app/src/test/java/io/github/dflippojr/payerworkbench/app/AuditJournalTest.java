@@ -346,6 +346,31 @@ class AuditJournalTest {
     }
 
     @Test
+    void anEventFromAnInterruptedThreadLandsInTheActiveSegmentAndKeepsTheFlag() throws Exception {
+        Path dir = tmp.resolve("journal");
+        AuditJournal journal = open(dir, DEFAULT, NOW);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AuditLog log = track(new AuditLog(journal, Clock.fixed(NOW, ZoneOffset.UTC), registry));
+        AuditEvent before = event(NOW, "before-interrupt");
+        AuditEvent during = event(NOW, "while-interrupted");
+        log.append(before);
+        Thread.currentThread().interrupt();
+        try {
+            log.append(during);
+        } finally {
+            assertTrue(Thread.interrupted(), "the caller's interrupt flag must survive the append");
+        }
+
+        assertEquals(List.of(dir.resolve("audit-000001.jsonl")), segments(dir), "no extra or empty segment");
+        String active = Files.readString(dir.resolve("audit-000001.jsonl"));
+        assertTrue(active.contains(before.eventId().toString()));
+        assertTrue(active.contains(during.eventId().toString()));
+        assertEquals(0, MAPPER.readTree(Files.readAllBytes(dir.resolve(AuditJournal.MANIFEST)))
+                .path("segments").size(), "the active segment is not sealed");
+        assertEquals(0, registry.get("workbench.audit.write.failures").counter().count());
+    }
+
+    @Test
     void auditLogFailsOpenWithWarningAndCounterWhenTheJournalCannotWrite(CapturedOutput output) throws Exception {
         Path dir = tmp.resolve("journal");
         AuditJournal journal = open(dir, new AuditJournal.Policy(Duration.ofDays(30), 300, 1_000_000), NOW);

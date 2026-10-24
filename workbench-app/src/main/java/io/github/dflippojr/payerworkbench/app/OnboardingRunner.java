@@ -11,10 +11,10 @@ import io.github.dflippojr.fhircrdrouter.client.CdsServiceDescriptor;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallException;
 import io.github.dflippojr.fhircrdrouter.client.PayerCallPhase;
 import io.github.dflippojr.fhircrdrouter.client.PayerExchange;
-import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformation;
 import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
+import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
@@ -53,6 +53,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -93,6 +94,9 @@ public class OnboardingRunner {
     public static final String CONNECTION_RECORD_CHECK = "connection.record";
     /** A step failed and no other check explains it. */
     public static final String STEP_FAILED_CHECK = "run.step-failed";
+    /** The discovery step's summary when services holds entries the SDK cannot map to a service. */
+    static final String UNREADABLE_SERVICES = "The payer's discovery document lists services that are not CDS "
+            + "service objects; see the discovery.services finding";
     /**
      * A payer response ran past {@code workbench.max-response-bytes}, so the workbench stopped reading it,
      * or held more than {@code workbench.max-response-json-values}, so it was not parsed.
@@ -252,18 +256,20 @@ public class OnboardingRunner {
     }
 
     /**
-     * Refuses a {@code slowResponseDelayMs} past {@link WorkbenchProperties#maxSlowResponseDelay()}: the
-     * workbench gives up on the hook call at {@code workbench.request-timeout}, but the mock payer would keep
-     * sleeping for the whole delay.
+     * Refuses a {@code slowResponseDelayMs} outside 0 to {@link WorkbenchProperties#maxSlowResponseDelay()}. Above the
+     * maximum, the workbench gives up on the hook call at {@code workbench.request-timeout} but the mock payer would
+     * keep sleeping for the whole delay. A negative delay reaches the mock payer's fault setup, which refuses it only
+     * after the payer lock and once a run id exists (#210), so both bounds are checked here, before any run starts.
      */
     private void checkSlowResponseDelay(RunRequest request) {
+        Long delay = request.slowResponseDelayMs();
         long max = properties.maxSlowResponseDelay().toMillis();
-        if (request.slowResponseDelayMs() != null && request.slowResponseDelayMs() > max) {
-            AuditContext audit = AuditContext.current();
-            if (audit != null) { audit.reasonCode = "invalid_slow_response_delay"; }
-            throw new IllegalArgumentException("slowResponseDelayMs must be at most " + max
-                    + " (workbench.request-timeout plus 1 s)");
-        }
+        if (delay == null || (delay >= 0 && delay <= max)) { return; }
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.reasonCode = "invalid_slow_response_delay"; }
+        throw new IllegalArgumentException(delay < 0
+                ? "slowResponseDelayMs must be between 0 and " + max + " (workbench.request-timeout plus 1 s)"
+                : "slowResponseDelayMs must be at most " + max + " (workbench.request-timeout plus 1 s)");
     }
 
     /** The payer was still held when the wait ended, or the wait was interrupted: no run is started. */
@@ -554,6 +560,11 @@ public class OnboardingRunner {
                 services = client.discoverServices(copy(record).authType(AuthType.NONE).build());
             } catch (PayerCallException e) {
                 return callFailed("Discovery", e);
+            } catch (RouterException e) {
+                // The payer answered, but the SDK could not read the body. Its message names neither the
+                // entry nor the field, so say what the response shows instead.
+                callFailure = e;
+                services = null;
             } catch (IllegalArgumentException e) {
                 // The SDK builds the URL before it sends anything, so no exchange exists to explain this.
                 callFailure = e;
@@ -564,6 +575,10 @@ public class OnboardingRunner {
                     discovery = ExchangeRecorder.adapt(events.getLast());
                 }
                 details.put("exchanges", exchangeViews(PayerCallPhase.DISCOVERY));
+            }
+            // The SDK maps a null entry to null rather than rejecting it.
+            if (services == null || services.stream().anyMatch(Objects::isNull)) {
+                return Outcome.fail(unreadableDiscovery());
             }
             List<Map<String, Object>> listed = new ArrayList<>();
             for (CdsServiceDescriptor service : services) {
@@ -600,6 +615,20 @@ public class OnboardingRunner {
             return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
 
+        private String unreadableDiscovery() {
+            JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
+            if (json == null) {
+                return "The payer's discovery response is not JSON the client library can read";
+            }
+            for (JsonNode service : json.path("services")) {
+                if (!service.isObject()) {
+                    return UNREADABLE_SERVICES;
+                }
+            }
+            return "The client library could not read the payer's discovery document: a service's hook, id, title "
+                    + "or description is not a string, or its prefetch is not an object of query strings";
+        }
+
         private Outcome authenticate(Map<String, Object> details) {
             details.put("authType", record.authType().name());
             invokeHook();
@@ -630,8 +659,10 @@ public class OnboardingRunner {
             // TOKEN and HOOK events into their separate timeline steps below.
             try {
                 response = client.callHook(record, serviceId, loaded.request());
-            } catch (RouterException | IllegalArgumentException e) {
+            } catch (RuntimeException e) {
                 // IllegalArgumentException: the SDK could not build the request URL, so nothing was sent.
+                // Anything else may come from reading an answered response, such as the NullPointerException
+                // a null card raises (#208); the recorded exchange below still goes to the later steps.
                 callFailure = e;
             }
             List<PayerExchange> hooks = recorder.events(PayerCallPhase.HOOK);
@@ -658,10 +689,16 @@ public class OnboardingRunner {
             if (callFailure instanceof PayerCallException e && e.phase() == PayerCallPhase.TOKEN) {
                 return callFailed("Token request", e);
             }
-            return accepted ? Outcome.pass("Got a " + tokenResponse.tokenType() + " access token for client "
+            return accepted ? Outcome.pass("Got " + tokenKind(tokenResponse.tokenType()) + " for client "
                     + record.clientId() + " (" + (tokenResponse.expiresInSeconds() == null ? "no usable expires_in"
                             : "expires in " + tokenResponse.expiresInSeconds() + " s") + "; value hidden)")
                     : Outcome.fail("The SDK could not authenticate: " + failureMessage());
+        }
+
+        /** The token as the Authenticate summary names it: its type, or that the response named none (#218). */
+        private static String tokenKind(String tokenType) {
+            return tokenType == null || tokenType.isBlank() ? "an access token with no token_type"
+                    : "a " + tokenType + " access token";
         }
 
         private TokenResponseMetadata tokenMetadata(PayerExchange event, boolean accepted) {
@@ -721,8 +758,25 @@ public class OnboardingRunner {
                     + exchange.latency().toMillis() + " ms");
         }
 
+        /** Names a {@code field} that is not a list of objects, such as "card 1 is not a JSON object". */
+        private static String listProblem(JsonNode json, String field, String name) {
+            JsonNode list = json.path(field);
+            if (!list.isArray()) {
+                return list.isMissingNode() || list.isNull() ? null : field + " is not an array";
+            }
+            for (int i = 0; i < list.size(); i++) {
+                if (!list.get(i).isObject()) {
+                    return name + " " + (i + 1) + " is not a JSON object";
+                }
+            }
+            return null;
+        }
+
         private String failureMessage() {
-            return callFailure == null ? "No HTTP exchange observed" : callFailure.getMessage();
+            if (callFailure == null) {
+                return "No HTTP exchange observed";
+            }
+            return callFailure.getMessage() == null ? callFailure.getClass().getSimpleName() : callFailure.getMessage();
         }
 
         private List<ExchangeView> exchangeViews(PayerCallPhase phase) {
@@ -752,6 +806,11 @@ public class OnboardingRunner {
             }
             if (!json.path("cards").isArray()) {
                 return Outcome.fail("The hook response has no cards array");
+            }
+            String problem = Optional.ofNullable(listProblem(json, "cards", "card"))
+                    .orElseGet(() -> listProblem(json, "systemActions", "system action"));
+            if (problem != null) {
+                return Outcome.fail("The hook response's " + problem);
             }
             if (response == null) {
                 return Outcome.fail("The client library could not read the response: " + failureMessage());
@@ -900,12 +959,27 @@ public class OnboardingRunner {
          */
         private Optional<Finding> brokenStepFinding() {
             return steps.stream().filter(s -> !s.ok() && !DIAGNOSTICS.equals(s.stepId())).findFirst().map(step ->
-                    new Finding(STEP_FAILED_CHECK, Severity.FAIL,
-                            RunVerdict.title(step.stepId()) + " failed with no payer response to diagnose",
-                            "The run stopped at this step before the payer answered, so none of the checks that read "
-                                    + "payer responses had anything to say.",
-                            "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
-                            "Fix what the summary names and run again. The step's details show what was attempted."));
+                    answered(step)
+                            ? new Finding(STEP_FAILED_CHECK, Severity.FAIL,
+                                    RunVerdict.title(step.stepId()) + " failed after the payer answered",
+                                    "The payer answered this step, but the run stopped here and no check that reads "
+                                            + "payer responses named the cause.",
+                                    "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
+                                    "Fix what the summary names and run again. The step's details show the "
+                                            + "payer's response.")
+                            : new Finding(STEP_FAILED_CHECK, Severity.FAIL,
+                                    RunVerdict.title(step.stepId()) + " failed with no payer response to diagnose",
+                                    "The run stopped at this step before the payer answered, so none of the checks "
+                                            + "that read payer responses had anything to say.",
+                                    "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
+                                    "Fix what the summary names and run again. The step's details show what was "
+                                            + "attempted."));
+        }
+
+        /** Whether the step recorded an HTTP response from the payer. */
+        private static boolean answered(StepResult step) {
+            return step.details().get("exchanges") instanceof List<?> exchanges && exchanges.stream()
+                    .anyMatch(e -> e instanceof ExchangeView view && view.status() != HttpExchange.NO_RESPONSE);
         }
 
         // ---- helpers ----

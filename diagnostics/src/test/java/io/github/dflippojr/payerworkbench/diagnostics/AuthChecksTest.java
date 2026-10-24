@@ -25,7 +25,9 @@ import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
 import java.util.UUID;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -41,6 +43,74 @@ class AuthChecksTest {
         @Test
         void issuedTokenPasses() {
             assertOnly(check.evaluate(healthy().build()), Severity.PASS);
+        }
+
+        /** RFC 6749 §5.1 makes token_type REQUIRED; a blank one says nothing either (#218). */
+        @Test
+        void missingTokenTypeWarns() {
+            for (String type : Arrays.asList(null, "", "  ")) {
+                var run = healthy();
+                run.tokenResponse = new TokenResponseMetadata(true, type, 300L, List.of("system/*.read"), null, null);
+                Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+                assertEquals("Token response lacks token_type", f.title(), String.valueOf(type));
+                assertEquals("An access token was issued, but the response does not say its token_type. RFC 6749 §5.1 "
+                        + "makes token_type REQUIRED, and §7.1 says a client must not use an access token whose type it "
+                        + "does not understand. The router SDK sends every token as Bearer whatever the response says, "
+                        + "so the client cannot tell whether the payer accepts it that way.", f.explanation(),
+                        String.valueOf(type));
+                assertTrue(f.suggestedFix().startsWith("Ask the payer to return token_type"), f::suggestedFix);
+            }
+            var run = healthy();
+            run.tokenResponse = new TokenResponseMetadata(true, null, 300L, List.of("system/*.read"), null, null);
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.WARN).evidence().contains(", token_type=null, "));
+        }
+
+        /** The router SDK implements only Bearer, so a DPoP or mac token it would send as Bearer is not one it can use (#218). */
+        @Test
+        void tokenTypeOtherThanBearerWarns() {
+            for (String type : List.of("DPoP", "mac", "Basic", "Bearer2", "Bearer x")) {
+                var run = healthy();
+                run.tokenResponse = new TokenResponseMetadata(true, type, 300L, List.of("system/*.read"), null, null);
+                Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+                assertEquals("Token response's token_type is not Bearer", f.title(), type);
+                assertEquals("An access token was issued with token_type \"" + type + "\". The router SDK implements "
+                        + "only Bearer: it sends every token as Authorization: Bearer, so a token bound to another type, "
+                        + "such as DPoP or mac, is likely to be refused at the hook call.", f.explanation(), type);
+                assertTrue(f.suggestedFix().contains("Bearer"), f::suggestedFix);
+            }
+        }
+
+        /** The type is case insensitive (RFC 6749 §5.1), and surrounding spaces do not change what the SDK sends. */
+        @Test
+        void bearerInAnyCaseWithSpacesPasses() {
+            for (String type : List.of("Bearer", "bearer", "BEARER", " Bearer ")) {
+                var run = healthy();
+                run.tokenResponse = new TokenResponseMetadata(true, type, 300L, List.of("system/*.read"), null, null);
+                assertOnly(check.evaluate(run.build()), Severity.PASS);
+            }
+        }
+
+        /**
+         * The class-level check for #218: auth.token never PASSes a token_type it cannot vouch for, whatever the
+         * payer sends. A value no branch names must not pass by default, so this sweeps seeded random strings over
+         * Bearer's letters and separators, plus the awkward ones (blanks, tabs, non-ASCII), and checks every one.
+         */
+        @Test
+        void onlyBearerInAnySpellingPasses() {
+            Random random = new Random(218L);
+            String alphabet = "BEARbear DPoMAC\t-_é ";
+            for (int i = 0; i < 2_000; i++) {
+                StringBuilder type = new StringBuilder();
+                for (int length = random.nextInt(9); length > 0; length--) {
+                    type.append(alphabet.charAt(random.nextInt(alphabet.length())));
+                }
+                String value = type.toString();
+                var run = healthy();
+                run.tokenResponse = new TokenResponseMetadata(true, value, 300L, List.of("system/*.read"), null, null);
+                Finding f = assertOnly(check.evaluate(run.build()));
+                boolean bearer = value.strip().equalsIgnoreCase("bearer");
+                assertEquals(bearer ? Severity.PASS : Severity.WARN, f.severity(), () -> "token_type \"" + value + "\"");
+            }
         }
 
         @Test

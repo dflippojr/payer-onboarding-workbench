@@ -141,8 +141,13 @@ public final class NorthwindPayer extends MockPayer {
         if (colon < 0) {
             throw invalidClient("Malformed Basic credentials");
         }
-        Map<String, String> parts = Request.formParameters(
-                "id=" + decoded.substring(0, colon) + "&secret=" + decoded.substring(colon + 1));
+        Map<String, String> parts;
+        try {
+            parts = Request.formParameters(
+                    "id=" + decoded.substring(0, colon) + "&secret=" + decoded.substring(colon + 1));
+        } catch (HttpError e) {
+            throw invalidClient("Malformed Basic credentials");
+        }
         String expected = clientSecrets.get(parts.get("id"));
         if (expected == null || !MessageDigest.isEqual(
                 expected.getBytes(StandardCharsets.UTF_8), parts.get("secret").getBytes(StandardCharsets.UTF_8))) {

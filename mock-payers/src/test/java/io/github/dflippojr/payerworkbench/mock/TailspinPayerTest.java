@@ -118,6 +118,15 @@ class TailspinPayerTest {
             assertEquals(404, request(payer, "GET", "/missing", null).statusCode());
         }
     }
+    @Test void malformedPercentEncodingInTokenBodyIsInvalidRequestNotServerError() throws Exception {
+        try (TailspinPayer payer = TailspinPayer.builder().build().start(0)) {
+            HttpResponse<String> response = request(payer, "POST", TailspinPayer.TOKEN_PATH, "grant_type=client_credentials&x=%zz");
+
+            assertEquals(400, response.statusCode(), response.body());
+            assertEquals("invalid_request", MAPPER.readTree(response.body()).path("error").asText());
+            assertFalse(response.body().contains("java."), response.body());
+        }
+    }
     @Test void launcherRegistersClientAndSupportsTlsAndPublicUrl() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         PrintStream out = new PrintStream(output, true, StandardCharsets.UTF_8);

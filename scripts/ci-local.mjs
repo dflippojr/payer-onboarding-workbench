@@ -2,11 +2,12 @@
 // The full CI gate on your machine: npm run ci:local. Node 22+, JDK 21 on JAVA_HOME,
 // Docker running (crd-reference job), and bash (Git Bash on Windows). Runs every run: step of .github/workflows/ci.yml in
 // the same order through bash, stops at the first failure, still runs the
-// if: always() steps (so the UI instance is stopped), then exits non-zero.
+// if: always() steps (so the UI instance is stopped), then exits non-zero. A SIGINT or
+// SIGTERM (Ctrl+C) stops the run the same way and exits 130 or 143.
 // scripts/ci-local.test.mjs fails when this list drifts from ci.yml. The hl7-validator
 // steps also need curl and sha256sum, and the first run downloads about 3.5 GB of FHIR
 // packages into ~/.cache/hl7-validator.
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,32 +62,53 @@ export const steps = [
   },
 ];
 
-const bash = command => {
-  const result = spawnSync('bash', ['-c', command], { cwd: root, stdio: 'inherit' });
-  if (result.error) console.error(`    ${result.error.message}`);
-  return result.status ?? 1;
-};
+// Exit status of a run that a signal stopped: 128 + the signal number, as a shell reports it.
+const signalExit = { SIGINT: 130, SIGTERM: 143 };
 
-// Returns the name of the first failed step, or null when every step passed.
-export function runSteps(list = steps, exec = bash, log = console.log) {
+// Async, so the event loop can receive a signal while a step runs.
+const bash = command => new Promise(finish => {
+  const child = spawn('bash', ['-c', command], { cwd: root, stdio: 'inherit' });
+  child.on('error', error => {
+    console.error(`    ${error.message}`);
+    finish(1);
+  });
+  child.on('close', status => finish(status ?? 1));
+});
+
+// Resolves to { failed, exitCode }: failed is the name of the first failed step, or null when every
+// step passed. A signal skips the remaining steps, counts the running step as failed, and still runs
+// the always steps. A signal sent to the whole process group (Ctrl+C) also reaches the running step;
+// one sent only to this runner waits for that step to finish.
+export async function runSteps(list = steps, exec = bash, log = console.log) {
   let failed = null;
-  for (const [index, step] of list.entries()) {
-    const label = step.name ?? step.run;
-    if (failed && !step.always) {
-      log(`\n--  ${index + 1}/${list.length} skipped: ${label}`);
-      continue;
+  let signal = null;
+  const handlers = Object.keys(signalExit).map(name => [name, () => {
+    if (signal) return;
+    signal = name;
+    log(`\n${name} received: skipping the remaining steps, still running the always steps`);
+  }]);
+  for (const [name, handler] of handlers) process.on(name, handler);
+  try {
+    for (const [index, step] of list.entries()) {
+      const label = step.name ?? step.run;
+      if (failed && !step.always) {
+        log(`\n--  ${index + 1}/${list.length} skipped: ${label}`);
+        continue;
+      }
+      log(`\n==> ${index + 1}/${list.length} ${label}\n    $ ${step.run}`);
+      const started = Date.now();
+      const status = await exec(step.run);
+      log(`    ${status === 0 ? 'ok' : `FAILED (exit ${status})`} in ${Math.round((Date.now() - started) / 1000)} s`);
+      if (status !== 0 || signal) failed ??= label;
     }
-    log(`\n==> ${index + 1}/${list.length} ${label}\n    $ ${step.run}`);
-    const started = Date.now();
-    const status = exec(step.run);
-    log(`    ${status === 0 ? 'ok' : `FAILED (exit ${status})`} in ${Math.round((Date.now() - started) / 1000)} s`);
-    if (status !== 0) failed ??= label;
+  } finally {
+    for (const [name, handler] of handlers) process.off(name, handler);
   }
-  return failed;
+  return { failed, exitCode: signal ? signalExit[signal] : failed ? 1 : 0 };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const failed = runSteps();
+  const { failed, exitCode } = await runSteps();
   console.log(failed ? `\nci:local FAILED at: ${failed}` : '\nci:local passed: every ci.yml step succeeded');
-  process.exitCode = failed ? 1 : 0;
+  process.exitCode = exitCode;
 }

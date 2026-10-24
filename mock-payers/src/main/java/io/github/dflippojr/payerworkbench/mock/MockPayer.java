@@ -264,7 +264,10 @@ public abstract class MockPayer implements AutoCloseable {
             } catch (HttpError e) {
                 response = e.response(mapper);
             } catch (RuntimeException e) {
-                response = Response.json(mapper, 500, error("server_error", "Unexpected error: " + e));
+                // The body names no exception class: the log keeps the detail, the client gets none of it.
+                LOG.log(System.Logger.Level.ERROR,
+                        displayName() + " failed on " + exchange.getRequestURI().getRawPath(), e);
+                response = Response.json(mapper, 500, error("server_error", "Unexpected error"));
             }
             if (requestId != null) {
                 response = response.withHeader(REQUEST_ID_HEADER, requestId);
@@ -567,7 +570,10 @@ public abstract class MockPayer implements AutoCloseable {
         if (behaviour.tokenErrorWith200()) {
             body = error("invalid_client", "Client authentication failed");
         } else {
-            body = mapper.createObjectNode().put("access_token", accessToken).put("token_type", behaviour.tokenType());
+            body = mapper.createObjectNode().put("access_token", accessToken);
+            if (behaviour.tokenType() != null) {
+                body.put("token_type", behaviour.tokenType());
+            }
             switch (behaviour.expiresIn()) {
                 case NUMBER -> body.put("expires_in", expiresInSeconds);
                 case NUMERIC_STRING -> body.put("expires_in", String.valueOf(expiresInSeconds));
@@ -750,6 +756,8 @@ public abstract class MockPayer implements AutoCloseable {
     /** An incoming request with its body already read. Header lookup is case-insensitive. */
     protected record Request(String method, String path, String rawQuery, Map<String, String> headers, String body) {
 
+        private static final Pattern MALFORMED_ESCAPE = Pattern.compile("%(?![0-9A-Fa-f]{2})");
+
         static Request from(HttpExchange exchange) throws IOException {
             Map<String, String> headers = new LinkedHashMap<>();
             exchange.getRequestHeaders().forEach((name, values) ->
@@ -789,11 +797,23 @@ public abstract class MockPayer implements AutoCloseable {
             }
             for (String pair : encoded.split("&")) {
                 int eq = pair.indexOf('=');
-                String name = URLDecoder.decode(eq < 0 ? pair : pair.substring(0, eq), StandardCharsets.UTF_8);
-                String value = eq < 0 ? "" : URLDecoder.decode(pair.substring(eq + 1), StandardCharsets.UTF_8);
+                String name = formDecode(eq < 0 ? pair : pair.substring(0, eq));
+                String value = eq < 0 ? "" : formDecode(pair.substring(eq + 1));
                 params.putIfAbsent(name, value);
             }
             return params;
+        }
+
+        /**
+         * A malformed escape such as {@code %zz} is the caller's bad request (#219), never a server fault.
+         * RFC 3986 needs {@code %} then two hex digits; {@link URLDecoder} would also take {@code %+1}, so it is
+         * checked first.
+         */
+        private static String formDecode(String text) {
+            if (MALFORMED_ESCAPE.matcher(text).find()) {
+                throw new HttpError(400, "invalid_request", "Malformed percent-encoding in form data");
+            }
+            return URLDecoder.decode(text, StandardCharsets.UTF_8);
         }
     }
 

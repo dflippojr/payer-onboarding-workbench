@@ -128,4 +128,32 @@ class HookFailureChecksTest {
                 Map.of("Retry-After", List.of(Fixtures.httpDate(Fixtures.NOW))), "{}").build()), Severity.FAIL);
         assertTrue(finding.suggestedFix().contains("Wait until " + Fixtures.NOW));
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Thursday, 01-Oct-26 12:00:30 GMT", "Thu Oct  1 12:00:30 2026"})
+    void obsoleteRetryAfterFormWaitsTheSameDelay(String retry) {
+        var obs = run(429, Map.of("Retry-After", List.of(retry), "Date", List.of(Fixtures.httpDate(Fixtures.NOW))),
+                "{\"error\":\"rate_limited\"}").build();
+        var finding = Fixtures.assertOnly(new RateLimitCheck().evaluate(obs), Severity.FAIL);
+        assertTrue(finding.suggestedFix().contains("Wait at least 30 seconds"), finding.suggestedFix());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Thursday, 01-Oct-26 12:00:00 GMT", "Thu Oct  1 12:00:00 2026"})
+    void obsoletePayerDateFormGivesTheSameDelayWindow(String date) {
+        var obs = run(429, Map.of("Retry-After", List.of(Fixtures.httpDate(Fixtures.NOW.plusSeconds(30))),
+                "Date", List.of(date)), "{\"error\":\"rate_limited\"}").build();
+        var finding = Fixtures.assertOnly(new RateLimitCheck().evaluate(obs), Severity.FAIL);
+        assertTrue(finding.suggestedFix().contains("Wait at least 30 seconds"), finding.suggestedFix());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Thursday, 01-Oct-26 12:00:30 PST", "Thursday, 01-Oct-26 12:00:30",
+        "Friday, 01-Oct-26 12:00:30 GMT", "Thu Oct 32 12:00:30 2026", "Friday, 29-Feb-25 12:00:30 GMT",
+        "Fri Feb 29 12:00:30 2025"})
+    void malformedHttpDateIsStillNotUsable(String retry) {
+        var finding = Fixtures.assertOnly(new RateLimitCheck().evaluate(run(429,
+                Map.of("Retry-After", List.of(retry)), "{}").build()), Severity.FAIL);
+        assertTrue(finding.suggestedFix().contains("No usable Retry-After delay"), finding.suggestedFix());
+    }
 }

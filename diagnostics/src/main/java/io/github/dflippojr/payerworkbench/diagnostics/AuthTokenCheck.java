@@ -13,9 +13,10 @@ import java.util.regex.Pattern;
 /**
  * {@code auth.token}: the OAuth2 token endpoint issued a usable access token. Reports
  * rejected clients (401 / {@code invalid_client}), {@code invalid_scope}, other
- * token errors, an unreachable endpoint, and a missing or unusable {@code expires_in}. A numeric-string
- * {@code expires_in} passes with a note, as the router SDK accepts it (fhir-crd-router#105, #177); a
- * fractional one warns, and says the SDK truncates and caches it.
+ * token errors, an unreachable endpoint, a missing {@code token_type} or one other than Bearer (the router
+ * SDK sends every token as Bearer, so it cannot use another type; #218), and a missing or unusable
+ * {@code expires_in}. A numeric-string {@code expires_in} passes with a note, as the router SDK accepts it
+ * (fhir-crd-router#105, #177); a fractional one warns, and says the SDK truncates and caches it.
  */
 public final class AuthTokenCheck implements DiagnosticCheck {
 
@@ -101,6 +102,28 @@ public final class AuthTokenCheck implements DiagnosticCheck {
                     evidence,
                     "Confirm the request uses grant_type=client_credentials and ask the payer why no token "
                             + "was issued."));
+        }
+        // Checked before expires_in: the type decides how the token is sent, so a wrong one matters more.
+        String tokenType = token.tokenType() == null ? "" : token.tokenType().strip();
+        if (tokenType.isEmpty()) {
+            return List.of(new Finding(CHECK_ID, Severity.WARN, "Token response lacks token_type",
+                    "An access token was issued, but the response does not say its token_type. RFC 6749 §5.1 "
+                            + "makes token_type REQUIRED, and §7.1 says a client must not use an access token whose type it "
+                            + "does not understand. The router SDK sends every token as Bearer whatever the response says, "
+                            + "so the client cannot tell whether the payer accepts it that way.",
+                    evidence,
+                    "Ask the payer to return token_type: \"Bearer\" in the token response, as RFC 6749 §5.1 and SMART "
+                            + "Backend Services require. The router SDK sends the token as Bearer either way."));
+        }
+        if (!"bearer".equalsIgnoreCase(tokenType)) {
+            return List.of(new Finding(CHECK_ID, Severity.WARN, "Token response's token_type is not Bearer",
+                    "An access token was issued with token_type \"" + token.tokenType() + "\". The router SDK implements "
+                            + "only Bearer: it sends every token as Authorization: Bearer, so a token bound to another type, "
+                            + "such as DPoP or mac, is likely to be refused at the hook call.",
+                    evidence,
+                    "Ask the payer to issue a Bearer token (SMART Backend Services fixes the type as bearer). The router "
+                            + "SDK cannot send a DPoP or mac token, so hook calls on this connection may fail until the payer "
+                            + "does."));
         }
         if (token.expiresInSeconds() == null) {
             String sent = token.expiresInSent();

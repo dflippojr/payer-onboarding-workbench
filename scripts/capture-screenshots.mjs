@@ -13,11 +13,12 @@
 // It fails if a run is missing the finding its screenshot is meant to show, and it
 // only stops the app and browser processes it started. Synthetic payers only.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findAppJar } from './workbench-lifecycle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'docs', 'screenshots');
@@ -225,9 +226,7 @@ async function main() {
     const mvnw = windows ? ['cmd.exe', ['/d', '/c', '.\\mvnw.cmd']] : ['./mvnw', []];
     run(mvnw[0], [...mvnw[1], '-B', '-q', '-pl', 'workbench-app', '-am', 'package', '-DskipTests']);
   }
-  const jarDir = join(root, 'workbench-app', 'target');
-  const jar = existsSync(jarDir) && readdirSync(jarDir).find(f => /^workbench-app-.*\.jar$/.test(f));
-  if (!jar) throw new Error('No workbench-app jar; run without CAPTURE_SKIP_BUILD');
+  const jar = findAppJar(join(root, 'workbench-app', 'target'), 'run without CAPTURE_SKIP_BUILD');
 
   if (process.env.CAPTURE_REUSE_REPLAYS !== '1' || !existsSync(join(siteDist, 'manifest.json'))) {
     log('==> Exporting the replay bundle to site-dist/');
@@ -238,7 +237,7 @@ async function main() {
   const site = await serveSiteDist();
   try {
     log('==> Starting the workbench on a free port');
-    const app = await startAndWait(java, ['-jar', join(jarDir, jar), '--server.port=0'],
+    const app = await startAndWait(java, ['-jar', jar, '--server.port=0'],
       /started on port (\d+)/, 120000, join(work, 'app.log'));
     const base = `http://127.0.0.1:${app.match[1]}`;
     log(`    ${base}`);
