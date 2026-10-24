@@ -4,6 +4,7 @@ import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.discovery;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertOnly;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.dflippojr.payerworkbench.core.Finding;
@@ -70,6 +71,7 @@ class DiscoveryChecksTest {
         void advertisedRequiredHookPasses() {
             Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(healthy().build()), Severity.PASS);
             assertTrue(f.title().contains("order-sign"));
+            assertEquals("Discovery lists CRD services, including every required hook.", f.explanation());
         }
 
         @Test
@@ -114,6 +116,61 @@ class DiscoveryChecksTest {
             assertTrue(f.evidence().startsWith("advertised services: crd-order-sign -> order-sign, (no id) -> (no hook)"),
                     f::evidence);
             assertTrue(f.evidence().endsWith(", and " + (100_001 - CappedLines.MAX) + " more"), f::evidence);
+        }
+
+        /** #214: CDS Hooks 2.0 Discovery says services is an array of service objects. */
+        @Test
+        void aNullEntryFailsAndIsNamedEvenBesideAUsableService() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[null,{\"hook\":\"order-sign\",\"id\":\"crd-order-sign\","
+                    + "\"prefetch\":{}}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertEquals("services[0] is not a JSON object", f.title());
+            assertEquals("not objects: services[0]: null; advertised services: crd-order-sign -> order-sign",
+                    f.evidence());
+        }
+
+        @Test
+        void entriesThatAreNotObjectsStayNamedBesideLongServiceIds() {
+            var run = healthy();
+            String service = "{\"hook\":\"order-sign\",\"id\":\"" + "a".repeat(1024) + "\"},";
+            run.discovery = discovery(200, "{\"services\":[" + service.repeat(8) + "null,".repeat(5) + "null]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().startsWith("not objects: services[8]: null, services[9]: null, services[10]: null, "
+                    + "services[11]: null, services[12]: null, services[13]: null; advertised services: "), f::evidence);
+        }
+
+        @Test
+        void everyEntryThatIsNotAnObjectIsNamedWithItsType() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[1,\"x\",{},[],true]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
+            assertEquals("services[0], services[1], services[3], services[4] are not JSON objects", f.title());
+            assertTrue(f.evidence().contains("services[0]: number, services[1]: string, services[3]: array, "
+                    + "services[4]: boolean"), f::evidence);
+            assertFalse(f.evidence().contains("services[2]"), f::evidence);
+            assertTrue(f.suggestedFix().contains("JSON object"), f::suggestedFix);
+        }
+
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+                "5 | services[0], services[1], services[2], services[3], services[4] are not JSON objects",
+                "6 | 6 entries in services are not JSON objects"})
+        void aTitleNamesUpToFiveEntriesThatAreNotObjects(int count, String title) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[" + String.join(",", java.util.Collections.nCopies(count, "0"))
+                    + "]}");
+            assertEquals(title, assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL).title());
+        }
+
+        @Test
+        void manyEntriesThatAreNotObjectsNameTheFirstAndCountTheRest() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[" + "null,".repeat(99) + "null]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of()).evaluate(run.build()), Severity.FAIL);
+            assertEquals("100 entries in services are not JSON objects", f.title());
+            assertTrue(f.evidence().endsWith(", and " + (100 - CappedLines.MAX) + " more; advertised services: none"),
+                    f::evidence);
         }
 
         @Test

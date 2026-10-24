@@ -52,6 +52,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -92,6 +93,9 @@ public class OnboardingRunner {
     public static final String CONNECTION_RECORD_CHECK = "connection.record";
     /** A step failed and no other check explains it. */
     public static final String STEP_FAILED_CHECK = "run.step-failed";
+    /** The discovery step's summary when services holds entries the SDK cannot map to a service. */
+    static final String UNREADABLE_SERVICES = "The payer's discovery document lists services that are not CDS "
+            + "service objects; see the discovery.services finding";
     /**
      * A payer response ran past {@code workbench.max-response-bytes}, so the workbench stopped reading it,
      * or held more than {@code workbench.max-response-json-values}, so it was not parsed.
@@ -555,6 +559,11 @@ public class OnboardingRunner {
                 services = client.discoverServices(copy(record).authType(AuthType.NONE).build());
             } catch (PayerCallException e) {
                 return callFailed("Discovery", e);
+            } catch (RouterException e) {
+                // The payer answered, but the SDK could not read the body. Its message names neither the
+                // entry nor the field, so say what the response shows instead.
+                callFailure = e;
+                services = null;
             } catch (IllegalArgumentException e) {
                 // The SDK builds the URL before it sends anything, so no exchange exists to explain this.
                 callFailure = e;
@@ -565,6 +574,10 @@ public class OnboardingRunner {
                     discovery = ExchangeRecorder.adapt(events.getLast());
                 }
                 details.put("exchanges", exchangeViews(PayerCallPhase.DISCOVERY));
+            }
+            // The SDK maps a null entry to null rather than rejecting it.
+            if (services == null || services.stream().anyMatch(Objects::isNull)) {
+                return Outcome.fail(unreadableDiscovery());
             }
             List<Map<String, Object>> listed = new ArrayList<>();
             for (CdsServiceDescriptor service : services) {
@@ -599,6 +612,20 @@ public class OnboardingRunner {
                         + sample.hook() + ", longer than the " + TextLimit.MAX_CHARS + " the workbench puts in a URL");
             }
             return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
+        }
+
+        private String unreadableDiscovery() {
+            JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
+            if (json == null) {
+                return "The payer's discovery response is not JSON the client library can read";
+            }
+            for (JsonNode service : json.path("services")) {
+                if (!service.isObject()) {
+                    return UNREADABLE_SERVICES;
+                }
+            }
+            return "The client library could not read the payer's discovery document: a service's hook, id, title "
+                    + "or description is not a string, or its prefetch is not an object of query strings";
         }
 
         private Outcome authenticate(Map<String, Object> details) {
@@ -925,12 +952,27 @@ public class OnboardingRunner {
          */
         private Optional<Finding> brokenStepFinding() {
             return steps.stream().filter(s -> !s.ok() && !DIAGNOSTICS.equals(s.stepId())).findFirst().map(step ->
-                    new Finding(STEP_FAILED_CHECK, Severity.FAIL,
-                            RunVerdict.title(step.stepId()) + " failed with no payer response to diagnose",
-                            "The run stopped at this step before the payer answered, so none of the checks that read "
-                                    + "payer responses had anything to say.",
-                            "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
-                            "Fix what the summary names and run again. The step's details show what was attempted."));
+                    answered(step)
+                            ? new Finding(STEP_FAILED_CHECK, Severity.FAIL,
+                                    RunVerdict.title(step.stepId()) + " failed after the payer answered",
+                                    "The payer answered this step, but the run stopped here and no check that reads "
+                                            + "payer responses named the cause.",
+                                    "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
+                                    "Fix what the summary names and run again. The step's details show the "
+                                            + "payer's response.")
+                            : new Finding(STEP_FAILED_CHECK, Severity.FAIL,
+                                    RunVerdict.title(step.stepId()) + " failed with no payer response to diagnose",
+                                    "The run stopped at this step before the payer answered, so none of the checks "
+                                            + "that read payer responses had anything to say.",
+                                    "step: " + RunVerdict.title(step.stepId()) + "\nsummary: " + step.summary(),
+                                    "Fix what the summary names and run again. The step's details show what was "
+                                            + "attempted."));
+        }
+
+        /** Whether the step recorded an HTTP response from the payer. */
+        private static boolean answered(StepResult step) {
+            return step.details().get("exchanges") instanceof List<?> exchanges && exchanges.stream()
+                    .anyMatch(e -> e instanceof ExchangeView view && view.status() != HttpExchange.NO_RESPONSE);
         }
 
         // ---- helpers ----
