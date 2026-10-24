@@ -67,8 +67,8 @@ class HttpDateFormsInvariantTest {
         ZonedDateTime utc = date.atZone(ZoneOffset.UTC);
         return switch (form) {
             case "IMF-fixdate" -> httpDate(date);
-            case "RFC 850" -> DateTimeFormatter.ofPattern("EEEE, dd-MMM-uu HH:mm:ss 'GMT'", Locale.ROOT).format(utc);
-            case "asctime" -> String.format(Locale.ROOT, "%1$ta %1$tb %2$2d %1$tT %1$tY", utc, utc.getDayOfMonth());
+            case "RFC 850" -> DateTimeFormatter.ofPattern("EEEE, dd-MMM-uu HH:mm:ss 'GMT'", Locale.US).format(utc);
+            case "asctime" -> String.format(Locale.US, "%1$ta %1$tb %2$2d %1$tT %1$tY", utc, utc.getDayOfMonth());
             default -> throw new IllegalArgumentException(form);
         };
     }
