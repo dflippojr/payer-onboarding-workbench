@@ -18,7 +18,8 @@ import java.util.Set;
  * {@code indicator}, {@code source.label}) and a valid {@code indicator}
  * ({@code info}, {@code warning} or {@code critical}). A card with suggestions also needs a
  * {@code selectionBehavior} of {@code at-most-one} or {@code any} (CDS Hooks 2.0 Card; HL7 tools invariant
- * {@code cds-resp-6}). {@code systemActions}, when present, must be a list of objects. Authentication and throttling errors that dedicated checks explain are left to those checks.
+ * {@code cds-resp-6}). {@code systemActions}, when present, must be a list of objects. Authentication and
+ * throttling errors that dedicated checks explain are left to those checks.
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
 
