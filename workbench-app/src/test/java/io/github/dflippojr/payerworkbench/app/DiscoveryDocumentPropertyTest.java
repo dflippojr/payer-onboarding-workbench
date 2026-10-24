@@ -116,15 +116,21 @@ class DiscoveryDocumentPropertyTest {
                     document + " -> " + text);
         }
         JsonNode entries = MAPPER.readTree(document).path("services");
+        boolean anyNotObject = false;
+        for (JsonNode entry : entries) {
+            anyNotObject |= !entry.isObject();
+        }
+        if (!anyNotObject) {
+            return;
+        }
+        Finding named = run.findings().stream().filter(f -> f.checkId().equals("discovery.services"))
+                .findFirst().orElseThrow(() -> new AssertionError(document + " -> no discovery.services"));
+        assertEquals(Severity.FAIL, named.severity(), document + " -> " + named.title());
+        assertFalse(run.steps().get(1).ok(), document + " -> discovery must fail");
+        // At most six entries, well under the evidence cap, so each one is either named or not.
         for (int i = 0; i < entries.size(); i++) {
-            if (!entries.get(i).isObject()) {
-                Finding named = run.findings().stream().filter(f -> f.checkId().equals("discovery.services"))
-                        .findFirst().orElseThrow(() -> new AssertionError(document + " -> no discovery.services"));
-                assertEquals(Severity.FAIL, named.severity(), document + " -> " + named.title());
-                assertTrue(named.evidence().contains("services[" + i + "]: "), document + " -> " + named.evidence());
-                assertFalse(run.steps().get(1).ok(), document + " -> discovery must fail");
-                break;
-            }
+            assertEquals(!entries.get(i).isObject(), named.evidence().contains("services[" + i + "]: "),
+                    document + " -> services[" + i + "] in " + named.evidence());
         }
     }
 }
