@@ -40,7 +40,7 @@
     <!-- Property-based tests (RedactorPropertyTest); runs on the JUnit Platform beside Jupiter. -->
     <jqwik.version>1.10.2</jqwik.version>
     <!-- CommonMark parser and its GFM extensions that judge the Markdown report's structure in tests (RunReportTest, #213). -->
-    <commonmark.version>0.30.0</commonmark.version>
+    <commonmark.version>0.31.0</commonmark.version>
     <!-- SonarCloud (see .github/workflows/sonar.yml). Each module's JaCoCo XML report is picked up from its default path. -->
     <sonar.organization>dflippojr</sonar.organization>
     <sonar.projectKey>dflippojr_payer-onboarding-workbench</sonar.projectKey>
