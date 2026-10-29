@@ -16,6 +16,21 @@ const SECRET_FIELDS = new Set([
 
 const isSecretField = name => SECRET_FIELDS.has(name.toLowerCase().replace(/[_-]/g, ''));
 
+/** Headers whose values Redactor masks. */
+const SENSITIVE_HEADERS = new Set([
+  'authorization', 'proxy-authorization', 'cookie', 'set-cookie',
+  'x-api-key', 'api-key', 'apikey', 'x-auth-token', 'x-access-token', 'x-client-secret']);
+
+/** A field Redactor masks: a secret field, or one named like a sensitive header (any case). */
+const isSecretKey = name => isSecretField(name) || SENSITIVE_HEADERS.has(name.toLowerCase());
+
+/**
+ * What Redactor leaves for the value of field or header `name`: the mask, after a scheme for an
+ * Authorization-style one (Bearer [REDACTED]), or nothing.
+ */
+const isMaskedValue = (name, v) => v === '' || v === MASK
+  || (/authorization$/i.test(name) && /^[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* \[REDACTED\]$/.test(v));
+
 /** Whether a Basic token is the base64 of an RFC 7617 user:pass pair, as Redactor decides. */
 function isUserPass(token) {
   const data = token.replace(/=+$/, '');
@@ -60,11 +75,6 @@ const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]
 /** A JSON value Redactor masks for a secret field: a string, or a number, true or false. */
 const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
-/** Headers whose values Redactor masks. */
-const SENSITIVE_HEADERS = new Set([
-  'authorization', 'proxy-authorization', 'cookie', 'set-cookie',
-  'x-api-key', 'api-key', 'apikey', 'x-auth-token', 'x-access-token', 'x-client-secret']);
-
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -86,18 +96,29 @@ const TEXT_CHECKS = [
   {
     name: 'JSON secret field',
     re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
-    ok: m => !isSecretField(m[1]) || ((m[2] === MASK || m[2] === '') && !maskCutShort(m)),
+    ok: m => !isSecretKey(m[1]) || (m[2] !== undefined && isMaskedValue(m[1], m[2]) && !maskCutShort(m)),
   },
   // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
   // masked values is a recorded header (X-Api-Key: ["[REDACTED]"]).
   {
     name: 'JSON secret structure',
     re: /\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*([{[])/g,
-    ok: m => !isSecretField(m[1]) || (m[2] === '['
+    ok: m => !isSecretKey(m[1]) || (m[2] === '['
       && /^\s*\\*"(?:[A-Za-z]+ )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:[A-Za-z]+ )?\[REDACTED\]\\*"\s*)*\]/.test(m.input.slice(m.index + m[0].length))),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
+  // A sensitive header line (Cookie: sid=...) where a line starts, also after an escaped line break in a
+  // JSON string, as in Redactor. Redactor masks the value to the end of the line, so only an escaped line
+  // break or the closing quote of a JSON string may follow the mask.
+  {
+    name: 'sensitive header line',
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*([^\r\n]*)`, 'gim'),
+    ok: m => {
+      const v = m[2].replace(/(?:\\[nr]|\\*"(?:\s*[,}\]].*)?$).*$/, '');
+      return v.trim() === '' || isMaskedValue(m[1], v);
+    },
+  },
 ];
 
 /** Returns one {check, match} per suspected leak in `text`. */
@@ -130,8 +151,12 @@ export function findJsonLeaks(value, path = '$') {
     if (!v || typeof v !== 'object') return;
     for (const [k, x] of Object.entries(v)) {
       const key = k.toLowerCase();
-      if (isSecretField(key) && (typeof x === 'number' || typeof x === 'boolean' || (x && typeof x === 'object' && !inHeaders)
-          || (typeof x === 'string' && x !== MASK && x !== ''))) {
+      // Redactor.redactTree masks a header-named list item by item (authorization: ["Bearer [REDACTED]"]).
+      const maskedHeaderList = SENSITIVE_HEADERS.has(key) && Array.isArray(x)
+        && x.every(hv => typeof hv === 'string' && isMaskedValue(key, hv));
+      if (isSecretKey(key) && (typeof x === 'number' || typeof x === 'boolean'
+          || (x && typeof x === 'object' && !inHeaders && !maskedHeaderList)
+          || (typeof x === 'string' && !isMaskedValue(key, x)))) {
         leaks.push({ check: 'secret field', match: `${p}.${k}` });
       }
       if (/headers$/i.test(k) && x && typeof x === 'object' && !Array.isArray(x)) {

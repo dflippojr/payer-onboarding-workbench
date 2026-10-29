@@ -69,6 +69,37 @@ test('accepts what Redactor leaves now', () => {
     assert.deepEqual(findTextLeaks(text), [], text);
   }
 });
+test('accepts what Redactor leaves for a sensitive header line or JSON key (#261)', () => {
+  for (const text of [
+    'HTTP/1.1 401\nCookie: [REDACTED]\nContent-Length: 0',
+    '  x-api-key:[REDACTED]\r\nAccept: */*',
+    'Authorization: Bearer [REDACTED]',
+    'Proxy-Authorization: [REDACTED]',
+    '{"debug":"echo:\\nSet-Cookie: [REDACTED]\\nAccept: */*"}',
+    '{"debug":"echo:\\nX-Auth-Token: [REDACTED]"}',
+    '{"headers":{"X-Api-Key":"[REDACTED]","Cookie":"[REDACTED]","authorization":"Bearer [REDACTED]","Accept":"x"}}',
+    '{"body":"{\\"Set-Cookie\\":\\"[REDACTED]\\"}"}',
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+  assert.deepEqual(findJsonLeaks({ details: { authorization: ['Bearer [REDACTED]'], cookie: '[REDACTED]' } }), []);
+});
+test('flags a sensitive header value Redactor would not leave (#261)', () => {
+  for (const text of [
+    'Cookie: [REDACTED]; theme=dark',
+    'Cookie: sid=LEAKED',
+    '{"debug":"echo:\\nCookie: sid=LEAKED\\nend"}',
+    '{"debug":"echo:\\nCookie: [REDACTED]sid=LEAKED"}',
+    'Set-Cookie: Bearer [REDACTED]',
+    '{"Cookie":"Bearer [REDACTED]"}',
+    '{"x-api-key":123}',
+    '{"authorization":{"token":"LEAKED"}}',
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
+  assert.equal(findJsonLeaks({ details: { cookie: ['sid=LEAKED'] } }).length, 1);
+  assert.equal(findJsonLeaks({ responseBody: '{"X-Api-Key":"LEAKED"}' }).length, 1);
+});
 test('accepts a recorded header list of masked values', () => {
   assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
   assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);

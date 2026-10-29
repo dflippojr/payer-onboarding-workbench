@@ -35,8 +35,11 @@ import java.util.stream.IntStream;
  * the values of well-known secret fields such as {@code client_secret},
  * {@code access_token} and {@code private_key} in form and query bodies and in
  * JSON (any value, including an object such as a private JWK, also in JSON
- * embedded in a JSON string; see {@link #isSecretField(String)}). It is a safety net, not a
- * guarantee: callers should still avoid passing secrets around in the first place.
+ * embedded in a JSON string; see {@link #isSecretField(String)}). The value of a
+ * credential header ({@link #isSensitiveHeader(String)}, such as {@code Cookie}) is
+ * masked in a header map, in a {@code Name: value} line of free text and in a JSON field
+ * of that name. It is a safety net, not a guarantee: callers should still avoid passing
+ * secrets around in the first place.
  */
 public final class Redactor {
 
@@ -96,13 +99,14 @@ public final class Redactor {
 
     /**
      * A JSON field and its string or scalar value; group 1 is the name, checked with
-     * {@link #isSecretField(String)}. A string cut off by the end of the text (a body truncated at
-     * the size limit) counts too, also when the cut leaves half an escape: a lone backslash at the
-     * end, or before the line break that starts a note appended to the cut body. Possessive
-     * quantifiers: a plain alternation recurses per character and overflows on long values.
+     * {@link #isSecretKey(String)}, and group 3 the string's content. A string cut off by the end of
+     * the text (a body truncated at the size limit) counts too, also when the cut leaves half an
+     * escape: a lone backslash at the end, or before the line break that starts a note appended to the
+     * cut body. Possessive quantifiers: a plain alternation recurses per character and overflows on
+     * long values.
      */
     private static final Pattern JSON_FIELD = Pattern.compile(
-            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\\\?+(?=\\R|\\z))|"
+            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))|"
                     + JSON_SCALAR + ")");
 
     /** A literal backslash, as a regex. */
@@ -120,9 +124,9 @@ public final class Redactor {
      * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"(?:" + PLAIN + "++"
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"((?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
-                    + "|" + BACKSLASH + PLAIN + ")*+(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
+                    + "|" + BACKSLASH + PLAIN + ")*+)(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
                     + JSON_SCALAR + ")");
 
     /** A JSON field whose value is an object or array; group 1 is the name. */
@@ -131,6 +135,42 @@ public final class Redactor {
     /** The same inside JSON embedded in a JSON string. */
     private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
             BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"\\s*:\\s*(?=[{\\[])");
+
+    /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
+    static final Set<String> SENSITIVE_HEADERS = Set.of(
+            "authorization", "proxy-authorization", "cookie", "set-cookie",
+            "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret");
+
+    /**
+     * A credential header line, {@code Name: value}, from where the line starts: group 1 is everything
+     * before the value, group 2 the name, any {@link #SENSITIVE_HEADERS} name in any case, and group 3
+     * the value. A line starts at the start of the text or after a line break (also an escaped one in a
+     * JSON string), and may be indented; a header name anywhere else ({@code see the Cookie: header
+     * docs}) is prose. The names are letters and {@code -} only.
+     */
+    private static final String HEADER_LINE_START =
+            "(?i)([ \\t]*+(" + String.join("|", SENSITIVE_HEADERS) + "):[ \\t]*+)";
+
+    /**
+     * A header line in plain text. The value runs to the end of the line ({@code ;} and {@code =} are
+     * part of a cookie), or to a backslash that starts a JSON {@code \n} or {@code \r} escape, as in
+     * {@link #FORM_SECRET}.
+     */
+    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^" + HEADER_LINE_START
+            + "((?:[^\\r\\n\\\\]++|" + BACKSLASH.repeat(2) + "|" + BACKSLASH + "(?![nr]))*+)");
+
+    /**
+     * A header line quoted inside a JSON string, after an escaped line break. The value runs to the
+     * next escaped line break or to the closing quote; any other escape ({@code \"} in a quoted cookie
+     * value) is part of it.
+     */
+    private static final Pattern ESCAPED_HEADER_LINE = Pattern.compile(
+            "(?<=" + BACKSLASH + "[nr])" + HEADER_LINE_START
+                    + "((?:[^\\r\\n\"\\\\]++|" + BACKSLASH + "[^nr\\r\\n])*+)");
+
+    /** The scheme of an {@code Authorization}-style value (an RFC 9110 token, group 1) and a credential after it. */
+    private static final Pattern SCHEME = Pattern.compile(
+            "[ \\t]*+([A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*+)[ \\t]++\\S");
 
     /**
      * Every {@link #SECRET_FIELDS} name as a form key: an optional {@code _} or {@code -} may separate
@@ -151,10 +191,6 @@ public final class Redactor {
             "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=(?:[^&\\s\"\\\\]++|" + BACKSLASH.repeat(2) + "|"
                     + BACKSLASH + "(?![nrtbf\"]))*+");
 
-    /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
-    static final Set<String> SENSITIVE_HEADERS = Set.of(
-            "authorization", "proxy-authorization", "cookie", "set-cookie",
-            "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret");
 
     private Redactor() {
     }
@@ -177,14 +213,41 @@ public final class Redactor {
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
-        out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretField(m.group(1))
-                ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + MASK + "\""
+        out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(m.group(1))
+                ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + masked(m.group(1), m.group(3)) + "\""
                 : m.group()));
-        out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretField(m.group(1))
-                ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + MASK + "\\\""
+        out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(m.group(1))
+                ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(m.group(1), m.group(3)) + "\\\""
                 : m.group()));
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
+        out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
+        out = ESCAPED_HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         return out;
+    }
+
+    /** A header line with its value masked; a line with no value is left as it is. */
+    private static String maskHeaderLine(MatchResult m) {
+        String line = m.group(3).isBlank() ? m.group() : m.group(1) + masked(m.group(2), m.group(3));
+        return Matcher.quoteReplacement(line);
+    }
+
+    /**
+     * The mask for the value of the secret field or credential header {@code name}: an
+     * {@code Authorization}-style string value keeps its scheme ({@code Bearer [REDACTED]}), any other
+     * value (or {@code null}, for a number or boolean) is masked whole.
+     */
+    private static String masked(String name, String value) {
+        if (value != null && keepsScheme(name)) {
+            Matcher scheme = SCHEME.matcher(value);
+            if (scheme.lookingAt()) {
+                return scheme.group(1) + " " + MASK;
+            }
+        }
+        return MASK;
+    }
+
+    private static boolean keepsScheme(String name) {
+        return name.toLowerCase(Locale.ROOT).endsWith("authorization");
     }
 
     /**
@@ -208,9 +271,9 @@ public final class Redactor {
     }
 
     /**
-     * Replaces the object or array value of every secret-named field that {@code fields} finds with a
-     * masked string, through its matching close bracket or, in a body cut off at the size limit, to
-     * the end of the text.
+     * Replaces the object or array value of every field named like a secret or a credential header
+     * that {@code fields} finds with a masked string, through its matching close bracket or, in a body
+     * cut off at the size limit, to the end of the text.
      */
     private static String maskStructures(String text, Pattern fields, boolean embedded) {
         Matcher m = fields.matcher(text);
@@ -219,7 +282,7 @@ public final class Redactor {
         int from = 0;
         while (from < text.length() && m.find(from)) {
             from = m.end();
-            if (isSecretField(m.group(1))) {
+            if (isSecretKey(m.group(1))) {
                 String quote = embedded ? "\\\"" : "\"";
                 out = out == null ? new StringBuilder(text.length()) : out;
                 out.append(text, copied, m.end()).append(quote).append(MASK).append(quote);
@@ -373,7 +436,7 @@ public final class Redactor {
         if (value == null) {
             return null;
         }
-        if (value instanceof String s && key.toLowerCase(Locale.ROOT).endsWith("authorization")) {
+        if (value instanceof String s && keepsScheme(key)) {
             return redactHeaderValue("Authorization", s);
         }
         return MASK;
