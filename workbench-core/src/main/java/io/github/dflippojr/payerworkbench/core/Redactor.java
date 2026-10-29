@@ -100,6 +100,9 @@ public final class Redactor {
     /** Short all-letter words after a scheme are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
 
+    /** What follows a scheme with no letter or digit ({@code ->}) is not a credential either. */
+    private static final Pattern PUNCTUATION = Pattern.compile("[^A-Za-z0-9]*+");
+
     private static final Pattern JWT = Pattern.compile(
             WORD_START + "(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
 
@@ -378,7 +381,8 @@ public final class Redactor {
      * Whether a scheme match is prose ("Missing bearer token", "Basic authentication is required")
      * rather than a credential: one short all-letter word, and for {@code Basic} not the base64 of a
      * {@code user:pass} pair (RFC 7617), which can be all letters too ({@code dXNlcjpwYXNz}), even
-     * with the period that ends a sentence after it.
+     * with the period that ends a sentence after it. So is punctuation with no letter or digit, as in
+     * {@code POST /oauth/token -> 200}.
      */
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
@@ -386,7 +390,7 @@ public final class Redactor {
         if (m.group(1).equalsIgnoreCase("Token") && word.endsWith(":")) {
             word = word.substring(0, word.length() - 1);
         }
-        return PROSE_WORD.matcher(word).matches()
+        return PUNCTUATION.matcher(word).matches() || PROSE_WORD.matcher(word).matches()
                 && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(withoutTrailingPeriods(m.group(2))));
     }
 

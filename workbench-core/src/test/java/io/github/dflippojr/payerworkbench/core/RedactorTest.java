@@ -535,7 +535,8 @@ class RedactorTest {
         assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
         // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
         for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",
-                "token endpoint: https://payer.example/token\ntoken response: error=invalid_client")) {
+                "token endpoint: https://payer.example/token\ntoken response: error=invalid_client",
+                "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms")) {
             assertEquals(text, Redactor.redact(text));
         }
     }
