@@ -87,6 +87,9 @@ async function main() {
     'northwind-synthetic', 'slow-response', ['FAIL perf.latency']);
   await app.stop();
   for (const name of ['replay.js', 'replay.css', 'index.html']) copyFileSync(join(root, 'replay', name), join(out, name));
+  // replay.js imports the app's presentation helpers from ./shared/present.js (#286).
+  mkdirSync(join(out, 'shared'));
+  copyFileSync(join(root, 'workbench-app', 'src', 'main', 'resources', 'static', 'shared', 'present.js'), join(out, 'shared', 'present.js'));
   const head = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' });
   let commit = head.status === 0 ? head.stdout.trim() : 'unknown';
   const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: root, encoding: 'utf8' });

@@ -199,6 +199,10 @@ class WorkbenchApiTest {
         assertEquals(200, get("/app.js").statusCode());
         assertEquals(200, get("/compare.js").statusCode());
         assertEquals(200, get("/styles.css").statusCode());
+        // app.js imports it as an ES module, which browsers load only with a JavaScript MIME type.
+        HttpResponse<String> shared = get("/shared/present.js");
+        assertEquals(200, shared.statusCode());
+        assertTrue(shared.headers().firstValue("Content-Type").orElse("").contains("javascript"), shared.headers().toString());
     }
 
     private HttpResponse<String> get(String path) throws Exception {
