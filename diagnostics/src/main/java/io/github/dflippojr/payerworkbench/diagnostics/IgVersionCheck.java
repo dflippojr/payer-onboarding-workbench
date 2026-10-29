@@ -29,6 +29,8 @@ public final class IgVersionCheck implements DiagnosticCheck {
     private static final Pattern VERSION_KEY = Pattern.compile("(?i)ig[-_.]?version");
     private static final Pattern VERSIONED_CANONICAL = Pattern.compile(
             "hl7\\.org/fhir/us/davinci-crd/[^\"|\\s]*\\|([0-9][0-9A-Za-z.\\-]*)");
+    private static final Pattern BUILD = Pattern.compile("\\+.*");
+    private static final Pattern PRE_RELEASE = Pattern.compile("-");
 
     @Override
     public String id() {
@@ -153,10 +155,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
         if (v.startsWith("v") || v.startsWith("V")) {
             v = v.substring(1);
         }
-        int build = v.indexOf('+');
-        if (build >= 0) {
-            v = v.substring(0, build);
-        }
+        v = BUILD.matcher(v).replaceFirst("");
         int suffix = preReleaseStart(v);
         String numeric = v.substring(0, suffix);
         while (numeric.endsWith(".0")) {
@@ -166,9 +165,7 @@ public final class IgVersionCheck implements DiagnosticCheck {
     }
 
     private static String major(String version) {
-        String numeric = numeric(version);
-        int dot = numeric.indexOf('.');
-        return dot < 0 ? numeric : numeric.substring(0, dot);
+        return numeric(version).split("\\.", 2)[0];
     }
 
     private static String numeric(String version) {
@@ -177,8 +174,8 @@ public final class IgVersionCheck implements DiagnosticCheck {
 
     /** Where a pre-release ({@code -ballot}) suffix starts, or the length if none. */
     private static int preReleaseStart(String version) {
-        int dash = version.indexOf('-');
-        return dash < 0 ? version.length() : dash;
+        Matcher m = PRE_RELEASE.matcher(version);
+        return m.find() ? m.start() : version.length();
     }
 
     private record Observed(String version, String source) {

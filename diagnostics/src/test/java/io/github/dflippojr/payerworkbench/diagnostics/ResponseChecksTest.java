@@ -43,7 +43,8 @@ class ResponseChecksTest {
         void majorDifferenceFails() {
             var run = healthy();
             run.connection = Fixtures.connection("1.0.0", false);
-            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("Major versions differ"), f::explanation);
         }
 
         @ParameterizedTest(name = "record {0}, payer {1} -> {2}")
@@ -83,6 +84,14 @@ class ResponseChecksTest {
             Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
             assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
             assertTrue(f.explanation().contains("pre-release"), f::explanation);
+            assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
+        }
+
+        @Test
+        void payerOnPreReleaseSaysOneSideIsPreRelease() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"2.0.1-ballot\"}}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
             assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
         }
 
