@@ -85,6 +85,8 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nAccept: a\\"}"}',
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\"}"}',
     '{"m":"x\\n\\tCookie: [REDACTED]\\nend"}',
+    // A tab after the colon, escaped when the text is quoted.
+    JSON.stringify({ responseBody: 'HTTP/1.1 401\nCookie:\t[REDACTED]\nAccept: x' }),
     // redactHeaders and redactTree keep an empty header list.
     '{"requestHeaders":{"Cookie":[],"Authorization":[ ]}}',
     // redactTree keeps any scheme of an authorization list item.

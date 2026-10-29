@@ -142,33 +142,49 @@ public final class Redactor {
             "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret");
 
     /**
-     * The name of a credential header line, {@code Name: value}, and the separator: group 2 of
+     * The name of a credential header line, {@code Name: value}, and its colon: group 2 of
      * {@link #HEADER_LINE} and {@link #ESCAPED_HEADER_LINE} is the name, any {@link #SENSITIVE_HEADERS}
      * name in any case, and group 1 everything from where the line starts to the value. A line starts at
      * the start of the text or after a line break (also an escaped one in a JSON string), and may be
      * indented; a header name anywhere else ({@code see the Cookie: header docs}) is prose. The names are
      * letters and {@code -} only.
      */
-    private static final String HEADER_NAME = "(" + String.join("|", SENSITIVE_HEADERS) + "):[ \\t]*+";
+    private static final String HEADER_NAME = "(" + String.join("|", SENSITIVE_HEADERS) + "):";
 
     /**
      * A header line in plain text. The value (group 3) runs to the end of the line ({@code ;} and {@code =} are
      * part of a cookie), or to a backslash that starts a JSON {@code \n} or {@code \r} escape, as in
      * {@link #FORM_SECRET}.
      */
-    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^(?i)([ \\t]*+" + HEADER_NAME + ")"
+    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^(?i)([ \\t]*+" + HEADER_NAME + "[ \\t]*+)"
             + "((?:[^\\r\\n\\\\]++|" + BACKSLASH.repeat(2) + "|" + BACKSLASH + "(?![nr]))*+)");
+
+    /** Spaces and tabs, also tabs escaped in a JSON string at any depth. */
+    private static final String ESCAPED_SPACE = "(?:[ \\t]|" + BACKSLASH + "++t)*+";
 
     /**
      * The start of a header line quoted inside a JSON string, after an escaped line break; its indent
-     * may be an escaped tab too. Its value ends where {@link #endOfEscapedLine} says.
+     * and the space after the colon may be escaped tabs too. Its value ends where
+     * {@link #endOfEscapedLine} says.
      */
-    private static final Pattern ESCAPED_HEADER_LINE = Pattern.compile(
-            "(?<=" + BACKSLASH + "[nr])(?i)((?:[ \\t]|" + BACKSLASH + "++t)*+" + HEADER_NAME + ")");
+    private static final Pattern ESCAPED_HEADER_LINE = Pattern.compile("(?<=" + BACKSLASH + "[nr])(?i)("
+            + ESCAPED_SPACE + HEADER_NAME + ESCAPED_SPACE + ")");
 
-    /** The scheme of an {@code Authorization}-style value (an RFC 9110 token, group 1) and a credential after it. */
+    /**
+     * The first word of an {@code Authorization}-style value (an RFC 9110 token, group 1) and more after it;
+     * it is kept only if it is one of {@link #AUTH_SCHEMES}.
+     */
     private static final Pattern SCHEME = Pattern.compile(
             "[ \\t]*+([A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*+)[ \\t]++\\S");
+
+    /**
+     * Authentication schemes an {@code Authorization}-style value keeps in front of the mask, lower case:
+     * the IANA HTTP Authentication Scheme Registry, and {@code Token}, {@code NTLM} and
+     * {@code AWS4-HMAC-SHA256}. Any other first word may be the credential itself.
+     */
+    private static final Set<String> AUTH_SCHEMES = Set.of(
+            "basic", "bearer", "concealed", "digest", "dpop", "gnap", "hoba", "mutual", "negotiate", "oauth",
+            "privatetoken", "scram-sha-1", "scram-sha-256", "vapid", "token", "ntlm", "aws4-hmac-sha256");
 
     /**
      * Every {@link #SECRET_FIELDS} name as a form key: an optional {@code _} or {@code -} may separate
@@ -306,13 +322,14 @@ public final class Redactor {
 
     /**
      * The mask for the value of the secret field or credential header {@code name}: an
-     * {@code Authorization}-style string value keeps its scheme ({@code Bearer [REDACTED]}), any other
-     * value (or {@code null}, for a number or boolean) is masked whole.
+     * {@code Authorization}-style string value keeps its scheme ({@code Bearer [REDACTED]}) when it starts
+     * with one of {@link #AUTH_SCHEMES}; any other value (or {@code null}, for a number or boolean) is
+     * masked whole.
      */
     private static String masked(String name, String value) {
         if (value != null && keepsScheme(name)) {
             Matcher scheme = SCHEME.matcher(value);
-            if (scheme.lookingAt()) {
+            if (scheme.lookingAt() && AUTH_SCHEMES.contains(scheme.group(1).toLowerCase(Locale.ROOT))) {
                 return scheme.group(1) + " " + MASK;
             }
         }

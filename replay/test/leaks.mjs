@@ -178,8 +178,8 @@ const TEXT_CHECKS = [
     name: 'sensitive header line',
     // The value is read in a lookahead, so the match ends at the name and a header line on the next
     // escaped line is scanned on its own; valueEnd finds where the value ends.
-    // An escaped tab may indent the line, as in Redactor's ESCAPED_HEADER_LINE.
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*(?=([^\r\n]*))`, 'gim'),
+    // An escaped tab may indent the line or follow the colon, as in Redactor's ESCAPED_HEADER_LINE.
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):(?:[ \t]|\\+t)*(?=([^\r\n]*))`, 'gim'),
     ok: m => {
       const v = m[2].slice(0, valueEnd(m[2], lineDepth(m.input, m.index)));
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);

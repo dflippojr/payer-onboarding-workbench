@@ -185,6 +185,10 @@ class RedactorTest {
         assertEquals("Authorization: " + Redactor.MASK, Redactor.redact("Authorization: sid=abc; x"));
         assertEquals("Authorization: Token " + Redactor.MASK, Redactor.redact("Authorization: Token abc"));
         assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer \"abc\""));
+        assertEquals("Authorization: SCRAM-SHA-256 " + Redactor.MASK, Redactor.redact("Authorization: SCRAM-SHA-256 c=biws"));
+        // A first word that is not an authentication scheme may be the credential itself: masked too.
+        assertEquals("Proxy-Authorization: " + Redactor.MASK, Redactor.redact("Proxy-Authorization: k3yMat3rial0001 note"));
+        assertEquals("{\"authorization\":\"" + Redactor.MASK + "\"}", Redactor.redact("{\"authorization\":\"k3yMat3rial0002 note\"}"));
         for (String masked : List.of("Authorization: Bearer [REDACTED]", "Cookie: [REDACTED]", "Authorization: [REDACTED]")) {
             assertEquals(masked, Redactor.redact(masked));
         }

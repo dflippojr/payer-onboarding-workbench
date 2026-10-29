@@ -49,7 +49,8 @@
     {"id": "header-line-after-json-escape", "rule": "HEADER_LINE", "input": "{\"debug\":\"echoed:\\nX-Auth-Token: FAKE-auth-token-line-0051\\nend\"}", "secrets": ["FAKE-auth-token-line-0051"]},
     {"id": "json-header-keys", "rule": "JSON_FIELD", "input": "{\"headers\":{\"X-Api-Key\":\"FAKE-json-x-api-key-0052\",\"Cookie\":\"sid=FAKE-json-cookie-0053\",\"Accept\":\"application/fhir+json\"}}", "secrets": ["FAKE-json-x-api-key-0052", "FAKE-json-cookie-0053"]},
     {"id": "json-in-json-header-key", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"body\":\"{\\\"Set-Cookie\\\":\\\"sid=FAKE-embedded-cookie-0054\\\"}\"}", "secrets": ["FAKE-embedded-cookie-0054"]},
-    {"id": "json-header-key-array", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"headers\":{\"cookie\":[\"sid=FAKE-json-cookie-array-0055\"]}}", "secrets": ["FAKE-json-cookie-array-0055"]}
+    {"id": "json-header-key-array", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"headers\":{\"cookie\":[\"sid=FAKE-json-cookie-array-0055\"]}}", "secrets": ["FAKE-json-cookie-array-0055"]},
+    {"id": "header-line-authorization-no-scheme", "rule": "HEADER_LINE", "input": "Proxy-Authorization: FAKEproxycred0056 sent twice", "secrets": ["FAKEproxycred0056"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
