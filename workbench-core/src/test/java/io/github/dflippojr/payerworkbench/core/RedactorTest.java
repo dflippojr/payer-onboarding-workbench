@@ -530,7 +530,9 @@ class RedactorTest {
                 "{\"kty\":1,".repeat(n),
                 "{\"x\":\"" + "\\\"kty\\\": ".repeat(n) + "\"}",
                 "{\"a\":".repeat(n / 2) + "{\"kty\":1}" + ",\"kty\":1,\"d\":\"y\"}".repeat(n / 2),
-                "{" + "\"kty\":1,".repeat(n) + "\"d\":\"y\"}");
+                "{" + "\"kty\":1,".repeat(n) + "\"d\":\"y\"}",
+                "[".repeat(n / 2) + "\"kty\":1],".repeat(n / 2),
+                "{\"b\":\"" + "[".repeat(n / 2) + "\\\"kty\\\":1],".repeat(n / 2) + "\"}");
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
     }
 
