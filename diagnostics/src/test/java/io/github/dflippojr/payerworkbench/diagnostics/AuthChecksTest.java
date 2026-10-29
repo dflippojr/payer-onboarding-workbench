@@ -551,6 +551,20 @@ class AuthChecksTest {
             assertFalse(f.evidence().contains("iat offset"), f::evidence);
         }
 
+        /** A measured iat, unlike a missing one, is described by how far it is from the payer's clock. */
+        @Test
+        void measuredIatRejectedForTimingSaysHowFarOff() {
+            String timing = "{\"error\":\"invalid_client\",\"error_description\":\"iat is in the future\"}";
+            var run = healthy();
+            run.token = token(401, assertionBody(jwt(TOKEN_URL, NOW.minusSeconds(20), NOW.plusSeconds(280))), timing, NOW);
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).explanation().contains(", and the JWT "
+                    + "times were within 60 seconds of the payer's clock, so check the JWT lifetime (exp minus iat) "
+                    + "as well."));
+            run.token = token(401, assertionBody(jwt(TOKEN_URL, NOW.minusSeconds(120), NOW.plusSeconds(180))), timing, NOW);
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).explanation().contains(", and the JWT "
+                    + "says it was issued 120 seconds before the payer's current time (the client clock is behind)."));
+        }
+
         /** Beyond Instant's range (about ±3.2e16 s) a claim is absent, not a DateTimeException (#266). */
         @Test
         void outOfRangeIatOrExpIsUnmeasuredNotACrash() {
