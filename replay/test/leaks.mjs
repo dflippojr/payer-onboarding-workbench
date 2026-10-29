@@ -87,8 +87,11 @@ const isAuthLineProse = (name, v) => {
   return Boolean(m) && isAuthProse(m);
 };
 
-/** A list of masked values, each optionally after a scheme, as redactTree leaves a header-named list. */
-const MASKED_LIST = new RegExp(String.raw`^\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*)*\]`);
+/**
+ * A list of masked values, each optionally after a scheme, as redactTree leaves a header-named list, or
+ * an empty list (redactHeaders keeps one for a header with no values).
+ */
+const MASKED_LIST = new RegExp(String.raw`^\s*(?:\]|\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*)*\])`);
 
 /**
  * How many backslashes escaped the line break before a header line at `index`, as Redactor counts
@@ -104,18 +107,19 @@ function lineDepth(text, index) {
 
 /**
  * Where a header line's value ends, as in Redactor's endOfEscapedLine: at depth d, c backslashes before
- * n or r are a line break when c % 2d == d, and before a quote end the string when c % 2d < d. A value
- * in plain text (depth 0) runs on; the check's own match ends it at the line break.
+ * n or r are a line break when c % 2d == d, and before a quote end the string when c % 2d < d. In plain
+ * text (depth 0) only a JSON line-break escape ends it (an odd run before n or r), as in HEADER_LINE.
  */
 function escapedLineEnd(value, depth) {
-  if (depth === 0) return value.length;
   for (let i = 0; i < value.length; i++) {
-    if (value[i] === '"') return i;
+    if (depth > 0 && value[i] === '"') return i;
     if (value[i] !== '\\') continue;
     const run = i;
     while (value[i] === '\\') i++;
-    const escapes = (i - run) % (2 * depth);
-    if ((/[nr]/.test(value[i] ?? '') && escapes === depth) || (value[i] === '"' && escapes < depth)) return run;
+    const escapes = (i - run) % (2 * (depth || 1));
+    if ((/[nr]/.test(value[i] ?? '') && escapes === (depth || 1)) || (depth > 0 && value[i] === '"' && escapes < depth)) {
+      return run;
+    }
   }
   return value.length;
 }
@@ -159,9 +163,9 @@ const TEXT_CHECKS = [
   // prose is not flagged.
   {
     name: 'sensitive header line',
-    // The match ends at an escaped line break too, also one escaped again (\\n in a serialized report), so
-    // the next escaped line is scanned on its own.
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*((?:[^\r\n\\]|\\+(?![\\nr]))*)`, 'gim'),
+    // The value is read in a lookahead, so the match ends at the name and a header line on the next
+    // escaped line is scanned on its own; escapedLineEnd finds where the value ends.
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*(?=([^\r\n]*))`, 'gim'),
     ok: m => {
       const v = m[2].slice(0, escapedLineEnd(m[2], lineDepth(m.input, m.index)));
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);

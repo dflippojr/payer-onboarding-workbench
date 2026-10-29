@@ -84,6 +84,8 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     // What Redactor leaves for a header line in JSON embedded in a JSON string.
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nAccept: a\\"}"}',
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\"}"}',
+    // redactHeaders and redactTree keep an empty header list.
+    '{"requestHeaders":{"Cookie":[],"Authorization":[ ]}}',
     // redactTree keeps any scheme of an authorization list item.
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
   ]) {
@@ -104,6 +106,9 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]","LEAKED"]}}',
     // An escaped quote does not end the string the line is in.
     '{"debug":"x\\nCookie: [REDACTED]\\", leak=LEAKED"}',
+    // \\n in a JSON string is a backslash and an n, not a line break: the value goes on.
+    '{"debug":"x\\nCookie: [REDACTED]\\\\nLEAKED"}',
+    'Cookie: [REDACTED]\\\\nLEAKED',
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\\\", leak=LEAKED\\"}"}',
     'Set-Cookie: Bearer [REDACTED]',
     '{"Cookie":"Bearer [REDACTED]"}',
