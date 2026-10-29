@@ -9,7 +9,10 @@
         { "id": "healthy-fabrikam-order-sign-home-oxygen", "workbench": "WARN", "validator": "FAIL" },
         { "id": "healthy-fabrikam-order-sign-conditional-cpap", "workbench": "WARN", "validator": "FAIL" },
         { "id": "mutant-card-selection-behavior-removed", "workbench": "WARN", "validator": "FAIL" },
-        { "id": "mutant-card-selection-behavior-unknown-code", "workbench": "WARN", "validator": "FAIL" }
+        { "id": "mutant-card-selection-behavior-unknown-code", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "mutant-suggestion-action-delete-without-resource-id", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "mutant-suggestion-action-delete-with-resource", "workbench": "WARN", "validator": "FAIL" },
+        { "id": "mutant-suggestion-action-description-removed", "workbench": "WARN", "validator": "FAIL" }
       ],
       "reason": "Deliberate leniency in fhir-crd-router's CoverageInformationValidator: the HL7 CRD reference implementation (which Fabrikam imitates) sends the pre-2.x 'identifier' sub-extension in place of coverage-assertion-id, and the router reports it as a WARNING. The validator reports a missing coverage-assertion-id slice and an undefined sub-extension (errors).",
       "issue": "https://github.com/dflippojr/fhir-crd-router/issues/96"
@@ -38,9 +41,11 @@
       "items": [
         { "id": "mutant-cards-removed", "workbench": "FAIL", "validator": "OK" },
         { "id": "mutant-card-indicator-removed", "workbench": "FAIL", "validator": "OK" },
-        { "id": "mutant-card-summary-too-long", "workbench": "WARN", "validator": "OK" }
+        { "id": "mutant-card-summary-too-long", "workbench": "WARN", "validator": "OK" },
+        { "id": "mutant-action-description-removed", "workbench": "FAIL", "validator": "OK" },
+        { "id": "mutant-action-resource-removed", "workbench": "FAIL", "validator": "OK" }
       ],
-      "reason": "The validator judges cards with hl7.fhir.uv.tools.r4#1.1.2's CDSHooksResponse logical model, which is looser than CDS Hooks 2.0: cards is 0..* and indicator 0..1 where the spec says REQUIRED, and summary has no 140-character limit. The workbench follows the spec text.",
+      "reason": "The validator judges cards with hl7.fhir.uv.tools.r4#1.1.2's CDSHooksResponse logical model, which is looser than CDS Hooks 2.0: cards is 0..* and indicator 0..1 where the spec says REQUIRED, and summary has no 140-character limit. An action's description is 0..1 (cds-resp-5 requires it only on suggestion actions, and the validator applies no action invariant to systemActions), and nothing requires resource for create or update, which the spec's Action table does. The workbench follows the spec text.",
       "issue": "https://github.com/dflippojr/payer-onboarding-workbench/issues/179"
     },
     {

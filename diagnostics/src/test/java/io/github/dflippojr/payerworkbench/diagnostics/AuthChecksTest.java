@@ -9,8 +9,10 @@ import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.hook;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.jwt;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertOnly;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.orderSign;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.rawJwt;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.token;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.tokenError;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -470,6 +472,137 @@ class AuthChecksTest {
             Finding f = assertOnly(check.evaluate(run.build()), Severity.PASS);
             assertTrue(f.evidence().contains(TOKEN_URL + " (iat offset -20 s)"), f::evidence);
             assertTrue(f.evidence().contains(ORDER_SIGN_URL + " (iat offset 30 s)"), f::evidence);
+        }
+
+        /** An exp with no iat measures nothing, so it must not earn "iat offset 0 s" and a PASS (#266). */
+        @Test
+        void expOnlyAssertionIsNotAMeasurement() {
+            var run = healthy();
+            run.token = token(200, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.plusSeconds(300).getEpochSecond() + "}")), Fixtures.TOKEN_OK_BODY, NOW);
+            assertEquals(List.of(), check.evaluate(run.build()));
+        }
+
+        @Test
+        void expOnlyHookClientJwtIsNotAMeasurement() {
+            var run = withoutRequestJwts();
+            run.hooks = List.of(new HookResponse("crd-order-sign", "order-sign", "sample-order-sign-1",
+                    hook(200, Fixtures.resource("order-sign-healthy.json"), 800),
+                    new JwtClaims(Fixtures.CLIENT_ID, List.of(ORDER_SIGN_URL), NOW.plusSeconds(300), null,
+                            UUID.randomUUID().toString(), "synthetic-kid", Fixtures.CLIENT_ID)));
+            assertEquals(List.of(), check.evaluate(run.build()));
+        }
+
+        /** The PASS lists only the exchanges whose iat was compared, not an exp-only one beside them. */
+        @Test
+        void passListsOnlyMeasuredExchanges() {
+            var run = withoutRequestJwts();
+            run.clientAssertion = new JwtClaims(Fixtures.CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(300), null,
+                    UUID.randomUUID().toString(), "synthetic-kid", Fixtures.CLIENT_ID);
+            run.hooks = List.of(clientJwtHook(200, Fixtures.resource("order-sign-healthy.json"), NOW.plusSeconds(30)));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.PASS);
+            assertEquals(ORDER_SIGN_URL + " (iat offset 30 s)", f.evidence());
+        }
+
+        /** expired() needs no iat, so an expired exp-only JWT rejected for timing keeps its FAIL (#266). */
+        @Test
+        void expiredExpOnlyAssertionRejectedForTimingFails() {
+            var run = healthy();
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.minusSeconds(600).getEpochSecond() + "}")),
+                    "{\"error\":\"invalid_client\",\"error_description\":\"clock skew too large\"}", NOW);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("already expired by the payer's clock (600 seconds ago"),
+                    f::explanation);
+            assertTrue(f.evidence().endsWith("\nJWT iat=(none), exp=" + NOW.minusSeconds(600) + "; payer Date header="
+                    + NOW), f::evidence);
+            assertFalse(f.evidence().contains("iat offset"), f::evidence);
+        }
+
+        /** An exp the payer's clock has passed is measured without iat, so a generic rejection FAILs too (#266). */
+        @Test
+        void expiredExpOnlyAssertionRejectedWithGenericErrorFails() {
+            var run = healthy();
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.minusSeconds(600).getEpochSecond() + "}")), INVALID_CLIENT, NOW);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().startsWith("The payer rejected the request, and the JWT had already expired by "
+                    + "the payer's clock (600 seconds ago"), f::explanation);
+            assertFalse(f.evidence().contains("iat offset"), f::evidence);
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.plusSeconds(300).getEpochSecond() + "}")), INVALID_CLIENT, NOW);
+            assertEquals(List.of(), check.evaluate(run.build()), "an unexpired exp-only JWT measures nothing");
+        }
+
+        /** With no iat, the FAIL must not claim the JWT times were within tolerance. */
+        @Test
+        void unexpiredExpOnlyAssertionRejectedForTimingSaysNoIat() {
+            var run = healthy();
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.plusSeconds(300).getEpochSecond() + "}")),
+                    "{\"error\":\"invalid_client\",\"error_description\":\"iat is in the future\"}", NOW);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains(", and the JWT has no iat (issued-at), so its issue time could not "
+                    + "be compared with the payer's clock."), f::explanation);
+            assertFalse(f.explanation().contains("within 60 seconds"), f::explanation);
+            assertFalse(f.evidence().contains("iat offset"), f::evidence);
+        }
+
+        /** A measured iat, unlike a missing one, is described by how far it is from the payer's clock. */
+        @Test
+        void measuredIatRejectedForTimingSaysHowFarOff() {
+            String timing = "{\"error\":\"invalid_client\",\"error_description\":\"iat is in the future\"}";
+            var run = healthy();
+            run.token = token(401, assertionBody(jwt(TOKEN_URL, NOW.minusSeconds(20), NOW.plusSeconds(280))), timing, NOW);
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).explanation().contains(", and the JWT "
+                    + "times were within 60 seconds of the payer's clock, so check the JWT lifetime (exp minus iat) "
+                    + "as well."));
+            run.token = token(401, assertionBody(jwt(TOKEN_URL, NOW.minusSeconds(120), NOW.plusSeconds(180))), timing, NOW);
+            assertTrue(assertOnly(check.evaluate(run.build()), Severity.FAIL).explanation().contains(", and the JWT "
+                    + "says it was issued 120 seconds before the payer's current time (the client clock is behind)."));
+        }
+
+        /** Beyond Instant's range (about ±3.2e16 s) a claim is absent, not a DateTimeException (#266). */
+        @Test
+        void outOfRangeIatOrExpIsUnmeasuredNotACrash() {
+            for (String claims : List.of("\"iat\":1000000000000000000", "\"exp\":1000000000000000000",
+                    "\"iat\":-1000000000000000000", "\"iat\":1e18", "\"iat\":1000000000000000000,\"exp\":"
+                            + Long.MAX_VALUE, "\"iat\":123456789012345678901234567890")) {
+                for (int status : List.of(200, 401)) {
+                    var run = healthy();
+                    run.token = token(status, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\"," + claims + "}")),
+                            status == 200 ? Fixtures.TOKEN_OK_BODY : INVALID_CLIENT, NOW);
+                    List<Finding> findings = assertDoesNotThrow(() -> check.evaluate(run.build()), claims);
+                    assertEquals(List.of(), findings, claims + " " + status);
+                }
+            }
+        }
+
+        /** An out-of-range iat beside a usable exp leaves the exp measured. */
+        @Test
+        void outOfRangeIatKeepsAUsableExp() {
+            var run = healthy();
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"iat\":1000000000000000000,"
+                    + "\"exp\":" + NOW.minusSeconds(600).getEpochSecond() + "}")),
+                    "{\"error\":\"invalid_client\",\"error_description\":\"clock skew too large\"}", NOW);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("JWT iat=(none), exp=" + NOW.minusSeconds(600)), f::evidence);
+        }
+
+        /** The first and last second an Instant holds are still measured; one past either is not. */
+        @Test
+        void instantRangeEdgesAreMeasured() {
+            for (long edge : List.of(Instant.MAX.getEpochSecond(), Instant.MIN.getEpochSecond())) {
+                var run = healthy();
+                run.token = token(200, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"iat\":" + edge + "}")),
+                        Fixtures.TOKEN_OK_BODY, NOW);
+                Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+                assertTrue(f.evidence().contains("iat=" + Instant.ofEpochSecond(edge)), f::evidence);
+                long past = edge > 0 ? edge + 1 : edge - 1;
+                run.token = token(200, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"iat\":" + past + "}")),
+                        Fixtures.TOKEN_OK_BODY, NOW);
+                assertEquals(List.of(), check.evaluate(run.build()), String.valueOf(past));
+            }
         }
 
         /** A healthy run whose recorded requests carry no readable JWT, as in the app. */

@@ -1101,8 +1101,11 @@ public class OnboardingRunner {
         }
     }
 
-    private static Instant epochSeconds(JsonNode json, String field) {
-        return json.path(field).isNumber() ? Instant.ofEpochSecond(json.get(field).asLong()) : null;
+    /** A NumericDate claim, or null when it is missing, not a number or beyond the seconds an Instant holds (#266). */
+    static Instant epochSeconds(JsonNode json, String field) {
+        long seconds = json.path(field).canConvertToLong() ? json.get(field).asLong() : Long.MIN_VALUE;
+        return seconds >= Instant.MIN.getEpochSecond() && seconds <= Instant.MAX.getEpochSecond()
+                ? Instant.ofEpochSecond(seconds) : null;
     }
 
     private Object decode(String base64url) {
