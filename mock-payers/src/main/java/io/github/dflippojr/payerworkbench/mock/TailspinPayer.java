@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
 import java.text.ParseException;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -38,7 +37,7 @@ public final class TailspinPayer extends MockPayer {
     private final Map<String, Instant> tokens = new ConcurrentHashMap<>();
 
     private TailspinPayer(Builder builder) {
-        super(builder.clock, builder.publicBaseUrl, builder.behaviour);
+        super(builder);
         clients = Map.copyOf(builder.clients);
         verifier = new RegisteredJwks(clients, TailspinPayer::invalidClient);
     }
@@ -122,40 +121,24 @@ public final class TailspinPayer extends MockPayer {
         return StandardCoverage.response(this, service, request, "TS");
     }
 
-    public static final class Builder {
+    public static final class Builder extends BaseBuilder<Builder> {
         private final Map<String, URI> clients = new LinkedHashMap<>();
-        private Clock clock = Clock.systemUTC();
-        private String publicBaseUrl;
-        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
         private Builder() { }
         public Builder client(String clientId, URI jwksUrl) {
             clients.put(Objects.requireNonNull(clientId), Objects.requireNonNull(jwksUrl));
             return this;
         }
-        public Builder clock(Clock clock) { this.clock = Objects.requireNonNull(clock); return this; }
-        public Builder publicBaseUrl(String url) { publicBaseUrl = url; return this; }
-        public Builder behaviour(PayerBehaviour behaviour) {
-            this.behaviour = Objects.requireNonNull(behaviour);
-            return this;
-        }
         public TailspinPayer build() { return new TailspinPayer(this); }
     }
     public static void main(String[] args) throws IOException {
-        MockPayer payer = launch(args, System.out);
-        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
+        StandaloneArgs.stopOnShutdown(launch(args, System.out));
     }
     static TailspinPayer launch(String[] args, PrintStream out) throws IOException {
         StandaloneArgs options = StandaloneArgs.parse(args);
         Builder builder = builder().publicBaseUrl(options.single("public-base-url", null));
-        for (String client : options.all("client")) {
-            int eq = client.indexOf('=');
-            if (eq <= 0) { throw new IllegalArgumentException("--client expects ID=JWKS_URL"); }
-            builder.client(client.substring(0, eq), URI.create(client.substring(eq + 1)));
-        }
-        TailspinPayer payer = builder.build();
-        options.configureTls(payer);
-        payer.start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
-        out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
+        options.clients(client -> "--client expects ID=JWKS_URL", builder::client);
+        TailspinPayer payer = options.startFrom(builder.build(), DEFAULT_PORT);
+        StandaloneArgs.printHeader(out, payer);
         out.println("  token endpoint: " + payer.tokenEndpoint() + " (private_key_jwt)");
         payer.clients.forEach((id, url) -> out.println("  client id=" + id + " jwks=" + url));
         out.println("  faults: " + payer.baseUrl() + "/admin/faults");
