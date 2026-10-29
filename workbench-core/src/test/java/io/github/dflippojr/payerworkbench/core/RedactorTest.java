@@ -169,6 +169,10 @@ class RedactorTest {
         assertEquals(masked, Redactor.redact(masked));
         assertEquals("{\"body\":\"{\\\"m\\\":\\\"x\\\\nCookie: " + Redactor.MASK + "\\\"}\"}",
                 Redactor.redact("{\"body\":\"{\\\"m\\\":\\\"x\\\\nCookie: sid=1\\\"}\"}"));
+        // An indent quoted inside the string: an escaped tab, also in embedded JSON.
+        assertEquals("{\"m\":\"x\\n\\tCookie: " + Redactor.MASK + "\\nend\"}", Redactor.redact("{\"m\":\"x\\n\\tCookie: sid=1\\nend\"}"));
+        assertEquals("{\"body\":\"{\\\"m\\\":\\\"x\\\\n\\\\t X-Api-Key: " + Redactor.MASK + "\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"m\\\":\\\"x\\\\n\\\\t X-Api-Key: k1\\\"}\"}"));
         // A string cut off inside the value: masked to the end.
         assertEquals("{\"m\":\"x\\nCookie: " + Redactor.MASK, Redactor.redact("{\"m\":\"x\\nCookie: sid=1; a=\\"));
     }

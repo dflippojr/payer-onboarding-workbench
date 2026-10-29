@@ -106,18 +106,20 @@ function lineDepth(text, index) {
 }
 
 /**
- * Where a header line's value ends, as in Redactor's endOfEscapedLine: at depth d, c backslashes before
- * n or r are a line break when c % 2d == d, and before a quote end the string when c % 2d < d. In plain
- * text (depth 0) only a JSON line-break escape ends it (an odd run before n or r), as in HEADER_LINE.
+ * Where a value inside a JSON string escaped to `depth` (1 in a JSON string, 2 in JSON embedded in one)
+ * ends, as in Redactor's endOfEscapedLine: c backslashes before a quote end the string when
+ * c % 2d < d, and, with `lineBreaks`, before n or r are a line break when c % 2d == d. In plain text
+ * (depth 0) only a JSON line-break escape ends it (an odd run before n or r), as in HEADER_LINE.
  */
-function escapedLineEnd(value, depth) {
+function valueEnd(value, depth, lineBreaks = true) {
+  const d = depth || 1;
   for (let i = 0; i < value.length; i++) {
     if (depth > 0 && value[i] === '"') return i;
     if (value[i] !== '\\') continue;
     const run = i;
     while (value[i] === '\\') i++;
-    const escapes = (i - run) % (2 * (depth || 1));
-    if ((/[nr]/.test(value[i] ?? '') && escapes === (depth || 1)) || (depth > 0 && value[i] === '"' && escapes < depth)) {
+    const escapes = (i - run) % (2 * d);
+    if ((lineBreaks && /[nr]/.test(value[i] ?? '') && escapes === d) || (depth > 0 && value[i] === '"' && escapes < d)) {
       return run;
     }
   }
@@ -145,10 +147,18 @@ const TEXT_CHECKS = [
   {
     name: 'JSON secret field',
     re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
-    // The value capture keeps the backslashes that escape the closing quote in JSON embedded more than once
-    // (\\\"); Redactor masks a value whole, so it never leaves the mask followed by a backslash.
-    ok: m => !isSecretKey(m[1])
-      || (m[2] !== undefined && isMaskedValue(m[1], m[2].replace(/\\+$/, '')) && !maskCutShort(m)),
+    // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
+    // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
+    ok: m => {
+      if (!isSecretKey(m[1])) return true;
+      if (m[2] === undefined) return false;
+      // Counted in the input: an earlier match can end inside the run of backslashes before the key.
+      const quote = m.index + m[0].indexOf('"');
+      let escaped = 0;
+      while (m.input[quote - 1 - escaped] === '\\') escaped++;
+      const rest = m.input.slice(m.index + m[0].length - m[2].length);
+      return isMaskedValue(m[1], rest.slice(0, valueEnd(rest, escaped + 1, false))) && !maskCutShort(m);
+    },
   },
   // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
   // masked values is a recorded header (X-Api-Key: ["[REDACTED]"]).
@@ -167,10 +177,11 @@ const TEXT_CHECKS = [
   {
     name: 'sensitive header line',
     // The value is read in a lookahead, so the match ends at the name and a header line on the next
-    // escaped line is scanned on its own; escapedLineEnd finds where the value ends.
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*(?=([^\r\n]*))`, 'gim'),
+    // escaped line is scanned on its own; valueEnd finds where the value ends.
+    // An escaped tab may indent the line, as in Redactor's ESCAPED_HEADER_LINE.
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*(?=([^\r\n]*))`, 'gim'),
     ok: m => {
-      const v = m[2].slice(0, escapedLineEnd(m[2], lineDepth(m.input, m.index)));
+      const v = m[2].slice(0, valueEnd(m[2], lineDepth(m.input, m.index)));
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);
     },
   },

@@ -142,29 +142,29 @@ public final class Redactor {
             "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret");
 
     /**
-     * A credential header line, {@code Name: value}, from where the line starts: group 1 is everything
-     * before the value, group 2 the name, any {@link #SENSITIVE_HEADERS} name in any case, and group 3
-     * the value. A line starts at the start of the text or after a line break (also an escaped one in a
-     * JSON string), and may be indented; a header name anywhere else ({@code see the Cookie: header
-     * docs}) is prose. The names are letters and {@code -} only.
+     * The name of a credential header line, {@code Name: value}, and the separator: group 2 of
+     * {@link #HEADER_LINE} and {@link #ESCAPED_HEADER_LINE} is the name, any {@link #SENSITIVE_HEADERS}
+     * name in any case, and group 1 everything from where the line starts to the value. A line starts at
+     * the start of the text or after a line break (also an escaped one in a JSON string), and may be
+     * indented; a header name anywhere else ({@code see the Cookie: header docs}) is prose. The names are
+     * letters and {@code -} only.
      */
-    private static final String HEADER_LINE_START =
-            "(?i)([ \\t]*+(" + String.join("|", SENSITIVE_HEADERS) + "):[ \\t]*+)";
+    private static final String HEADER_NAME = "(" + String.join("|", SENSITIVE_HEADERS) + "):[ \\t]*+";
 
     /**
-     * A header line in plain text. The value runs to the end of the line ({@code ;} and {@code =} are
+     * A header line in plain text. The value (group 3) runs to the end of the line ({@code ;} and {@code =} are
      * part of a cookie), or to a backslash that starts a JSON {@code \n} or {@code \r} escape, as in
      * {@link #FORM_SECRET}.
      */
-    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^" + HEADER_LINE_START
+    private static final Pattern HEADER_LINE = Pattern.compile("(?m)^(?i)([ \\t]*+" + HEADER_NAME + ")"
             + "((?:[^\\r\\n\\\\]++|" + BACKSLASH.repeat(2) + "|" + BACKSLASH + "(?![nr]))*+)");
 
     /**
-     * The start of a header line quoted inside a JSON string, after an escaped line break; its value
-     * ends where {@link #endOfEscapedLine} says.
+     * The start of a header line quoted inside a JSON string, after an escaped line break; its indent
+     * may be an escaped tab too. Its value ends where {@link #endOfEscapedLine} says.
      */
-    private static final Pattern ESCAPED_HEADER_LINE =
-            Pattern.compile("(?<=" + BACKSLASH + "[nr])" + HEADER_LINE_START);
+    private static final Pattern ESCAPED_HEADER_LINE = Pattern.compile(
+            "(?<=" + BACKSLASH + "[nr])(?i)((?:[ \\t]|" + BACKSLASH + "++t)*+" + HEADER_NAME + ")");
 
     /** The scheme of an {@code Authorization}-style value (an RFC 9110 token, group 1) and a credential after it. */
     private static final Pattern SCHEME = Pattern.compile(

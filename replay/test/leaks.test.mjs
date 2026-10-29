@@ -84,6 +84,7 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     // What Redactor leaves for a header line in JSON embedded in a JSON string.
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nAccept: a\\"}"}',
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\"}"}',
+    '{"m":"x\\n\\tCookie: [REDACTED]\\nend"}',
     // redactHeaders and redactTree keep an empty header list.
     '{"requestHeaders":{"Cookie":[],"Authorization":[ ]}}',
     // redactTree keeps any scheme of an authorization list item.
@@ -126,6 +127,15 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
   assert.equal(findJsonLeaks({ responseBody: '{"X-Api-Key":"LEAKED"}' }).length, 1);
   const body = JSON.stringify({ debug: JSON.stringify({ Cookie: 'sid=LEAKED' }) });
   assert.ok(findTextLeaks(JSON.stringify({ responseBody: body })).length > 0, body);
+  for (const text of [
+    // An escaped tab before the name is an indent, as in Redactor.
+    '{"m":"x\\n\\tCookie: sid=LEAKED"}',
+    // A mask that ends at an escaped quote has more of the value after it, at any depth.
+    '{"access_token":"[REDACTED]\\", tail=LEAKED"}',
+    JSON.stringify({ responseBody: `echo: ${JSON.stringify({ access_token: '[REDACTED]", tail=LEAKED' })}` }),
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
 });
 test('accepts a recorded header list of masked values', () => {
   assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
