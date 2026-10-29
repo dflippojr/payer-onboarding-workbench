@@ -18,8 +18,9 @@ import java.util.regex.Pattern;
 
 /**
  * {@code auth.clock-skew}: a measured JWT issue-time difference beyond tolerance,
- * or an explicit payer error indicating a clock difference. Expiry alone does
- * not establish skew: the credential may simply be stale.
+ * a rejected JWT whose exp the payer's clock has passed, or an explicit payer
+ * error indicating a clock difference. An expiry error with no JWT time to
+ * measure does not establish skew: the credential may simply be stale.
  *
  * <p>The JWT times come from the claims the caller recorded: a hook call's
  * {@link HookResponse#clientJwt()} and the run's {@link RunObservations#clientAssertion()}
@@ -56,7 +57,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
                     && TIME_ERROR.matcher(exchange.responseBody()).find();
             boolean skewed = m != null && (m.skewOverTolerance(tolerance));
 
-            if (rejected && (timeError || skewed)) {
+            if (rejected && (timeError || skewed || (m != null && m.expired()))) {
                 findings.add(new Finding(CHECK_ID, Severity.FAIL, "Rejection consistent with clock skew",
                         "The payer rejected the request" + (timeError ? " with an error about token timing" : "")
                                 + (m == null ? "" : ", and " + m.describe(tolerance))
@@ -72,7 +73,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
                                 + "for JWT iat (issued-at) and exp (expiry) times would reject it.",
                         Support.describe(exchange) + "\n" + m.evidence(),
                         "Sync the client host's clock with NTP."));
-            } else if (m != null && Support.isSuccess(exchange.status())) {
+            } else if (m != null && m.iat() != null && Support.isSuccess(exchange.status())) {
                 verified.add(exchange.url() + " (iat offset " + m.skewSeconds() + " s)");
             }
         }
@@ -91,16 +92,20 @@ public final class ClockSkewCheck implements DiagnosticCheck {
             return new Measurement(recorded.iat(), recorded.exp(), serverNow);
         }
         for (JsonNode claims : Support.requestJwtClaims(exchange)) {
-            JsonNode iat = claims.get("iat");
-            JsonNode exp = claims.get("exp");
-            if ((iat != null && iat.canConvertToLong()) || (exp != null && exp.canConvertToLong())) {
-                return new Measurement(
-                        iat != null && iat.canConvertToLong() ? Instant.ofEpochSecond(iat.asLong()) : null,
-                        exp != null && exp.canConvertToLong() ? Instant.ofEpochSecond(exp.asLong()) : null,
-                        serverNow);
+            Instant iat = numericDate(claims.get("iat"));
+            Instant exp = numericDate(claims.get("exp"));
+            if (iat != null || exp != null) {
+                return new Measurement(iat, exp, serverNow);
             }
         }
         return null;
+    }
+
+    /** A NumericDate claim, or null when it is missing, not a number or beyond the seconds an Instant holds. */
+    private static Instant numericDate(JsonNode claim) {
+        long seconds = claim != null && claim.canConvertToLong() ? claim.asLong() : Long.MIN_VALUE;
+        return seconds >= Instant.MIN.getEpochSecond() && seconds <= Instant.MAX.getEpochSecond()
+                ? Instant.ofEpochSecond(seconds) : null;
     }
 
     /** The client JWT claims recorded for this exchange: a hook call's client JWT or the token request's assertion. */
@@ -117,10 +122,12 @@ public final class ClockSkewCheck implements DiagnosticCheck {
         return null;
     }
 
+    /** The JWT times of one exchange; {@code iat} is null when the JWT has none, and then no skew is measured. */
     private record Measurement(Instant iat, Instant exp, Instant serverNow) {
 
+        /** Seconds from the payer's clock to iat; call only when iat is present. */
         long skewSeconds() {
-            return iat == null ? 0 : Duration.between(serverNow, iat).toSeconds();
+            return Duration.between(serverNow, iat).toSeconds();
         }
 
         boolean skewOverTolerance(Duration tolerance) {
@@ -132,6 +139,10 @@ public final class ClockSkewCheck implements DiagnosticCheck {
         }
 
         String describe(Duration tolerance) {
+            if (iat == null && !expired()) {
+                return "the JWT has no iat (issued-at), so its issue time could not be compared with the payer's "
+                        + "clock";
+            }
             if (!skewOverTolerance(tolerance) && !expired()) {
                 return "the JWT times were within " + tolerance.toSeconds() + " seconds of the payer's clock, "
                         + "so check the JWT lifetime (exp minus iat) as well";
@@ -153,8 +164,8 @@ public final class ClockSkewCheck implements DiagnosticCheck {
         }
 
         String evidence() {
-            return "JWT iat=" + iat + ", exp=" + exp + "; payer Date header=" + serverNow
-                    + "; iat offset=" + skewSeconds() + " s";
+            return "JWT iat=" + (iat == null ? "(none)" : iat) + ", exp=" + exp + "; payer Date header=" + serverNow
+                    + (iat == null ? "" : "; iat offset=" + skewSeconds() + " s");
         }
     }
 }

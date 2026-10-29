@@ -73,10 +73,14 @@ final class Fixtures {
 
     /** A JWT with a random (fake) signature; the signature is returned via {@link #signatureOf}. */
     static String jwt(String aud, Instant iat, Instant exp) {
-        String header = "{\"alg\":\"RS384\",\"typ\":\"JWT\",\"kid\":\"synthetic-kid\"}";
-        String payload = "{\"iss\":\"" + CLIENT_ID + "\",\"sub\":\"" + CLIENT_ID + "\",\"aud\":\"" + aud
+        return rawJwt("{\"iss\":\"" + CLIENT_ID + "\",\"sub\":\"" + CLIENT_ID + "\",\"aud\":\"" + aud
                 + "\",\"jti\":\"" + UUID.randomUUID() + "\",\"iat\":" + iat.getEpochSecond()
-                + ",\"exp\":" + exp.getEpochSecond() + "}";
+                + ",\"exp\":" + exp.getEpochSecond() + "}");
+    }
+
+    /** A JWT with the given claims JSON as its payload, for claims {@link #jwt} cannot express. */
+    static String rawJwt(String payload) {
+        String header = "{\"alg\":\"RS384\",\"typ\":\"JWT\",\"kid\":\"synthetic-kid\"}";
         byte[] sig = new byte[64];
         RANDOM.nextBytes(sig);
         Base64.Encoder enc = Base64.getUrlEncoder().withoutPadding();
