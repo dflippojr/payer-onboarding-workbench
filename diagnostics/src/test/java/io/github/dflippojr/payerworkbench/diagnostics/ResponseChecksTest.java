@@ -43,7 +43,8 @@ class ResponseChecksTest {
         void majorDifferenceFails() {
             var run = healthy();
             run.connection = Fixtures.connection("1.0.0", false);
-            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("Major versions differ"), f::explanation);
         }
 
         @ParameterizedTest(name = "record {0}, payer {1} -> {2}")
@@ -55,7 +56,13 @@ class ResponseChecksTest {
                 "2.1.0, 2.1, PASS",
                 "2.0, 2.0.1, WARN",
                 "2.0.0-ballot, 2.0.0, WARN",
+                "2.0.1, 2.0.1-ballot, WARN",
                 "2.0.0-ballot, 2.0-ballot, PASS",
+                "2.0.1+20240101, 2.0.1, PASS",
+                "2.0.1, 2.0.1+20240101, PASS",
+                "2.0.1+a, 2.0.1+b, PASS",
+                "2.0.1-ballot+a, 2.0.1-ballot+b, PASS",
+                "2.0.1-ballot, 2.0.1-snapshot, WARN",
                 "1.0.0, 2.0.0, FAIL",
                 "2.10, 2.1, WARN"})
         void trailingZeroComponentsDoNotMakeVersionsDiffer(String record, String payer, Severity expected) {
@@ -68,6 +75,43 @@ class ResponseChecksTest {
             } else {
                 assertEquals("CRD IG version mismatch: payer " + payer + ", record " + record, f.title());
             }
+        }
+
+        @Test
+        void preReleaseDifferenceDoesNotSayMinorOrPatch() {
+            var run = healthy();
+            run.connection = Fixtures.connection("2.0.1-ballot", false);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
+            assertTrue(f.explanation().contains("pre-release"), f::explanation);
+            assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
+        }
+
+        @Test
+        void payerOnPreReleaseSaysOneSideIsPreRelease() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"2.0.1-ballot\"}}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
+        }
+
+        @Test
+        void differentPreReleaseLabelsSayPreRelease() {
+            var run = healthy();
+            run.connection = Fixtures.connection("2.0.1-ballot", false);
+            run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"2.0.1-snapshot\"}}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
+            assertTrue(f.explanation().contains("different pre-release labels"), f::explanation);
+        }
+
+        @Test
+        void numericDifferenceWinsOverPreRelease() {
+            var run = healthy();
+            run.connection = Fixtures.connection("2.1.0-ballot", false);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertTrue(f.explanation().contains("Minor or patch versions differ"), f::explanation);
+            assertFalse(f.explanation().contains("pre-release"), f::explanation);
         }
 
         @Test

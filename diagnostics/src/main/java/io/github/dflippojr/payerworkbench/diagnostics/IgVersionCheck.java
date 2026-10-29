@@ -29,7 +29,8 @@ public final class IgVersionCheck implements DiagnosticCheck {
     private static final Pattern VERSION_KEY = Pattern.compile("(?i)ig[-_.]?version");
     private static final Pattern VERSIONED_CANONICAL = Pattern.compile(
             "hl7\\.org/fhir/us/davinci-crd/[^\"|\\s]*\\|([0-9][0-9A-Za-z.\\-]*)");
-    private static final Pattern SUFFIX = Pattern.compile("[-+]");
+    private static final Pattern BUILD = Pattern.compile("\\+.*");
+    private static final Pattern PRE_RELEASE = Pattern.compile("-");
 
     @Override
     public String id() {
@@ -75,13 +76,26 @@ public final class IgVersionCheck implements DiagnosticCheck {
                 "CRD IG version mismatch: payer " + o.version() + ", record " + expected,
                 "The payer follows a different version of the CRD implementation guide (the Da Vinci spec that "
                         + "defines request and response shapes) than the connection record expects. "
-                        + (majorDiffers
-                                ? "Major versions differ, so fields and response formats are likely incompatible."
-                                : "Minor or patch versions differ, so some fields or code systems may have changed."),
+                        + difference(want, got, majorDiffers),
                 evidence,
                 "Confirm with the payer which version they will run in production; then either update the "
                         + "connection record's igVersion to " + o.version() + " and re-test, or ask the payer for an "
                         + "endpoint on " + expected + "."));
+    }
+
+    private static String difference(String want, String got, boolean majorDiffers) {
+        if (majorDiffers) {
+            return "Major versions differ, so fields and response formats are likely incompatible.";
+        }
+        if (!numeric(want).equals(numeric(got))) {
+            return "Minor or patch versions differ, so some fields or code systems may have changed.";
+        }
+        if (preReleaseStart(want) < want.length() && preReleaseStart(got) < got.length()) {
+            return "Both sides are pre-releases of the same version but with different pre-release labels, and "
+                    + "pre-releases can differ from each other in fields and code systems.";
+        }
+        return "One side is a pre-release (ballot) of the CRD IG and the other is the release, and a ballot can "
+                + "differ from the published IG in fields and code systems.";
     }
 
     private static Optional<Observed> fromDiscovery(RunObservations obs) {
@@ -131,16 +145,18 @@ public final class IgVersionCheck implements DiagnosticCheck {
     }
 
     /**
-     * Strips a leading {@code v} and trailing {@code .0} components of the numeric part,
-     * keeping the major and any pre-release or build suffix: {@code 2.0.0} and {@code 2.0}
-     * become {@code 2}, {@code 2.1.0-ballot} becomes {@code 2.1-ballot}.
+     * Strips a leading {@code v}, any build metadata ({@code +x}, which semver gives no
+     * precedence) and trailing {@code .0} components of the numeric part, keeping the major
+     * and any pre-release suffix: {@code 2.0.0} and {@code 2.0} become {@code 2},
+     * {@code 2.1.0-ballot} becomes {@code 2.1-ballot}, {@code 2.0.1+20240101} becomes {@code 2.0.1}.
      */
     private static String normalize(String version) {
         String v = version.strip();
         if (v.startsWith("v") || v.startsWith("V")) {
             v = v.substring(1);
         }
-        int suffix = suffixStart(v);
+        v = BUILD.matcher(v).replaceFirst("");
+        int suffix = preReleaseStart(v);
         String numeric = v.substring(0, suffix);
         while (numeric.endsWith(".0")) {
             numeric = numeric.substring(0, numeric.length() - 2);
@@ -149,14 +165,16 @@ public final class IgVersionCheck implements DiagnosticCheck {
     }
 
     private static String major(String version) {
-        int end = suffixStart(version);
-        int dot = version.indexOf('.');
-        return version.substring(0, dot < 0 ? end : Math.min(dot, end));
+        return numeric(version).split("\\.", 2)[0];
     }
 
-    /** Where a pre-release ({@code -ballot}) or build ({@code +x}) suffix starts, or the length if none. */
-    private static int suffixStart(String version) {
-        Matcher m = SUFFIX.matcher(version);
+    private static String numeric(String version) {
+        return version.substring(0, preReleaseStart(version));
+    }
+
+    /** Where a pre-release ({@code -ballot}) suffix starts, or the length if none. */
+    private static int preReleaseStart(String version) {
+        Matcher m = PRE_RELEASE.matcher(version);
         return m.find() ? m.start() : version.length();
     }
 
