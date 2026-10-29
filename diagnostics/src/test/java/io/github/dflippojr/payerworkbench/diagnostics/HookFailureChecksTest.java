@@ -37,6 +37,46 @@ class HookFailureChecksTest {
     }
 
     @Test
+    void errorInsideQuotedErrorUriIsNotTheError() {
+        var obs = run(401, Map.of("www-authenticate", List.of(
+                "Bearer error_uri=\"https://p.test/help?error=see_docs\", error=\"invalid_token\"")), "{}").build();
+        var f = Fixtures.assertOnly(new HookRejectedCheck().evaluate(obs), Severity.FAIL);
+        assertTrue(f.explanation().contains("Reason: invalid_token."), f::explanation);
+        assertTrue(f.suggestedFix().contains("fresh access token"));
+    }
+
+    @Test
+    void parameterEndingInTheNameIsNotTheParameter() {
+        var obs = run(403, Map.of("www-authenticate", List.of(
+                "Bearer myscope=\"x\", suberror=invalid_token, error=insufficient_scope, scope=\"system/*.read\"")),
+                "{}").build();
+        var f = Fixtures.assertOnly(new HookRejectedCheck().evaluate(obs), Severity.FAIL);
+        assertTrue(f.explanation().contains("Reason: insufficient_scope. Required scope: system/*.read."),
+                f::explanation);
+        assertTrue(f.suggestedFix().contains("required scopes: system/*.read"), f::suggestedFix);
+    }
+
+    @Test
+    void suberrorAloneIsNotTheError() {
+        var f = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run(401,
+                Map.of("WWW-Authenticate", List.of("Bearer realm=\"cds\", suberror=invalid_token")), "{}").build()),
+                Severity.FAIL);
+        assertTrue(f.evidence().contains("suberror=invalid_token"), f::evidence);
+        assertTrue(f.explanation().contains("payer supplied no reason"), f::explanation);
+        assertTrue(f.suggestedFix().contains("registered client id"), f::suggestedFix);
+    }
+
+    @Test
+    void parametersAreReadFromTheChallengeThatCarriesTheError() {
+        var f = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run(401, Map.of("WWW-Authenticate", List.of(
+                "Basic realm=\"a\", scope=\"basic-scope\", Bearer error=\"invalid_token\", scope=\"system/*.read\"")),
+                "{}").build()), Severity.FAIL);
+        assertTrue(f.explanation().contains("Reason: invalid_token. Required scope: system/*.read."),
+                f::explanation);
+        assertTrue(f.suggestedFix().contains("fresh access token"), f::suggestedFix);
+    }
+
+    @Test
     void unquotedHeaderErrorOverridesBody() {
         var finding = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run(401,
                 Map.of("WWW-Authenticate", List.of("Bearer error=invalid_request")),

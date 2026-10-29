@@ -9,15 +9,11 @@ import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.Optional;
 
 /** Explains resource-server credential rejections, leaving client JWT audiences to their specific check. */
 public final class HookRejectedCheck implements DiagnosticCheck {
     public static final String CHECK_ID = "auth.hook-rejected";
-    // Quoted strings may contain commas and escaped quotes; do not split the header on commas.
-    private static final Pattern PARAMETER = Pattern.compile(
-            "(?i)(error_description|error|scope)\\s*=\\s*(?:\"((?:[^\"\\\\]++|\\\\.)*+)\"|([^,\\s]+))");
 
     @Override
     public String id() {
@@ -39,9 +35,11 @@ public final class HookRejectedCheck implements DiagnosticCheck {
             HttpExchange exchange = hook.exchange();
             String header = Support.header(exchange.responseHeaders(), "WWW-Authenticate").orElse("");
             JsonNode body = Support.parseJson(exchange.responseBody()).orElse(null);
-            String error = value(header, body, "error");
-            String reason = value(header, body, "error_description");
-            String scope = value(header, body, "scope");
+            // Several challenges: the parameters come from the first one carrying an error (AuthChallenge.param).
+            List<AuthChallenge> challenges = AuthChallenge.parse(header);
+            String error = value(challenges, body, "error");
+            String reason = value(challenges, body, "error_description");
+            String scope = value(challenges, body, "scope");
             String scheme = header.isBlank() ? "unspecified" : header.strip().split("\\s+", 2)[0];
             // A run with authType NONE sends no Authorization header; say so rather than blame a token.
             boolean unauthenticated = hook.clientJwt() == null
@@ -63,13 +61,10 @@ public final class HookRejectedCheck implements DiagnosticCheck {
         return findings;
     }
 
-    private static String value(String header, JsonNode body, String name) {
-        Matcher matcher = PARAMETER.matcher(header);
-        while (matcher.find()) {
-            if (matcher.group(1).equalsIgnoreCase(name)) {
-                return matcher.group(2) == null ? matcher.group(3)
-                        : matcher.group(2).replace("\\\"", "\"").replace("\\\\", "\\");
-            }
+    private static String value(List<AuthChallenge> challenges, JsonNode body, String name) {
+        Optional<String> param = AuthChallenge.param(challenges, name);
+        if (param.isPresent()) {
+            return param.get();
         }
         return body == null ? "" : body.path(name).asText("");
     }

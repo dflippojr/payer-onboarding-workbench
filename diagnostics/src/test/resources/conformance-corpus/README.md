@@ -54,5 +54,6 @@ Before adding an entry, decide which side is wrong:
 - **The workbench is wrong.** Fix the check and add a unit test for the case. The PR that added this corpus did that twice:
   - `response.coverage-location` passed coverage information placed on a coding inside the order (`mutant-ci-on-coding`).
   - `response.schema` passed cards with suggestions but no `selectionBehavior` (`mutant-card-selection-behavior-removed`).
+  - `response.schema` passed actions without a valid `type`, a `description` or the `resource` a create or update needs (`mutant-action-*`, #263).
 - **A mock is wrong.** Fix the mock and regenerate the corpus. Northwind and Tailspin used a card topic code system that does not exist, and Fabrikam's suggestion cards lacked `selectionBehavior`.
 - **The validator is wrong, or the difference is deliberate.** Add an entry only if neither of the above applies.

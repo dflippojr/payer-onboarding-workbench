@@ -184,4 +184,46 @@
   "base" : "healthy-fabrikam-order-sign-hospital-bed",
   "rule" : "required element removed",
   "description" : "covered removed from coverage-information inside a card suggestion"
+}, {
+  "id" : "mutant-action-type-removed",
+  "file" : "mutant-action-type-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "systemActions[0].type removed (CDS Hooks 2.0 Action: type REQUIRED)"
+}, {
+  "id" : "mutant-action-type-unknown-code",
+  "file" : "mutant-action-type-unknown-code.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong code",
+  "description" : "systemActions[0].type is modify (CDS Hooks 2.0 Action: create, update or delete)"
+}, {
+  "id" : "mutant-action-description-removed",
+  "file" : "mutant-action-description-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "systemActions[0].description removed (CDS Hooks 2.0 Action: description REQUIRED)"
+}, {
+  "id" : "mutant-action-resource-removed",
+  "file" : "mutant-action-resource-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "a second system action, a create with no resource (CDS Hooks 2.0 Action: resource SHALL hold the new resource for create)"
+}, {
+  "id" : "mutant-suggestion-action-delete-without-resource-id",
+  "file" : "mutant-suggestion-action-delete-without-resource-id.json",
+  "base" : "healthy-fabrikam-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "a second action on a card suggestion, a delete with no resourceId (CDS Hooks 2.0 Action: resourceId SHOULD be provided for delete; HL7 tools invariant cds-resp-2)"
+}, {
+  "id" : "mutant-suggestion-action-delete-with-resource",
+  "file" : "mutant-suggestion-action-delete-with-resource.json",
+  "base" : "healthy-fabrikam-order-sign-hospital-bed",
+  "rule" : "wrong action structure",
+  "description" : "a second action on a card suggestion, a delete that sends the order as resource besides its resourceId (CDS Hooks 2.0 Action: resource for delete is deprecated; HL7 tools invariant cds-resp-2)"
+}, {
+  "id" : "mutant-suggestion-action-description-removed",
+  "file" : "mutant-suggestion-action-description-removed.json",
+  "base" : "healthy-fabrikam-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "description removed from a card suggestion's action (CDS Hooks 2.0 Action: description REQUIRED; HL7 tools invariant cds-resp-5)"
 } ]

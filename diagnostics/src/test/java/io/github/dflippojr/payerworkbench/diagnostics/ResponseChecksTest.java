@@ -43,7 +43,8 @@ class ResponseChecksTest {
         void majorDifferenceFails() {
             var run = healthy();
             run.connection = Fixtures.connection("1.0.0", false);
-            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("Major versions differ"), f::explanation);
         }
 
         @ParameterizedTest(name = "record {0}, payer {1} -> {2}")
@@ -55,7 +56,13 @@ class ResponseChecksTest {
                 "2.1.0, 2.1, PASS",
                 "2.0, 2.0.1, WARN",
                 "2.0.0-ballot, 2.0.0, WARN",
+                "2.0.1, 2.0.1-ballot, WARN",
                 "2.0.0-ballot, 2.0-ballot, PASS",
+                "2.0.1+20240101, 2.0.1, PASS",
+                "2.0.1, 2.0.1+20240101, PASS",
+                "2.0.1+a, 2.0.1+b, PASS",
+                "2.0.1-ballot+a, 2.0.1-ballot+b, PASS",
+                "2.0.1-ballot, 2.0.1-snapshot, WARN",
                 "1.0.0, 2.0.0, FAIL",
                 "2.10, 2.1, WARN"})
         void trailingZeroComponentsDoNotMakeVersionsDiffer(String record, String payer, Severity expected) {
@@ -68,6 +75,43 @@ class ResponseChecksTest {
             } else {
                 assertEquals("CRD IG version mismatch: payer " + payer + ", record " + record, f.title());
             }
+        }
+
+        @Test
+        void preReleaseDifferenceDoesNotSayMinorOrPatch() {
+            var run = healthy();
+            run.connection = Fixtures.connection("2.0.1-ballot", false);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
+            assertTrue(f.explanation().contains("pre-release"), f::explanation);
+            assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
+        }
+
+        @Test
+        void payerOnPreReleaseSaysOneSideIsPreRelease() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"2.0.1-ballot\"}}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
+        }
+
+        @Test
+        void differentPreReleaseLabelsSayPreRelease() {
+            var run = healthy();
+            run.connection = Fixtures.connection("2.0.1-ballot", false);
+            run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"2.0.1-snapshot\"}}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
+            assertTrue(f.explanation().contains("different pre-release labels"), f::explanation);
+        }
+
+        @Test
+        void numericDifferenceWinsOverPreRelease() {
+            var run = healthy();
+            run.connection = Fixtures.connection("2.1.0-ballot", false);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertTrue(f.explanation().contains("Minor or patch versions differ"), f::explanation);
+            assertFalse(f.explanation().contains("pre-release"), f::explanation);
         }
 
         @Test
@@ -145,7 +189,7 @@ class ResponseChecksTest {
         @ParameterizedTest(name = "systemActions {0}")
         @CsvSource(delimiter = '|', value = {
                 "[null]|systemActions[0] is not a JSON object",
-                "[{\"type\":\"update\"},7]|systemActions[1] is not a JSON object",
+                "[{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":\"Task/1\"},7]|systemActions[1] is not a JSON object",
                 "{}|\"systemActions\" is not an array"})
         void malformedSystemActionsFail(String actions, String problem) {
             var run = healthy().hookBody("{\"cards\":[],\"systemActions\":" + actions + "}");
@@ -158,6 +202,64 @@ class ResponseChecksTest {
             // The CRD reference server writes every unset field as null.
             var run = healthy().hookBody("{\"cards\":[],\"systemActions\":null}");
             assertOnly(check.evaluate(run.build()), Severity.PASS);
+        }
+
+        @Test
+        void systemActionWithoutDescriptionOrResourceFails() {
+            // #263: a null resource is an absent one, so this action has neither a description nor a resource.
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[{\"type\":\"update\",\"resource\":null}]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("systemActions[0].description is missing"), f::evidence);
+            assertTrue(f.evidence().contains("systemActions[0].resource is missing (required for update)"), f::evidence);
+            assertTrue(f.explanation().contains("CDS Hooks 2.0 Action"), f::explanation);
+        }
+
+        /** A card with one suggestion whose actions are {@code actions}. */
+        private static String suggestionCard(String actions) {
+            return "{\"summary\":\"a\",\"indicator\":\"info\",\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\","
+                    + "\"suggestions\":[{\"label\":\"Save\",\"actions\":" + actions + "}]}";
+        }
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource(delimiter = '|', value = {
+                "{\"type\":\"modify\",\"description\":\"d\",\"resource\":{}}|.type is \"modify\" (must be create, update or delete)",
+                "{\"type\":7,\"description\":\"d\",\"resource\":{}}|.type is missing",
+                "{\"description\":\"d\",\"resource\":{}}|.type is missing",
+                "{\"type\":\"create\",\"resource\":{}}|.description is missing",
+                "{\"type\":\"create\",\"description\":\" \",\"resource\":{}}|.description is missing",
+                "{\"type\":\"create\",\"description\":7,\"resource\":{}}|.description is missing",
+                "{\"type\":\"create\",\"description\":\"d\"}|.resource is missing (required for create)",
+                "{\"type\":\"update\",\"description\":\"d\",\"resource\":\"Task/1\"}|.resource is not a JSON object",
+                "7|' is not a JSON object'"})
+        void invalidActionsFailInSystemActionsAndSuggestions(String action, String problem) {
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[" + action + "]}");
+            assertEquals("systemActions[0]" + problem,
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+            run.hookBody("{\"cards\":[" + suggestionCard("[" + action + "]") + "]}");
+            assertEquals("cards[0].suggestions[0].actions[0]" + problem,
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+        }
+
+        @Test
+        void validActionsPass() {
+            String actions = "[{\"type\":\"create\",\"description\":\"c\",\"resource\":{\"resourceType\":\"Task\"}},"
+                    + "{\"type\":\"update\",\"description\":\"u\",\"resource\":{\"resourceType\":\"Task\"},\"resourceId\":null},"
+                    + "{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":\"Task/1\",\"resource\":null}]";
+            var run = healthy().hookBody("{\"cards\":[" + suggestionCard(actions) + "],\"systemActions\":" + actions + "}");
+            assertOnly(check.evaluate(run.build()), Severity.PASS);
+        }
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource(delimiter = '|', value = {
+                "{\"type\":\"delete\",\"description\":\"d\"}|systemActions[0].resourceId is missing (should be sent for delete)",
+                "{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":7}|systemActions[0].resourceId is missing (should be sent for delete)",
+                "{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":\"Task/1\",\"resource\":{}}|systemActions[0].resource is sent with delete (send resourceId instead)"})
+        void deleteWithoutResourceIdWarns(String action, String problem) {
+            // CDS Hooks 2.0 says SHOULD, and the HL7 tools model's cds-resp-2 is a warning.
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[" + action + "]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertEquals(problem, f.evidence().lines().findFirst().orElseThrow());
+            assertTrue(f.explanation().contains("actions"), f::explanation);
         }
 
         @Test
