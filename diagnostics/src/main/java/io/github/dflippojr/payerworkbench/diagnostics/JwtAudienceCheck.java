@@ -160,7 +160,14 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
                 return "aud names host " + a.getHost() + " but the request went to " + t.getHost();
             }
             if (a.getPort() != t.getPort()) {
-                return "aud names port " + a.getPort() + " but the request went to port " + t.getPort();
+                int ap = effectivePort(a);
+                int tp = effectivePort(t);
+                if (ap != tp) {
+                    return "aud names " + portName(ap) + " but the request went to " + portName(tp);
+                }
+                return a.getPort() != -1
+                        ? "aud writes the default port :" + ap + " explicitly, which the URL leaves out"
+                        : "the URL writes the default port :" + tp + " explicitly, which aud leaves out";
             }
             String ap = stripSlash(nullToEmpty(a.getPath()));
             String tp = stripSlash(nullToEmpty(t.getPath()));
@@ -176,6 +183,21 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
         } catch (IllegalArgumentException e) {
             return "aud is \"" + aud + "\"";
         }
+    }
+
+    /** The explicit port, else the scheme's default (443 for https, 80 for http), else -1. */
+    private static int effectivePort(URI uri) {
+        if (uri.getPort() != -1) {
+            return uri.getPort();
+        }
+        if ("https".equalsIgnoreCase(uri.getScheme())) {
+            return 443;
+        }
+        return "http".equalsIgnoreCase(uri.getScheme()) ? 80 : -1;
+    }
+
+    private static String portName(int port) {
+        return port == -1 ? "no port" : "port " + port;
     }
 
     /** If {@code longer} is {@code shorter} with path segments inserted at one place, those segments. */

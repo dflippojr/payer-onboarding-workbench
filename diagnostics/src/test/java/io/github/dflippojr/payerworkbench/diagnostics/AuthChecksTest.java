@@ -348,6 +348,8 @@ class AuthChecksTest {
                     JwtAudienceCheck.difference("http://h.test/x", "http://h.test:8080/x"));
             assertEquals("aud names port 8443 but the request went to port 9443",
                     JwtAudienceCheck.difference("https://h.test:8443/x", "https://h.test:9443/x"));
+            assertEquals("aud names no port but the request went to port 21",
+                    JwtAudienceCheck.difference("ftp://h.test/x", "ftp://h.test:21/x"));
         }
 
         @Test
