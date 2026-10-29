@@ -41,7 +41,15 @@
     {"id": "bearer-url-encoded", "rule": "AUTH_SCHEME", "input": "Authorization: Bearer %2FFAKE0043%3ASECRETPART0043", "secrets": ["FAKE0043", "SECRETPART0043"]},
     {"id": "json-in-json-cut-off-before-quote", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"debug\":\"{\\\"client_secret\\\":\\\"FAKE-embedded-cut-0044\"}", "secrets": ["FAKE-embedded-cut-0044"]},
     {"id": "bearer-slash-escaped", "rule": "AUTH_SCHEME", "input": "{\"error\":\"invalid_token\",\"error_description\":\"rejected Bearer FakeTok\\/bearer-0045-not-real+x\\/y==\"}", "secrets": ["bearer-0045-not-real", "x\\/y=="]},
-    {"id": "bearer-unicode-escaped", "rule": "AUTH_SCHEME", "input": "{\"error\":\"invalid_token\",\"error_description\":\"rejected Bearer FakeTok\\u002Fbearer-0046-not-real\\u002Bx/y\\u003d\\u003d\"}", "secrets": ["bearer-0046-not-real", "x/y"]}
+    {"id": "bearer-unicode-escaped", "rule": "AUTH_SCHEME", "input": "{\"error\":\"invalid_token\",\"error_description\":\"rejected Bearer FakeTok\\u002Fbearer-0046-not-real\\u002Bx/y\\u003d\\u003d\"}", "secrets": ["bearer-0046-not-real", "x/y"]},
+    {"id": "header-line-cookie", "rule": "HEADER_LINE", "input": "HTTP/1.1 401 Unauthorized\nCookie: sid=FAKE-cookie-line-0047; theme=dark\nContent-Length: 0", "secrets": ["FAKE-cookie-line-0047", "theme=dark"]},
+    {"id": "header-line-set-cookie", "rule": "HEADER_LINE", "input": "Set-Cookie: sid=FAKE-set-cookie-line-0048; Path=/; HttpOnly", "secrets": ["FAKE-set-cookie-line-0048"]},
+    {"id": "header-line-x-api-key", "rule": "HEADER_LINE", "input": "x-api-key: FAKE-x-api-key-line-0049\r\nAccept: */*", "secrets": ["FAKE-x-api-key-line-0049"]},
+    {"id": "header-line-proxy-authorization", "rule": "HEADER_LINE", "input": "Proxy-Authorization: FAKE-proxy-auth-line-0050", "secrets": ["FAKE-proxy-auth-line-0050"]},
+    {"id": "header-line-after-json-escape", "rule": "HEADER_LINE", "input": "{\"debug\":\"echoed:\\nX-Auth-Token: FAKE-auth-token-line-0051\\nend\"}", "secrets": ["FAKE-auth-token-line-0051"]},
+    {"id": "json-header-keys", "rule": "JSON_FIELD", "input": "{\"headers\":{\"X-Api-Key\":\"FAKE-json-x-api-key-0052\",\"Cookie\":\"sid=FAKE-json-cookie-0053\",\"Accept\":\"application/fhir+json\"}}", "secrets": ["FAKE-json-x-api-key-0052", "FAKE-json-cookie-0053"]},
+    {"id": "json-in-json-header-key", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"body\":\"{\\\"Set-Cookie\\\":\\\"sid=FAKE-embedded-cookie-0054\\\"}\"}", "secrets": ["FAKE-embedded-cookie-0054"]},
+    {"id": "json-header-key-array", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"headers\":{\"cookie\":[\"sid=FAKE-json-cookie-array-0055\"]}}", "secrets": ["FAKE-json-cookie-array-0055"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
@@ -55,7 +63,9 @@
     {"id": "form-no-secrets", "rule": "FORM_SECRET", "input": "grant_type=client_credentials&scope=system%2F*.read"},
     {"id": "plain-json", "rule": "JSON_SECRET", "input": "{\"resourceType\":\"Patient\",\"id\":\"example\"}"},
     {"id": "prose-basic-sentence-end", "rule": "PROSE_WORD", "input": "The payer only accepts HTTP Basic auth."},
-    {"id": "json-ordinary-structures", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"token\":{\"type\":\"Bearer\"},\"cards\":[{\"summary\":\"s\"}]}"}
+    {"id": "json-ordinary-structures", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"token\":{\"type\":\"Bearer\"},\"cards\":[{\"summary\":\"s\"}]}"},
+    {"id": "header-name-in-prose", "rule": "HEADER_LINE", "input": "see the Cookie: header docs; send the X-Api-Key: header too"},
+    {"id": "json-ordinary-headers", "rule": "JSON_FIELD", "input": "{\"headers\":{\"Accept\":\"application/fhir+json\",\"Content-Type\":\"application/json\"}}"}
   ],
   "headers": [
     {"name": "Authorization", "value": "Bearer FAKE-header-bearer-0022", "secrets": ["FAKE-header-bearer-0022"]},

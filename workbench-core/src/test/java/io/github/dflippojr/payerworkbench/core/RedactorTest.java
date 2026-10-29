@@ -140,6 +140,85 @@ class RedactorTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"Cookie", "Set-Cookie", "X-Api-Key", "Api-Key", "X-Auth-Token", "X-Access-Token",
+            "x-client-secret", "Proxy-Authorization"})
+    void masksSensitiveHeaderLine(String name) {
+        assertEquals("HTTP/1.1 401\n" + name + ": " + Redactor.MASK + "\nContent-Length: 0",
+                Redactor.redact("HTTP/1.1 401\n" + name + ": sid=abc; Path=/\nContent-Length: 0"));
+    }
+
+    @Test
+    void masksSensitiveHeaderLineToTheEndOfTheLine() {
+        assertEquals("Set-Cookie: " + Redactor.MASK, Redactor.redact("Set-Cookie: sid=\"a b\"; Path=/; HttpOnly"));
+        assertEquals("Cookie: " + Redactor.MASK + "\r\nAccept: */*", Redactor.redact("Cookie: a=1; b=2\r\nAccept: */*"));
+        assertEquals("  x-api-key:" + Redactor.MASK, Redactor.redact("  x-api-key:k1"));
+        // Quoted inside a JSON string: the value ends at the next escaped line break or the closing quote.
+        assertEquals("{\"debug\":\"echo:\\nCookie: " + Redactor.MASK + "\\nAccept: */*\"}",
+                Redactor.redact("{\"debug\":\"echo:\\nCookie: sid=\\\"q\\\"; a=1\\nAccept: */*\"}"));
+        assertEquals("{\"debug\":\"echo:\\nX-Auth-Token: " + Redactor.MASK + "\"}",
+                Redactor.redact("{\"debug\":\"echo:\\nX-Auth-Token: tok\"}"));
+    }
+
+    @Test
+    void sensitiveHeaderLineKeepsTheAuthorizationScheme() {
+        assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer abc.def"));
+        assertEquals("Proxy-Authorization: Basic " + Redactor.MASK, Redactor.redact("Proxy-Authorization: Basic YWJjOmRl"));
+        assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer abc, more"));
+        assertEquals("Authorization: " + Redactor.MASK, Redactor.redact("Authorization: sid=abc; x"));
+        for (String masked : List.of("Authorization: Bearer [REDACTED]", "Cookie: [REDACTED]", "Authorization: [REDACTED]")) {
+            assertEquals(masked, Redactor.redact(masked));
+        }
+    }
+
+    @Test
+    void leavesHeaderNamesInProseAlone() {
+        for (String text : List.of("see the Cookie: header docs", "Cookie:", "Cookie: \nnext", "the X-Api-Key: header",
+                "Accept: application/fhir+json", "Cookies: none")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
+    void masksSensitiveHeaderKeysInJson() {
+        assertEquals("{\"headers\":{\"X-Api-Key\":\"" + Redactor.MASK + "\"}}",
+                Redactor.redact("{\"headers\":{\"X-Api-Key\":\"k\"}}"));
+        assertEquals("{\"headers\":{\"X-Api-Key\":\"" + Redactor.MASK + "\",\"Cookie\":\"" + Redactor.MASK
+                        + "\",\"Accept\":\"x\"}}",
+                Redactor.redact("{\"headers\":{\"X-Api-Key\":\"k\",\"Cookie\":\"sid=1\",\"Accept\":\"x\"}}"));
+        assertEquals("{\"headers\":{\"authorization\":\"Bearer " + Redactor.MASK + "\",\"cookie\":\"" + Redactor.MASK + "\"}}",
+                Redactor.redact("{\"headers\":{\"authorization\":\"Bearer abc\",\"cookie\":[\"a=1\",\"b=2\"]}}"));
+    }
+
+    @Test
+    void everySensitiveHeaderIsMaskedAsALineAndAJsonField() {
+        for (String header : Redactor.SENSITIVE_HEADERS) {
+            for (String name : List.of(header, header.toUpperCase(Locale.ROOT), titleCase(header))) {
+                assertTrue(Redactor.isSensitiveHeader(name), name);
+                assertEquals("a\n" + name + ": " + Redactor.MASK + "\nb", Redactor.redact("a\n" + name + ": sid=abc; x=1\nb"), name);
+                assertEquals("{\"m\":\"a\\n" + name + ": " + Redactor.MASK + "\\nb\"}",
+                        Redactor.redact("{\"m\":\"a\\n" + name + ": sid=abc; x=1\\nb\"}"), name);
+                for (String value : List.of("\"sid=abc\"", "42", "true", "{\"v\":\"sid\"}", "[\"sid\"]")) {
+                    assertEquals("{\"" + name + "\":\"" + Redactor.MASK + "\",\"k\":1}",
+                            Redactor.redact("{\"" + name + "\":" + value + ",\"k\":1}"), name + " " + value);
+                    String embedded = value.replace("\"", "\\\"");
+                    assertEquals("{\"body\":\"{\\\"" + name + "\\\":\\\"" + Redactor.MASK + "\\\",\\\"k\\\":1}\"}",
+                            Redactor.redact("{\"body\":\"{\\\"" + name + "\\\":" + embedded + ",\\\"k\\\":1}\"}"),
+                            name + " " + embedded);
+                }
+            }
+        }
+    }
+
+    private static String titleCase(String header) {
+        StringBuilder out = new StringBuilder(header.length());
+        for (int i = 0; i < header.length(); i++) {
+            char c = header.charAt(i);
+            out.append(i == 0 || header.charAt(i - 1) == '-' ? Character.toUpperCase(c) : c);
+        }
+        return out.toString();
+    }
+
     @Test
     void masksTokenValuesInJsonBody() {
         String token = randomToken();

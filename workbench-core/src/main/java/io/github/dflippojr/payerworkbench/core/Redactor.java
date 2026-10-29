@@ -151,7 +151,8 @@ public final class Redactor {
             "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=(?:[^&\\s\"\\\\]++|" + BACKSLASH.repeat(2) + "|"
                     + BACKSLASH + "(?![nrtbf\"]))*+");
 
-    private static final Set<String> SENSITIVE_HEADERS = Set.of(
+    /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
+    static final Set<String> SENSITIVE_HEADERS = Set.of(
             "authorization", "proxy-authorization", "cookie", "set-cookie",
             "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret");
 
