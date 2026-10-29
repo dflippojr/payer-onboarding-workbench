@@ -84,6 +84,16 @@ final class Fixtures {
                 + enc.encodeToString(payload.getBytes(StandardCharsets.UTF_8)) + "." + enc.encodeToString(sig);
     }
 
+    /** A JWT with the given claims JSON as its payload, for claims {@link #jwt} cannot express. */
+    static String rawJwt(String payload) {
+        String header = "{\"alg\":\"RS384\",\"typ\":\"JWT\",\"kid\":\"synthetic-kid\"}";
+        byte[] sig = new byte[64];
+        RANDOM.nextBytes(sig);
+        Base64.Encoder enc = Base64.getUrlEncoder().withoutPadding();
+        return enc.encodeToString(header.getBytes(StandardCharsets.UTF_8)) + "."
+                + enc.encodeToString(payload.getBytes(StandardCharsets.UTF_8)) + "." + enc.encodeToString(sig);
+    }
+
     static String signatureOf(String jwt) {
         return jwt.substring(jwt.lastIndexOf('.') + 1);
     }

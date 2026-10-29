@@ -1101,7 +1101,7 @@ public class OnboardingRunner {
         }
     }
 
-    private static Instant epochSeconds(JsonNode json, String field) {
+    static Instant epochSeconds(JsonNode json, String field) {
         return json.path(field).isNumber() ? Instant.ofEpochSecond(json.get(field).asLong()) : null;
     }
 
