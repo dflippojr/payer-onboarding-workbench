@@ -69,6 +69,89 @@ test('accepts what Redactor leaves now', () => {
     assert.deepEqual(findTextLeaks(text), [], text);
   }
 });
+test('accepts what Redactor leaves for a sensitive header line or JSON key (#261)', () => {
+  for (const text of [
+    'HTTP/1.1 401\nCookie: [REDACTED]\nContent-Length: 0',
+    '  x-api-key:[REDACTED]\r\nAccept: */*',
+    'Authorization: Bearer [REDACTED]',
+    'Proxy-Authorization: [REDACTED]',
+    '{"debug":"echo:\\nSet-Cookie: [REDACTED]\\nAccept: */*"}',
+    '{"debug":"echo:\\nX-Auth-Token: [REDACTED]"}',
+    '{"headers":{"X-Api-Key":"[REDACTED]","Cookie":"[REDACTED]","authorization":"Bearer [REDACTED]","Accept":"x"}}',
+    '{"body":"{\\"Set-Cookie\\":\\"[REDACTED]\\"}"}',
+    // A redacted body as a report serializes it: its escaped line breaks are escaped again.
+    JSON.stringify({ responseBody: '{"debug":"echo:\\nCookie: [REDACTED]\\nAccept: */*"}' }),
+    // What Redactor leaves for a header line in JSON embedded in a JSON string.
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nAccept: a\\"}"}',
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\"}"}',
+    '{"m":"x\\n\\tCookie: [REDACTED]\\nend"}',
+    // A masked header line at the start of a JSON string; a header-named key is not a line.
+    JSON.stringify({ responseBody: 'Cookie: [REDACTED]\nAccept: x' }),
+    JSON.stringify({ responseBody: JSON.stringify({ responseBody: 'Authorization: Bearer [REDACTED]' }) }),
+    '{"a":1,"Cookie":"[REDACTED]",\n"X-Api-Key": "[REDACTED]"}',
+    '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
+    // A tab after the colon, escaped when the text is quoted.
+    JSON.stringify({ responseBody: 'HTTP/1.1 401\nCookie:\t[REDACTED]\nAccept: x' }),
+    // redactHeaders and redactTree keep an empty header list.
+    '{"requestHeaders":{"Cookie":[],"Authorization":[ ]}}',
+    // redactTree keeps any scheme of an authorization list item.
+    '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+  assert.deepEqual(findJsonLeaks({ details: { authorization: ['Bearer [REDACTED]'], cookie: '[REDACTED]' } }), []);
+  // A masked field in JSON embedded in a body, as a report serializes it: the closing quote is \\\".
+  for (const field of [{ Cookie: '[REDACTED]' }, { authorization: 'Bearer [REDACTED]' }, { access_token: '[REDACTED]' }]) {
+    const body = JSON.stringify({ debug: JSON.stringify(field) });
+    assert.deepEqual(findTextLeaks(JSON.stringify({ responseBody: body })), [], body);
+  }
+});
+test('flags a sensitive header value Redactor would not leave (#261)', () => {
+  for (const text of [
+    'Cookie: [REDACTED]; theme=dark',
+    'Cookie: sid=LEAKED',
+    '{"debug":"echo:\\nCookie: sid=LEAKED\\nend"}',
+    '{"debug":"echo:\\nCookie: [REDACTED]sid=LEAKED"}',
+    // A masked line does not hide the next escaped line.
+    '{"body":"HTTP/1.1 401\\nCookie: [REDACTED]\\nSet-Cookie: sid=LEAKED\\nend"}',
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nX-Api-Key: LEAKED\\"}"}',
+    JSON.stringify({ responseBody: '{"debug":"echo:\\nCookie: [REDACTED]\\nSet-Cookie: sid=LEAKED"}' }),
+    '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]","LEAKED"]}}',
+    // An escaped quote does not end the string the line is in.
+    '{"debug":"x\\nCookie: [REDACTED]\\", leak=LEAKED"}',
+    // \\n in a JSON string is a backslash and an n, not a line break: the value goes on.
+    '{"debug":"x\\nCookie: [REDACTED]\\\\nLEAKED"}',
+    'Cookie: [REDACTED]\\\\nLEAKED',
+    // \N is not a line-break escape: the value goes on.
+    'X-Client-Secret: [REDACTED]\\NLEAKED',
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\\\", leak=LEAKED\\"}"}',
+    'Set-Cookie: Bearer [REDACTED]',
+    '{"Cookie":"Bearer [REDACTED]"}',
+    '{"x-api-key":123}',
+    '{"authorization":{"token":"LEAKED"}}',
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
+  assert.equal(findJsonLeaks({ details: { cookie: ['sid=LEAKED'] } }).length, 1);
+  assert.equal(findJsonLeaks({ responseBody: '{"X-Api-Key":"LEAKED"}' }).length, 1);
+  const body = JSON.stringify({ debug: JSON.stringify({ Cookie: 'sid=LEAKED' }) });
+  assert.ok(findTextLeaks(JSON.stringify({ responseBody: body })).length > 0, body);
+  for (const text of [
+    // An escaped tab before the name is an indent, as in Redactor.
+    '{"m":"x\\n\\tCookie: sid=LEAKED"}',
+    // A mask that ends at an escaped quote has more of the value after it, at any depth.
+    '{"access_token":"[REDACTED]\\", tail=LEAKED"}',
+    // Only an authorization list item may have a scheme in front of the mask, as on main for the others.
+    'echo: {"client_secret":["LEAKED0001 [REDACTED]"]}',
+    'echo: {"Cookie":["LEAKED0001 [REDACTED]"]}',
+    // A header line at the start of a JSON string, as a recorded plain-text body is serialized.
+    JSON.stringify({ responseBody: 'Cookie: sid=LEAKED\nAccept: x' }),
+    JSON.stringify({ responseBody: JSON.stringify({ responseBody: 'Cookie: sid=LEAKED' }) }),
+    JSON.stringify({ responseBody: `echo: ${JSON.stringify({ access_token: '[REDACTED]", tail=LEAKED' })}` }),
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
+});
 test('accepts a recorded header list of masked values', () => {
   assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
   assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);
