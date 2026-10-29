@@ -145,7 +145,10 @@ const TEXT_CHECKS = [
   {
     name: 'JSON secret field',
     re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
-    ok: m => !isSecretKey(m[1]) || (m[2] !== undefined && isMaskedValue(m[1], m[2]) && !maskCutShort(m)),
+    // The value capture keeps the backslashes that escape the closing quote in JSON embedded more than once
+    // (\\\"); Redactor masks a value whole, so it never leaves the mask followed by a backslash.
+    ok: m => !isSecretKey(m[1])
+      || (m[2] !== undefined && isMaskedValue(m[1], m[2].replace(/\\+$/, '')) && !maskCutShort(m)),
   },
   // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
   // masked values is a recorded header (X-Api-Key: ["[REDACTED]"]).

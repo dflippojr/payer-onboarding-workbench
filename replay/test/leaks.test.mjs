@@ -92,6 +92,11 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     assert.deepEqual(findTextLeaks(text), [], text);
   }
   assert.deepEqual(findJsonLeaks({ details: { authorization: ['Bearer [REDACTED]'], cookie: '[REDACTED]' } }), []);
+  // A masked field in JSON embedded in a body, as a report serializes it: the closing quote is \\\".
+  for (const field of [{ Cookie: '[REDACTED]' }, { authorization: 'Bearer [REDACTED]' }, { access_token: '[REDACTED]' }]) {
+    const body = JSON.stringify({ debug: JSON.stringify(field) });
+    assert.deepEqual(findTextLeaks(JSON.stringify({ responseBody: body })), [], body);
+  }
 });
 test('flags a sensitive header value Redactor would not leave (#261)', () => {
   for (const text of [
@@ -119,6 +124,8 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
   }
   assert.equal(findJsonLeaks({ details: { cookie: ['sid=LEAKED'] } }).length, 1);
   assert.equal(findJsonLeaks({ responseBody: '{"X-Api-Key":"LEAKED"}' }).length, 1);
+  const body = JSON.stringify({ debug: JSON.stringify({ Cookie: 'sid=LEAKED' }) });
+  assert.ok(findTextLeaks(JSON.stringify({ responseBody: body })).length > 0, body);
 });
 test('accepts a recorded header list of masked values', () => {
   assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
