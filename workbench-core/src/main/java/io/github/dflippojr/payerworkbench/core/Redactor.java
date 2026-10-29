@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 /**
@@ -131,8 +132,15 @@ public final class Redactor {
     private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
             BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"\\s*:\\s*(?=[{\\[])");
 
-    private static final String FORM_SECRET_KEYS =
-            "client_secret|access_token|refresh_token|id_token|password|api_key|apikey|private_key";
+    /**
+     * Every {@link #SECRET_FIELDS} name as a form key: an optional {@code _} or {@code -} may separate
+     * any two letters, and the match is case-insensitive. That is the normalization
+     * {@link #isSecretField(String)} applies, so {@code client_secret}, {@code clientSecret} and
+     * {@code client-secret} all match {@code clientsecret}. The names are lower-case letters only.
+     */
+    private static final String FORM_SECRET_KEYS = SECRET_FIELDS.stream()
+            .map(name -> String.join("[_-]?", name.split("")))
+            .collect(Collectors.joining("|"));
 
     /**
      * A form secret runs to the next {@code &}, whitespace or quote, or to a backslash that starts a

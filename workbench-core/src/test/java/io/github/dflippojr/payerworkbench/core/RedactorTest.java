@@ -80,8 +80,11 @@ class RedactorTest {
         String out = Redactor.redact("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"
                 + "&client_assertion=" + jwt);
 
+        // A client_assertion JWT is masked whole, claims included (DECISIONS.md:71, issue #260).
         assertFalse(out.contains(signature));
-        assertTrue(out.contains("client_assertion=" + header + "." + payload + "." + Redactor.MASK));
+        assertFalse(out.contains(header));
+        assertEquals("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"
+                + "&client_assertion=" + Redactor.MASK, out);
     }
 
     @Test
