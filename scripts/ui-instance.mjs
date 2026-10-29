@@ -8,7 +8,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { findAppJar } from './workbench-lifecycle.mjs';
+import { findAppJar, javaBin } from './workbench-lifecycle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const stateDir = join(root, '.ui-test');
@@ -81,7 +81,7 @@ async function serve() {
       baseURL: null, ready: false, pid: null, supervisorPid: process.pid, data, log };
     writeFileSync(handle, JSON.stringify(state), { mode: 0o600, flag: 'wx' });
     const jar = findAppJar(join(root, 'workbench-app', 'target'), 'run ./mvnw verify first');
-    const java = env.JAVA_HOME ? join(env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
+    const java = javaBin(env);
     const fd = openSync(log, 'w');
     try {
       app = spawn(java, ['-Xmx512m', '-Djava.io.tmpdir=' + data, '-jar', jar,

@@ -18,7 +18,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findAppJar } from './workbench-lifecycle.mjs';
+import { findAppJar, javaBin } from './workbench-lifecycle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'docs', 'screenshots');
@@ -33,10 +33,6 @@ function log(message) {
 function run(command, args, env = {}) {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', env: { ...process.env, ...env } });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} exited with ${result.status}`);
-}
-
-function javaBin() {
-  return process.env.JAVA_HOME ? join(process.env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
 }
 
 function findBrowser() {
