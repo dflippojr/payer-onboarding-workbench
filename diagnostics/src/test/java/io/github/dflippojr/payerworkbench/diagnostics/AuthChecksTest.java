@@ -537,6 +537,21 @@ class AuthChecksTest {
             assertFalse(f.evidence().contains("iat offset"), f::evidence);
         }
 
+        /** An exp the payer's clock has passed is measured without iat, so a generic rejection FAILs too (#266). */
+        @Test
+        void expiredExpOnlyAssertionRejectedWithGenericErrorFails() {
+            var run = healthy();
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.minusSeconds(600).getEpochSecond() + "}")), INVALID_CLIENT, NOW);
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().startsWith("The payer rejected the request, and the JWT had already expired by "
+                    + "the payer's clock (600 seconds ago"), f::explanation);
+            assertFalse(f.evidence().contains("iat offset"), f::evidence);
+            run.token = token(401, assertionBody(rawJwt("{\"aud\":\"" + TOKEN_URL + "\",\"exp\":"
+                    + NOW.plusSeconds(300).getEpochSecond() + "}")), INVALID_CLIENT, NOW);
+            assertEquals(List.of(), check.evaluate(run.build()), "an unexpired exp-only JWT measures nothing");
+        }
+
         /** With no iat, the FAIL must not claim the JWT times were within tolerance. */
         @Test
         void unexpiredExpOnlyAssertionRejectedForTimingSaysNoIat() {

@@ -18,8 +18,9 @@ import java.util.regex.Pattern;
 
 /**
  * {@code auth.clock-skew}: a measured JWT issue-time difference beyond tolerance,
- * or an explicit payer error indicating a clock difference. Expiry alone does
- * not establish skew: the credential may simply be stale.
+ * a rejected JWT whose exp the payer's clock has passed, or an explicit payer
+ * error indicating a clock difference. An expiry error with no JWT time to
+ * measure does not establish skew: the credential may simply be stale.
  *
  * <p>The JWT times come from the claims the caller recorded: a hook call's
  * {@link HookResponse#clientJwt()} and the run's {@link RunObservations#clientAssertion()}
@@ -56,7 +57,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
                     && TIME_ERROR.matcher(exchange.responseBody()).find();
             boolean skewed = m != null && (m.skewOverTolerance(tolerance));
 
-            if (rejected && (timeError || skewed)) {
+            if (rejected && (timeError || skewed || (m != null && m.expired()))) {
                 findings.add(new Finding(CHECK_ID, Severity.FAIL, "Rejection consistent with clock skew",
                         "The payer rejected the request" + (timeError ? " with an error about token timing" : "")
                                 + (m == null ? "" : ", and " + m.describe(tolerance))
