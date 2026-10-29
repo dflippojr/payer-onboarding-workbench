@@ -1,0 +1,109 @@
+{
+  "cards" : [ {
+    "uuid" : "7b31f1a3-b195-3f8b-be68-8b361a0349e2",
+    "summary" : "Fabrikam: E0250 - Prior authorization and clinical documentation required",
+    "indicator" : "info",
+    "source" : {
+      "label" : "Fabrikam Benefits (synthetic)",
+      "topic" : {
+        "system" : "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp",
+        "code" : "coverage",
+        "display" : "Coverage"
+      }
+    },
+    "selectionBehavior" : "at-most-one",
+    "suggestions" : [ {
+      "label" : "Save coverage information to the order",
+      "isRecommended" : true,
+      "actions" : [ {
+        "type" : "update",
+        "description" : "Add coverage information to DeviceRequest/devreq-hospital-bed",
+        "resource" : {
+          "resourceType" : "DeviceRequest",
+          "id" : "devreq-hospital-bed",
+          "status" : "draft",
+          "intent" : "original-order",
+          "codeCodeableConcept" : {
+            "coding" : [ {
+              "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+              "code" : "E0250",
+              "display" : "Hospital bed, fixed height, with any type side rails, with mattress"
+            } ],
+            "text" : "Hospital bed, fixed height, with any type side rails, with mattress"
+          },
+          "subject" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "encounter" : {
+            "reference" : "Encounter/enc-synthetic-001"
+          },
+          "authoredOn" : "2026-03-02",
+          "requester" : {
+            "reference" : "Practitioner/pract-synthetic-001"
+          },
+          "insurance" : [ {
+            "reference" : "Coverage/cov-synthetic-001"
+          } ],
+          "extension" : [ {
+            "url" : "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information",
+            "extension" : [ {
+              "url" : "coverage",
+              "valueReference" : {
+                "reference" : "Coverage/cov-synthetic-001"
+              }
+            }, {
+              "url" : "covered",
+              "valueCode" : "conditional"
+            }, {
+              "url" : "pa-needed",
+              "valueCode" : "auth-needed"
+            }, {
+              "url" : "info-needed",
+              "valueCode" : "detail-code"
+            }, {
+              "url" : "doc-needed",
+              "valueCode" : "clinical"
+            }, {
+              "url" : "date",
+              "valueDate" : "2026-03-02"
+            }, {
+              "url" : "identifier",
+              "valueString" : "FAB-DeviceRequest-devreq-hospital-bed-E0250"
+            } ]
+          } ]
+        }
+      }, {
+        "type" : "delete",
+        "description" : "Delete the superseded synthetic hospital bed order",
+        "resourceId" : "DeviceRequest/devreq-hospital-bed",
+        "resource" : {
+          "resourceType" : "DeviceRequest",
+          "id" : "devreq-hospital-bed",
+          "status" : "draft",
+          "intent" : "original-order",
+          "codeCodeableConcept" : {
+            "coding" : [ {
+              "system" : "https://bluebutton.cms.gov/resources/codesystem/hcpcs",
+              "code" : "E0250",
+              "display" : "Hospital bed, fixed height, with any type side rails, with mattress"
+            } ],
+            "text" : "Hospital bed, fixed height, with any type side rails, with mattress"
+          },
+          "subject" : {
+            "reference" : "Patient/pat-synthetic-001"
+          },
+          "encounter" : {
+            "reference" : "Encounter/enc-synthetic-001"
+          },
+          "authoredOn" : "2026-03-02",
+          "requester" : {
+            "reference" : "Practitioner/pract-synthetic-001"
+          },
+          "insurance" : [ {
+            "reference" : "Coverage/cov-synthetic-001"
+          } ]
+        }
+      } ]
+    } ]
+  } ]
+}

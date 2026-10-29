@@ -199,10 +199,55 @@ final class ConformanceCorpus {
                     body -> ((ObjectNode) body.path("cards").path(0)).put("selectionBehavior", "all")),
             new Mutation("suggestion-ci-covered-removed", "required element removed",
                     "covered removed from coverage-information inside a card suggestion", true,
-                    body -> removeSub(firstCoverageInformation(body.path("cards")), "covered")));
+                    body -> removeSub(firstCoverageInformation(body.path("cards")), "covered")),
+            action("action-type-removed", "required element removed",
+                    "systemActions[0].type removed (CDS Hooks 2.0 Action: type REQUIRED)",
+                    action -> action.remove("type")),
+            action("action-type-unknown-code", "wrong code",
+                    "systemActions[0].type is modify (CDS Hooks 2.0 Action: create, update or delete)",
+                    action -> action.put("type", "modify")),
+            action("action-description-removed", "required element removed",
+                    "systemActions[0].description removed (CDS Hooks 2.0 Action: description REQUIRED)",
+                    action -> action.remove("description")),
+            new Mutation("action-resource-removed", "required element removed",
+                    "a second system action, a create with no resource (CDS Hooks 2.0 Action: resource SHALL "
+                            + "hold the new resource for create)", false,
+                    body -> ((ArrayNode) body.path("systemActions")).addObject().put("type", "create")
+                            .put("description", "Create a synthetic task for the hospital bed order")),
+            new Mutation("suggestion-action-delete-without-resource-id", "required element removed",
+                    "a second action on a card suggestion, a delete with no resourceId (CDS Hooks 2.0 Action: "
+                            + "resourceId SHOULD be provided for delete; HL7 tools invariant cds-resp-2)", true,
+                    body -> suggestionActions(body).addObject().put("type", "delete")
+                            .put("description", "Delete the superseded synthetic hospital bed order")),
+            new Mutation("suggestion-action-delete-with-resource", "wrong action structure",
+                    "a second action on a card suggestion, a delete that sends the order as resource besides its "
+                            + "resourceId (CDS Hooks 2.0 Action: resource for delete is deprecated; HL7 tools "
+                            + "invariant cds-resp-2)", true,
+                    body -> {
+                        ObjectNode order = ((ObjectNode) suggestionActions(body).path(0).path("resource")).deepCopy();
+                        order.remove("extension");
+                        suggestionActions(body).addObject().put("type", "delete")
+                                .put("description", "Delete the superseded synthetic hospital bed order")
+                                .put("resourceId", "DeviceRequest/" + order.path("id").asText())
+                                .set("resource", order);
+                    }),
+            new Mutation("suggestion-action-description-removed", "required element removed",
+                    "description removed from a card suggestion's action (CDS Hooks 2.0 Action: description "
+                            + "REQUIRED; HL7 tools invariant cds-resp-5)", true,
+                    body -> ((ObjectNode) suggestionActions(body).path(0)).remove("description")));
 
     private static Mutation card(String id, String rule, String description, Consumer<ObjectNode> edit) {
         return new Mutation(id, rule, description, false, body -> edit.accept((ObjectNode) body.path("cards").path(0)));
+    }
+
+    private static Mutation action(String id, String rule, String description, Consumer<ObjectNode> edit) {
+        return new Mutation(id, rule, description, false,
+                body -> edit.accept((ObjectNode) body.path("systemActions").path(0)));
+    }
+
+    /** The actions of the first suggestion on the first card. */
+    private static ArrayNode suggestionActions(ObjectNode body) {
+        return (ArrayNode) body.path("cards").path(0).path("suggestions").path(0).path("actions");
     }
 
     private static Mutation coverage(String id, String rule, String description, Consumer<ObjectNode> edit) {

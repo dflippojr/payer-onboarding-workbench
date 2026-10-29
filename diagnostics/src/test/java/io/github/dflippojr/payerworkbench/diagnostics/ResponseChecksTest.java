@@ -145,7 +145,7 @@ class ResponseChecksTest {
         @ParameterizedTest(name = "systemActions {0}")
         @CsvSource(delimiter = '|', value = {
                 "[null]|systemActions[0] is not a JSON object",
-                "[{\"type\":\"update\"},7]|systemActions[1] is not a JSON object",
+                "[{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":\"Task/1\"},7]|systemActions[1] is not a JSON object",
                 "{}|\"systemActions\" is not an array"})
         void malformedSystemActionsFail(String actions, String problem) {
             var run = healthy().hookBody("{\"cards\":[],\"systemActions\":" + actions + "}");
@@ -158,6 +158,64 @@ class ResponseChecksTest {
             // The CRD reference server writes every unset field as null.
             var run = healthy().hookBody("{\"cards\":[],\"systemActions\":null}");
             assertOnly(check.evaluate(run.build()), Severity.PASS);
+        }
+
+        @Test
+        void systemActionWithoutDescriptionOrResourceFails() {
+            // #263: a null resource is an absent one, so this action has neither a description nor a resource.
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[{\"type\":\"update\",\"resource\":null}]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("systemActions[0].description is missing"), f::evidence);
+            assertTrue(f.evidence().contains("systemActions[0].resource is missing (required for update)"), f::evidence);
+            assertTrue(f.explanation().contains("CDS Hooks 2.0 Action"), f::explanation);
+        }
+
+        /** A card with one suggestion whose actions are {@code actions}. */
+        private static String suggestionCard(String actions) {
+            return "{\"summary\":\"a\",\"indicator\":\"info\",\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\","
+                    + "\"suggestions\":[{\"label\":\"Save\",\"actions\":" + actions + "}]}";
+        }
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource(delimiter = '|', value = {
+                "{\"type\":\"modify\",\"description\":\"d\",\"resource\":{}}|.type is \"modify\" (must be create, update or delete)",
+                "{\"type\":7,\"description\":\"d\",\"resource\":{}}|.type is missing",
+                "{\"description\":\"d\",\"resource\":{}}|.type is missing",
+                "{\"type\":\"create\",\"resource\":{}}|.description is missing",
+                "{\"type\":\"create\",\"description\":\" \",\"resource\":{}}|.description is missing",
+                "{\"type\":\"create\",\"description\":7,\"resource\":{}}|.description is missing",
+                "{\"type\":\"create\",\"description\":\"d\"}|.resource is missing (required for create)",
+                "{\"type\":\"update\",\"description\":\"d\",\"resource\":\"Task/1\"}|.resource is not a JSON object",
+                "7|' is not a JSON object'"})
+        void invalidActionsFailInSystemActionsAndSuggestions(String action, String problem) {
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[" + action + "]}");
+            assertEquals("systemActions[0]" + problem,
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+            run.hookBody("{\"cards\":[" + suggestionCard("[" + action + "]") + "]}");
+            assertEquals("cards[0].suggestions[0].actions[0]" + problem,
+                    assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
+        }
+
+        @Test
+        void validActionsPass() {
+            String actions = "[{\"type\":\"create\",\"description\":\"c\",\"resource\":{\"resourceType\":\"Task\"}},"
+                    + "{\"type\":\"update\",\"description\":\"u\",\"resource\":{\"resourceType\":\"Task\"},\"resourceId\":null},"
+                    + "{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":\"Task/1\",\"resource\":null}]";
+            var run = healthy().hookBody("{\"cards\":[" + suggestionCard(actions) + "],\"systemActions\":" + actions + "}");
+            assertOnly(check.evaluate(run.build()), Severity.PASS);
+        }
+
+        @ParameterizedTest(name = "{0} -> {1}")
+        @CsvSource(delimiter = '|', value = {
+                "{\"type\":\"delete\",\"description\":\"d\"}|systemActions[0].resourceId is missing (should be sent for delete)",
+                "{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":7}|systemActions[0].resourceId is missing (should be sent for delete)",
+                "{\"type\":\"delete\",\"description\":\"d\",\"resourceId\":\"Task/1\",\"resource\":{}}|systemActions[0].resource is sent with delete (send resourceId instead)"})
+        void deleteWithoutResourceIdWarns(String action, String problem) {
+            // CDS Hooks 2.0 says SHOULD, and the HL7 tools model's cds-resp-2 is a warning.
+            var run = healthy().hookBody("{\"cards\":[],\"systemActions\":[" + action + "]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
+            assertEquals(problem, f.evidence().lines().findFirst().orElseThrow());
+            assertTrue(f.explanation().contains("actions"), f::explanation);
         }
 
         @Test
