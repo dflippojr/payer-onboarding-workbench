@@ -50,7 +50,16 @@
     {"id": "json-header-keys", "rule": "JSON_FIELD", "input": "{\"headers\":{\"X-Api-Key\":\"FAKE-json-x-api-key-0052\",\"Cookie\":\"sid=FAKE-json-cookie-0053\",\"Accept\":\"application/fhir+json\"}}", "secrets": ["FAKE-json-x-api-key-0052", "FAKE-json-cookie-0053"]},
     {"id": "json-in-json-header-key", "rule": "EMBEDDED_JSON_FIELD", "input": "{\"body\":\"{\\\"Set-Cookie\\\":\\\"sid=FAKE-embedded-cookie-0054\\\"}\"}", "secrets": ["FAKE-embedded-cookie-0054"]},
     {"id": "json-header-key-array", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"headers\":{\"cookie\":[\"sid=FAKE-json-cookie-array-0055\"]}}", "secrets": ["FAKE-json-cookie-array-0055"]},
-    {"id": "header-line-authorization-no-scheme", "rule": "HEADER_LINE", "input": "Proxy-Authorization: FAKEproxycred0056 sent twice", "secrets": ["FAKEproxycred0056"]}
+    {"id": "header-line-authorization-no-scheme", "rule": "HEADER_LINE", "input": "Proxy-Authorization: FAKEproxycred0056 sent twice", "secrets": ["FAKEproxycred0056"]},
+    {"id": "jwk-rsa-private", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"kty\":\"RSA\",\"n\":\"FAKEPUBLICMODULUS\",\"e\":\"AQAB\",\"d\":\"FAKE-jwk-d-0057\",\"p\":\"FAKE-jwk-p-0058\",\"q\":\"FAKE-jwk-q-0059\",\"dp\":\"FAKE-jwk-dp-0060\",\"dq\":\"FAKE-jwk-dq-0061\",\"qi\":\"FAKE-jwk-qi-0062\"}", "secrets": ["FAKE-jwk-d-0057", "FAKE-jwk-p-0058", "FAKE-jwk-q-0059", "FAKE-jwk-dp-0060", "FAKE-jwk-dq-0061", "FAKE-jwk-qi-0062"]},
+    {"id": "jwk-oct", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"kty\":\"oct\",\"k\":\"FAKE-jwk-k-0063\"}", "secrets": ["FAKE-jwk-k-0063"]},
+    {"id": "jwks-keys", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"FAKEX\",\"y\":\"FAKEY\",\"d\":\"FAKE-jwks-d-0064\"},{\"k\":\"FAKE-jwks-k-0065\",\"kty\":\"oct\"}]}", "secrets": ["FAKE-jwks-d-0064", "FAKE-jwks-k-0065"]},
+    {"id": "jwk-in-json-string", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"d\\\":\\\"FAKE-embedded-jwk-d-0066\\\"}\"}", "secrets": ["FAKE-embedded-jwk-d-0066"]},
+    {"id": "token-scheme", "rule": "AUTH_SCHEME", "input": "payer echoed Token FAKEtokenscheme0067notreal", "secrets": ["FAKEtokenscheme0067notreal"]},
+    {"id": "dpop-scheme", "rule": "AUTH_SCHEME", "input": "{\"error_description\":\"rejected DPoP FAKE-dpop-0068-not-real\"}", "secrets": ["FAKE-dpop-0068-not-real"]},
+    {"id": "bearer-percent-encoded", "rule": "AUTH_SCHEME", "input": "GET /cb?h=Authorization%3A%20Bearer%20FAKE-bearer-pct-0069", "secrets": ["FAKE-bearer-pct-0069"]},
+    {"id": "bearer-plus-encoded", "rule": "AUTH_SCHEME", "input": "auth=Bearer+FAKE-bearer-plus-0070&next=1", "secrets": ["FAKE-bearer-plus-0070"]},
+    {"id": "pgp-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nFAKE-PGP-KEY-NOT-REAL-0071", "secrets": ["FAKE-PGP-KEY-NOT-REAL-0071"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
@@ -67,7 +76,14 @@
     {"id": "json-ordinary-structures", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"token\":{\"type\":\"Bearer\"},\"cards\":[{\"summary\":\"s\"}]}"},
     {"id": "header-name-in-prose", "rule": "HEADER_LINE", "input": "see the Cookie: header docs; send the X-Api-Key: header too"},
     {"id": "authorization-line-prose", "rule": "HEADER_LINE", "input": "Authorization: Bearer access token required"},
-    {"id": "json-ordinary-headers", "rule": "JSON_FIELD", "input": "{\"headers\":{\"Accept\":\"application/fhir+json\",\"Content-Type\":\"application/json\"}}"}
+    {"id": "json-ordinary-headers", "rule": "JSON_FIELD", "input": "{\"headers\":{\"Accept\":\"application/fhir+json\",\"Content-Type\":\"application/json\"}}"},
+    {"id": "jwk-public", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"RS384\",\"n\":\"FAKEPUBLICMODULUS\",\"e\":\"AQAB\"},{\"kty\":\"EC\",\"crv\":\"P-384\",\"x\":\"FAKEX\",\"y\":\"FAKEY\"}]}"},
+    {"id": "jwk-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"d\":\"2026-10-29\",\"p\":0.05,\"q\":\"query\",\"k\":[1,2]}"},
+    {"id": "prose-token", "rule": "PROSE_WORD", "input": "Token expired."},
+    {"id": "prose-token-endpoint", "rule": "PROSE_WORD", "input": "token endpoint: https://payer.example/token\ntoken response: error=invalid_client"},
+    {"id": "prose-dpop", "rule": "PROSE_WORD", "input": "DPoP proof required"},
+    {"id": "prose-bearer-plus-encoded", "rule": "PROSE_WORD", "input": "q=missing+bearer+token"},
+    {"id": "pgp-private-key-block-in-prose", "rule": "UNTERMINATED_PEM_KEY", "input": "paste the PGP PRIVATE KEY BLOCK into the vault, not here"}
   ],
   "headers": [
     {"name": "Authorization", "value": "Bearer FAKE-header-bearer-0022", "secrets": ["FAKE-header-bearer-0022"]},

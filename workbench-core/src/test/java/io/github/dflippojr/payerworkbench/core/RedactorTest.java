@@ -455,6 +455,95 @@ class RedactorTest {
                 Redactor.redact("Bearer abc123\\u0022 and Bearer abc123\\u0020more"));
     }
 
+    @Test
+    void masksThePrivateMembersOfAJwk() {
+        assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\",\"p\":\"[REDACTED]\"}",
+                Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVATEDVALUE\",\"p\":\"PRIMEP\"}"));
+        assertEquals("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}", Redactor.redact("{\"kty\":\"oct\",\"k\":\"SYMKEY123\"}"));
+        // Every private member, including the other primes (RFC 7518 6.3.2.7); the public ones stay.
+        String pub = "\"kty\":\"RSA\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"RS256\",\"n\":\"MODULUS\",\"e\":\"AQAB\"";
+        assertEquals("{" + pub + ",\"d\":\"[REDACTED]\",\"p\":\"[REDACTED]\",\"q\":\"[REDACTED]\",\"dp\":\"[REDACTED]\","
+                        + "\"dq\":\"[REDACTED]\",\"qi\":\"[REDACTED]\",\"oth\":\"[REDACTED]\"}",
+                Redactor.redact("{" + pub + ",\"d\":\"PRIVD\",\"p\":\"PRIVP\",\"q\":\"PRIVQ\",\"dp\":\"PRIVDP\","
+                        + "\"dq\":\"PRIVDQ\",\"qi\":\"PRIVQI\",\"oth\":[{\"r\":\"PRIVR\",\"d\":\"PRIVOD\",\"t\":\"PRIVT\"}]}"));
+        // kty after the private member, and a value that is not a string.
+        assertEquals("{\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"d\":\"[REDACTED]\",\"kty\":\"EC\"}",
+                Redactor.redact("{\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"d\":\"PRIVECD\",\"kty\":\"EC\"}"));
+        assertEquals("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}", Redactor.redact("{\"kty\":\"oct\",\"k\":12345678}"));
+        // Each key of a JWKS, also pretty-printed, and a key with braces and quotes in a string.
+        assertEquals("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"[REDACTED]\"},\n"
+                        + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"[REDACTED]\",\n   \"kty\" : \"oct\"}]}",
+                Redactor.redact("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"PRIVOKPD\"},\n"
+                        + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"PRIVK\",\n   \"kty\" : \"oct\"}]}"));
+        // In JSON embedded in a JSON string, and in a body cut off at the size limit.
+        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"n\\\":\\\"N1\\\",\\\"d\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"n\\\":\\\"N1\\\",\\\"d\\\":\\\"PRIVEMBD\\\"}\"}"));
+        assertEquals("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}]}\"}",
+                Redactor.redact("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVEMBK\\\"}]}\"}"));
+        assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"", Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVCUTOFF"));
+    }
+
+    @Test
+    void leavesJwkMemberNamesOutsideAJwkAlone() {
+        for (String text : List.of(
+                "{\"d\":\"x\"}",
+                "{\"d\":\"2026-10-29\",\"p\":0.05,\"q\":\"query\",\"k\":[1,2]}",
+                // A public key keeps every member.
+                "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"ES256\"}",
+                // Only the JWK's own members: not a sibling of a nested JWK, nor a member of an object inside one.
+                "{\"jwk\":{\"kty\":\"RSA\",\"n\":\"N1\"},\"d\":\"x\"}",
+                "{\"kty\":\"RSA\",\"meta\":{\"d\":\"x\"},\"n\":\"N1\"}",
+                // kty quoted in a string is not a member.
+                "{\"note\":\"the \\\"kty\\\": member\",\"d\":\"x\"}",
+                "{\"note\":\"\\\"kty\\\":\",\"d\":\"x\"}")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
+    void masksJwkPrivateMembersInATree() {
+        Map<String, Object> jwk = new LinkedHashMap<>();
+        jwk.put("kty", "RSA");
+        jwk.put("n", "N1");
+        jwk.put("d", "PRIVD");
+        jwk.put("oth", List.of(Map.of("r", "PRIVR")));
+        assertEquals(Map.of("kty", "RSA", "n", "N1", "d", "[REDACTED]", "oth", "[REDACTED]"), Redactor.redactTree(jwk));
+        assertEquals(Map.of("d", "x"), Redactor.redactTree(Map.of("d", "x")));
+    }
+
+    @Test
+    void masksTokenAndDPoPCredentials() {
+        assertEquals("Token [REDACTED]", Redactor.redact("Token 9944b09199c62bcf9418ad846dd0e4bbdfc6ee4b"));
+        assertEquals("DPoP " + Redactor.MASK, Redactor.redact("DPoP PHNhbWw6QXNz"));
+        assertEquals("{\"error_description\":\"rejected token [REDACTED]\"}",
+                Redactor.redact("{\"error_description\":\"rejected token gho_SynthTok123:x\"}"));
+        assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
+        // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
+        for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",
+                "token endpoint: https://payer.example/token\ntoken response: error=invalid_client")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
+    void masksAUrlEncodedBearerCredential() {
+        assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer%20abc123def"));
+        assertEquals("cb?auth=Bearer [REDACTED]&x=1", Redactor.redact("cb?auth=Bearer+abc123def&x=1"));
+        assertEquals("cb?h=Authorization%3A%20Bearer [REDACTED]", Redactor.redact("cb?h=Authorization%3A%20Bearer%20abc123def"));
+        assertEquals("q=missing+bearer+token", Redactor.redact("q=missing+bearer+token"));
+    }
+
+    @Test
+    void masksAnUnterminatedPgpPrivateKeyBlock() {
+        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + Redactor.MASK,
+                Redactor.redact("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKEKEYMATERIAL\n=abcd"));
+        String terminated = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKE\n-----END PGP PRIVATE KEY BLOCK-----";
+        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n-----END PGP PRIVATE KEY BLOCK-----",
+                Redactor.redact(terminated));
+        String publicKey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQENBFAKEPUBLIC";
+        assertEquals(publicKey, Redactor.redact(publicKey));
+    }
+
     record Echoed(String summary, String clientSecret, Integer apiKey, int password, List<String> notes) {
     }
 
