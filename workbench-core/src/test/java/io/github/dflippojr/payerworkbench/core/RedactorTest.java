@@ -481,6 +481,17 @@ class RedactorTest {
         assertEquals("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}]}\"}",
                 Redactor.redact("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVEMBK\\\"}]}\"}"));
         assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"", Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVCUTOFF"));
+        // A JWK inside a JWK: each one's own members, the inner one read before the outer.
+        assertEquals("{\"a\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"kty\":\"oct\",\"k\":\"[REDACTED]\"}",
+                Redactor.redact("{\"a\":{\"kty\":\"oct\",\"k\":\"PRIVK1\"},\"kty\":\"oct\",\"k\":\"PRIVK2\"}"));
+        // kty after nested objects and arrays; a JWK inside a masked member goes with it.
+        assertEquals("{\"x5c\":[\"c1\",\"c2\"],\"meta\":{\"x\":[1,{\"y\":2}]},\"d\":\"[REDACTED]\",\"kty\":\"RSA\"}",
+                Redactor.redact("{\"x5c\":[\"c1\",\"c2\"],\"meta\":{\"x\":[1,{\"y\":2}]},\"d\":\"PRIVD\",\"kty\":\"RSA\"}"));
+        assertEquals("{\"kty\":\"RSA\",\"oth\":\"[REDACTED]\"}",
+                Redactor.redact("{\"kty\":\"RSA\",\"oth\":[{\"kty\":\"oct\",\"k\":\"PRIVK\"}]}"));
+        // Embedded JSON cut off before its object closes.
+        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"\",\"n\":1}",
+                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"\",\"n\":1}"));
     }
 
     @Test
@@ -495,7 +506,11 @@ class RedactorTest {
                 "{\"kty\":\"RSA\",\"meta\":{\"d\":\"x\"},\"n\":\"N1\"}",
                 // kty quoted in a string is not a member.
                 "{\"note\":\"the \\\"kty\\\": member\",\"d\":\"x\"}",
-                "{\"note\":\"\\\"kty\\\":\",\"d\":\"x\"}")) {
+                "{\"note\":\"\\\"kty\\\":\",\"d\":\"x\"}",
+                "{\"note\":\"\\\"kty\\\": a, \\\"kty\\\": b\",\"d\":\"x\"}",
+                // kty that is not the member of an object.
+                "\"kty\": \"RSA\", \"d\": \"x\"",
+                "[\"kty\": \"RSA\", \"d\": \"x\"]")) {
             assertEquals(text, Redactor.redact(text));
         }
     }
@@ -528,7 +543,8 @@ class RedactorTest {
     @Test
     void masksAUrlEncodedBearerCredential() {
         assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer%20abc123def"));
-        assertEquals("cb?auth=Bearer [REDACTED]&x=1", Redactor.redact("cb?auth=Bearer+abc123def&x=1"));
+        // As after a space, the credential runs to the next whitespace, quote, comma, semicolon or backslash.
+        assertEquals("cb?auth=Bearer [REDACTED]", Redactor.redact("cb?auth=Bearer+abc123def&x=1"));
         assertEquals("cb?h=Authorization%3A%20Bearer [REDACTED]", Redactor.redact("cb?h=Authorization%3A%20Bearer%20abc123def"));
         assertEquals("q=missing+bearer+token", Redactor.redact("q=missing+bearer+token"));
     }

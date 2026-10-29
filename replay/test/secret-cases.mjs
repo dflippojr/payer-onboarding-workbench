@@ -1,6 +1,6 @@
 // Seeded generator for the class-level leak check (#160): the same secret shapes and placements as
-// workbench-core's RedactorPropertyTest (random tokens, Basic user:pass, colon-split bearers,
-// numeric secrets, PEM private keys; raw or URL-encoded; in headers, bodies and query strings, with
+// workbench-core's RedactorPropertyTest (random tokens after Bearer, Token or DPoP, Basic user:pass,
+// colon-split bearers, numeric secrets, PEM and PGP private keys; raw or URL-encoded; in headers, bodies and query strings, with
 // or without the text quoted inside a JSON string, also by a serializer that escapes / as \/ or + as
 // \u002B).
 // Everything is generated; nothing secret-shaped is committed.
@@ -23,7 +23,9 @@ const FORM_KEYS = [
 const PEM_KEYS = ['private_key', 'privateKey', 'Private-Key'];
 const CREDENTIAL_HEADERS = ['X-Api-Key', 'api-key', 'apikey', 'x-auth-token', 'x-access-token', 'x-client-secret', 'Cookie', 'Set-Cookie'];
 const AUTHORIZATION_HEADERS = ['Authorization', 'authorization', 'Proxy-Authorization'];
-const PEM_LABELS = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'ENCRYPTED PRIVATE KEY', 'OPENSSH PRIVATE KEY'];
+/** Schemes a token-shaped secret follows: Token and DPoP are masked as Bearer is (#262). */
+const BEARER_SCHEMES = ['Bearer', 'bearer', 'BEARER', 'Token', 'token', 'DPoP', 'dpop'];
+const PEM_LABELS = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'ENCRYPTED PRIVATE KEY', 'OPENSSH PRIVATE KEY', 'PGP PRIVATE KEY BLOCK'];
 const USER_CHARS = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(c => c !== ':').join('');
 const PASS_CHARS = `${Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('')}éüß€`;
 
@@ -122,7 +124,7 @@ export function placed(c) {
  */
 export function build(c, value) {
   const pick = list => list[c.variant % list.length];
-  const scheme = pick(c.secret.shape === 'BASIC_USER_PASS' ? ['Basic', 'basic', 'BASIC'] : ['Bearer', 'bearer', 'BEARER']);
+  const scheme = pick(c.secret.shape === 'BASIC_USER_PASS' ? ['Basic', 'basic', 'BASIC'] : BEARER_SCHEMES);
   const keys = list => (c.secret.shape === 'PEM' ? ['private_key'] : list);
   if (c.slot === 'AUTHORIZATION_HEADER') {
     return { text: null, record: { requestHeaders: { [pick(AUTHORIZATION_HEADERS)]: [`${scheme} ${value}`] } } };
