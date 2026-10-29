@@ -30,6 +30,17 @@ const JWK_PRIVATE_MEMBERS = new Set(['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'
 /** A kty member, also in JSON embedded in a JSON string at any depth. */
 const JWK_TYPE = /\\*"kty\\*"\s*:/;
 
+/** Whether text has a kty member, searched once per text rather than once per member. */
+let jwkTypeText = null;
+let jwkTypeFound = false;
+const hasJwkType = text => {
+  if (text !== jwkTypeText) {
+    jwkTypeText = text;
+    jwkTypeFound = JWK_TYPE.test(text);
+  }
+  return jwkTypeFound;
+};
+
 /** An RFC 9110 token, as Redactor reads an Authorization scheme. */
 const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
 
@@ -202,7 +213,7 @@ const TEXT_CHECKS = [
   {
     name: 'JWK private member',
     re: /\\*"(?:d|p|q|dp|dq|qi|oth|k)\\*"\s*:\s*(?=\S)(?!\\*"\[REDACTED\]\\*"(?![A-Za-z0-9]))/g,
-    ok: m => !JWK_TYPE.test(m.input),
+    ok: m => !hasJwkType(m.input),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },

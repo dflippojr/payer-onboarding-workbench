@@ -539,8 +539,9 @@ public final class Redactor {
     /**
      * Where the JSON object that holds the member whose name starts at {@code member} starts, or
      * {@link #NOT_IN_BRACKETS} or {@link #IN_ARRAY} if it is not in an object. Reads back from the
-     * member, skipping strings and closed brackets, and jumping over each object already read (see
-     * {@link #objects}). Reading back to {@code outside}, a member found not to be in an object (its
+     * member, skipping strings and closed brackets, and jumping over each pair of brackets already
+     * matched, by an earlier search (which adds each pair it matches to {@code matching}) or by
+     * {@link #objects}, so no text is read back over twice. Reading back to {@code outside}, a member found not to be in an object (its
      * search ended with {@code outsideResult}), outside any string, ends the same way: at any bracket
      * depth for {@link #NOT_IN_BRACKETS}, outside any bracket for {@link #IN_ARRAY}. In
      * embedded JSON, where an inner quote is {@code \"} and an escaped one {@code \\\"}, an unescaped
@@ -548,7 +549,8 @@ public final class Redactor {
      */
     private static int startOfObject(String text, int member, boolean embedded, Map<Integer, Integer> matching,
             int outside, int outsideResult) {
-        int depth = 0;
+        // The close brackets read back over and not yet matched, innermost last.
+        List<Integer> closes = new ArrayList<>();
         boolean inString = false;
         for (int i = member - 1; i >= 0; i--) {
             char c = text.charAt(i);
@@ -561,18 +563,18 @@ public final class Redactor {
                     inString = !inString;
                 }
                 i -= run;
-                if (i == outside && !inString && (depth == 0 || outsideResult == NOT_IN_BRACKETS)) {
+                if (i == outside && !inString && (closes.isEmpty() || outsideResult == NOT_IN_BRACKETS)) {
                     return outsideResult;
                 }
-            } else if (!inString && c == '}' && matching.containsKey(i)) {
+            } else if (!inString && (c == '}' || c == ']') && matching.containsKey(i)) {
                 i = matching.get(i);
             } else if (!inString && (c == '}' || c == ']')) {
-                depth++;
+                closes.add(i);
             } else if (!inString && (c == '{' || c == '[')) {
-                if (depth == 0) {
+                if (closes.isEmpty()) {
                     return c == '{' ? i : IN_ARRAY;
                 }
-                depth--;
+                matching.put(closes.removeLast(), i);
             }
         }
         return NOT_IN_BRACKETS;
