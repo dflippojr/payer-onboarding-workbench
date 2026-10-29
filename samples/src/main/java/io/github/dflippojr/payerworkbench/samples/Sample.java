@@ -35,9 +35,4 @@ public record Sample(SampleMetadata metadata, PrefetchVariant variant, CdsHookRe
     public JsonNode toJson() {
         return FhirResources.MAPPER.valueToTree(request);
     }
-
-    /** The request as pretty-printed JSON, with prefetch keys in a stable order. */
-    public String toJsonString() {
-        return FhirResources.pretty(request);
-    }
 }
