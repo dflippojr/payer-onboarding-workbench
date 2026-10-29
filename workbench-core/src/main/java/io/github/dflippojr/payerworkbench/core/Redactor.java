@@ -466,7 +466,9 @@ public final class Redactor {
      * Masks the {@link #JWK_PRIVATE_MEMBERS} of every JSON object with a {@code kty} member, as a secret
      * field is masked: a string or scalar value becomes the mask, and so does an object or array, through
      * its close bracket. Only the JWK's own members count, not those of an object inside or next to it.
-     * Each object is read once, so the time stays linear in the length of the text.
+     * Each object is read once, and the searches back for the object around each {@code kty} share a
+     * budget linear in the length of the text. Text that spends it (no JSON a payer would send) has every
+     * private member masked instead, wherever it is.
      */
     private static String maskJwks(String text, boolean embedded) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
@@ -478,12 +480,17 @@ public final class Redactor {
         // The last kty found not to be in an object, and how its search ended.
         int outside = -1;
         int outsideResult = NOT_IN_BRACKETS;
+        int[] budget = {2 * text.length() + 1024};
         while (type.find()) {
             int member = type.start();
             if (member < readEnd || !opensName(text, member, embedded)) {
                 continue;
             }
-            int start = startOfObject(text, member, embedded, matching, outside, outsideResult);
+            int start = startOfObject(text, member, embedded, matching, outside, outsideResult, budget);
+            if (start == OUT_OF_TIME) {
+                names = everyPrivateMember(text, embedded);
+                break;
+            }
             if (start < 0) {
                 outside = member;
                 outsideResult = start;
@@ -526,6 +533,26 @@ public final class Redactor {
     /** {@link #startOfObject}: the member is in an array, not an object. */
     private static final int IN_ARRAY = -2;
 
+    /** {@link #startOfObject}: the searches spent their budget. */
+    private static final int OUT_OF_TIME = -3;
+
+    /** Where the name of every {@link #JWK_PRIVATE_MEMBERS} field in the text starts, in a JWK or not. */
+    private static TreeSet<Integer> everyPrivateMember(String text, boolean embedded) {
+        TreeSet<Integer> names = new TreeSet<>();
+        List<Pattern> fields = embedded
+                ? List.of(EMBEDDED_JSON_FIELD, EMBEDDED_JSON_FIELD_STRUCTURE)
+                : List.of(JSON_FIELD, JSON_FIELD_STRUCTURE);
+        for (Pattern field : fields) {
+            Matcher m = field.matcher(text);
+            while (m.find()) {
+                if (JWK_PRIVATE_MEMBERS.contains(m.group(1))) {
+                    names.add(m.start());
+                }
+            }
+        }
+        return names;
+    }
+
     /**
      * Whether the quote at {@code member} opens a string rather than being escaped inside one: one
      * backslash before it in embedded JSON ({@code \"}, not {@code \\\"}), none in plain JSON.
@@ -540,21 +567,25 @@ public final class Redactor {
 
     /**
      * Where the JSON object that holds the member whose name starts at {@code member} starts, or
-     * {@link #NOT_IN_BRACKETS} or {@link #IN_ARRAY} if it is not in an object. Reads back from the
-     * member, skipping strings and closed brackets, and jumping over each pair of brackets already
-     * matched, by an earlier search (which adds each pair it matches to {@code matching}) or by
-     * {@link #objects}, so no text is read back over twice. Reading back to {@code outside}, a member found not to be in an object (its
-     * search ended with {@code outsideResult}), outside any string, ends the same way: at any bracket
-     * depth for {@link #NOT_IN_BRACKETS}, outside any bracket for {@link #IN_ARRAY}. In
+     * {@link #NOT_IN_BRACKETS} or {@link #IN_ARRAY} if it is not in an object, or {@link #OUT_OF_TIME}
+     * once the searches have read {@code budget[0]} characters in all. Reads back from the member,
+     * skipping strings and closed brackets, and jumping over each pair of brackets already matched, by
+     * an earlier search (which adds each pair it matches to {@code matching}) or by {@link #objects}.
+     * Reading back to {@code outside}, a member found not to be in an object (its search ended with
+     * {@code outsideResult}), outside any string, ends the same way: at any bracket depth for
+     * {@link #NOT_IN_BRACKETS}, outside any bracket for {@link #IN_ARRAY}. In
      * embedded JSON, where an inner quote is {@code \"} and an escaped one {@code \\\"}, an unescaped
      * quote is the start of the outer string, so the member is not in embedded JSON.
      */
     private static int startOfObject(String text, int member, boolean embedded, Map<Integer, Integer> matching,
-            int outside, int outsideResult) {
+            int outside, int outsideResult, int[] budget) {
         // The close brackets read back over and not yet matched, innermost last.
         List<Integer> closes = new ArrayList<>();
         boolean inString = false;
         for (int i = member - 1; i >= 0; i--) {
+            if (--budget[0] < 0) {
+                return OUT_OF_TIME;
+            }
             char c = text.charAt(i);
             if (c == '"') {
                 int run = backslashesBefore(text, i);
