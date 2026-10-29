@@ -120,6 +120,23 @@ final class Fixtures {
                 + "&client_assertion=" + jwt;
     }
 
+    /**
+     * A token request whose JWT sits outside the secret fields. The redactor keeps the claims of such a JWT
+     * (only its signature is masked), so a check that reads the recorded request still sees them.
+     */
+    static String jwtFieldBody(String jwt) {
+        return "grant_type=client_credentials&request=" + jwt;
+    }
+
+    /**
+     * The claims the app records for the assertion {@link #jwt} encodes. The recorded token request keeps
+     * no readable claims, because its body is masked, so a run carries them in {@code clientAssertion}.
+     */
+    static JwtClaims assertionClaims(String aud, Instant iat, Instant exp) {
+        return new JwtClaims(CLIENT_ID, List.of(aud), exp, iat, UUID.randomUUID().toString(), "synthetic-kid",
+                CLIENT_ID);
+    }
+
     static HttpExchange token(int status, String requestBody, String responseBody, Instant serverDate) {
         return new HttpExchange("POST", TOKEN_URL, status, Duration.ofMillis(200),
                 headers("Content-Type", "application/x-www-form-urlencoded"), requestBody,

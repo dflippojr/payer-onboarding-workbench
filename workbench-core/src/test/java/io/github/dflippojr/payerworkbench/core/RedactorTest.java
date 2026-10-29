@@ -15,10 +15,13 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Keys and tokens are generated at runtime; nothing secret-shaped is committed. */
@@ -66,7 +69,7 @@ class RedactorTest {
     }
 
     @Test
-    void masksJwtSignatureButKeepsClaims() {
+    void masksClientAssertionJwtWhole() {
         String header = b64url("{\"alg\":\"RS384\",\"typ\":\"JWT\"}");
         String payload = b64url("{\"iss\":\"synthetic-client\",\"aud\":\"https://payer.example.test/token\"}");
         byte[] sig = new byte[256];
@@ -77,8 +80,11 @@ class RedactorTest {
         String out = Redactor.redact("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"
                 + "&client_assertion=" + jwt);
 
+        // A client_assertion JWT is masked whole, claims included (DECISIONS.md:71, issue #260).
         assertFalse(out.contains(signature));
-        assertTrue(out.contains("client_assertion=" + header + "." + payload + "." + Redactor.MASK));
+        assertFalse(out.contains(header));
+        assertEquals("client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"
+                + "&client_assertion=" + Redactor.MASK, out);
     }
 
     @Test
@@ -113,6 +119,25 @@ class RedactorTest {
 
         assertEquals("grant_type=client_credentials&client_id=synthetic-client&client_secret="
                 + Redactor.MASK + "&scope=system%2F*.read", out);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"client_assertion", "clientAssertion", "client-assertion", "assertion", "secret",
+            "clientSecret", "client-secret", "accessToken", "refresh-token", "privateKey", "api-key"})
+    void masksSecretKeyInFormBody(String key) {
+        assertEquals("a=1&" + key + "=" + Redactor.MASK + "&b=2",
+                Redactor.redact("a=1&" + key + "=PHNhbWw6QXNz&b=2"));
+    }
+
+    @Test
+    void everySecretFieldIsMaskedAsAFormKey() {
+        for (String name : Redactor.SECRET_FIELDS) {
+            int half = name.length() / 2;
+            String split = name.substring(0, half) + "_" + name.substring(half);
+            for (String key : List.of(name, name.toUpperCase(Locale.ROOT), split, split.replace('_', '-'))) {
+                assertEquals(key + "=" + Redactor.MASK + "&x=1", Redactor.redact(key + "=PHNhbWw6QXNz&x=1"), key);
+            }
+        }
     }
 
     @Test

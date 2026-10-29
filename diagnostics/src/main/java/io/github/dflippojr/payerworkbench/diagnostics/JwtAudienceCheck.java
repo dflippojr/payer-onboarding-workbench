@@ -1,6 +1,5 @@
 package io.github.dflippojr.payerworkbench.diagnostics;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import io.github.dflippojr.payerworkbench.core.DiagnosticCheck;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
@@ -22,10 +21,10 @@ import java.util.regex.Pattern;
  * missing or extra {@code /r4} path segment, a different host). Payers compare
  * {@code aud} as an exact string.
  *
- * <p>Two kinds of JWT are examined. A {@code client_assertion} in a token request
- * body keeps its claims after redaction, so it is read from the recorded request.
- * A CDS Hooks client JWT travels as a bearer token, which {@code Redactor} masks
- * whole, so its claims come from {@link HookResponse#clientJwt()}. When a hook
+ * <p>Only a CDS Hooks client JWT is examined. It travels as a bearer token, which
+ * {@code Redactor} masks whole, so its claims come from {@link HookResponse#clientJwt()}.
+ * A {@code client_assertion} in a token request is masked whole too, so this check
+ * leaves it to {@code auth.client-assertion}, which checks its {@code aud}. When a hook
  * call's {@code aud} already is the service URL, a 401 whose error is about the
  * audience means the payer validates against some other URL; that FAILs too.
  */
@@ -45,22 +44,6 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
     public List<Finding> evaluate(RunObservations obs) {
         List<Finding> findings = new ArrayList<>();
         List<String> verified = new ArrayList<>();
-        for (HttpExchange exchange : obs.exchanges()) {
-            String target = Support.withoutQuery(exchange.url());
-            for (JsonNode claims : Support.requestJwtClaims(exchange)) {
-                List<String> auds = Support.stringValues(claims.get("aud"));
-                if (auds.isEmpty()) {
-                    continue;
-                }
-                if (auds.contains(target)) {
-                    if (Support.isSuccess(exchange.status())) {
-                        verified.add(target);
-                    }
-                    continue;
-                }
-                mismatch(exchange, auds, target, "the JWT it carried", isRejected(exchange)).ifPresent(findings::add);
-            }
-        }
         for (HookResponse hook : obs.hookResponses()) {
             JwtClaims jwt = hook.clientJwt();
             if (jwt == null || jwt.aud().isEmpty()) {
@@ -157,17 +140,6 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
         String said = Support.lower(exchange.responseBody()) + "\n"
                 + Support.lower(Support.header(exchange.responseHeaders(), "WWW-Authenticate").orElse(""));
         return CITES_AUDIENCE.matcher(said).find();
-    }
-
-    private static boolean isRejected(HttpExchange exchange) {
-        if (exchange.status() == 401) {
-            return true;
-        }
-        if (exchange.status() == 400) {
-            String body = Support.lower(exchange.responseBody());
-            return body.contains("invalid_client") || body.contains("invalid_grant");
-        }
-        return false;
     }
 
     /** Plain-language description of how {@code aud} differs from {@code target}. */
