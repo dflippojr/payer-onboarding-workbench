@@ -130,7 +130,7 @@ class RedactorTest {
     }
 
     @Test
-    void everySecretFieldIsMaskedAsAFormKeyInEverySpelling() {
+    void everySecretFieldIsMaskedAsAFormKey() {
         for (String name : Redactor.SECRET_FIELDS) {
             int half = name.length() / 2;
             String split = name.substring(0, half) + "_" + name.substring(half);
