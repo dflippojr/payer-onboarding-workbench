@@ -89,15 +89,24 @@ const isAuthLineProse = (name, v) => {
 
 /**
  * A list of masked values, each optionally after a scheme, as redactTree leaves a header-named list, or
- * an empty list (redactHeaders keeps one for a header with no values).
+ * an empty list (redactHeaders keeps one for a header with no values). Any token is a scheme for an
+ * authorization list (SCRAM-SHA-256 [REDACTED]); for any other name only letters are, as before #261.
  */
-const MASKED_LIST = new RegExp(String.raw`^\s*(?:\]|\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*)*\])`);
+const maskedList = scheme => new RegExp(String.raw`^\s*(?:\]|\\*"(?:${scheme} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${scheme} )?\[REDACTED\]\\*"\s*)*\])`);
+const MASKED_AUTHORIZATION_LIST = maskedList(SCHEME);
+const MASKED_LIST = maskedList('[A-Za-z]+');
 
 /**
  * How many backslashes escaped the line break before a header line at `index`, as Redactor counts
- * them (1 in a JSON string, 2 in JSON embedded in one), or 0 where a line starts in plain text.
+ * them (1 in a JSON string, 2 in JSON embedded in one), or 0 where a line starts in plain text. A line
+ * at the start of a JSON string is as deep as the string: one more than the backslashes before its quote.
  */
 function lineDepth(text, index) {
+  if (text[index - 1] === '"') {
+    let k = 0;
+    while (text[index - 2 - k] === '\\') k++;
+    return k + 1;
+  }
   if (index < 2 || !/[nr]/i.test(text[index - 1]) || text[index - 2] !== '\\') return 0;
   let i = index - 1;
   while (i > 0 && text[i - 1] === '\\') i--;
@@ -166,7 +175,7 @@ const TEXT_CHECKS = [
     name: 'JSON secret structure',
     re: /\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*([{[])/g,
     ok: m => !isSecretKey(m[1]) || (m[2] === '['
-      && MASKED_LIST.test(m.input.slice(m.index + m[0].length))),
+      && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
@@ -179,7 +188,8 @@ const TEXT_CHECKS = [
     // The value is read in a lookahead, so the match ends at the name and a header line on the next
     // escaped line is scanned on its own; valueEnd finds where the value ends.
     // An escaped tab may indent the line or follow the colon, as in Redactor's ESCAPED_HEADER_LINE.
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):(?:[ \t]|\\+t)*(?=([^\r\n]*))`, 'gim'),
+    // A JSON string's start is a line start too: Redactor saw the body before it was serialized.
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr])|(?<=[:\[,]\s*\\*"))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):(?:[ \t]|\\+t)*(?=([^\r\n]*))`, 'gim'),
     ok: m => {
       const v = m[2].slice(0, valueEnd(m[2], lineDepth(m.input, m.index)));
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);

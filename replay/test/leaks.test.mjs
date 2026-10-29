@@ -85,6 +85,11 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nAccept: a\\"}"}',
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\"}"}',
     '{"m":"x\\n\\tCookie: [REDACTED]\\nend"}',
+    // A masked header line at the start of a JSON string; a header-named key is not a line.
+    JSON.stringify({ responseBody: 'Cookie: [REDACTED]\nAccept: x' }),
+    JSON.stringify({ responseBody: JSON.stringify({ responseBody: 'Authorization: Bearer [REDACTED]' }) }),
+    '{"a":1,"Cookie":"[REDACTED]",\n"X-Api-Key": "[REDACTED]"}',
+    '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
     // A tab after the colon, escaped when the text is quoted.
     JSON.stringify({ responseBody: 'HTTP/1.1 401\nCookie:\t[REDACTED]\nAccept: x' }),
     // redactHeaders and redactTree keep an empty header list.
@@ -136,6 +141,12 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     '{"m":"x\\n\\tCookie: sid=LEAKED"}',
     // A mask that ends at an escaped quote has more of the value after it, at any depth.
     '{"access_token":"[REDACTED]\\", tail=LEAKED"}',
+    // Only an authorization list item may have a scheme in front of the mask, as on main for the others.
+    'echo: {"client_secret":["LEAKED0001 [REDACTED]"]}',
+    'echo: {"Cookie":["LEAKED0001 [REDACTED]"]}',
+    // A header line at the start of a JSON string, as a recorded plain-text body is serialized.
+    JSON.stringify({ responseBody: 'Cookie: sid=LEAKED\nAccept: x' }),
+    JSON.stringify({ responseBody: JSON.stringify({ responseBody: 'Cookie: sid=LEAKED' }) }),
     JSON.stringify({ responseBody: `echo: ${JSON.stringify({ access_token: '[REDACTED]", tail=LEAKED' })}` }),
   ]) {
     assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
