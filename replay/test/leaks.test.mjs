@@ -152,6 +152,17 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
   }
 });
+test('flags a word in front of a masked non-authorization header list item (#292)', () => {
+  // Redactor masks every value of a sensitive header other than Authorization whole, so a prefix that
+  // looks like a scheme (tail [REDACTED]) is the start of the secret.
+  for (const name of ['Cookie', 'Set-Cookie']) {
+    const text = `{"${name}":["tail [REDACTED]"]}`;
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+    const record = { requestHeaders: { [name]: ['[REDACTED]', 'tail [REDACTED]'] } };
+    assert.ok(findTextLeaks(JSON.stringify(record)).length > 0, `not flagged: ${JSON.stringify(record)}`);
+    assert.equal(findJsonLeaks(record).length, 1, JSON.stringify(record));
+  }
+});
 test('accepts a recorded header list of masked values', () => {
   assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
   assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);
