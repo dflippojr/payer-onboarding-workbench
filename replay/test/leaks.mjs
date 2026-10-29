@@ -56,13 +56,13 @@ function isUserPass(token) {
 /**
  * Redactor keeps one short all-letter word after the scheme as prose, unless it is a Basic user:pass;
  * after Token, which is also an ordinary word, the word may end with a colon (token endpoint: <url>).
- * Punctuation with no letter or digit (POST /oauth/token -> 200) is not a credential either.
+ * Up to 7 characters with no letter or digit (POST /oauth/token -> 200) are not a credential either.
  * The scanner decodes the word without any trailing period or parenthesis, so it also catches a
  * credential at the end of a sentence.
  */
 const isAuthProse = m => {
   const word = /^token$/i.test(m[1]) ? (m[2] + m[3]).replace(/:$/, '') : m[2] + m[3];
-  if (!/[A-Za-z0-9]/.test(word)) return true;
+  if (/^[^A-Za-z0-9]{1,7}$/.test(word)) return true;
   return /^[A-Za-z]{1,15}[.)]*$/.test(word) && !(/^basic$/i.test(m[1]) && isUserPass(word.replace(/[.)]+$/, '')));
 };
 

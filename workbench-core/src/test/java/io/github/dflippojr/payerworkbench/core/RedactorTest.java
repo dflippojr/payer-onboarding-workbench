@@ -532,6 +532,7 @@ class RedactorTest {
         assertEquals("DPoP " + Redactor.MASK, Redactor.redact("DPoP PHNhbWw6QXNz"));
         assertEquals("{\"error_description\":\"rejected token [REDACTED]\"}",
                 Redactor.redact("{\"error_description\":\"rejected token gho_SynthTok123:x\"}"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer --------"));
         assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
         // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
         for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",

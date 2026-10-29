@@ -100,8 +100,11 @@ public final class Redactor {
     /** Short all-letter words after a scheme are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
 
-    /** What follows a scheme with no letter or digit ({@code ->}) is not a credential either. */
-    private static final Pattern PUNCTUATION = Pattern.compile("[^A-Za-z0-9]*+");
+    /**
+     * A few characters with no letter or digit after a scheme ({@code ->}) are not a credential either;
+     * eight or more are masked, as any token is.
+     */
+    private static final Pattern PUNCTUATION = Pattern.compile("[^A-Za-z0-9]{1,7}");
 
     private static final Pattern JWT = Pattern.compile(
             WORD_START + "(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
@@ -381,8 +384,8 @@ public final class Redactor {
      * Whether a scheme match is prose ("Missing bearer token", "Basic authentication is required")
      * rather than a credential: one short all-letter word, and for {@code Basic} not the base64 of a
      * {@code user:pass} pair (RFC 7617), which can be all letters too ({@code dXNlcjpwYXNz}), even
-     * with the period that ends a sentence after it. So is punctuation with no letter or digit, as in
-     * {@code POST /oauth/token -> 200}.
+     * with the period that ends a sentence after it. So is a short run of punctuation ({@link #PUNCTUATION}),
+     * as in {@code POST /oauth/token -> 200}.
      */
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
