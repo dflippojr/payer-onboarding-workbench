@@ -209,10 +209,12 @@ const TEXT_CHECKS = [
       && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))),
   },
   // Redactor masks a JWK's private members, only the object's own ones; the scanner flags any of them
-  // left unmasked in text that has a kty member anywhere, also in JSON embedded in a JSON string.
+  // left unmasked in text that has a kty member anywhere, also in JSON embedded in a JSON string. Only
+  // the end of the value may follow the mask: whitespace, a comma or close bracket, or a quote or
+  // backslash that ends the string holding embedded JSON or escapes a line break in it.
   {
     name: 'JWK private member',
-    re: /\\*"(?:d|p|q|dp|dq|qi|oth|k)\\*"\s*:\s*(?=\S)(?!\\*"\[REDACTED\]\\*"(?![A-Za-z0-9]))/g,
+    re: /\\*"(?:d|p|q|dp|dq|qi|oth|k)\\*"\s*:\s*(?=\S)(?!\\*"\[REDACTED\]\\*"(?![^\s,}\]\\"]))/g,
     ok: m => !hasJwkType(m.input),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.

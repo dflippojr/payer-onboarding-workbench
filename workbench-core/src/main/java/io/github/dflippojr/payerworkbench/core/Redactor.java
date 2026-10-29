@@ -15,7 +15,6 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -472,7 +471,8 @@ public final class Redactor {
     private static String maskJwks(String text, boolean embedded) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
         String kty = embedded ? "\\\"kty\\\"" : "\"kty\"";
-        Set<Integer> read = new HashSet<>();
+        // Where the text read by objects() so far ends: every object before it is known.
+        int readEnd = 0;
         Map<Integer, Integer> matching = new HashMap<>();
         TreeSet<Integer> names = new TreeSet<>();
         // The last kty found not to be in an object, and how its search ended.
@@ -480,16 +480,18 @@ public final class Redactor {
         int outsideResult = NOT_IN_BRACKETS;
         while (type.find()) {
             int member = type.start();
-            if (read.contains(member) || !opensName(text, member, embedded)) {
+            if (member < readEnd || !opensName(text, member, embedded)) {
                 continue;
             }
             int start = startOfObject(text, member, embedded, matching, outside, outsideResult);
             if (start < 0) {
                 outside = member;
                 outsideResult = start;
+                continue;
             }
-            for (JsonObject object : start < 0 ? List.<JsonObject>of() : objects(text, start, embedded, matching)) {
-                read.addAll(object.names());
+            List<JsonObject> objects = new ArrayList<>();
+            readEnd = objects(text, start, embedded, matching, objects);
+            for (JsonObject object : objects) {
                 if (object.names().stream().anyMatch(name -> text.startsWith(kty, name))) {
                     names.addAll(object.names());
                 }
@@ -581,14 +583,16 @@ public final class Redactor {
     }
 
     /**
-     * Every JSON object from the one starting at {@code start} through its close bracket (or the end of
-     * the text), the ones inside it included, with where each of its own members' names starts: the
+     * Adds to {@code found} every JSON object from the one starting at {@code start} through its close
+     * bracket, the ones inside it included, and returns where it stopped reading: after that bracket, or
+     * at the end of the text or of the string holding embedded JSON. Each object comes with where each of
+     * its own members' names starts: the
      * opening quote, or in embedded JSON the backslash before it. Reads the text as
      * {@link #endOfStructure} does. {@code matching} maps each bracket of an object read so far to the
      * other one: this adds the objects it closes, and skips an object read before.
      */
-    private static List<JsonObject> objects(String text, int start, boolean embedded, Map<Integer, Integer> matching) {
-        List<JsonObject> found = new ArrayList<>();
+    private static int objects(String text, int start, boolean embedded, Map<Integer, Integer> matching,
+            List<JsonObject> found) {
         // The open objects, innermost last, with null for an open array.
         List<JsonObject> open = new ArrayList<>();
         boolean inString = false;
@@ -638,7 +642,7 @@ public final class Redactor {
                 }
             }
         }
-        return found;
+        return i;
     }
 
     private static boolean isUserPass(String token) {
