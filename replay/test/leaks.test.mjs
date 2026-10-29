@@ -117,6 +117,8 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     // \\n in a JSON string is a backslash and an n, not a line break: the value goes on.
     '{"debug":"x\\nCookie: [REDACTED]\\\\nLEAKED"}',
     'Cookie: [REDACTED]\\\\nLEAKED',
+    // \N is not a line-break escape: the value goes on.
+    'X-Client-Secret: [REDACTED]\\NLEAKED',
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\\\", leak=LEAKED\\"}"}',
     'Set-Cookie: Bearer [REDACTED]',
     '{"Cookie":"Bearer [REDACTED]"}',

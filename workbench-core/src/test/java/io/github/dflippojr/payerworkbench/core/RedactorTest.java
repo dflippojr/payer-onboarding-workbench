@@ -153,6 +153,9 @@ class RedactorTest {
         assertEquals("Set-Cookie: " + Redactor.MASK, Redactor.redact("Set-Cookie: sid=\"a b\"; Path=/; HttpOnly"));
         assertEquals("Cookie: " + Redactor.MASK + "\r\nAccept: */*", Redactor.redact("Cookie: a=1; b=2\r\nAccept: */*"));
         assertEquals("  x-api-key:" + Redactor.MASK, Redactor.redact("  x-api-key:k1"));
+        // Only a lower-case \n or \r is a JSON line-break escape; \N and \R are part of the value.
+        assertEquals("X-Client-Secret: " + Redactor.MASK, Redactor.redact("X-Client-Secret: abc\\Ndef0001"));
+        assertEquals("X-Client-Secret: " + Redactor.MASK, Redactor.redact("X-Client-Secret: abc\\Rdef0002"));
         // Quoted inside a JSON string: the value ends at the next escaped line break or the closing quote.
         assertEquals("{\"debug\":\"echo:\\nCookie: " + Redactor.MASK + "\\nAccept: */*\"}",
                 Redactor.redact("{\"debug\":\"echo:\\nCookie: sid=\\\"q\\\"; a=1\\nAccept: */*\"}"));
