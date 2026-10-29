@@ -22,6 +22,12 @@ export function findAppJar(target, noJarHint) {
   return join(target, jars[0]);
 }
 
+// The one java lookup for the app-launching scripts, so they all start the same JVM.
+export function javaBin(env = process.env) {
+  const windows = process.platform === 'win32';
+  return env.JAVA_HOME ? join(env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
+}
+
 function prepareStop(child) {
   let resolveStop, rejectStop, timer, forcing = false, settled = false;
   const failures = [];
@@ -124,8 +130,7 @@ export function createWorkbench(skipBuild) {
   async function start(jar, log, args = []) {
     const fd = openSync(log, 'w');
     console.log('==> Starting the workbench on a free port');
-    const java = process.env.JAVA_HOME
-      ? join(process.env.JAVA_HOME, 'bin', windows ? 'java.exe' : 'java') : 'java';
+    const java = javaBin();
     if (windows && !process.env.JAVA_HOME) {
       console.log('    JAVA_HOME is unset; if java on the PATH is a launcher shim, cleanup can leave the JVM running');
     }
