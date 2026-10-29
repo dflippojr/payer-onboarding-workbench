@@ -90,6 +90,9 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     'Cookie: sid=LEAKED',
     '{"debug":"echo:\\nCookie: sid=LEAKED\\nend"}',
     '{"debug":"echo:\\nCookie: [REDACTED]sid=LEAKED"}',
+    // A masked line does not hide the next escaped line.
+    '{"body":"HTTP/1.1 401\\nCookie: [REDACTED]\\nSet-Cookie: sid=LEAKED\\nend"}',
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nX-Api-Key: LEAKED\\"}"}',
     'Set-Cookie: Bearer [REDACTED]',
     '{"Cookie":"Bearer [REDACTED]"}',
     '{"x-api-key":123}',

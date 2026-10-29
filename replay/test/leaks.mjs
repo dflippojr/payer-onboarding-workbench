@@ -123,9 +123,10 @@ const TEXT_CHECKS = [
   // prose is not flagged.
   {
     name: 'sensitive header line',
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*([^\r\n]*)`, 'gim'),
+    // The match ends at an escaped line break too, so the next escaped line is scanned on its own.
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*((?:[^\r\n\\]|\\(?![nr]))*)`, 'gim'),
     ok: m => {
-      const v = m[2].replace(/(?:\\[nr]|\\*"(?:\s*[,}\]].*)?$).*$/, '');
+      const v = m[2].replace(/\\*"(?:\s*[,}\]].*)?$/, '');
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);
     },
   },
