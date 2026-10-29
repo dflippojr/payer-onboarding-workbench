@@ -164,14 +164,16 @@ test('flags a word in front of a masked non-authorization header list item (#292
   }
 });
 test('accepts a recorded header list of masked values', () => {
-  // Bare masks only, except after an authorization scheme (#292).
-  const record = { requestHeaders: {
-    'X-Api-Key': ['[REDACTED]'], Cookie: ['[REDACTED]', '[REDACTED]'], 'Set-Cookie': ['[REDACTED]'],
-    Authorization: ['Bearer [REDACTED]'] } };
+  // Bare masks only (#292).
+  const record = { requestHeaders: { 'X-Api-Key': ['[REDACTED]'], Cookie: ['[REDACTED]', '[REDACTED]'], 'Set-Cookie': ['[REDACTED]'] } };
   assert.deepEqual(findTextLeaks(JSON.stringify(record)), []);
   assert.deepEqual(findJsonLeaks(record), []);
   assert.ok(findTextLeaks(JSON.stringify({ requestHeaders: { 'Api-Key': ['Bearer [REDACTED]'] } })).length > 0);
   assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);
+});
+test('accepts a scheme in front of a masked authorization header list item', () => {
+  const record = { requestHeaders: { Authorization: ['Bearer [REDACTED]'], 'Proxy-Authorization': ['SCRAM-SHA-256 [REDACTED]'] } };
+  assert.deepEqual(findTextLeaks(JSON.stringify(record)), []);
 });
 
 // Class-level check (#160): generated secrets of every shape, placed in headers, bodies and query
