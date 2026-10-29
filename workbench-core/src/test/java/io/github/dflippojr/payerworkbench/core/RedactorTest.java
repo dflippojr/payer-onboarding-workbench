@@ -511,8 +511,10 @@ class RedactorTest {
                 "{\"note\":\"\\\"kty\\\": a, \\\"kty\\\": b\",\"d\":\"x\"}",
                 // A name that only ends in kty ("\"kty"), and kty that is not the member of an object.
                 "[{\"\\\"kty\":0,\"d\":\"x\"}]",
+                "{\"b\":\"{\\\"\\\\\\\"kty\\\":0,\\\"d\\\":\\\"x\\\"}\"}",
                 "\"kty\": \"RSA\", \"d\": \"x\"",
-                "[\"kty\": \"RSA\", \"d\": \"x\"]")) {
+                "[\"kty\": \"RSA\", \"d\": \"x\"]",
+                "[\"kty\": 1, \"kty\": 2, \"d\": \"x\"]")) {
             assertEquals(text, Redactor.redact(text));
         }
     }

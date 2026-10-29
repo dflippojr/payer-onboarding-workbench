@@ -389,11 +389,14 @@ public final class Redactor {
      */
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
+        if (PUNCTUATION.matcher(word).matches()) {
+            return true;
+        }
         // Token is also an ordinary word, as in "token endpoint: <url>".
         if (m.group(1).equalsIgnoreCase("Token") && word.endsWith(":")) {
             word = word.substring(0, word.length() - 1);
         }
-        return PUNCTUATION.matcher(word).matches() || PROSE_WORD.matcher(word).matches()
+        return PROSE_WORD.matcher(word).matches()
                 && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(withoutTrailingPeriods(m.group(2))));
     }
 
@@ -472,10 +475,19 @@ public final class Redactor {
         Set<Integer> read = new HashSet<>();
         Map<Integer, Integer> matching = new HashMap<>();
         TreeSet<Integer> names = new TreeSet<>();
+        // The last kty found not to be in an object, and how its search ended.
         int outside = -1;
+        int outsideResult = NOT_IN_BRACKETS;
         while (type.find()) {
-            int start = read.contains(type.start()) ? -1 : startOfObject(text, type.start(), embedded, matching, outside);
-            outside = start < 0 && !read.contains(type.start()) ? type.start() : outside;
+            int member = type.start();
+            if (read.contains(member) || !opensName(text, member, embedded)) {
+                continue;
+            }
+            int start = startOfObject(text, member, embedded, matching, outside, outsideResult);
+            if (start < 0) {
+                outside = member;
+                outsideResult = start;
+            }
             for (JsonObject object : start < 0 ? List.<JsonObject>of() : objects(text, start, embedded, matching)) {
                 read.addAll(object.names());
                 if (object.names().stream().anyMatch(name -> text.startsWith(kty, name))) {
@@ -506,20 +518,36 @@ public final class Redactor {
         return out.append(text, copied, text.length()).toString();
     }
 
+    /** {@link #startOfObject}: no open bracket before the member, to the start of the text or the string. */
+    private static final int NOT_IN_BRACKETS = -1;
+
+    /** {@link #startOfObject}: the member is in an array, not an object. */
+    private static final int IN_ARRAY = -2;
+
+    /**
+     * Whether the quote at {@code member} opens a string rather than being escaped inside one: one
+     * backslash before it in embedded JSON ({@code \"}, not {@code \\\"}), none in plain JSON.
+     */
+    private static boolean opensName(String text, int member, boolean embedded) {
+        return embedded ? backslashesBefore(text, member + 1) % 4 == 1 : backslashesBefore(text, member) % 2 == 0;
+    }
+
     /** A JSON object found by {@link #objects}: where it starts and where each of its own members' names starts. */
     private record JsonObject(int start, List<Integer> names) {
     }
 
     /**
-     * Where the JSON object that holds the member whose name starts at {@code member} starts, or -1 if
-     * it is not in an object. Reads back from the member, skipping strings and closed brackets, and
-     * jumping over each object already read (see {@link #objects}). Reading back to {@code outside}, a
-     * member found not to be in an object, outside any string and bracket, ends the same way. In
+     * Where the JSON object that holds the member whose name starts at {@code member} starts, or
+     * {@link #NOT_IN_BRACKETS} or {@link #IN_ARRAY} if it is not in an object. Reads back from the
+     * member, skipping strings and closed brackets, and jumping over each object already read (see
+     * {@link #objects}). Reading back to {@code outside}, a member found not to be in an object (its
+     * search ended with {@code outsideResult}), outside any string, ends the same way: at any bracket
+     * depth for {@link #NOT_IN_BRACKETS}, outside any bracket for {@link #IN_ARRAY}. In
      * embedded JSON, where an inner quote is {@code \"} and an escaped one {@code \\\"}, an unescaped
      * quote is the start of the outer string, so the member is not in embedded JSON.
      */
     private static int startOfObject(String text, int member, boolean embedded, Map<Integer, Integer> matching,
-            int outside) {
+            int outside, int outsideResult) {
         int depth = 0;
         boolean inString = false;
         for (int i = member - 1; i >= 0; i--) {
@@ -527,14 +555,14 @@ public final class Redactor {
             if (c == '"') {
                 int run = backslashesBefore(text, i);
                 if (embedded && run % 2 == 0) {
-                    return -1;
+                    return NOT_IN_BRACKETS;
                 }
                 if (run % (embedded ? 4 : 2) == (embedded ? 1 : 0)) {
                     inString = !inString;
                 }
                 i -= run;
-                if (i == outside && !inString && depth == 0) {
-                    return -1;
+                if (i == outside && !inString && (depth == 0 || outsideResult == NOT_IN_BRACKETS)) {
+                    return outsideResult;
                 }
             } else if (!inString && c == '}' && matching.containsKey(i)) {
                 i = matching.get(i);
@@ -542,12 +570,12 @@ public final class Redactor {
                 depth++;
             } else if (!inString && (c == '{' || c == '[')) {
                 if (depth == 0) {
-                    return c == '{' ? i : -1;
+                    return c == '{' ? i : IN_ARRAY;
                 }
                 depth--;
             }
         }
-        return -1;
+        return NOT_IN_BRACKETS;
     }
 
     /**

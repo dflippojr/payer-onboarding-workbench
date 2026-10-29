@@ -61,8 +61,8 @@ function isUserPass(token) {
  * credential at the end of a sentence.
  */
 const isAuthProse = m => {
+  if (/^[^A-Za-z0-9]{1,7}$/.test(m[2] + m[3])) return true;
   const word = /^token$/i.test(m[1]) ? (m[2] + m[3]).replace(/:$/, '') : m[2] + m[3];
-  if (/^[^A-Za-z0-9]{1,7}$/.test(word)) return true;
   return /^[A-Za-z]{1,15}[.)]*$/.test(word) && !(/^basic$/i.test(m[1]) && isUserPass(word.replace(/[.)]+$/, '')));
 };
 
