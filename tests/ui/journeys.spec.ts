@@ -101,6 +101,17 @@ test('J02/J03 failure evidence, reload and reset faults/settings', async ({ page
   await exchange.locator('summary').press('Enter');
   await expect(exchange.locator('.exchange-grid')).toContainText('Request headers');
   await expect(exchange.locator('.exchange-grid')).toContainText('Response body');
+  // Latency, header lines and the status icon come from static/shared/present.js, shared with the replay (#286).
+  await expect(exchange.locator('summary .latency')).toHaveText(/^(\d+ ms|\d+\.\d\d s)$/);
+  const headerLines = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+: .*(\n[A-Za-z0-9!#$%&'*+.^_`|~-]+: .*)*$/;
+  await expect(exchange.locator('p.label:text-is("Request headers") + pre')).toHaveText(headerLines);
+  await expect(exchange.locator('p.label:text-is("Response headers") + pre')).toHaveText(headerLines);
+  const icon = exchange.locator('summary .chip svg');
+  await expect(icon).toHaveAttribute('class', 'icon fail');
+  await expect(icon).toHaveAttribute('aria-hidden', 'true');
+  await expect(icon).toHaveAttribute('viewBox', '0 0 20 20');
+  expect(await icon.evaluate(svg => [...svg.children].map(c => `${c.tagName} ${c.getAttribute('d') ?? c.getAttribute('r')}`)))
+    .toEqual(['circle 8.5', 'path M7 7l6 6M13 7l-6 6']);
   await page.setViewportSize({ width: 1440, height: 900 });
   const [request, response] = await exchange.locator('.exchange-grid > div').all();
   expect(Math.round((await request.boundingBox())!.y)).toBe(Math.round((await response.boundingBox())!.y));
