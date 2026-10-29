@@ -161,6 +161,19 @@ class RedactorTest {
     }
 
     @Test
+    void masksSensitiveHeaderLineInJsonEmbeddedInAJsonString() {
+        // The inner string's line break is \\n and its closing quote \"; an escaped quote in it is \\\".
+        String masked = "{\"body\":\"{\\\"m\\\":\\\"x\\\\nCookie: " + Redactor.MASK + "\\\\nAccept: a\\\"}\"}";
+        assertEquals(masked,
+                Redactor.redact("{\"body\":\"{\\\"m\\\":\\\"x\\\\nCookie: sid=\\\\\\\"q\\\\\\\"\\\\nAccept: a\\\"}\"}"));
+        assertEquals(masked, Redactor.redact(masked));
+        assertEquals("{\"body\":\"{\\\"m\\\":\\\"x\\\\nCookie: " + Redactor.MASK + "\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"m\\\":\\\"x\\\\nCookie: sid=1\\\"}\"}"));
+        // A string cut off inside the value: masked to the end.
+        assertEquals("{\"m\":\"x\\nCookie: " + Redactor.MASK, Redactor.redact("{\"m\":\"x\\nCookie: sid=1; a=\\"));
+    }
+
+    @Test
     void sensitiveHeaderLineKeepsTheAuthorizationScheme() {
         assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer abc.def"));
         assertEquals("Proxy-Authorization: Basic " + Redactor.MASK, Redactor.redact("Proxy-Authorization: Basic YWJjOmRl"));

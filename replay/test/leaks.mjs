@@ -90,6 +90,36 @@ const isAuthLineProse = (name, v) => {
 /** A list of masked values, each optionally after a scheme, as redactTree leaves a header-named list. */
 const MASKED_LIST = new RegExp(String.raw`^\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*)*\]`);
 
+/**
+ * How many backslashes escaped the line break before a header line at `index`, as Redactor counts
+ * them (1 in a JSON string, 2 in JSON embedded in one), or 0 where a line starts in plain text.
+ */
+function lineDepth(text, index) {
+  if (index < 2 || !/[nr]/i.test(text[index - 1]) || text[index - 2] !== '\\') return 0;
+  let i = index - 1;
+  while (i > 0 && text[i - 1] === '\\') i--;
+  const run = index - 1 - i;
+  return run & -run;
+}
+
+/**
+ * Where a header line's value ends, as in Redactor's endOfEscapedLine: at depth d, c backslashes before
+ * n or r are a line break when c % 2d == d, and before a quote end the string when c % 2d < d. A value
+ * in plain text (depth 0) runs on; the check's own match ends it at the line break.
+ */
+function escapedLineEnd(value, depth) {
+  if (depth === 0) return value.length;
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '"') return i;
+    if (value[i] !== '\\') continue;
+    const run = i;
+    while (value[i] === '\\') i++;
+    const escapes = (i - run) % (2 * depth);
+    if ((/[nr]/.test(value[i] ?? '') && escapes === depth) || (value[i] === '"' && escapes < depth)) return run;
+  }
+  return value.length;
+}
+
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -133,7 +163,7 @@ const TEXT_CHECKS = [
     // the next escaped line is scanned on its own.
     re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*((?:[^\r\n\\]|\\+(?![\\nr]))*)`, 'gim'),
     ok: m => {
-      const v = m[2].replace(/\\*"(?:\s*[,}\]].*)?$/, '');
+      const v = m[2].slice(0, escapedLineEnd(m[2], lineDepth(m.input, m.index)));
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);
     },
   },

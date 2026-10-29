@@ -81,6 +81,9 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     '{"body":"{\\"Set-Cookie\\":\\"[REDACTED]\\"}"}',
     // A redacted body as a report serializes it: its escaped line breaks are escaped again.
     JSON.stringify({ responseBody: '{"debug":"echo:\\nCookie: [REDACTED]\\nAccept: */*"}' }),
+    // What Redactor leaves for a header line in JSON embedded in a JSON string.
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nAccept: a\\"}"}',
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\"}"}',
     // redactTree keeps any scheme of an authorization list item.
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
   ]) {
@@ -99,6 +102,9 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\nX-Api-Key: LEAKED\\"}"}',
     JSON.stringify({ responseBody: '{"debug":"echo:\\nCookie: [REDACTED]\\nSet-Cookie: sid=LEAKED"}' }),
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]","LEAKED"]}}',
+    // An escaped quote does not end the string the line is in.
+    '{"debug":"x\\nCookie: [REDACTED]\\", leak=LEAKED"}',
+    '{"body":"{\\"m\\":\\"x\\\\nCookie: [REDACTED]\\\\\\", leak=LEAKED\\"}"}',
     'Set-Cookie: Bearer [REDACTED]',
     '{"Cookie":"Bearer [REDACTED]"}',
     '{"x-api-key":123}',

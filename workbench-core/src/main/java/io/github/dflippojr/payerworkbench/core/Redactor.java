@@ -160,13 +160,11 @@ public final class Redactor {
             + "((?:[^\\r\\n\\\\]++|" + BACKSLASH.repeat(2) + "|" + BACKSLASH + "(?![nr]))*+)");
 
     /**
-     * A header line quoted inside a JSON string, after an escaped line break. The value runs to the
-     * next escaped line break or to the closing quote; any other escape ({@code \"} in a quoted cookie
-     * value) is part of it.
+     * The start of a header line quoted inside a JSON string, after an escaped line break; its value
+     * ends where {@link #endOfEscapedLine} says.
      */
-    private static final Pattern ESCAPED_HEADER_LINE = Pattern.compile(
-            "(?<=" + BACKSLASH + "[nr])" + HEADER_LINE_START
-                    + "((?:[^\\r\\n\"\\\\]++|" + BACKSLASH + "[^nr\\r\\n])*+)");
+    private static final Pattern ESCAPED_HEADER_LINE =
+            Pattern.compile("(?<=" + BACKSLASH + "[nr])" + HEADER_LINE_START);
 
     /** The scheme of an {@code Authorization}-style value (an RFC 9110 token, group 1) and a credential after it. */
     private static final Pattern SCHEME = Pattern.compile(
@@ -221,7 +219,7 @@ public final class Redactor {
                 : m.group()));
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
-        out = ESCAPED_HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
+        out = maskEscapedHeaderLines(out);
         return out;
     }
 
@@ -232,10 +230,78 @@ public final class Redactor {
      */
     private static String maskHeaderLine(MatchResult m) {
         String value = m.group(3);
-        Matcher scheme = AUTH_SCHEME.matcher(value);
-        boolean prose = keepsScheme(m.group(2)) && scheme.lookingAt() && isProse(scheme);
-        String line = value.isBlank() || prose ? m.group() : m.group(1) + masked(m.group(2), value);
+        String line = keepsLine(m.group(2), value) ? m.group() : m.group(1) + masked(m.group(2), value);
         return Matcher.quoteReplacement(line);
+    }
+
+    private static boolean keepsLine(String name, String value) {
+        Matcher scheme = AUTH_SCHEME.matcher(value);
+        return value.isBlank() || (keepsScheme(name) && scheme.lookingAt() && isProse(scheme));
+    }
+
+    /** Masks the value of every header line quoted inside a JSON string, as {@link #maskHeaderLine} does. */
+    private static String maskEscapedHeaderLines(String text) {
+        Matcher m = ESCAPED_HEADER_LINE.matcher(text);
+        StringBuilder out = null;
+        int copied = 0;
+        int from = 0;
+        while (from < text.length() && m.find(from)) {
+            // The backslashes before the n or r of the line break in front of the line.
+            int depth = Integer.lowestOneBit(backslashesBefore(text, m.start() - 1));
+            int end = endOfEscapedLine(text, m.end(), depth);
+            String value = text.substring(m.end(), end);
+            from = Math.max(end, m.end() + 1);
+            if (!keepsLine(m.group(2), value)) {
+                out = out == null ? new StringBuilder(text.length()) : out;
+                out.append(text, copied, m.end()).append(masked(m.group(2), value));
+                copied = end;
+            }
+        }
+        return out == null ? text : out.append(text, copied, text.length()).toString();
+    }
+
+    private static int backslashesBefore(String text, int index) {
+        int i = index;
+        while (i > 0 && text.charAt(i - 1) == '\\') {
+            i--;
+        }
+        return index - i;
+    }
+
+    /**
+     * Where the value of a header line quoted inside a JSON string ends: at the line break or the
+     * closing quote of that string, or at the end of the text. The line break before the line was
+     * escaped with {@code depth} backslashes: 1 in a JSON string, 2 in JSON embedded in one, and so on.
+     * There, a run of {@code c} backslashes before {@code n} or {@code r} is a line break when
+     * {@code c % (2 * depth) == depth}, and before a quote ends the string when
+     * {@code c % (2 * depth) < depth}. Anything else, such as an escaped quote in a quoted cookie value,
+     * is part of the value.
+     */
+    private static int endOfEscapedLine(String text, int start, int depth) {
+        int i = start;
+        while (i < text.length()) {
+            char c = text.charAt(i);
+            if (c == '\r' || c == '\n' || c == '"') {
+                return i;
+            }
+            int run = i;
+            while (i < text.length() && text.charAt(i) == '\\') {
+                i++;
+            }
+            if (i == text.length()) {
+                return i;
+            }
+            int escapes = (i - run) % (2 * depth);
+            char next = text.charAt(i);
+            if (next == '\r' || next == '\n') {
+                return i;
+            }
+            if (i > run && (((next == 'n' || next == 'r') && escapes == depth) || (next == '"' && escapes < depth))) {
+                return run;
+            }
+            i++;
+        }
+        return i;
     }
 
     /**
