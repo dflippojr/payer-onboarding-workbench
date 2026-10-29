@@ -75,7 +75,8 @@ async function fixture({ platform = 'linux', env = {}, jars = ['workbench-app-1.
     }, { context });
   });
   await module.evaluate();
-  return { child, parent, calls, timers, advance, create: module.namespace.createWorkbench, root: module.namespace.root };
+  return { child, parent, calls, timers, advance, create: module.namespace.createWorkbench, root: module.namespace.root,
+    javaBin: module.namespace.javaBin };
 }
 
 test('import is inert; creation installs signals but does not build or spawn', async () => {
@@ -520,6 +521,20 @@ for (const env of [{}, { JAVA_HOME: path.resolve('jdk') }]) {
     const posix = await fixture();
     await posix.create('DEMO_SKIP_BUILD').start('app.jar', 'app.log');
     assert.equal(posix.calls.logs.some(line => /launcher shim/.test(line)), false);
+  });
+}
+
+for (const platform of ['linux', 'win32']) {
+  test(`javaBin on ${platform}: JAVA_HOME's java when set, else java on the PATH, from the env argument`, async () => {
+    const jdk = path.resolve('jdk');
+    const exe = platform === 'win32' ? 'java.exe' : 'java';
+    const f = await fixture({ platform, env: { JAVA_HOME: jdk } });
+    assert.equal(f.javaBin(), path.join(jdk, 'bin', exe));
+    assert.equal(f.javaBin({ JAVA_HOME: jdk }), path.join(jdk, 'bin', exe));
+    assert.equal(f.javaBin({}), 'java');
+    const unset = await fixture({ platform });
+    assert.equal(unset.javaBin(), 'java');
+    assert.equal(unset.javaBin({ JAVA_HOME: '' }), 'java');
   });
 }
 
