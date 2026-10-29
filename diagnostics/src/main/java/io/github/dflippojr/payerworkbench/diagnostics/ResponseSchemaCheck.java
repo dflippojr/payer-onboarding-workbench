@@ -19,8 +19,12 @@ import java.util.Set;
  * ({@code info}, {@code warning} or {@code critical}). A card with suggestions also needs a
  * {@code selectionBehavior} of {@code at-most-one} or {@code any} (CDS Hooks 2.0 Card; HL7 tools invariant
  * {@code cds-resp-6}). {@code systemActions}, and a card's {@code suggestions} and each suggestion's
- * {@code actions}, when present, must be lists; each system action must be an object. Authentication and
- * throttling errors that dedicated checks explain are left to those checks.
+ * {@code actions}, when present, must be lists. Each action, in either list, must be a CDS Hooks 2.0 Action:
+ * an object with a {@code type} of {@code create}, {@code update} or {@code delete}, a {@code description}
+ * (HL7 tools invariant {@code cds-resp-5} for suggestions) and, for create and update, a {@code resource}
+ * object. A delete without a {@code resourceId}, or with a {@code resource}, only warns: the spec says
+ * SHOULD, and the tools invariant {@code cds-resp-2} is a warning. Authentication and throttling errors
+ * that dedicated checks explain are left to those checks.
  */
 public final class ResponseSchemaCheck implements DiagnosticCheck {
 
@@ -28,6 +32,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
 
     static final Set<String> INDICATORS = Set.of("info", "warning", "critical");
     static final Set<String> SELECTION_BEHAVIORS = Set.of("at-most-one", "any");
+    static final Set<String> ACTION_TYPES = Set.of("create", "update", "delete");
     static final int MAX_SUMMARY = 140;
 
     @Override
@@ -81,11 +86,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             // A JSON null is an absent value, as for selectionBehavior below.
             JsonNode actions = json.get().path("systemActions");
             if (actions.isArray()) {
-                for (int i = 0; i < actions.size(); i++) {
-                    if (!actions.get(i).isObject()) {
-                        problems.add("systemActions[" + i + "] is not a JSON object");
-                    }
-                }
+                validateActions(actions, "systemActions", problems, warnings);
             } else if (!actions.isMissingNode() && !actions.isNull()) {
                 problems.add("\"systemActions\" is not an array");
             }
@@ -93,8 +94,9 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 findings.add(fail(label, problems.join("\n"), exchange));
             } else if (!warnings.isEmpty()) {
                 findings.add(new Finding(CHECK_ID, Severity.WARN, "Cards from " + label + " bend the CDS Hooks rules",
-                        "The response is usable, but some cards break CDS Hooks recommendations that EHRs rely on "
-                                + "when displaying them, so they may be truncated or shown oddly.",
+                        "The response is usable, but some cards or actions break CDS Hooks recommendations that "
+                                + "EHRs rely on when displaying or applying them, so cards may be truncated or shown "
+                                + "oddly, and a delete without a resourceId may not be applied.",
                         warnings.join("\n") + "\n" + Support.describe(exchange),
                         "Ask the payer to fix the listed fields; the library will still parse the cards."));
             } else {
@@ -104,7 +106,8 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         if (findings.isEmpty() && okCalls > 0) {
             findings.add(new Finding(CHECK_ID, Severity.PASS, "Hook responses are well-formed",
                     "Every hook response was valid CDS Hooks JSON, and every card had a summary, a valid "
-                            + "indicator, a source label and, when it offered suggestions, a selection behavior.",
+                            + "indicator, a source label and, when it offered suggestions, a selection behavior; "
+                            + "every action had a type, a description and the resource it acts on.",
                     okCalls + " response(s), " + cardCount + " card(s) checked", null));
         }
         return findings;
@@ -141,6 +144,8 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 JsonNode actions = suggestions.get(s).path("actions");
                 if (isPresent(actions) && !actions.isArray()) {
                     problems.add(path + ".suggestions[" + s + "].actions is not an array");
+                } else if (actions.isArray()) {
+                    validateActions(actions, path + ".suggestions[" + s + "].actions", problems, warnings);
                 }
             }
         }
@@ -154,6 +159,42 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
         }
     }
 
+    /** Each element of {@code actions} is a CDS Hooks 2.0 Action; {@code path} names the list. */
+    private static void validateActions(JsonNode actions, String path, CappedLines problems, CappedLines warnings) {
+        for (int i = 0; i < actions.size(); i++) {
+            JsonNode action = actions.get(i);
+            String at = path + "[" + i + "]";
+            if (!action.isObject()) {
+                problems.add(at + " is not a JSON object");
+                continue;
+            }
+            JsonNode type = action.path("type");
+            if (!type.isTextual()) {
+                problems.add(at + ".type is missing");
+            } else if (!ACTION_TYPES.contains(type.asText())) {
+                problems.add(at + ".type is \"" + type.asText() + "\" (must be create, update or delete)");
+            }
+            JsonNode description = action.path("description");
+            if (!description.isTextual() || description.asText().isBlank()) {
+                problems.add(at + ".description is missing");
+            }
+            JsonNode resource = action.path("resource");
+            if (type.asText().equals("delete")) {
+                JsonNode resourceId = action.path("resourceId");
+                if (!resourceId.isTextual() || resourceId.asText().isBlank()) {
+                    warnings.add(at + ".resourceId is missing (should be sent for delete)");
+                }
+                if (isPresent(resource)) {
+                    warnings.add(at + ".resource is sent with delete (send resourceId instead)");
+                }
+            } else if (isPresent(resource) && !resource.isObject()) {
+                problems.add(at + ".resource is not a JSON object");
+            } else if (!isPresent(resource) && ACTION_TYPES.contains(type.asText())) {
+                problems.add(at + ".resource is missing (required for " + type.asText() + ")");
+            }
+        }
+    }
+
     /** False for a missing node or a JSON null, which CDS Hooks reads as an absent value. */
     private static boolean isPresent(JsonNode node) {
         return !node.isMissingNode() && !node.isNull();
@@ -164,7 +205,9 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 "The response does not follow the CDS Hooks card format. Each card (a message the payer wants "
                         + "shown to the clinician) needs a summary, an indicator of info, warning or critical, "
                         + "and a source label naming the payer, and a card with suggestions needs a selection "
-                        + "behavior (at-most-one or any); EHRs may drop or refuse cards that lack them.",
+                        + "behavior (at-most-one or any). Each action (CDS Hooks 2.0 Action, in systemActions or a "
+                        + "suggestion) needs a type of create, update or delete, a description, and for create "
+                        + "or update the resource itself. EHRs may drop or refuse cards and actions that lack them.",
                 problems + "\n" + Support.describe(exchange),
                 "Send the payer the listed problems; until fixed, expect these cards to be dropped. If the payer "
                         + "uses another indicator word (e.g. \"hard-stop\"), ask them to map it to critical.");
