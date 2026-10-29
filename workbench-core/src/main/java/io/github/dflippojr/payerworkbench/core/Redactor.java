@@ -225,9 +225,16 @@ public final class Redactor {
         return out;
     }
 
-    /** A header line with its value masked; a line with no value is left as it is. */
+    /**
+     * A header line with its value masked. A line with no value is left as it is, and so is an
+     * {@code Authorization}-style line whose value {@link #AUTH_SCHEME} keeps as prose
+     * ({@code Authorization: Bearer access token required}), as it does anywhere else.
+     */
     private static String maskHeaderLine(MatchResult m) {
-        String line = m.group(3).isBlank() ? m.group() : m.group(1) + masked(m.group(2), m.group(3));
+        String value = m.group(3);
+        Matcher scheme = AUTH_SCHEME.matcher(value);
+        boolean prose = keepsScheme(m.group(2)) && scheme.lookingAt() && isProse(scheme);
+        String line = value.isBlank() || prose ? m.group() : m.group(1) + masked(m.group(2), value);
         return Matcher.quoteReplacement(line);
     }
 

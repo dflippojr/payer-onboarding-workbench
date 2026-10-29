@@ -164,8 +164,10 @@ class RedactorTest {
     void sensitiveHeaderLineKeepsTheAuthorizationScheme() {
         assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer abc.def"));
         assertEquals("Proxy-Authorization: Basic " + Redactor.MASK, Redactor.redact("Proxy-Authorization: Basic YWJjOmRl"));
-        assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer abc, more"));
+        assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer abc123, more"));
         assertEquals("Authorization: " + Redactor.MASK, Redactor.redact("Authorization: sid=abc; x"));
+        assertEquals("Authorization: Token " + Redactor.MASK, Redactor.redact("Authorization: Token abc"));
+        assertEquals("Authorization: Bearer " + Redactor.MASK, Redactor.redact("Authorization: Bearer \"abc\""));
         for (String masked : List.of("Authorization: Bearer [REDACTED]", "Cookie: [REDACTED]", "Authorization: [REDACTED]")) {
             assertEquals(masked, Redactor.redact(masked));
         }
@@ -174,7 +176,8 @@ class RedactorTest {
     @Test
     void leavesHeaderNamesInProseAlone() {
         for (String text : List.of("see the Cookie: header docs", "Cookie:", "Cookie: \nnext", "the X-Api-Key: header",
-                "Accept: application/fhir+json", "Cookies: none")) {
+                "Accept: application/fhir+json", "Cookies: none", "Authorization: Bearer access token required",
+                "Proxy-Authorization: Basic authentication is required")) {
             assertEquals(text, Redactor.redact(text));
         }
     }

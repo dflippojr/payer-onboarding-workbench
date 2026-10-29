@@ -75,6 +75,15 @@ const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]
 /** A JSON value Redactor masks for a secret field: a string, or a number, true or false. */
 const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
+/** A scheme, its credential and anything after it to a separator, as in Redactor's AUTH_SCHEME. */
+const AUTH_SCHEME = String.raw`(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
+
+/** Whether an Authorization-style header line's value is prose that Redactor keeps, as it does anywhere. */
+const isAuthLineProse = (name, v) => {
+  const m = /authorization$/i.test(name) && new RegExp(`^${AUTH_SCHEME}`, 'i').exec(v);
+  return Boolean(m) && isAuthProse(m);
+};
+
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -84,7 +93,7 @@ const TEXT_CHECKS = [
   // backslash, also escaped again (\\/) in a recorded body (#211).
   {
     name: 'Bearer/Basic credential',
-    re: new RegExp(String.raw`${WORD_START}(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`, 'gi'),
+    re: new RegExp(String.raw`${WORD_START}${AUTH_SCHEME}`, 'gi'),
     ok: isAuthProse,
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
@@ -110,13 +119,14 @@ const TEXT_CHECKS = [
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
   // A sensitive header line (Cookie: sid=...) where a line starts, also after an escaped line break in a
   // JSON string, as in Redactor. Redactor masks the value to the end of the line, so only an escaped line
-  // break or the closing quote of a JSON string may follow the mask.
+  // break or the closing quote of a JSON string may follow the mask; an Authorization line it keeps as
+  // prose is not flagged.
   {
     name: 'sensitive header line',
     re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*([^\r\n]*)`, 'gim'),
     ok: m => {
       const v = m[2].replace(/(?:\\[nr]|\\*"(?:\s*[,}\]].*)?$).*$/, '');
-      return v.trim() === '' || isMaskedValue(m[1], v);
+      return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);
     },
   },
 ];

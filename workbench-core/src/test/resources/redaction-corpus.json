@@ -65,6 +65,7 @@
     {"id": "prose-basic-sentence-end", "rule": "PROSE_WORD", "input": "The payer only accepts HTTP Basic auth."},
     {"id": "json-ordinary-structures", "rule": "JSON_FIELD_STRUCTURE", "input": "{\"token\":{\"type\":\"Bearer\"},\"cards\":[{\"summary\":\"s\"}]}"},
     {"id": "header-name-in-prose", "rule": "HEADER_LINE", "input": "see the Cookie: header docs; send the X-Api-Key: header too"},
+    {"id": "authorization-line-prose", "rule": "HEADER_LINE", "input": "Authorization: Bearer access token required"},
     {"id": "json-ordinary-headers", "rule": "JSON_FIELD", "input": "{\"headers\":{\"Accept\":\"application/fhir+json\",\"Content-Type\":\"application/json\"}}"}
   ],
   "headers": [
