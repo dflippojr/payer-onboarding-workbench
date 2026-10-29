@@ -133,6 +133,7 @@ test('flags a JWK private member, Token or DPoP credential Redactor would not le
     'Token LEAKEDtok123',
     'Authorization: Token abc',
     'DPoP [REDACTED]:TAIL',
+    'Token -------:',
     'cb?auth=Bearer+LEAKED123',
   ]) {
     assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);

@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -508,11 +509,27 @@ class RedactorTest {
                 "{\"note\":\"the \\\"kty\\\": member\",\"d\":\"x\"}",
                 "{\"note\":\"\\\"kty\\\":\",\"d\":\"x\"}",
                 "{\"note\":\"\\\"kty\\\": a, \\\"kty\\\": b\",\"d\":\"x\"}",
-                // kty that is not the member of an object.
+                // A name that only ends in kty ("\"kty"), and kty that is not the member of an object.
+                "[{\"\\\"kty\":0,\"d\":\"x\"}]",
                 "\"kty\": \"RSA\", \"d\": \"x\"",
                 "[\"kty\": \"RSA\", \"d\": \"x\"]")) {
             assertEquals(text, Redactor.redact(text));
         }
+    }
+
+    @Test
+    void findsJwksInLinearTime() {
+        // About 1 MB each: linear time takes well under a second, quadratic time minutes.
+        int n = 80_000;
+        List<String> texts = List.of(
+                "[" + "{\"\\\"kty\":0},".repeat(n) + "{}]",
+                "]\"kty\":".repeat(n),
+                "{\"b\":\"" + "]\\\"kty\\\":".repeat(n) + "\"}",
+                "{\"kty\":1,".repeat(n),
+                "{\"x\":\"" + "\\\"kty\\\": ".repeat(n) + "\"}",
+                "{\"a\":".repeat(n / 2) + "{\"kty\":1}" + ",\"kty\":1,\"d\":\"y\"}".repeat(n / 2),
+                "{" + "\"kty\":1,".repeat(n) + "\"d\":\"y\"}");
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
     }
 
     @Test
@@ -533,6 +550,8 @@ class RedactorTest {
         assertEquals("{\"error_description\":\"rejected token [REDACTED]\"}",
                 Redactor.redact("{\"error_description\":\"rejected token gho_SynthTok123:x\"}"));
         assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer --------"));
+        // Eight characters count before a prose colon is dropped.
+        assertEquals("Token [REDACTED]", Redactor.redact("Token -------:"));
         assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
         // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
         for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",
