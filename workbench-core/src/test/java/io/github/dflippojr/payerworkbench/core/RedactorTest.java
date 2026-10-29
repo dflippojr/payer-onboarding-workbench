@@ -539,6 +539,24 @@ class RedactorTest {
     }
 
     @Test
+    void masksOnlyJwksInLargeOrdinaryJson() {
+        // About 1 MB: within the time budget, so ordinary fields are kept, also in JSON embedded in a string.
+        StringBuilder jwks = new StringBuilder("{\"keys\": [\n");
+        for (int i = 0; i < 2000; i++) {
+            jwks.append("  {\"kid\": \"k").append(i).append("\", \"n\": \"").append("N".repeat(300))
+                    .append("\", \"e\": \"AQAB\",\n   \"d\": \"PRIVD").append(i).append("\", \"kty\": \"RSA\"},\n")
+                    .append("  {\"d\": \"keep\", \"p\": 0.05, \"items\": [{\"q\": \"keep\"}]},\n");
+        }
+        String text = jwks.append("  {}\n]}").toString();
+        for (String json : List.of(text, "{\"body\":" + JSON.writeValueAsString(text) + "}")) {
+            String out = Redactor.redact(json);
+            assertFalse(out.contains("PRIVD"));
+            assertEquals(4000, out.split("keep", -1).length - 1);
+            assertEquals(2000, out.split("0\\.05", -1).length - 1);
+        }
+    }
+
+    @Test
     void masksJwkPrivateMembersInTextTooTangledToReadInLinearTime() {
         // Past its time budget the search gives up on finding each JWK and masks every private member.
         String out = Redactor.redact("\"kty\":\"".repeat(80_000) + "{\"kty\":\"oct\",\"k\":\"PRIVK\"}");
@@ -548,6 +566,17 @@ class RedactorTest {
                 + "{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"}\"}");
         assertFalse(embedded.contains("PRIVK"));
         assertTrue(embedded.endsWith("\\\"k\\\":\\\"[REDACTED]\\\"}\"}"), embedded.substring(embedded.length() - 40));
+    }
+
+    @Test
+    void masksEveryPrivateMemberOnceTheBudgetIsSpent() {
+        String text = "{\"jwk\":{\"kty\":\"oct\",\"k\":\"PRIVK\"},\"d\":\"x\"}";
+        assertEquals("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"x\"}", Redactor.maskJwks(text, false, 100));
+        // Spent searching back for the object, or reading it.
+        for (int budget : List.of(0, 3)) {
+            assertEquals("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"[REDACTED]\"}",
+                    Redactor.maskJwks(text, false, budget));
+        }
     }
 
     @Test

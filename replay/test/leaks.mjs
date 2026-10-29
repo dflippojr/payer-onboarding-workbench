@@ -41,6 +41,12 @@ const hasJwkType = text => {
   return jwkTypeFound;
 };
 
+/**
+ * Whether a field holds a JWK's private member: Redactor masks a JWK's own ones, the scanner any in text
+ * that has a kty member, as the secret fields it always masks.
+ */
+const isJwkMember = (name, text) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text);
+
 /** An RFC 9110 token, as Redactor reads an Authorization scheme. */
 const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
 
@@ -77,8 +83,12 @@ const isAuthProse = m => {
   return /^[A-Za-z]{1,15}[.)]*$/.test(word) && !(/^basic$/i.test(m[1]) && isUserPass(word.replace(/[.)]+$/, '')));
 };
 
-/** A masked JSON string whose closing quote has more of the value right after it ("[REDACTED]"ssTAIL). */
-const maskCutShort = m => /^\\*"[A-Za-z0-9]/.test(m.input.slice(m.index + m[0].length));
+/**
+ * A masked JSON string whose closing quote has more of the value right after it ("[REDACTED]"ssTAIL,
+ * "[REDACTED]"-tail): only whitespace, a comma or close bracket, or the quote or backslash of an enclosing
+ * string may follow the value.
+ */
+const maskCutShort = m => /^\\*"[^\s,}\]\\"]/.test(m.input.slice(m.index + m[0].length));
 
 /**
  * A masked form value is [REDACTED], optionally followed by the start of a JSON escape (\n, \") where
@@ -190,7 +200,7 @@ const TEXT_CHECKS = [
     // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
     // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
     ok: m => {
-      if (!isSecretKey(m[1])) return true;
+      if (!isSecretKey(m[1]) && !isJwkMember(m[1], m.input)) return true;
       if (m[2] === undefined) return false;
       // Counted in the input: an earlier match can end inside the run of backslashes before the key.
       const quote = m.index + m[0].indexOf('"');
@@ -205,18 +215,8 @@ const TEXT_CHECKS = [
   {
     name: 'JSON secret structure',
     re: /\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*([{[])/g,
-    ok: m => !isSecretKey(m[1]) || (m[2] === '['
+    ok: m => !(isSecretKey(m[1]) || isJwkMember(m[1], m.input)) || (m[2] === '['
       && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))),
-  },
-  // Redactor masks a JWK's private members, only the object's own ones; the scanner flags any of them
-  // left unmasked in text that has a kty member anywhere, also in JSON embedded in a JSON string. Only
-  // the end of the value may follow the mask: whitespace, a comma or close bracket, or a quote or
-  // backslash that ends the string holding embedded JSON or escapes a line break in it. The mask's
-  // quotes are escaped as the name's are, so an escaped quote inside the value does not close it.
-  {
-    name: 'JWK private member',
-    re: /(\\*)"(?:d|p|q|dp|dq|qi|oth|k)\1"\s*:\s*(?=\S)(?!\1"\[REDACTED\]\1"(?![^\s,}\]\\"]))/g,
-    ok: m => !hasJwkType(m.input),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },

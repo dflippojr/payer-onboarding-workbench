@@ -49,7 +49,8 @@ import java.util.stream.IntStream;
  * <p>Out of scope (#262): other schemes in free text, such as {@code Digest response=...}
  * (an {@code Authorization} header or line is still masked whole); URL-encoded separators
  * after any scheme but {@code Bearer}; JWK member names outside an object with a
- * {@code kty} member, so an ordinary field named {@code d} or {@code k} is kept.
+ * {@code kty} member, so an ordinary field named {@code d} or {@code k} is kept (except in
+ * text too tangled to find the JWKs in linear time, where every such name is masked).
  */
 public final class Redactor {
 
@@ -466,11 +467,16 @@ public final class Redactor {
      * Masks the {@link #JWK_PRIVATE_MEMBERS} of every JSON object with a {@code kty} member, as a secret
      * field is masked: a string or scalar value becomes the mask, and so does an object or array, through
      * its close bracket. Only the JWK's own members count, not those of an object inside or next to it.
-     * Each object is read once, and the searches back for the object around each {@code kty} share a
-     * budget linear in the length of the text. Text that spends it (no JSON a payer would send) has every
-     * private member masked instead, wherever it is.
+     * Finding the JWKs reads at most {@code 4n + 1024} characters of a text of length {@code n}, then
+     * masks every private member name in the text instead, in a JWK or not: text that spends that budget
+     * is nothing a payer would send, so it is over-masked rather than read for longer.
      */
     private static String maskJwks(String text, boolean embedded) {
+        return maskJwks(text, embedded, 4 * text.length() + 1024);
+    }
+
+    /** {@link #maskJwks(String, boolean)} with a budget of {@code characters} to read. */
+    static String maskJwks(String text, boolean embedded, int characters) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
         String kty = embedded ? "\\\"kty\\\"" : "\"kty\"";
         // Where the text read by objects() so far ends: every object before it is known.
@@ -480,7 +486,8 @@ public final class Redactor {
         // The last kty found not to be in an object, and how its search ended.
         int outside = -1;
         int outsideResult = NOT_IN_BRACKETS;
-        int[] budget = {2 * text.length() + 1024};
+        // What is left to read: startOfObject() and objects() spend it, one character a step.
+        int[] budget = {characters};
         while (type.find()) {
             int member = type.start();
             if (member < readEnd || !opensName(text, member, embedded)) {
@@ -497,7 +504,12 @@ public final class Redactor {
                 continue;
             }
             List<JsonObject> objects = new ArrayList<>();
-            readEnd = objects(text, start, embedded, matching, objects);
+            int end = objects(text, start, embedded, matching, objects, budget);
+            if (end == OUT_OF_TIME) {
+                names = everyPrivateMember(text, embedded);
+                break;
+            }
+            readEnd = end;
             for (JsonObject object : objects) {
                 if (object.names().stream().anyMatch(name -> text.startsWith(kty, name))) {
                     names.addAll(object.names());
@@ -533,7 +545,7 @@ public final class Redactor {
     /** {@link #startOfObject}: the member is in an array, not an object. */
     private static final int IN_ARRAY = -2;
 
-    /** {@link #startOfObject}: the searches spent their budget. */
+    /** {@link #startOfObject} and {@link #objects}: the budget is spent. */
     private static final int OUT_OF_TIME = -3;
 
     /** Where the name of every {@link #JWK_PRIVATE_MEMBERS} field in the text starts, in a JWK or not. */
@@ -620,10 +632,11 @@ public final class Redactor {
      * its own members' names starts: the
      * opening quote, or in embedded JSON the backslash before it. Reads the text as
      * {@link #endOfStructure} does. {@code matching} maps each bracket of an object read so far to the
-     * other one: this adds the objects it closes, and skips an object read before.
+     * other one: this adds the objects it closes, and skips an object read before. Returns
+     * {@link #OUT_OF_TIME} once the budget is spent, as {@link #startOfObject} does.
      */
     private static int objects(String text, int start, boolean embedded, Map<Integer, Integer> matching,
-            List<JsonObject> found) {
+            List<JsonObject> found, int[] budget) {
         // The open objects, innermost last, with null for an open array.
         List<JsonObject> open = new ArrayList<>();
         boolean inString = false;
@@ -631,6 +644,9 @@ public final class Redactor {
         boolean nameNext = false;
         int i = start;
         while (i < text.length()) {
+            if (--budget[0] < 0) {
+                return OUT_OF_TIME;
+            }
             int at = i;
             char c = text.charAt(i++);
             if (embedded && c == '"') {
