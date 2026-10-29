@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
 import java.text.ParseException;
-import java.time.Clock;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -78,7 +77,7 @@ public final class FabrikamPayer extends MockPayer {
     private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
 
     private FabrikamPayer(Builder builder) {
-        super(builder.clock, builder.publicBaseUrl, builder.behaviour);
+        super(builder);
         this.jwksUrls = Map.copyOf(builder.jwksUrls);
         this.verifier = new RegisteredJwks(jwksUrls, FabrikamPayer::unauthorized);
     }
@@ -221,34 +220,15 @@ public final class FabrikamPayer extends MockPayer {
     }
 
     /** Configures a {@link FabrikamPayer}. */
-    public static final class Builder {
+    public static final class Builder extends BaseBuilder<Builder> {
 
         private final Map<String, URI> jwksUrls = new LinkedHashMap<>();
-        private Clock clock = Clock.systemUTC();
-        private String publicBaseUrl;
-        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
 
         private Builder() { }
 
         /** Registers a client by its {@code iss} and the URL its public JWK Set is served from. */
         public Builder client(String issuer, URI jwksUrl) {
             jwksUrls.put(Objects.requireNonNull(issuer, "issuer"), Objects.requireNonNull(jwksUrl, "jwksUrl"));
-            return this;
-        }
-
-        public Builder clock(Clock clock) {
-            this.clock = Objects.requireNonNull(clock, "clock");
-            return this;
-        }
-
-        public Builder publicBaseUrl(String publicBaseUrl) {
-            this.publicBaseUrl = publicBaseUrl;
-            return this;
-        }
-
-        /** How this payer varies from the standard behaviour; {@link PayerBehaviour#STANDARD} by default. */
-        public Builder behaviour(PayerBehaviour behaviour) {
-            this.behaviour = Objects.requireNonNull(behaviour, "behaviour");
             return this;
         }
 
@@ -263,25 +243,16 @@ public final class FabrikamPayer extends MockPayer {
      * {@code --client ISS=JWKS_URL} (repeatable), {@code --public-base-url URL}.
      */
     public static void main(String[] args) throws IOException {
-        MockPayer payer = launch(args, System.out);
-        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
+        StandaloneArgs.stopOnShutdown(launch(args, System.out));
     }
 
     /** Starts a payer as {@link #main} would and prints how to reach it; the caller stops it. */
     static FabrikamPayer launch(String[] args, PrintStream out) throws IOException {
         StandaloneArgs options = StandaloneArgs.parse(args);
         Builder builder = builder().publicBaseUrl(options.single("public-base-url", null));
-        for (String client : options.all("client")) {
-            int eq = client.indexOf('=');
-            if (eq <= 0) {
-                throw new IllegalArgumentException("--client expects ISS=JWKS_URL, got '" + client + "'");
-            }
-            builder.client(client.substring(0, eq), URI.create(client.substring(eq + 1)));
-        }
-        FabrikamPayer payer = builder.build();
-        options.configureTls(payer);
-        payer.start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
-        out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
+        options.clients(client -> "--client expects ISS=JWKS_URL, got '" + client + "'", builder::client);
+        FabrikamPayer payer = options.startFrom(builder.build(), DEFAULT_PORT);
+        StandaloneArgs.printHeader(out, payer);
         if (payer.jwksUrls.isEmpty()) {
             out.println("  no clients registered: every hook call will get 401 (add --client ISS=JWKS_URL)");
         }

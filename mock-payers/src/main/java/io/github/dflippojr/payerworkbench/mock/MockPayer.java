@@ -128,6 +128,40 @@ public abstract class MockPayer implements AutoCloseable {
         faults.onProgrammaticChange(change -> audit.programmatic(this.clock, change));
     }
 
+    MockPayer(BaseBuilder<?> builder) {
+        this(builder.clock, builder.publicBaseUrl, builder.behaviour);
+    }
+
+    /** The builder options every payer shares; {@code B} is the payer's own builder, so setters chain. */
+    abstract static class BaseBuilder<B extends BaseBuilder<B>> {
+
+        private Clock clock = Clock.systemUTC();
+        private String publicBaseUrl;
+        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
+
+        /** Safe because each payer's builder is declared {@code Builder extends BaseBuilder<Builder>}. */
+        @SuppressWarnings("unchecked")
+        private B self() {
+            return (B) this;
+        }
+
+        public B clock(Clock clock) {
+            this.clock = Objects.requireNonNull(clock, "clock");
+            return self();
+        }
+
+        public B publicBaseUrl(String publicBaseUrl) {
+            this.publicBaseUrl = publicBaseUrl;
+            return self();
+        }
+
+        /** How this payer varies from the standard behaviour; {@link PayerBehaviour#STANDARD} by default. */
+        public B behaviour(PayerBehaviour behaviour) {
+            this.behaviour = Objects.requireNonNull(behaviour, "behaviour");
+            return self();
+        }
+    }
+
     /** The payer's name as shown to users, e.g. on card sources. */
     public abstract String displayName();
 

@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -59,7 +58,7 @@ public final class NorthwindPayer extends MockPayer {
     private final Map<String, IssuedToken> tokens = new ConcurrentHashMap<>();
 
     private NorthwindPayer(Builder builder) {
-        super(builder.clock, builder.publicBaseUrl, builder.behaviour);
+        super(builder);
         this.clientSecrets = Map.copyOf(builder.clientSecrets);
         this.tokenLifetime = builder.tokenLifetime;
     }
@@ -204,13 +203,10 @@ public final class NorthwindPayer extends MockPayer {
     private record IssuedToken(String clientId, String audience, Instant expiresAt) { }
 
     /** Configures a {@link NorthwindPayer}. Register at least one client before calling {@link #build()}. */
-    public static final class Builder {
+    public static final class Builder extends BaseBuilder<Builder> {
 
         private final Map<String, String> clientSecrets = new LinkedHashMap<>();
         private Duration tokenLifetime = DEFAULT_TOKEN_LIFETIME;
-        private Clock clock = Clock.systemUTC();
-        private String publicBaseUrl;
-        private PayerBehaviour behaviour = PayerBehaviour.STANDARD;
 
         private Builder() { }
 
@@ -228,22 +224,6 @@ public final class NorthwindPayer extends MockPayer {
             return this;
         }
 
-        public Builder clock(Clock clock) {
-            this.clock = Objects.requireNonNull(clock, "clock");
-            return this;
-        }
-
-        public Builder publicBaseUrl(String publicBaseUrl) {
-            this.publicBaseUrl = publicBaseUrl;
-            return this;
-        }
-
-        /** How this payer varies from the standard behaviour; {@link PayerBehaviour#STANDARD} by default. */
-        public Builder behaviour(PayerBehaviour behaviour) {
-            this.behaviour = Objects.requireNonNull(behaviour, "behaviour");
-            return this;
-        }
-
         public NorthwindPayer build() {
             return new NorthwindPayer(this);
         }
@@ -256,8 +236,7 @@ public final class NorthwindPayer extends MockPayer {
      * {@code --token-lifetime-seconds N}, {@code --public-base-url URL}.
      */
     public static void main(String[] args) throws IOException {
-        MockPayer payer = launch(args, System.out);
-        Runtime.getRuntime().addShutdownHook(new Thread(payer::stop));
+        StandaloneArgs.stopOnShutdown(launch(args, System.out));
     }
 
     /** Starts a payer as {@link #main} would and prints how to reach it; the caller stops it. */
@@ -269,15 +248,13 @@ public final class NorthwindPayer extends MockPayer {
         if (generated) {
             secret = StandaloneArgs.randomSecret();
         }
-        NorthwindPayer payer = builder()
+        NorthwindPayer payer = options.startFrom(builder()
                 .client(clientId, secret)
                 .tokenLifetime(Duration.ofSeconds(Long.parseLong(
                         options.single("token-lifetime-seconds", String.valueOf(DEFAULT_TOKEN_LIFETIME.toSeconds())))))
                 .publicBaseUrl(options.single("public-base-url", null))
-                .build();
-        options.configureTls(payer);
-        payer.start(Integer.parseInt(options.single("port", String.valueOf(DEFAULT_PORT))));
-        out.println(DISPLAY_NAME + " listening at " + payer.baseUrl() + " (CRD " + IG_VERSION + ")");
+                .build(), DEFAULT_PORT);
+        StandaloneArgs.printHeader(out, payer);
         out.println("  token endpoint: " + payer.tokenEndpoint() + "  (client_secret_basic)");
         out.println("  client id:      " + clientId);
         if (generated) {
