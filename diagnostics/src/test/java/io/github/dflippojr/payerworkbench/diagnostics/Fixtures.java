@@ -121,6 +121,14 @@ final class Fixtures {
     }
 
     /**
+     * A token request whose JWT sits outside the secret fields. The redactor keeps the claims of such a JWT
+     * (only its signature is masked), so a check that reads the recorded request still sees them.
+     */
+    static String jwtFieldBody(String jwt) {
+        return "grant_type=client_credentials&request=" + jwt;
+    }
+
+    /**
      * The claims the app records for the assertion {@link #jwt} encodes. The recorded token request keeps
      * no readable claims, because its body is masked, so a run carries them in {@code clientAssertion}.
      */

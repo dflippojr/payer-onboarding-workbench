@@ -69,7 +69,7 @@ class RedactorTest {
     }
 
     @Test
-    void masksJwtSignatureButKeepsClaims() {
+    void masksClientAssertionJwtWhole() {
         String header = b64url("{\"alg\":\"RS384\",\"typ\":\"JWT\"}");
         String payload = b64url("{\"iss\":\"synthetic-client\",\"aud\":\"https://payer.example.test/token\"}");
         byte[] sig = new byte[256];
