@@ -129,6 +129,7 @@ test('flags a JWK private member, Token or DPoP credential Redactor would not le
     '{"kty":"RSA","d":"[REDACTED]"ssTAIL"}',
     '{"kty":"RSA","d":"[REDACTED]"-tail"}',
     '{"kty":"RSA","d":"[REDACTED]"_tail"}',
+    'evidence: {"kty":"oct","k":"[REDACTED]\\" tail LEAKED"}',
     '{"b":"{\\"kty\\":\\"RSA\\",\\"d\\":\\"[REDACTED]\\"-tail\\"}"}',
     '{"kty":"oct","k":12345678}',
     '{"kty":"RSA","oth":[{"r":"LEAKED"}]}',

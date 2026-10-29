@@ -533,8 +533,17 @@ class RedactorTest {
                 "{" + "\"kty\":1,".repeat(n) + "\"d\":\"y\"}",
                 "[".repeat(n / 2) + "\"kty\":1],".repeat(n / 2),
                 "{" + "\"x\":\"kty\":1,".repeat(n) + "\"d\":\"y\"}",
+                "\"kty\":\"".repeat(n),
                 "{\"b\":\"" + "[".repeat(n / 2) + "\\\"kty\\\":1],".repeat(n / 2) + "\"}");
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
+    }
+
+    @Test
+    void masksJwkPrivateMembersInTextTooTangledToReadInLinearTime() {
+        // Past its time budget the search gives up on finding each JWK and masks every private member.
+        String out = Redactor.redact("\"kty\":\"".repeat(80_000) + "{\"kty\":\"oct\",\"k\":\"PRIVK\"}");
+        assertFalse(out.contains("PRIVK"));
+        assertTrue(out.endsWith("\"k\":\"[REDACTED]\"}"), out.substring(out.length() - 40));
     }
 
     @Test
