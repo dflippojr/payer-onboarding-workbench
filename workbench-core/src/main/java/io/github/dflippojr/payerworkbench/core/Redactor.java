@@ -86,7 +86,7 @@ public final class Redactor {
      * JSON field names whose values are always masked, lower case without {@code _} and {@code -}
      * (see {@link #isSecretField(String)}).
      */
-    private static final Set<String> SECRET_FIELDS = Set.of(
+    static final Set<String> SECRET_FIELDS = Set.of(
             "clientsecret", "accesstoken", "refreshtoken", "idtoken", "password", "apikey", "privatekey",
             "secret", "clientassertion", "assertion");
 

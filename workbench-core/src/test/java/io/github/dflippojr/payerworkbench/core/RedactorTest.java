@@ -15,10 +15,13 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Keys and tokens are generated at runtime; nothing secret-shaped is committed. */
@@ -113,6 +116,25 @@ class RedactorTest {
 
         assertEquals("grant_type=client_credentials&client_id=synthetic-client&client_secret="
                 + Redactor.MASK + "&scope=system%2F*.read", out);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"client_assertion", "clientAssertion", "client-assertion", "assertion", "secret",
+            "clientSecret", "client-secret", "accessToken", "refresh-token", "privateKey", "api-key"})
+    void masksSecretKeyInFormBody(String key) {
+        assertEquals("a=1&" + key + "=" + Redactor.MASK + "&b=2",
+                Redactor.redact("a=1&" + key + "=PHNhbWw6QXNz&b=2"));
+    }
+
+    @Test
+    void everySecretFieldIsMaskedAsAFormKeyInEverySpelling() {
+        for (String name : Redactor.SECRET_FIELDS) {
+            int half = name.length() / 2;
+            String split = name.substring(0, half) + "_" + name.substring(half);
+            for (String key : List.of(name, name.toUpperCase(Locale.ROOT), split, split.replace('_', '-'))) {
+                assertEquals(key + "=" + Redactor.MASK + "&x=1", Redactor.redact(key + "=PHNhbWw6QXNz&x=1"), key);
+            }
+        }
     }
 
     @Test
