@@ -24,12 +24,15 @@ const SENSITIVE_HEADERS = new Set([
 /** A field Redactor masks: a secret field, or one named like a sensitive header (any case). */
 const isSecretKey = name => isSecretField(name) || SENSITIVE_HEADERS.has(name.toLowerCase());
 
+/** An RFC 9110 token, as Redactor reads an Authorization scheme. */
+const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
+
 /**
  * What Redactor leaves for the value of field or header `name`: the mask, after a scheme for an
  * Authorization-style one (Bearer [REDACTED]), or nothing.
  */
 const isMaskedValue = (name, v) => v === '' || v === MASK
-  || (/authorization$/i.test(name) && /^[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* \[REDACTED\]$/.test(v));
+  || (/authorization$/i.test(name) && new RegExp(`^${SCHEME} \\[REDACTED\\]$`).test(v));
 
 /** Whether a Basic token is the base64 of an RFC 7617 user:pass pair, as Redactor decides. */
 function isUserPass(token) {
@@ -84,6 +87,9 @@ const isAuthLineProse = (name, v) => {
   return Boolean(m) && isAuthProse(m);
 };
 
+/** A list of masked values, each optionally after a scheme, as redactTree leaves a header-named list. */
+const MASKED_LIST = new RegExp(String.raw`^\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${SCHEME} )?\[REDACTED\]\\*"\s*)*\]`);
+
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -113,7 +119,7 @@ const TEXT_CHECKS = [
     name: 'JSON secret structure',
     re: /\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*([{[])/g,
     ok: m => !isSecretKey(m[1]) || (m[2] === '['
-      && /^\s*\\*"(?:[A-Za-z]+ )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:[A-Za-z]+ )?\[REDACTED\]\\*"\s*)*\]/.test(m.input.slice(m.index + m[0].length))),
+      && MASKED_LIST.test(m.input.slice(m.index + m[0].length))),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
@@ -123,8 +129,9 @@ const TEXT_CHECKS = [
   // prose is not flagged.
   {
     name: 'sensitive header line',
-    // The match ends at an escaped line break too, so the next escaped line is scanned on its own.
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*((?:[^\r\n\\]|\\(?![nr]))*)`, 'gim'),
+    // The match ends at an escaped line break too, also one escaped again (\\n in a serialized report), so
+    // the next escaped line is scanned on its own.
+    re: new RegExp(String.raw`(?:^|(?<=\\[nr]))[ \t]*(${[...SENSITIVE_HEADERS].join('|')}):[ \t]*((?:[^\r\n\\]|\\+(?![\\nr]))*)`, 'gim'),
     ok: m => {
       const v = m[2].replace(/\\*"(?:\s*[,}\]].*)?$/, '');
       return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);
