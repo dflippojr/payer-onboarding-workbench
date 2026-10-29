@@ -55,6 +55,7 @@ class ResponseChecksTest {
                 "2.1.0, 2.1, PASS",
                 "2.0, 2.0.1, WARN",
                 "2.0.0-ballot, 2.0.0, WARN",
+                "2.0.1, 2.0.1-ballot, WARN",
                 "2.0.0-ballot, 2.0-ballot, PASS",
                 "2.0.1+20240101, 2.0.1, PASS",
                 "2.0.1, 2.0.1+20240101, PASS",
@@ -82,6 +83,7 @@ class ResponseChecksTest {
             Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
             assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
             assertTrue(f.explanation().contains("pre-release"), f::explanation);
+            assertTrue(f.explanation().contains("One side is a pre-release (ballot) of the CRD IG"), f::explanation);
         }
 
         @Test
@@ -91,7 +93,7 @@ class ResponseChecksTest {
             run.discovery = discovery(200, "{\"services\":[],\"extension\":{\"igVersion\":\"2.0.1-snapshot\"}}");
             Finding f = assertOnly(check.evaluate(run.build()), Severity.WARN);
             assertFalse(f.explanation().contains("Minor or patch"), f::explanation);
-            assertTrue(f.explanation().contains("pre-release"), f::explanation);
+            assertTrue(f.explanation().contains("different pre-release labels"), f::explanation);
         }
 
         @Test
