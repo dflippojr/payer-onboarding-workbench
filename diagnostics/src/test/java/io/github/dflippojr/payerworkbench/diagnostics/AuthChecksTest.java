@@ -304,28 +304,14 @@ class AuthChecksTest {
     class JwtAudience {
         private final JwtAudienceCheck check = new JwtAudienceCheck();
 
+        /** The token request's assertion is masked in the recorded request; auth.client-assertion checks its aud instead. */
         @Test
-        void exactAudiencePasses() {
-            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
-        }
-
-        @Test
-        void trailingSlashAudienceFailsOn401() {
+        void tokenRequestAssertionIsLeftToClientAssertion() {
             var run = healthy();
             run.token = token(401, assertionBody(jwt(TOKEN_URL + "/", NOW, NOW.plusSeconds(300))), INVALID_CLIENT, NOW);
             run.tokenResponse = tokenError("invalid_client", null);
-            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
-            assertTrue(f.explanation().contains("aud has a trailing slash"), f::explanation);
-            assertTrue(f.suggestedFix().contains("exactly " + TOKEN_URL));
-        }
-
-        @Test
-        void r4PrefixAudienceFailsOn401() {
-            var run = healthy();
-            String aud = "https://auth.synthetic-payer.test/r4/oauth2/token";
-            run.token = token(401, assertionBody(jwt(aud, NOW, NOW.plusSeconds(300))), INVALID_CLIENT, NOW);
-            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
-            assertTrue(f.explanation().contains("aud has the extra path segment /r4"), f::explanation);
+            run.clientAssertion = Fixtures.assertionClaims(TOKEN_URL + "/", NOW, NOW.plusSeconds(300));
+            assertTrue(check.evaluate(run.build()).isEmpty());
         }
 
         @Test
@@ -334,14 +320,6 @@ class AuthChecksTest {
                     JwtAudienceCheck.difference("https://p.test/cds-services/x", "https://p.test/r4/cds-services/x"));
             assertEquals("aud names host other.test but the request went to p.test",
                     JwtAudienceCheck.difference("https://other.test/token", "https://p.test/token"));
-        }
-
-        @Test
-        void mismatchAcceptedByPayerIsInfo() {
-            var run = healthy();
-            run.token = token(200, assertionBody(jwt(TOKEN_URL + "/", NOW, NOW.plusSeconds(300))),
-                    Fixtures.TOKEN_OK_BODY, NOW);
-            assertOnly(check.evaluate(run.build()), Severity.INFO);
         }
 
         @Test
@@ -387,9 +365,8 @@ class AuthChecksTest {
             HookResponse call = orderSign(hook(401, "{\"error\":\"unauthorized\",\"error_description\":"
                     + "\"JWT expired\"}", 300), ORDER_SIGN_URL);
             run.hooks = new ArrayList<>(List.of(call));
-            // Only the token request's client assertion is verified; the hook call is someone else's finding.
-            Finding f = assertOnly(check.evaluate(run.build()), Severity.PASS);
-            assertFalse(f.evidence().contains(ORDER_SIGN_URL), f::evidence);
+            // The hook call's aud matches, and its rejection does not cite the audience: someone else's finding.
+            assertTrue(check.evaluate(run.build()).isEmpty());
             assertFalse(JwtAudienceCheck.explains(call));
         }
 
@@ -416,15 +393,18 @@ class AuthChecksTest {
 
         @Test
         void agreeingClocksPass() {
-            assertOnly(check.evaluate(healthy().build()), Severity.PASS);
+            var run = healthy();
+            run.clientAssertion = Fixtures.assertionClaims(TOKEN_URL, NOW, NOW.plusSeconds(300));
+            assertOnly(check.evaluate(run.build()), Severity.PASS);
         }
 
         @Test
         void futureIatRejectedFails() {
             var run = healthy();
             var iat = NOW.plusSeconds(300);
-            run.token = token(400, assertionBody(jwt(TOKEN_URL, iat, iat.plusSeconds(300))),
+            run.token = token(400, "grant_type=client_credentials",
                     "{\"error\":\"invalid_client\",\"error_description\":\"iat is in the future\"}", NOW);
+            run.clientAssertion = claims(TOKEN_URL, iat);
             Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
             assertTrue(f.explanation().contains("300 seconds after"), f::explanation);
             assertTrue(f.suggestedFix().contains("NTP"));
@@ -434,7 +414,8 @@ class AuthChecksTest {
         void expiredJwtRejectedFailsEvenWithoutTimingMessage() {
             var run = healthy();
             var iat = NOW.minusSeconds(900);
-            run.token = token(401, assertionBody(jwt(TOKEN_URL, iat, iat.plusSeconds(300))), INVALID_CLIENT, NOW);
+            run.token = token(401, "grant_type=client_credentials", INVALID_CLIENT, NOW);
+            run.clientAssertion = claims(TOKEN_URL, iat);
             Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
             assertTrue(f.explanation().contains("already expired"), f::explanation);
         }
@@ -451,7 +432,8 @@ class AuthChecksTest {
         void skewedButAcceptedWarns() {
             var run = healthy();
             var iat = NOW.plusSeconds(120);
-            run.token = token(200, assertionBody(jwt(TOKEN_URL, iat, iat.plusSeconds(300))), Fixtures.TOKEN_OK_BODY, NOW);
+            run.token = token(200, "grant_type=client_credentials", Fixtures.TOKEN_OK_BODY, NOW);
+            run.clientAssertion = claims(TOKEN_URL, iat);
             assertOnly(check.evaluate(run.build()), Severity.WARN);
         }
 

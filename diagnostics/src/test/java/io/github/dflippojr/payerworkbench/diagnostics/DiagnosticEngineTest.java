@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.diagnostics;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.NOW;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.TOKEN_URL;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertionBody;
+import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.assertionClaims;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.discovery;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.healthy;
 import static io.github.dflippojr.payerworkbench.diagnostics.Fixtures.hook;
@@ -46,9 +47,13 @@ class DiagnosticEngineTest {
 
     @Test
     void healthyRunYieldsOnePassPerCheck() {
-        List<Finding> findings = engine.run(healthy().build());
+        var run = healthy();
+        run.clientAssertion = assertionClaims(TOKEN_URL, NOW, NOW.plusSeconds(300));
+        List<Finding> findings = engine.run(run.build());
 
-        assertEquals(CATALOG.stream().filter(id -> !Set.of("auth.client-assertion", "auth.hook-rejected", "perf.rate-limit").contains(id)).collect(Collectors.toSet()),
+        // auth.jwt-audience reads only a CDS Hooks client JWT, and the healthy hooks carry none.
+        assertEquals(CATALOG.stream().filter(id -> !Set.of("auth.hook-rejected", "auth.jwt-audience", "perf.rate-limit")
+                .contains(id)).collect(Collectors.toSet()),
                 findings.stream().map(Finding::checkId).collect(Collectors.toSet()));
         assertEquals(CATALOG.size() - 3, findings.size(), findings::toString);
         findings.forEach(f -> assertEquals(Severity.PASS, f.severity(), f::toString));
@@ -62,8 +67,10 @@ class DiagnosticEngineTest {
         run.connection = Fixtures.connection("1.0.0", false);
         run.discovery = discovery(200, resource("discovery-healthy.json")
                 .replace("\"patient\": \"Patient/{{context.patientId}}\",", "\"pt\": \"Patient/{{context.patientId}}\","));
-        // Token issued without expires_in, and the client_assertion aud has a trailing slash (payer lenient).
+        // Token issued without expires_in, and the client_assertion aud has a trailing slash. The payer
+        // accepted it, but auth.client-assertion requires the exact token endpoint.
         run.token = token(200, assertionBody(jwt(TOKEN_URL + "/", NOW, NOW.plusSeconds(300))), Fixtures.TOKEN_OK_BODY, NOW);
+        run.clientAssertion = assertionClaims(TOKEN_URL + "/", NOW, NOW.plusSeconds(300));
         run.tokenResponse = new TokenResponseMetadata(true, "Bearer", null, List.of("system/*.read"), null, null);
         // order-sign is slow, has an invalid indicator and puts coverage in a suggestion;
         // appointment-book fails mutual TLS.
@@ -89,7 +96,7 @@ class DiagnosticEngineTest {
         assertEquals(Severity.WARN, worst.get("perf.latency"));
         assertEquals(Severity.INFO, worst.get("discovery.prefetch-keys"));
         assertEquals(Severity.INFO, worst.get("response.coverage-location"));
-        assertEquals(Severity.INFO, worst.get("auth.jwt-audience"));
+        assertEquals(Severity.FAIL, worst.get("auth.client-assertion"));
         assertEquals(Severity.PASS, worst.get("discovery.reachable"));
         assertEquals(Severity.FAIL, findings.get(0).severity());
         findings.stream().filter(f -> f.severity() != Severity.PASS)
