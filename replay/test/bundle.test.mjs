@@ -134,7 +134,7 @@ test('every run in the manifest loads as a report', () => {
 
 test('the bundle holds only the replay files and recorded runs', () => {
   requireBundle();
-  const allowed = /^(index\.html|manifest\.json|replay\.js|replay\.css|runs\/[a-z0-9-]+\.json)$/;
+  const allowed = /^(index\.html|manifest\.json|replay\.js|replay\.css|shared\/present\.js|runs\/[a-z0-9-]+\.json)$/;
   for (const file of bundleFiles()) {
     const rel = relative(dist, file).split(sep).join('/');
     assert.match(rel, allowed, `unexpected file in the bundle: ${rel}`);
@@ -500,6 +500,37 @@ test('vendor-into-site.mjs copies the bundle and drops stale runs', () => {
       assert.equal(readFileSync(join(target, relative(dist, file)), 'utf8'), readFileSync(file, 'utf8'));
     }
     assert.throws(() => execFileSync(process.execPath, [join(root, 'scripts', 'vendor-into-site.mjs'), root], { stdio: 'pipe' }));
+  } finally {
+    rmSync(target, { recursive: true, force: true });
+  }
+});
+
+test('vendoring ships the app\'s shared/present.js, and the vendored replay.js renders with it', async () => {
+  const manifest = requireBundle();
+  const shared = readFileSync(join(root, 'workbench-app', 'src', 'main', 'resources', 'static', 'shared', 'present.js'), 'utf8');
+  assert.equal(readFileSync(join(dist, 'shared', 'present.js'), 'utf8'), shared, 'the bundle\'s copy differs from the app\'s');
+  const target = mkdtempSync(join(tmpdir(), 'pw-vendor-shared-'));
+  try {
+    execFileSync(process.execPath, [join(root, 'scripts', 'vendor-into-site.mjs'), target], { stdio: 'pipe' });
+    assert.equal(readFileSync(join(target, 'shared', 'present.js'), 'utf8'), shared);
+    const { createRoot } = installFakeDom(pathname => {
+      const p = join(target, ...pathname.slice('/workbench/'.length).split('/'));
+      return pathname.startsWith('/workbench/') && existsSync(p) ? readFileSync(p, 'utf8') : undefined;
+    });
+    const { mountReplay, formatMs, headers, pretty } = await import(pathToFileURL(join(target, 'replay.js')).href);
+    const el = createRoot();
+    const replay = await mountReplay(el, { baseUrl: '/workbench' });
+    await replay.select(manifest.runs[0].id);
+    replay.showResult();
+    assert.ok(iconKinds(el).length > 0, 'no status icons rendered');
+    assert.ok(el.findAll(n => n.tagName === 'SVG').every(n => n.getAttribute('class').startsWith('pw-icon ')));
+    // replay.js still exports the formatting helpers it used to define.
+    assert.equal(formatMs(12.4), '12 ms');
+    assert.equal(formatMs(11234), '11.23 s');
+    assert.equal(headers({ Accept: ['a', 'b'], Host: 'x' }), 'Accept: a, b\nHost: x');
+    assert.equal(headers({}), '(none)');
+    assert.equal(pretty('{"a":1}'), '{\n  "a": 1\n}');
+    assert.equal(pretty('not json'), 'not json');
   } finally {
     rmSync(target, { recursive: true, force: true });
   }

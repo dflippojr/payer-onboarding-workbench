@@ -465,6 +465,7 @@ The mock payers listen on ephemeral `localhost` ports, so after redaction the ex
 | `runs/<id>.json` | One run's report as `GET /api/runs/{id}/report?format=json` returns it (already redacted), with addresses rewritten to example hosts. Runs: `northwind-healthy`, `fabrikam-healthy`, `fabrikam-wrong-audience-reject`, `northwind-expired-token-401`, `fabrikam-malformed-card`, `northwind-slow-response`. |
 | `manifest.json` | `workbenchVersion`, `gitCommit` (`-dirty` if tracked files had changes), `generatedAt`, and `runs`: `id`, `title`, `teaser` (the one line on the scenario card saying what breaks), `description`, `payerId`, `payerName`, `fault`, `verdict`, `file`. `teaser` and `payerName` are optional: without them the viewer uses the first FAIL finding's title and the report's payer name. |
 | `replay.js` | ES module exporting `mountReplay(el, { baseUrl, run, headingLevel, autoplay })`, which resolves to `{ select(id), play(), showResult() }`. The only network calls are fetches of `manifest.json` and `runs/*.json` under `baseUrl`. |
+| `shared/present.js` | The element builder, status icons and latency, header and JSON formatting that `replay.js` imports. It is the app's own `static/shared/present.js`, copied as-is. |
 | `replay.css` | Styles, all scoped under `.pw-replay`. |
 | `index.html` | A small test page that mounts the replay with `autoplay: true`. |
 

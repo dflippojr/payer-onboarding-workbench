@@ -14,6 +14,13 @@
 //
 //   import { mountReplay } from './replay.js';
 //   mountReplay(document.getElementById('replay'), { baseUrl: '/workbench/' });
+//
+// shared/present.js (the element builder, icons and formatting) is the workbench app's own
+// static/shared/present.js; the export copies it into the bundle beside this file.
+
+import { formatMs, h, headers, icon as svgIcon, pretty } from './shared/present.js';
+
+export { formatMs, headers, pretty };
 
 export const DISCLAIMER =
   'Recorded run against a synthetic mock payer; addresses rewritten to example hosts. Passing here does not prove real-payer interoperability.';
@@ -34,19 +41,6 @@ const VERDICT_LABELS = { PASS: 'Pass', PASS_WITH_WARNINGS: 'Pass with warnings',
 const SEVERITY_LABELS = { FAIL: 'Fail', WARN: 'Warn', INFO: 'Info', PASS: 'Pass' };
 const STATE_LABELS = { active: 'running' };
 
-const SVG = 'http://www.w3.org/2000/svg';
-/** Icon shapes on a 20 px grid; the status ones match the workbench app's (static/app.js). */
-const ICONS = {
-  pass: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M6.5 10.2l2.3 2.3 4.7-4.9' }]],
-  fail: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M7 7l6 6M13 7l-6 6' }]],
-  warn: [['path', { d: 'M10 2.5l8 14.5H2z' }], ['path', { d: 'M10 8v4M10 14.5v.5' }]],
-  info: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 9v5M10 6v.5' }]],
-  skipped: [['circle', { cx: 10, cy: 10, r: 8.5, 'stroke-dasharray': '3 3' }], ['path', { d: 'M6.5 10h7' }]],
-  running: [['circle', { cx: 10, cy: 10, r: 8.5 }], ['path', { d: 'M10 5.5V10l3 2' }]],
-  fix: [['path', { d: 'M4 10.5l4 4 8-9' }]],
-  play: [['path', { d: 'M6.5 4.5l9 5.5-9 5.5z' }]],
-  replay: [['path', { d: 'M16 10a6 6 0 1 1-2-4.5' }], ['path', { d: 'M14.5 2.5v3.5H11' }]],
-};
 /** Icon for each step state, verdict and finding severity; a word always goes beside it. */
 const KINDS = {
   passed: 'pass', failed: 'fail', skipped: 'skipped', active: 'running',
@@ -501,36 +495,9 @@ async function getJson(url) {
   return res.json();
 }
 
-/** Builds an element; children may be strings, nodes, arrays or null. */
-function h(tag, attrs, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v === null || v === undefined || v === false) continue;
-    if (k === 'class') el.className = v;
-    else el.setAttribute(k, v === true ? '' : v);
-  }
-  const add = c => {
-    if (c === null || c === undefined || c === false) return;
-    if (Array.isArray(c)) c.forEach(add);
-    else el.append(c instanceof Node ? c : String(c));
-  };
-  children.forEach(add);
-  return el;
-}
-
 /** A decorative status icon (inline SVG, aria-hidden); the word beside it carries the meaning. */
 function icon(kind, size) {
-  const svg = document.createElementNS(SVG, 'svg');
-  const attrs = { class: `pw-icon ${kind}`, width: size, height: size, viewBox: '0 0 20 20', fill: 'none',
-    stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-    'aria-hidden': 'true', focusable: 'false' };
-  for (const [k, v] of Object.entries(attrs)) svg.setAttribute(k, v);
-  for (const [tag, shape] of ICONS[kind] || ICONS.info) {
-    const part = document.createElementNS(SVG, tag);
-    for (const [k, v] of Object.entries(shape)) part.setAttribute(k, v);
-    svg.append(part);
-  }
-  return svg;
+  return svgIcon(kind, size, 'pw-icon');
 }
 
 /** A status chip: icon plus word, so colour is never the only signal. */
@@ -545,16 +512,4 @@ function show(el, on) {
 
 function seconds(ms) {
   return `${+(ms / 1000).toFixed(1)} s`;
-}
-
-export function formatMs(ms) {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`;
-}
-
-export function headers(map) {
-  return Object.entries(map || {}).map(([k, vs]) => `${k}: ${[].concat(vs).join(', ')}`).join('\n') || '(none)';
-}
-
-export function pretty(text) {
-  try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
 }
