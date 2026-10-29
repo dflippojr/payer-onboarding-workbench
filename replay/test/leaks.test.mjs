@@ -164,7 +164,13 @@ test('flags a word in front of a masked non-authorization header list item (#292
   }
 });
 test('accepts a recorded header list of masked values', () => {
-  assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
+  // Bare masks only, except after an authorization scheme (#292).
+  const record = { requestHeaders: {
+    'X-Api-Key': ['[REDACTED]'], Cookie: ['[REDACTED]', '[REDACTED]'], 'Set-Cookie': ['[REDACTED]'],
+    Authorization: ['Bearer [REDACTED]'] } };
+  assert.deepEqual(findTextLeaks(JSON.stringify(record)), []);
+  assert.deepEqual(findJsonLeaks(record), []);
+  assert.ok(findTextLeaks(JSON.stringify({ requestHeaders: { 'Api-Key': ['Bearer [REDACTED]'] } })).length > 0);
   assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);
 });
 
