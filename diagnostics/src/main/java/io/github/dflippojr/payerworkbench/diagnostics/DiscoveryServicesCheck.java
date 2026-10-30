@@ -33,9 +33,12 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
 
     private static final Pattern URL_SAFE_ID = Pattern.compile("[A-Za-z0-9._~-]+");
 
-    /** What the redactor leaves of a JWT-shaped value; the part it masked was URL-safe. */
+    /**
+     * What the redactor leaves of a JWT-shaped value; the part it masked was URL-safe. Each run of token characters
+     * is tried once, from its start, because an id can be megabytes of {@code eyJ} with no dots.
+     */
     private static final Pattern MASKED_JWT = Pattern.compile(
-            "eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*\\." + Pattern.quote(Redactor.MASK));
+            "(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*?\\beyJ)[A-Za-z0-9_-]++\\.[A-Za-z0-9_-]*+\\." + Pattern.quote(Redactor.MASK));
 
     private final Set<String> requiredHooks;
 
