@@ -6,7 +6,7 @@ Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which 
 
 **Status:** v1 is done. The onboarding flow (API and browser UI), the three mock payers, the diagnostic checks, the sample library, report export, the scripted demo and the replay bundle are merged, and the replay is live on [dflippojr.dev](https://dflippojr.dev/). Later work is tracked in [GitHub issues](https://github.com/dflippojr/payer-onboarding-workbench/issues).
 
-All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
+All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer. The one exception is [custom endpoints](#run-against-your-own-endpoint), off by default: a run still sends synthetic requests, but its report holds that endpoint's real responses.
 
 ## Develop
 
@@ -168,7 +168,7 @@ Keys stay in memory for one run, including rejected authentication. Reports show
 
 ### Diagnostic reports
 
-`GET /api/runs/{id}/report` turns a run into a report you can attach to a ticket or send to a payer. Every format covers the same ground: the verdict (`PASS`, `PASS_WITH_WARNINGS` or `FAIL`, and the step where the flow broke), the payer, environment and CRD IG version (expected by the connection and advertised by the payer), the run's correlation id (see [Observability](#observability)), the step timeline with each HTTP exchange, findings by severity (most severe first) with explanation, redacted evidence and fix, when it was generated and by which workbench version, and the synthetic-data / no-interoperability disclaimer.
+`GET /api/runs/{id}/report` turns a run into a report you can attach to a ticket or send to a payer. Every format covers the same ground: the verdict (`PASS`, `PASS_WITH_WARNINGS` or `FAIL`, and the step where the flow broke), the payer, environment and CRD IG version (expected by the connection and advertised by the payer), the run's correlation id (see [Observability](#observability)), the step timeline with each HTTP exchange, findings by severity (most severe first) with explanation, redacted evidence and fix, when it was generated and by which workbench version, and the disclaimer. A run against a synthetic payer gets the synthetic-data / no-interoperability text. A custom-endpoint run says instead that it was made against a user-supplied endpoint with synthetic requests and that the report includes that endpoint's responses with credentials redacted, so read such a report before you share it.
 
 - `html` is one self-contained file (inline CSS, no scripts or external assets). It opens with the verdict (icon and word, the step where the flow broke, counts by severity), then the facts with times in UTC to the second, the failing call, the timeline and the findings. The full ISO time stays in each `<time datetime>` attribute. On screen it uses the workbench's tokens and follows a dark preference. Print is always light, keeps headings with the block after them, keeps small blocks (facts, steps, Fix, the curl command, the footer) whole, and lets long bodies and findings flow across pages, so no page is left half blank.
 - `md` is for pasting into an issue or a wiki.
