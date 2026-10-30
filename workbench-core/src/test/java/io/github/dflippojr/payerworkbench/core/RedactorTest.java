@@ -589,6 +589,18 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateMemberRightAfterAMalformedValueOnceTheBudgetIsSpent() {
+        // The empty value's closing quote is also the quote that opens "d": the names are found on their own.
+        assertEquals("{\"x\":\"\"d\":\"[REDACTED]\",\"kty\":\"RSA\"}",
+                Redactor.maskJwks("{\"x\":\"\"d\":\"PRIVD\",\"kty\":\"RSA\"}", false, 0));
+        assertEquals("{\\\"x\\\":\\\"\\\"d\\\":\\\"[REDACTED]\\\",\\\"kty\\\":\\\"RSA\\\"}",
+                Redactor.maskJwks("{\\\"x\\\":\\\"\\\"d\\\":\\\"PRIVD\\\",\\\"kty\\\":\\\"RSA\\\"}", true, 0));
+        // The review's shape: the repeated kty members spend the budget, and the last one's value ends at "d".
+        String out = Redactor.redact("\"kty\":\"".repeat(63) + "{\"d\":\"PRIVD\",\"e\":\"AQAB\",\"kty\":\"RSA\"}");
+        assertFalse(out.contains("PRIVD"), out);
+    }
+
+    @Test
     void masksJwkPrivateMembersInATree() {
         Map<String, Object> jwk = new LinkedHashMap<>();
         jwk.put("kty", "RSA");

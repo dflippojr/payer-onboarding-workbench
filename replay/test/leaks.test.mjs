@@ -145,6 +145,10 @@ test('flags a JWK private member, Token or DPoP credential Redactor would not le
     'GET /cb?h=Authorization%3A%20Bearer [REDACTED]:LEAKEDSUFFIX',
     '{"body":"{\\"kty\\":\\"RSA\\",\\"d\\":\\n\\"LEAKED\\"}"}',
     '{"body":"{\\"password\\":\\n\\"LEAKED\\"}"}',
+    // Redactor masks a JWK member's array whole, so a list of masks there is never its output.
+    'evidence: {"kty":"RSA","d":["LEAKED [REDACTED]"]}',
+    'evidence: {"kty":"RSA","d":["[REDACTED]"]}',
+    'evidence: {"b":"{\\"kty\\":\\"RSA\\",\\"d\\":[\\"LEAKED [REDACTED]\\"]}"}',
   ]) {
     assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
   }
