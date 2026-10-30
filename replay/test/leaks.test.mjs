@@ -106,6 +106,54 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     assert.deepEqual(findTextLeaks(JSON.stringify({ responseBody: body })), [], body);
   }
 });
+test('accepts what Redactor leaves for a JWK, a Token or DPoP credential and a URL-encoded Bearer (#262)', () => {
+  for (const text of [
+    '{"kty":"RSA","n":"N1","e":"AQAB","d":"[REDACTED]","p":"[REDACTED]","oth":"[REDACTED]"}',
+    '{"keys":[{"kty":"oct","k":"[REDACTED]"},\n {"d" : "[REDACTED]", "kty":"EC"}]}',
+    '{"body":"{\\"kty\\":\\"RSA\\",\\"d\\":\\"[REDACTED]\\"}"}',
+    JSON.stringify({ responseBody: '{"keys":[{"kty":"oct","k":"[REDACTED]"}]}' }),
+    'payer echoed Token [REDACTED]',
+    '{"error_description":"rejected DPoP [REDACTED]"}',
+    'Authorization: Token [REDACTED]',
+    'GET /cb?h=Authorization%3A%20Bearer [REDACTED]',
+    'auth=Bearer [REDACTED]',
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+  assert.deepEqual(findJsonLeaks({ jwk: { kty: 'RSA', n: 'N1', d: MASK } }), []);
+});
+test('flags a JWK private member, Token or DPoP credential Redactor would not leave (#262)', () => {
+  for (const text of [
+    '{"kty":"RSA","d":"LEAKED"}',
+    '{"kty":"RSA","d":"[REDACTED]x"}',
+    '{"kty":"RSA","d":"[REDACTED]"ssTAIL"}',
+    '{"kty":"RSA","d":"[REDACTED]"-tail"}',
+    '{"kty":"RSA","d":"[REDACTED]"_tail"}',
+    'evidence: {"kty":"oct","k":"[REDACTED]\\" tail LEAKED"}',
+    '{"b":"{\\"kty\\":\\"RSA\\",\\"d\\":\\"[REDACTED]\\"-tail\\"}"}',
+    '{"kty":"oct","k":12345678}',
+    '{"kty":"RSA","oth":[{"r":"LEAKED"}]}',
+    '{"body":"{\\"kty\\":\\"RSA\\",\\"d\\":\\"LEAKED\\"}"}',
+    'Token LEAKEDtok123',
+    'Authorization: Token abc',
+    'DPoP [REDACTED]:TAIL',
+    'Token -------:',
+    'cb?auth=Bearer+LEAKED123',
+    'received token DPoP LEAKEDtok123',
+    'the token Bearer LEAKEDtok123',
+    'Bearer%20++++++++',
+    'GET /cb?h=Authorization%3A%20Bearer [REDACTED]:LEAKEDSUFFIX',
+    '{"body":"{\\"kty\\":\\"RSA\\",\\"d\\":\\n\\"LEAKED\\"}"}',
+    '{"body":"{\\"password\\":\\n\\"LEAKED\\"}"}',
+    // Redactor masks a JWK member's array whole, so a list of masks there is never its output.
+    'evidence: {"kty":"RSA","d":["LEAKED [REDACTED]"]}',
+    'evidence: {"kty":"RSA","d":["[REDACTED]"]}',
+    'evidence: {"b":"{\\"kty\\":\\"RSA\\",\\"d\\":[\\"LEAKED [REDACTED]\\"]}"}',
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
+  assert.equal(findJsonLeaks({ responseBody: '{"keys":[{"kty":"oct","k":"LEAKED"}]}' }).length, 1);
+});
 test('flags a sensitive header value Redactor would not leave (#261)', () => {
   for (const text of [
     'Cookie: [REDACTED]; theme=dark',

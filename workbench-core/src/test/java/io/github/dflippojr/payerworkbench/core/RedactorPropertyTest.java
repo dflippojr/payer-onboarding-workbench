@@ -27,7 +27,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Class-level check (#160): generates secrets of every shape {@link Redactor} promises to mask
- * (random tokens, Basic {@code user:pass}, colon-split bearers, numeric secrets, PEM private keys,
+ * (random tokens after Bearer, Token or DPoP, Basic {@code user:pass}, colon-split bearers, numeric
+ * secrets, PEM and PGP private keys,
  * values full of JSON escapes), raw or URL-encoded, places them where a payer echoes credentials
  * (headers, bodies, query strings, bodies cut off at any position in a JSON value), with or without
  * the whole text quoted inside a JSON string (also by a serializer that escapes {@code /} or
@@ -64,8 +65,11 @@ class RedactorPropertyTest {
     private static final List<String> CREDENTIAL_HEADERS = List.of(
             "X-Api-Key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-client-secret", "Cookie", "Set-Cookie");
     private static final List<String> AUTHORIZATION_HEADERS = List.of("Authorization", "authorization", "Proxy-Authorization");
+    /** Schemes a token-shaped secret follows: Token and DPoP are masked as Bearer is (#262). */
+    private static final List<String> BEARER_SCHEMES = List.of("Bearer", "bearer", "BEARER", "Token", "token", "DPoP", "dpop");
     private static final List<String> PEM_LABELS = List.of(
-            "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY");
+            "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY",
+            "PGP PRIVATE KEY BLOCK");
 
     enum Shape { TOKEN, BASIC_USER_PASS, COLON_BEARER, NUMERIC, PEM, ESCAPED }
 
@@ -123,7 +127,7 @@ class RedactorPropertyTest {
         }
 
         private String scheme() {
-            return pick(secret.shape() == Shape.BASIC_USER_PASS ? List.of("Basic", "basic", "BASIC") : List.of("Bearer", "bearer", "BEARER"));
+            return pick(secret.shape() == Shape.BASIC_USER_PASS ? List.of("Basic", "basic", "BASIC") : BEARER_SCHEMES);
         }
 
         String text() {

@@ -24,6 +24,32 @@ const SENSITIVE_HEADERS = new Set([
 /** A field Redactor masks: a secret field, or one named like a sensitive header (any case). */
 const isSecretKey = name => isSecretField(name) || SENSITIVE_HEADERS.has(name.toLowerCase());
 
+/** The private members of a JWK, which Redactor masks in a JSON object with a kty member (#262). */
+const JWK_PRIVATE_MEMBERS = new Set(['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']);
+
+/** Whitespace in JSON, also escaped (\n, \t) where the JSON is embedded in a JSON string. */
+const JSON_SPACE = String.raw`(?:\s|\\+[nrt])*`;
+
+/** A kty member, also in JSON embedded in a JSON string at any depth. */
+const JWK_TYPE = new RegExp(String.raw`\\*"kty\\*"${JSON_SPACE}:`);
+
+/** Whether text has a kty member, searched once per text rather than once per member. */
+let jwkTypeText = null;
+let jwkTypeFound = false;
+const hasJwkType = text => {
+  if (text !== jwkTypeText) {
+    jwkTypeText = text;
+    jwkTypeFound = JWK_TYPE.test(text);
+  }
+  return jwkTypeFound;
+};
+
+/**
+ * Whether a field holds a JWK's private member: Redactor masks a JWK's own ones, the scanner any in text
+ * that has a kty member, as the secret fields it always masks.
+ */
+const isJwkMember = (name, text) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text);
+
 /** An RFC 9110 token, as Redactor reads an Authorization scheme. */
 const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
 
@@ -48,15 +74,24 @@ function isUserPass(token) {
 }
 
 /**
- * Redactor keeps one short all-letter word after the scheme as prose, unless it is a Basic user:pass.
+ * Redactor keeps one short all-letter word after the scheme as prose, unless it is a Basic user:pass;
+ * after Token, which is also an ordinary word, the word may end with a colon (token endpoint: <url>).
+ * Up to 7 characters with no letter or digit (POST /oauth/token -> 200) are not a credential either.
  * The scanner decodes the word without any trailing period or parenthesis, so it also catches a
  * credential at the end of a sentence.
  */
-const isAuthProse = m => /^[A-Za-z]{1,15}[.)]*$/.test(m[2] + m[3])
-  && !(/^basic$/i.test(m[1]) && isUserPass((m[2] + m[3]).replace(/[.)]+$/, '')));
+const isAuthProse = m => {
+  if (/^[^A-Za-z0-9]{1,7}$/.test(m[2] + m[3])) return true;
+  const word = /^token$/i.test(m[1]) ? (m[2] + m[3]).replace(/:$/, '') : m[2] + m[3];
+  return /^[A-Za-z]{1,15}[.)]*$/.test(word) && !(/^basic$/i.test(m[1]) && isUserPass(word.replace(/[.)]+$/, '')));
+};
 
-/** A masked JSON string whose closing quote has more of the value right after it ("[REDACTED]"ssTAIL). */
-const maskCutShort = m => /^\\*"[A-Za-z0-9]/.test(m.input.slice(m.index + m[0].length));
+/**
+ * A masked JSON string whose closing quote has more of the value right after it ("[REDACTED]"ssTAIL,
+ * "[REDACTED]"-tail): only whitespace, a comma or close bracket, or the quote or backslash of an enclosing
+ * string may follow the value.
+ */
+const maskCutShort = m => /^\\*"[^\s,}\]\\"]/.test(m.input.slice(m.index + m[0].length));
 
 /**
  * A masked form value is [REDACTED], optionally followed by the start of a JSON escape (\n, \") where
@@ -78,13 +113,22 @@ const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]
 /** A JSON value Redactor masks for a secret field: a string, or a number, true or false. */
 const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
-/** A scheme, its credential and anything after it to a separator, as in Redactor's AUTH_SCHEME. */
-const AUTH_SCHEME = String.raw`(Bearer|Basic)\s+(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
+/**
+ * A scheme, its credential and anything after it to a separator, as in Redactor's AUTH_SCHEME. After
+ * Bearer the space may be URL-encoded (Bearer%20, Bearer+); after Token and DPoP it may not be a line break.
+ */
+const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
 
-/** Whether an Authorization-style header line's value is prose that Redactor keeps, as it does anywhere. */
+/** Where a scheme starts, as in Redactor: also right after a URL escape (%3A%20Bearer%20). */
+const AUTH_START = String.raw`(?:${WORD_START}|(?<=%[0-9A-F]{2})(?=Bearer))`;
+
+/**
+ * Whether an Authorization-style header line's value is prose that Redactor keeps, as it does anywhere:
+ * only after Bearer or Basic (Authorization: Token abc is a credential).
+ */
 const isAuthLineProse = (name, v) => {
   const m = /authorization$/i.test(name) && new RegExp(`^${AUTH_SCHEME}`, 'i').exec(v);
-  return Boolean(m) && isAuthProse(m);
+  return Boolean(m) && /^(?:bearer|basic)$/i.test(m[1]) && isAuthProse(m);
 };
 
 /**
@@ -143,24 +187,26 @@ const TEXT_CHECKS = [
   // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
   // backslash, as in Redactor; a JSON escape of a token character (\/, \u002B) is that character, not a
   // backslash, also escaped again (\\/) in a recorded body (#211).
+  // The match ends at the scheme (the rest is read in a lookahead), so a scheme kept as prose does not
+  // hide one right after it (token DPoP <credential>), as in Redactor.
   {
     name: 'Bearer/Basic credential',
-    re: new RegExp(String.raw`${WORD_START}${AUTH_SCHEME}`, 'gi'),
+    re: new RegExp(String.raw`${AUTH_START}(?=${AUTH_SCHEME})(Bearer|Basic|Token|DPoP)`, 'gi'),
     ok: isAuthProse,
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
   // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART, Bearer [REDACTED]\u002BPART).
-  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${WORD_START}(?:Bearer|Basic)\s+\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
+  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
   {
     name: 'JSON secret field',
-    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
+    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
     // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
     // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
     ok: m => {
-      if (!isSecretKey(m[1])) return true;
+      if (!isSecretKey(m[1]) && !isJwkMember(m[1], m.input)) return true;
       if (m[2] === undefined) return false;
       // Counted in the input: an earlier match can end inside the run of backslashes before the key.
       const quote = m.index + m[0].indexOf('"');
@@ -171,12 +217,14 @@ const TEXT_CHECKS = [
     },
   },
   // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
-  // masked values is a recorded header (X-Api-Key: ["[REDACTED]"]).
+  // masked values is a secret-named list redactTree masked item by item (X-Api-Key: ["[REDACTED]"]);
+  // it masks a JWK private member's list whole, so no list of masks is left there.
   {
     name: 'JSON secret structure',
-    re: /\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*([{[])/g,
-    ok: m => !isSecretKey(m[1]) || (m[2] === '['
-      && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))),
+    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
+    ok: m => isSecretKey(m[1])
+      ? m[2] === '[' && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
+      : !isJwkMember(m[1], m.input),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
@@ -235,6 +283,9 @@ export function findJsonLeaks(value, path = '$') {
           || (x && typeof x === 'object' && !inHeaders && !maskedHeaderList)
           || (typeof x === 'string' && !isMaskedValue(key, x)))) {
         leaks.push({ check: 'secret field', match: `${p}.${k}` });
+      }
+      if ('kty' in v && JWK_PRIVATE_MEMBERS.has(k) && x !== MASK && x != null) {
+        leaks.push({ check: 'JWK private member', match: `${p}.${k}` });
       }
       if (/headers$/i.test(k) && x && typeof x === 'object' && !Array.isArray(x)) {
         for (const [name, values] of Object.entries(x)) {

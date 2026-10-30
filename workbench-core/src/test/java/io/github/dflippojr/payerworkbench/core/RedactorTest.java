@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -453,6 +454,211 @@ class RedactorTest {
         // An escaped quote, space or backslash still ends the token.
         assertEquals("Bearer [REDACTED]\\u0022 and Bearer [REDACTED]\\u0020more",
                 Redactor.redact("Bearer abc123\\u0022 and Bearer abc123\\u0020more"));
+    }
+
+    @Test
+    void masksThePrivateMembersOfAJwk() {
+        assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\",\"p\":\"[REDACTED]\"}",
+                Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVATEDVALUE\",\"p\":\"PRIMEP\"}"));
+        assertEquals("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}", Redactor.redact("{\"kty\":\"oct\",\"k\":\"SYMKEY123\"}"));
+        // Every private member, including the other primes (RFC 7518 6.3.2.7); the public ones stay.
+        String pub = "\"kty\":\"RSA\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"RS256\",\"n\":\"MODULUS\",\"e\":\"AQAB\"";
+        assertEquals("{" + pub + ",\"d\":\"[REDACTED]\",\"p\":\"[REDACTED]\",\"q\":\"[REDACTED]\",\"dp\":\"[REDACTED]\","
+                        + "\"dq\":\"[REDACTED]\",\"qi\":\"[REDACTED]\",\"oth\":\"[REDACTED]\"}",
+                Redactor.redact("{" + pub + ",\"d\":\"PRIVD\",\"p\":\"PRIVP\",\"q\":\"PRIVQ\",\"dp\":\"PRIVDP\","
+                        + "\"dq\":\"PRIVDQ\",\"qi\":\"PRIVQI\",\"oth\":[{\"r\":\"PRIVR\",\"d\":\"PRIVOD\",\"t\":\"PRIVT\"}]}"));
+        // kty after the private member, and a value that is not a string.
+        assertEquals("{\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"d\":\"[REDACTED]\",\"kty\":\"EC\"}",
+                Redactor.redact("{\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"d\":\"PRIVECD\",\"kty\":\"EC\"}"));
+        assertEquals("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}", Redactor.redact("{\"kty\":\"oct\",\"k\":12345678}"));
+        // Each key of a JWKS, also pretty-printed, and a key with braces and quotes in a string.
+        assertEquals("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"[REDACTED]\"},\n"
+                        + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"[REDACTED]\",\n   \"kty\" : \"oct\"}]}",
+                Redactor.redact("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"PRIVOKPD\"},\n"
+                        + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"PRIVK\",\n   \"kty\" : \"oct\"}]}"));
+        // In JSON embedded in a JSON string, and in a body cut off at the size limit.
+        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"n\\\":\\\"N1\\\",\\\"d\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"n\\\":\\\"N1\\\",\\\"d\\\":\\\"PRIVEMBD\\\"}\"}"));
+        assertEquals("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}]}\"}",
+                Redactor.redact("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVEMBK\\\"}]}\"}"));
+        assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"", Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVCUTOFF"));
+        // Pretty-printed JSON embedded in a JSON string: its line breaks are escaped.
+        assertEquals("{\"body\":\"{\\n \\\"kty\\\" :\\n \\\"RSA\\\",\\n \\\"d\\\":\\n\\t\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\n \\\"kty\\\" :\\n \\\"RSA\\\",\\n \\\"d\\\":\\n\\t\\\"PRIVEMBNL\\\"}\"}"));
+        assertEquals("{\"body\":\"{\\\"password\\\":\\n\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"password\\\":\\n\\\"PRIVPW\\\"}\"}"));
+        // A JWK inside a JWK: each one's own members, the inner one read before the outer.
+        assertEquals("{\"a\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"kty\":\"oct\",\"k\":\"[REDACTED]\"}",
+                Redactor.redact("{\"a\":{\"kty\":\"oct\",\"k\":\"PRIVK1\"},\"kty\":\"oct\",\"k\":\"PRIVK2\"}"));
+        // kty after nested objects and arrays; a JWK inside a masked member goes with it.
+        assertEquals("{\"x5c\":[\"c1\",\"c2\"],\"meta\":{\"x\":[1,{\"y\":2}]},\"d\":\"[REDACTED]\",\"kty\":\"RSA\"}",
+                Redactor.redact("{\"x5c\":[\"c1\",\"c2\"],\"meta\":{\"x\":[1,{\"y\":2}]},\"d\":\"PRIVD\",\"kty\":\"RSA\"}"));
+        assertEquals("{\"kty\":\"RSA\",\"oth\":\"[REDACTED]\"}",
+                Redactor.redact("{\"kty\":\"RSA\",\"oth\":[{\"kty\":\"oct\",\"k\":\"PRIVK\"}]}"));
+        // Embedded JSON cut off before its object closes.
+        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"\",\"n\":1}",
+                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"\",\"n\":1}"));
+    }
+
+    @Test
+    void leavesJwkMemberNamesOutsideAJwkAlone() {
+        for (String text : List.of(
+                "{\"d\":\"x\"}",
+                "{\"d\":\"2026-10-29\",\"p\":0.05,\"q\":\"query\",\"k\":[1,2]}",
+                // A public key keeps every member.
+                "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"ES256\"}",
+                // Only the JWK's own members: not a sibling of a nested JWK, nor a member of an object inside one.
+                "{\"jwk\":{\"kty\":\"RSA\",\"n\":\"N1\"},\"d\":\"x\"}",
+                "{\"kty\":\"RSA\",\"meta\":{\"d\":\"x\"},\"n\":\"N1\"}",
+                // kty quoted in a string is not a member.
+                "{\"note\":\"the \\\"kty\\\": member\",\"d\":\"x\"}",
+                "{\"note\":\"\\\"kty\\\":\",\"d\":\"x\"}",
+                "{\"note\":\"\\\"kty\\\": a, \\\"kty\\\": b\",\"d\":\"x\"}",
+                // A name that only ends in kty ("\"kty"), and kty that is not the member of an object.
+                "[{\"\\\"kty\":0,\"d\":\"x\"}]",
+                "{\"b\":\"{\\\"\\\\\\\"kty\\\":0,\\\"d\\\":\\\"x\\\"}\"}",
+                "\"kty\": \"RSA\", \"d\": \"x\"",
+                "[\"kty\": \"RSA\", \"d\": \"x\"]",
+                "[\"kty\": 1, \"kty\": 2, \"d\": \"x\"]")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
+    void findsJwksInLinearTime() {
+        // About 1 MB each: linear time takes well under a second, quadratic time minutes.
+        int n = 80_000;
+        List<String> texts = List.of(
+                "[" + "{\"\\\"kty\":0},".repeat(n) + "{}]",
+                "]\"kty\":".repeat(n),
+                "{\"b\":\"" + "]\\\"kty\\\":".repeat(n) + "\"}",
+                "{\"kty\":1,".repeat(n),
+                "{\"x\":\"" + "\\\"kty\\\": ".repeat(n) + "\"}",
+                "{\"a\":".repeat(n / 2) + "{\"kty\":1}" + ",\"kty\":1,\"d\":\"y\"}".repeat(n / 2),
+                "{" + "\"kty\":1,".repeat(n) + "\"d\":\"y\"}",
+                "[".repeat(n / 2) + "\"kty\":1],".repeat(n / 2),
+                "{" + "\"x\":\"kty\":1,".repeat(n) + "\"d\":\"y\"}",
+                "\"kty\":\"".repeat(n),
+                "\"kty\":\"".repeat(n / 2) + "\"x\":\"\"d\":\"y\",".repeat(n / 2),
+                "{\"b\":\"" + "[".repeat(n / 2) + "\\\"kty\\\":1],".repeat(n / 2) + "\"}");
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
+    }
+
+    @Test
+    void masksOnlyJwksInLargeOrdinaryJson() {
+        // About 1 MB: within the time budget, so ordinary fields are kept, also in JSON embedded in a string.
+        StringBuilder jwks = new StringBuilder("{\"keys\": [\n");
+        for (int i = 0; i < 2000; i++) {
+            jwks.append("  {\"kid\": \"k").append(i).append("\", \"n\": \"").append("N".repeat(300))
+                    .append("\", \"e\": \"AQAB\",\n   \"d\": \"PRIVD").append(i).append("\", \"kty\": \"RSA\"},\n")
+                    .append("  {\"d\": \"keep\", \"p\": 0.05, \"items\": [{\"q\": \"keep\"}]},\n");
+        }
+        String text = jwks.append("  {}\n]}").toString();
+        for (String json : List.of(text, "{\"body\":" + JSON.writeValueAsString(text) + "}")) {
+            String out = Redactor.redact(json);
+            assertFalse(out.contains("PRIVD"));
+            assertEquals(4000, out.split("keep", -1).length - 1);
+            assertEquals(2000, out.split("0\\.05", -1).length - 1);
+        }
+    }
+
+    @Test
+    void masksJwkPrivateMembersInTextTooTangledToReadInLinearTime() {
+        // Past its time budget the search gives up on finding each JWK and masks every private member.
+        String out = Redactor.redact("\"kty\":\"".repeat(80_000) + "{\"kty\":\"oct\",\"k\":\"PRIVK\"}");
+        assertFalse(out.contains("PRIVK"));
+        assertTrue(out.endsWith("\"k\":\"[REDACTED]\"}"), out.substring(out.length() - 40));
+        String embedded = Redactor.redact("{\"b\":\"" + "\\\"kty\\\":\\\"".repeat(80_000)
+                + "{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"}\"}");
+        assertFalse(embedded.contains("PRIVK"));
+        assertTrue(embedded.endsWith("\\\"k\\\":\\\"[REDACTED]\\\"}\"}"), embedded.substring(embedded.length() - 40));
+    }
+
+    @Test
+    void masksEveryPrivateMemberOnceTheBudgetIsSpent() {
+        String text = "{\"jwk\":{\"kty\":\"oct\",\"k\":\"PRIVK\"},\"d\":\"x\"}";
+        assertEquals("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"x\"}", Redactor.maskJwks(text, false, 100));
+        // Spent searching back for the object, or reading it.
+        for (int budget : List.of(0, 3)) {
+            assertEquals("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"[REDACTED]\"}",
+                    Redactor.maskJwks(text, false, budget));
+        }
+        // A run of backslashes skipped at once costs what reading it does: three searches back over 1000
+        // of them spend 3000, not 1021.
+        String run = "{\"d\":\"x\"}" + "\\".repeat(1000) + "\"kty\":\"".repeat(3);
+        assertTrue(Redactor.maskJwks(run, false, 1200).startsWith("{\"d\":\"[REDACTED]\"}"));
+    }
+
+    @Test
+    void masksAPrivateMemberRightAfterAMalformedValueOnceTheBudgetIsSpent() {
+        // The empty value's closing quote is also the quote that opens "d": the names are found on their own.
+        assertEquals("{\"x\":\"\"d\":\"[REDACTED]\",\"kty\":\"RSA\"}",
+                Redactor.maskJwks("{\"x\":\"\"d\":\"PRIVD\",\"kty\":\"RSA\"}", false, 0));
+        assertEquals("{\\\"x\\\":\\\"\\\"d\\\":\\\"[REDACTED]\\\",\\\"kty\\\":\\\"RSA\\\"}",
+                Redactor.maskJwks("{\\\"x\\\":\\\"\\\"d\\\":\\\"PRIVD\\\",\\\"kty\\\":\\\"RSA\\\"}", true, 0));
+        // The review's shape: the repeated kty members spend the budget, and the last one's value ends at "d".
+        String out = Redactor.redact("\"kty\":\"".repeat(63) + "{\"d\":\"PRIVD\",\"e\":\"AQAB\",\"kty\":\"RSA\"}");
+        assertFalse(out.contains("PRIVD"), out);
+    }
+
+    @Test
+    void masksJwkPrivateMembersInATree() {
+        Map<String, Object> jwk = new LinkedHashMap<>();
+        jwk.put("kty", "RSA");
+        jwk.put("n", "N1");
+        jwk.put("d", "PRIVD");
+        jwk.put("oth", List.of(Map.of("r", "PRIVR")));
+        assertEquals(Map.of("kty", "RSA", "n", "N1", "d", "[REDACTED]", "oth", "[REDACTED]"), Redactor.redactTree(jwk));
+        assertEquals(Map.of("d", "x"), Redactor.redactTree(Map.of("d", "x")));
+    }
+
+    @Test
+    void masksTokenAndDPoPCredentials() {
+        assertEquals("Token [REDACTED]", Redactor.redact("Token 9944b09199c62bcf9418ad846dd0e4bbdfc6ee4b"));
+        assertEquals("DPoP " + Redactor.MASK, Redactor.redact("DPoP PHNhbWw6QXNz"));
+        assertEquals("{\"error_description\":\"rejected token [REDACTED]\"}",
+                Redactor.redact("{\"error_description\":\"rejected token gho_SynthTok123:x\"}"));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer --------"));
+        // Eight characters count before a prose colon is dropped.
+        assertEquals("Token [REDACTED]", Redactor.redact("Token -------:"));
+        // A scheme kept as prose does not hide the scheme after it.
+        assertEquals("received token DPoP [REDACTED]", Redactor.redact("received token DPoP PHNhbWw6QXNzZXJ0aW9u"));
+        assertEquals("the token Bearer [REDACTED] expired", Redactor.redact("the token Bearer abc123def expired"));
+        assertEquals("a bearer token\neyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.[REDACTED]",
+                Redactor.redact("a bearer token\neyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.SIGNATURE1"));
+        assertEquals("Token [REDACTED]", Redactor.redact("Token\t9944b09199c62bcf"));
+        assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
+        // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
+        for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",
+                "token endpoint: https://payer.example/token\ntoken response: error=invalid_client",
+                "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms",
+                // The next line is not the credential of an ordinary word.
+                "issue a token\n2 times per hour", "DPoP\r\nproof-v2 required")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
+    void masksAUrlEncodedBearerCredential() {
+        assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer%20abc123def"));
+        // One encoded space: a + after it is part of the token.
+        assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer%20++++++++"));
+        assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer+++++++++"));
+        // As after a space, the credential runs to the next whitespace, quote, comma, semicolon or backslash.
+        assertEquals("cb?auth=Bearer [REDACTED]", Redactor.redact("cb?auth=Bearer+abc123def&x=1"));
+        assertEquals("cb?h=Authorization%3A%20Bearer [REDACTED]", Redactor.redact("cb?h=Authorization%3A%20Bearer%20abc123def"));
+        assertEquals("q=missing+bearer+token", Redactor.redact("q=missing+bearer+token"));
+    }
+
+    @Test
+    void masksAnUnterminatedPgpPrivateKeyBlock() {
+        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + Redactor.MASK,
+                Redactor.redact("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKEKEYMATERIAL\n=abcd"));
+        String terminated = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKE\n-----END PGP PRIVATE KEY BLOCK-----";
+        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n-----END PGP PRIVATE KEY BLOCK-----",
+                Redactor.redact(terminated));
+        String publicKey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQENBFAKEPUBLIC";
+        assertEquals(publicKey, Redactor.redact(publicKey));
     }
 
     record Echoed(String summary, String clientSecret, Integer apiKey, int password, List<String> notes) {

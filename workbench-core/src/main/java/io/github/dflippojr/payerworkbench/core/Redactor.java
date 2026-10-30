@@ -10,9 +10,11 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.time.temporal.TemporalAccessor;
 import java.time.temporal.TemporalAmount;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -20,6 +22,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -30,16 +33,24 @@ import java.util.stream.IntStream;
  * Masks credential material in strings and HTTP headers before they are stored,
  * shown or written to a report.
  *
- * <p>Covers bearer and basic credentials, JWT signatures (the header and payload
- * stay readable because their claims are useful for diagnosis), PEM blocks, and
- * the values of well-known secret fields such as {@code client_secret},
- * {@code access_token} and {@code private_key} in form and query bodies and in
- * JSON (any value, including an object such as a private JWK, also in JSON
+ * <p>Covers {@code Bearer}, {@code Basic}, {@code Token} and {@code DPoP} credentials (a
+ * {@code Bearer} one also URL-encoded, {@code Bearer%20} or {@code Bearer+}), JWT signatures
+ * (the header and payload stay readable because their claims are useful for diagnosis), PEM
+ * blocks and PGP private key blocks, the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
+ * of a JSON object with a {@code kty} member), and the values of well-known secret fields such
+ * as {@code client_secret}, {@code access_token} and {@code private_key} in form and query
+ * bodies and in JSON (any value, including an object such as a private JWK, also in JSON
  * embedded in a JSON string; see {@link #isSecretField(String)}). The value of a
  * credential header ({@link #isSensitiveHeader(String)}, such as {@code Cookie}) is
  * masked in a header map, in a {@code Name: value} line of free text and in a JSON field
  * of that name. It is a safety net, not a guarantee: callers should still avoid passing
  * secrets around in the first place.
+ *
+ * <p>Out of scope (#262): other schemes in free text, such as {@code Digest response=...}
+ * (an {@code Authorization} header or line is still masked whole); URL-encoded separators
+ * after any scheme but {@code Bearer}; JWK member names outside an object with a
+ * {@code kty} member, so an ordinary field named {@code d} or {@code k} is kept (except in
+ * text too tangled to find the JWKs in linear time, where every such name is masked).
  */
 public final class Redactor {
 
@@ -49,9 +60,12 @@ public final class Redactor {
     private static final Pattern PEM_BLOCK = Pattern.compile(
             "-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \\1-----", Pattern.DOTALL);
 
-    /** A private key header with no matching footer (truncated paste): mask to the end. */
+    /**
+     * A private key header, PEM or PGP ({@code PRIVATE KEY BLOCK}), with no matching footer (truncated
+     * paste): mask to the end.
+     */
     private static final Pattern UNTERMINATED_PEM_KEY = Pattern.compile(
-            "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----(?!\\s*" + Pattern.quote(MASK) + ").*", Pattern.DOTALL);
+            "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----(?!\\s*" + Pattern.quote(MASK) + ").*", Pattern.DOTALL);
 
     /**
      * Where a word starts: a word boundary, or right after a JSON escape such as {@code \n}, which
@@ -68,20 +82,31 @@ public final class Redactor {
             "\\\\++(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))";
 
     /**
-     * A scheme, its token68 part (group 2, which may be URL-encoded) and anything else up to the next
-     * whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is masked
-     * whole. Both parts read a JSON escape of a token character ({@link #ESCAPED_TOKEN_CHAR}) as the
-     * character it stands for, so a token quoted by a serializer that escapes some of its characters
+     * A scheme (group 1), its token68 part (group 2, which may be URL-encoded) and anything else up to
+     * the next whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is
+     * masked whole. After {@code Bearer} the space may be URL-encoded too ({@code Bearer%20},
+     * {@code Bearer+}), also right after another escape ({@code %3A%20Bearer%20}). After {@code Token}
+     * and {@code DPoP}, ordinary words, only spaces and tabs are: a word on the next line
+     * ({@code a bearer token}, then a JWT) is not their credential. Both parts read a
+     * JSON escape of a token character ({@link #ESCAPED_TOKEN_CHAR}) as the character it stands for,
+     * so a token quoted by a serializer that escapes some of its characters
      * ({@code tok\/en}, {@code tok}{@code \}{@code u002Ben}) is masked whole too. Case-insensitive, so
      * the escapes' hex digits may be either case. Possessive quantifiers, as in {@link #JSON_FIELD}.
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
-            "(?i)" + WORD_START + "(Bearer|Basic)\\s+(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
+            "(?i)(?:" + WORD_START + "|(?<=%[0-9A-F]{2})(?=Bearer))(Bearer|Basic|Token|DPoP)"
+                    + "(?:[ \\t]++|(?<=Bearer|Basic)\\s+|(?<=Bearer)(?:%20|\\+))(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
                     + "((?:[A-Za-z0-9\\-._~+/%]++|" + ESCAPED_TOKEN_CHAR + ")++=*)"
                     + "((?:[^\\s\"',;\\\\]++|" + ESCAPED_TOKEN_CHAR + ")*+)");
 
-    /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
+    /** Short all-letter words after a scheme are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
+
+    /**
+     * A few characters with no letter or digit after a scheme ({@code ->}) are not a credential either;
+     * eight or more are masked, as any token is.
+     */
+    private static final Pattern PUNCTUATION = Pattern.compile("[^A-Za-z0-9]{1,7}");
 
     private static final Pattern JWT = Pattern.compile(
             WORD_START + "(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
@@ -93,6 +118,16 @@ public final class Redactor {
     static final Set<String> SECRET_FIELDS = Set.of(
             "clientsecret", "accesstoken", "refreshtoken", "idtoken", "password", "apikey", "privatekey",
             "secret", "clientassertion", "assertion");
+
+    /**
+     * The private members of a JWK (RFC 7518 section 6: the RSA private key and other primes, the EC and
+     * OKP private key, the symmetric key), masked only in a JSON object that has a {@code kty} member,
+     * where {@link #isSecretField(String)} does not apply: elsewhere these are ordinary short names.
+     */
+    static final Set<String> JWK_PRIVATE_MEMBERS = Set.of("d", "p", "q", "dp", "dq", "qi", "oth", "k");
+
+    /** The {@code kty} member that makes a JSON object a JWK; it starts at the name's opening quote. */
+    private static final Pattern JWK_TYPE = Pattern.compile("\"kty\"\\s*:");
 
     /** A JSON number, {@code true} or {@code false}: a secret-named field holding one is masked too. */
     private static final String JSON_SCALAR = "-?+\\d[\\d.eE+-]*+|true\\b|false\\b";
@@ -115,6 +150,9 @@ public final class Redactor {
     /** Any character but a quote or backslash, as a regex. */
     private static final String PLAIN = "[^\"\\\\]";
 
+    /** Whitespace in JSON embedded in a JSON string, where a line break or tab is escaped. */
+    private static final String EMBEDDED_SPACE = "(?:\\s|" + BACKSLASH + "[nrt])*+";
+
     /**
      * The same inside JSON that is itself embedded in a JSON string ({@code {\"key\": \"value\"}}),
      * where the inner string's own escapes are escaped again: an inner {@code \\} is four backslashes
@@ -124,7 +162,8 @@ public final class Redactor {
      * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"((?:" + PLAIN + "++"
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
+                    + BACKSLASH + "\"((?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
                     + "|" + BACKSLASH + PLAIN + ")*+)(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
                     + JSON_SCALAR + ")");
@@ -134,7 +173,20 @@ public final class Redactor {
 
     /** The same inside JSON embedded in a JSON string. */
     private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"\\s*:\\s*(?=[{\\[])");
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
+
+    /** {@link #JWK_TYPE} inside JSON embedded in a JSON string; it starts at the backslash. */
+    private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(BACKSLASH + "\"kty" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
+
+    /** The {@link #JWK_PRIVATE_MEMBERS} names, as a regex alternation. */
+    private static final String JWK_PRIVATE_NAMES = "(?:" + String.join("|", JWK_PRIVATE_MEMBERS) + ")";
+
+    /** The name of a {@link #JWK_PRIVATE_MEMBERS} field, through its colon. */
+    private static final Pattern JWK_PRIVATE_NAME = Pattern.compile("\"" + JWK_PRIVATE_NAMES + "\"\\s*:");
+
+    /** {@link #JWK_PRIVATE_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
+    private static final Pattern EMBEDDED_JWK_PRIVATE_NAME = Pattern.compile(
+            BACKSLASH + "\"" + JWK_PRIVATE_NAMES + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
     /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
     static final Set<String> SENSITIVE_HEADERS = Set.of(
@@ -221,9 +273,7 @@ public final class Redactor {
                 Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK + "\n-----END " + m.group(1) + "-----"));
         out = UNTERMINATED_PEM_KEY.matcher(out).replaceAll(m ->
                 Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK));
-        out = AUTH_SCHEME.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isProse(m)
-                ? m.group()
-                : m.group(1) + " " + MASK));
+        out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
@@ -233,6 +283,8 @@ public final class Redactor {
         out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(m.group(1))
                 ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(m.group(1), m.group(3)) + "\\\""
                 : m.group()));
+        out = maskJwks(out, false);
+        out = maskJwks(out, true);
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
@@ -240,9 +292,33 @@ public final class Redactor {
     }
 
     /**
+     * Masks every credential {@link #AUTH_SCHEME} finds, keeping the scheme ({@code Bearer [REDACTED]}).
+     * A match kept as prose ({@link #isProse}) is read again from its word, so a scheme there
+     * ({@code token DPoP <credential>}) is found too.
+     */
+    private static String maskSchemeCredentials(String text) {
+        Matcher m = AUTH_SCHEME.matcher(text);
+        StringBuilder out = null;
+        int copied = 0;
+        int from = 0;
+        while (from < text.length() && m.find(from)) {
+            if (isProse(m)) {
+                from = m.end(1);
+                continue;
+            }
+            out = out == null ? new StringBuilder(text.length()) : out;
+            out.append(text, copied, m.start()).append(m.group(1)).append(' ').append(MASK);
+            copied = m.end();
+            from = copied;
+        }
+        return out == null ? text : out.append(text, copied, text.length()).toString();
+    }
+
+    /**
      * A header line with its value masked. A line with no value is left as it is, and so is an
-     * {@code Authorization}-style line whose value {@link #AUTH_SCHEME} keeps as prose
-     * ({@code Authorization: Bearer access token required}), as it does anywhere else.
+     * {@code Authorization}-style line whose {@code Bearer} or {@code Basic} value {@link #AUTH_SCHEME}
+     * keeps as prose ({@code Authorization: Bearer access token required}), as it does anywhere else.
+     * After {@code Token} or {@code DPoP} such a line is a credential ({@code Authorization: Token abc}).
      */
     private static String maskHeaderLine(MatchResult m) {
         String value = m.group(3);
@@ -252,7 +328,8 @@ public final class Redactor {
 
     private static boolean keepsLine(String name, String value) {
         Matcher scheme = AUTH_SCHEME.matcher(value);
-        return value.isBlank() || (keepsScheme(name) && scheme.lookingAt() && isProse(scheme));
+        return value.isBlank() || (keepsScheme(name) && scheme.lookingAt()
+                && scheme.group(1).matches("(?i)Bearer|Basic") && isProse(scheme));
     }
 
     /** Masks the value of every header line quoted inside a JSON string, as {@link #maskHeaderLine} does. */
@@ -344,10 +421,18 @@ public final class Redactor {
      * Whether a scheme match is prose ("Missing bearer token", "Basic authentication is required")
      * rather than a credential: one short all-letter word, and for {@code Basic} not the base64 of a
      * {@code user:pass} pair (RFC 7617), which can be all letters too ({@code dXNlcjpwYXNz}), even
-     * with the period that ends a sentence after it.
+     * with the period that ends a sentence after it. So is a short run of punctuation ({@link #PUNCTUATION}),
+     * as in {@code POST /oauth/token -> 200}.
      */
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
+        if (PUNCTUATION.matcher(word).matches()) {
+            return true;
+        }
+        // Token is also an ordinary word, as in "token endpoint: <url>".
+        if (m.group(1).equalsIgnoreCase("Token") && word.endsWith(":")) {
+            word = word.substring(0, word.length() - 1);
+        }
         return PROSE_WORD.matcher(word).matches()
                 && !(m.group(1).equalsIgnoreCase("Basic") && isUserPass(withoutTrailingPeriods(m.group(2))));
     }
@@ -415,6 +500,240 @@ public final class Redactor {
         return text.length();
     }
 
+    /**
+     * Masks the {@link #JWK_PRIVATE_MEMBERS} of every JSON object with a {@code kty} member, as a secret
+     * field is masked: a string or scalar value becomes the mask, and so does an object or array, through
+     * its close bracket. Only the JWK's own members count, not those of an object inside or next to it.
+     * Finding the JWKs reads at most {@code 4n + 1024} characters of a text of length {@code n}, then
+     * masks every private member name in the text instead, in a JWK or not: text that spends that budget
+     * is nothing a payer would send, so it is over-masked rather than read for longer.
+     */
+    private static String maskJwks(String text, boolean embedded) {
+        return maskJwks(text, embedded, 4 * text.length() + 1024);
+    }
+
+    /** {@link #maskJwks(String, boolean)} with a budget of {@code characters} to read. */
+    static String maskJwks(String text, boolean embedded, int characters) {
+        Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
+        String kty = embedded ? "\\\"kty\\\"" : "\"kty\"";
+        // Where the text read by objects() so far ends: every object before it is known.
+        int readEnd = 0;
+        Map<Integer, Integer> matching = new HashMap<>();
+        TreeSet<Integer> names = new TreeSet<>();
+        // The last kty found not to be in an object, and how its search ended.
+        int outside = -1;
+        int outsideResult = NOT_IN_BRACKETS;
+        // What is left to read: startOfObject() and objects() spend it, one character a step.
+        int[] budget = {characters};
+        while (type.find()) {
+            int member = type.start();
+            if (member < readEnd || !opensName(text, member, embedded, budget)) {
+                continue;
+            }
+            int start = startOfObject(text, member, embedded, matching, outside, outsideResult, budget);
+            if (start == OUT_OF_TIME) {
+                names = everyPrivateMember(text, embedded);
+                break;
+            }
+            if (start < 0) {
+                outside = member;
+                outsideResult = start;
+                continue;
+            }
+            List<JsonObject> objects = new ArrayList<>();
+            int end = objects(text, start, embedded, matching, objects, budget);
+            if (end == OUT_OF_TIME) {
+                names = everyPrivateMember(text, embedded);
+                break;
+            }
+            readEnd = end;
+            for (JsonObject object : objects) {
+                if (object.names().stream().anyMatch(name -> text.startsWith(kty, name))) {
+                    names.addAll(object.names());
+                }
+            }
+        }
+        if (names.isEmpty()) {
+            return text;
+        }
+        Matcher field = (embedded ? EMBEDDED_JSON_FIELD : JSON_FIELD).matcher(text);
+        Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : JSON_FIELD_STRUCTURE).matcher(text);
+        String masked = embedded ? "\\\"" + MASK + "\\\"" : "\"" + MASK + "\"";
+        StringBuilder out = new StringBuilder(text.length());
+        int copied = 0;
+        for (int name : names) {
+            if (name < copied) {
+                continue;
+            }
+            if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(structure.group(1))) {
+                out.append(text, copied, structure.end()).append(masked);
+                copied = endOfStructure(text, structure.end(), embedded);
+            } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(field.group(1))) {
+                out.append(text, copied, field.end(2)).append(masked);
+                copied = field.end();
+            }
+        }
+        return out.append(text, copied, text.length()).toString();
+    }
+
+    /** {@link #startOfObject}: no open bracket before the member, to the start of the text or the string. */
+    private static final int NOT_IN_BRACKETS = -1;
+
+    /** {@link #startOfObject}: the member is in an array, not an object. */
+    private static final int IN_ARRAY = -2;
+
+    /** {@link #startOfObject} and {@link #objects}: the budget is spent. */
+    private static final int OUT_OF_TIME = -3;
+
+    /**
+     * Where the name of every {@link #JWK_PRIVATE_MEMBERS} field in the text starts, in a JWK or not. Only
+     * the names are matched, not the values before them: in malformed text a value can end at the quote
+     * that opens the next name ({@code "x":""d":}), and a search for whole fields would skip that name.
+     */
+    private static TreeSet<Integer> everyPrivateMember(String text, boolean embedded) {
+        TreeSet<Integer> names = new TreeSet<>();
+        Matcher m = (embedded ? EMBEDDED_JWK_PRIVATE_NAME : JWK_PRIVATE_NAME).matcher(text);
+        while (m.find()) {
+            names.add(m.start());
+        }
+        return names;
+    }
+
+    /**
+     * Whether the quote at {@code member} opens a string rather than being escaped inside one: one
+     * backslash before it in embedded JSON ({@code \"}, not {@code \\\"}), none in plain JSON. The
+     * backslashes it reads are charged to the budget.
+     */
+    private static boolean opensName(String text, int member, boolean embedded, int[] budget) {
+        int run = backslashesBefore(text, embedded ? member + 1 : member);
+        budget[0] -= run;
+        return embedded ? run % 4 == 1 : run % 2 == 0;
+    }
+
+    /** A JSON object found by {@link #objects}: where it starts and where each of its own members' names starts. */
+    private record JsonObject(int start, List<Integer> names) {
+    }
+
+    /**
+     * Where the JSON object that holds the member whose name starts at {@code member} starts, or
+     * {@link #NOT_IN_BRACKETS} or {@link #IN_ARRAY} if it is not in an object, or {@link #OUT_OF_TIME}
+     * once the searches have read {@code budget[0]} characters in all, a run of backslashes before a
+     * quote included. Reads back from the member,
+     * skipping strings and closed brackets, and jumping over each pair of brackets already matched, by
+     * an earlier search (which adds each pair it matches to {@code matching}) or by {@link #objects}.
+     * Reading back to {@code outside}, a member found not to be in an object (its search ended with
+     * {@code outsideResult}), outside any string, ends the same way: at any bracket depth for
+     * {@link #NOT_IN_BRACKETS}, outside any bracket for {@link #IN_ARRAY}. In
+     * embedded JSON, where an inner quote is {@code \"} and an escaped one {@code \\\"}, an unescaped
+     * quote is the start of the outer string, so the member is not in embedded JSON.
+     */
+    private static int startOfObject(String text, int member, boolean embedded, Map<Integer, Integer> matching,
+            int outside, int outsideResult, int[] budget) {
+        // The close brackets read back over and not yet matched, innermost last.
+        List<Integer> closes = new ArrayList<>();
+        boolean inString = false;
+        for (int i = member - 1; i >= 0; i--) {
+            if (--budget[0] < 0) {
+                return OUT_OF_TIME;
+            }
+            char c = text.charAt(i);
+            if (c == '"') {
+                int run = backslashesBefore(text, i);
+                budget[0] -= run;
+                if (budget[0] < 0) {
+                    return OUT_OF_TIME;
+                }
+                if (embedded && run % 2 == 0) {
+                    return NOT_IN_BRACKETS;
+                }
+                if (run % (embedded ? 4 : 2) == (embedded ? 1 : 0)) {
+                    inString = !inString;
+                }
+                i -= run;
+                if (i == outside && !inString && (closes.isEmpty() || outsideResult == NOT_IN_BRACKETS)) {
+                    return outsideResult;
+                }
+            } else if (!inString && (c == '}' || c == ']') && matching.containsKey(i)) {
+                i = matching.get(i);
+            } else if (!inString && (c == '}' || c == ']')) {
+                closes.add(i);
+            } else if (!inString && (c == '{' || c == '[')) {
+                if (closes.isEmpty()) {
+                    return c == '{' ? i : IN_ARRAY;
+                }
+                matching.put(closes.removeLast(), i);
+            }
+        }
+        return NOT_IN_BRACKETS;
+    }
+
+    /**
+     * Adds to {@code found} every JSON object from the one starting at {@code start} through its close
+     * bracket, the ones inside it included, and returns where it stopped reading: after that bracket, or
+     * at the end of the text or of the string holding embedded JSON. Each object comes with where each of
+     * its own members' names starts: the
+     * opening quote, or in embedded JSON the backslash before it. Reads the text as
+     * {@link #endOfStructure} does. {@code matching} maps each bracket of an object read so far to the
+     * other one: this adds the objects it closes, and skips an object read before. Returns
+     * {@link #OUT_OF_TIME} once the budget is spent, as {@link #startOfObject} does.
+     */
+    private static int objects(String text, int start, boolean embedded, Map<Integer, Integer> matching,
+            List<JsonObject> found, int[] budget) {
+        // The open objects, innermost last, with null for an open array.
+        List<JsonObject> open = new ArrayList<>();
+        boolean inString = false;
+        boolean escaped = false;
+        boolean nameNext = false;
+        int i = start;
+        while (i < text.length()) {
+            if (--budget[0] < 0) {
+                return OUT_OF_TIME;
+            }
+            int at = i;
+            char c = text.charAt(i++);
+            if (embedded && c == '"') {
+                break;
+            }
+            if (embedded && c == '\\' && i < text.length()) {
+                c = text.charAt(i++);
+            }
+            if (inString) {
+                inString = escaped || c != '"';
+                escaped = !escaped && c == '\\';
+            } else if (c == '"') {
+                inString = true;
+                if (nameNext) {
+                    open.getLast().names().add(at);
+                    nameNext = false;
+                }
+            } else if (c == '{' && at > start && matching.containsKey(at)) {
+                i = matching.get(at) + 1;
+                nameNext = false;
+            } else if (c == '{') {
+                JsonObject object = new JsonObject(at, new ArrayList<>());
+                found.add(object);
+                open.add(object);
+                nameNext = true;
+            } else if (c == '[') {
+                open.add(null);
+                nameNext = false;
+            } else if (c == ',') {
+                nameNext = open.getLast() != null;
+            } else if (c == '}' || c == ']') {
+                JsonObject object = open.removeLast();
+                if (object != null) {
+                    matching.put(at, object.start());
+                    matching.put(object.start(), at);
+                }
+                nameNext = false;
+                if (open.isEmpty()) {
+                    break;
+                }
+            }
+        }
+        return i;
+    }
+
     private static boolean isUserPass(String token) {
         String decoded;
         try {
@@ -475,7 +794,8 @@ public final class Redactor {
      * durations are returned as they are. Any other value, such as a {@code StringBuilder} or a parsed
      * JSON tree, becomes its redacted {@link String#valueOf(Object) string form}, so it cannot carry a
      * secret through unredacted. An {@code Authorization}-style field keeps its scheme
-     * ({@code Bearer [REDACTED]}).
+     * ({@code Bearer [REDACTED]}). In a map with a {@code kty} key (a JWK) the
+     * {@link #JWK_PRIVATE_MEMBERS} are masked too.
      */
     public static Object redactTree(Object value) {
         return redactTree(null, value);
@@ -494,7 +814,11 @@ public final class Redactor {
         }
         if (value instanceof Map<?, ?> map) {
             Map<Object, Object> out = new LinkedHashMap<>();
-            map.forEach((k, v) -> out.put(k instanceof String s ? redact(s) : k, redactTree(String.valueOf(k), v)));
+            boolean jwk = map.keySet().stream().anyMatch("kty"::equals);
+            map.forEach((k, v) -> out.put(k instanceof String s ? redact(s) : k,
+                    jwk && k instanceof String name && JWK_PRIVATE_MEMBERS.contains(name)
+                            ? maskField(name, v)
+                            : redactTree(String.valueOf(k), v)));
             return Collections.unmodifiableMap(out);
         }
         if (value instanceof Set<?> set) {
