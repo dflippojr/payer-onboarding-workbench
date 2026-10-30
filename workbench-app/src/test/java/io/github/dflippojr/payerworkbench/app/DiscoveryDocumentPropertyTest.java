@@ -150,7 +150,7 @@ class DiscoveryDocumentPropertyTest {
         Arbitrary<String> hook = Arbitraries.frequencyOf(
                 net.jqwik.api.Tuple.of(5, Arbitraries.just("\"hook\":\"order-sign\",")),
                 net.jqwik.api.Tuple.of(1, Arbitraries.just("\"hook\":\"patient-view\",")));
-        Arbitrary<String> id = Arbitraries.of("\"id\":\"crd\"", "\"id\":\"crd-2\"", "\"id\":\"eyJhbGci.eyJpc3Mi.c2ln\"", "\"id\":[]", "\"id\":\"bad id\"", "\"id\":\"..\"",
+        Arbitrary<String> id = Arbitraries.of("\"id\":\"crd\"", "\"id\":\"crd-2\"", "\"id\":\"eyJhbGci.eyJpc3Mi.c2ln\"", "\"id\":\"[REDACTED]\"", "\"id\":[]", "\"id\":\"bad id\"", "\"id\":\"..\"",
                 "\"id\":\"\"", "\"id\":7", "\"id\":true", "\"id\":null", "\"id\":{}", "\"title\":\"no id\"");
         return Combinators.combine(hook, id).as((h, i) -> "{" + h + i + ",\"prefetch\":{}}").list().ofMinSize(1).ofMaxSize(4);
     }
@@ -173,7 +173,7 @@ class DiscoveryDocumentPropertyTest {
         }
         JsonNode id = first == null ? MAPPER.missingNode() : first.path("id");
         boolean usable = id.isTextual() && !id.textValue().isEmpty() && !id.textValue().equals("bad id")
-                && !id.textValue().equals("..");
+                && !id.textValue().equals("..") && !id.textValue().equals("[REDACTED]");
         // An id that is an object or array fails the whole document in the client library, wherever it is.
         boolean readable = !document.contains("\"id\":{}") && !document.contains("\"id\":[]");
 

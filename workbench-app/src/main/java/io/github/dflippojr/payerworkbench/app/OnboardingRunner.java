@@ -614,7 +614,7 @@ public class OnboardingRunner {
             // The first service for the hook is the one called, as discovery.services judges it. The SDK turns a
             // number or boolean id into a string, so the document decides whether there is an id; the value comes
             // from the descriptor because the recorded document is redacted.
-            if (first.id() == null || firstServiceHasNoId()) {
+            if (first.id() == null || firstServiceHasNoId(discovery == null ? null : readJson(discovery.responseBody()))) {
                 return Outcome.fail(noServiceId());
             }
             serviceId = first.id();
@@ -636,8 +636,7 @@ public class OnboardingRunner {
         }
 
         /** Whether the discovery document lists a service for the hook first whose id is missing or not a string. */
-        private boolean firstServiceHasNoId() {
-            JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
+        private boolean firstServiceHasNoId(JsonNode json) {
             return json != null && DiscoveryServicesCheck.firstService(json.path("services"), sample.hook())
                     .filter(service -> DiscoveryServicesCheck.stringId(service) == null).isPresent();
         }
@@ -653,7 +652,7 @@ public class OnboardingRunner {
                 }
             }
             // The library rejects an object or array id, and the discovery.services finding names it as missing.
-            if (firstServiceHasNoId()) {
+            if (firstServiceHasNoId(json)) {
                 return noServiceId();
             }
             return "The client library could not read the payer's discovery document: a service's hook, id, title "

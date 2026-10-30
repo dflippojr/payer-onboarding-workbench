@@ -33,6 +33,10 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
 
     private static final Pattern URL_SAFE_ID = Pattern.compile("[A-Za-z0-9._~-]+");
 
+    /** What the redactor leaves of a JWT-shaped value; the part it masked was URL-safe. */
+    private static final Pattern MASKED_JWT = Pattern.compile(
+            "eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]*\\." + Pattern.quote(Redactor.MASK));
+
     private final Set<String> requiredHooks;
 
     public DiscoveryServicesCheck(Set<String> requiredHooks) {
@@ -144,8 +148,8 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
                 return List.of(noId(hook, consequence, evidence));
             }
             // The body is redacted, and a JWT-shaped id loses its URL-safe last part to the mask. The run called
-            // the original, so only the part the mask left is judged.
-            if (!isUrlSafeServiceId(id.replace(Redactor.MASK, "x"))) {
+            // the original, so only the rest is judged. A mask anywhere else is the payer's own text.
+            if (!isUrlSafeServiceId(MASKED_JWT.matcher(id).replaceAll("x"))) {
                 return List.of(unusableId(hook, id, consequence, evidence));
             }
         }

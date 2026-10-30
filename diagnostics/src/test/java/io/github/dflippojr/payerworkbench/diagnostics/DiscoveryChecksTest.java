@@ -247,10 +247,11 @@ class DiscoveryChecksTest {
             assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
         }
 
-        @Test
-        void anUnsafeIdStaysUnsafeBesideAMask() {
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"a/b eyJhbGci.eyJpc3Mi.c2ln", "[REDACTED]", "a.[REDACTED]"})
+        void anUnsafeIdStaysUnsafeBesideAMask(String id) {
             var run = healthy();
-            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"a/b eyJhbGci.eyJpc3Mi.c2ln\"}]}");
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + id + "\"}]}");
             Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
             assertTrue(f.title().contains("not URL-safe"), f.title());
         }
