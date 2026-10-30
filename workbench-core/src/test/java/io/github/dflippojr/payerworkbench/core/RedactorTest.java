@@ -582,6 +582,10 @@ class RedactorTest {
             assertEquals("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"[REDACTED]\"}",
                     Redactor.maskJwks(text, false, budget));
         }
+        // A run of backslashes skipped at once costs what reading it does: three searches back over 1000
+        // of them spend 3000, not 1021.
+        String run = "\\".repeat(1000) + "\"kty\":\"".repeat(3) + "{\"d\":\"x\"}";
+        assertTrue(Redactor.maskJwks(run, false, 1200).endsWith("{\"d\":\"[REDACTED]\"}"));
     }
 
     @Test
