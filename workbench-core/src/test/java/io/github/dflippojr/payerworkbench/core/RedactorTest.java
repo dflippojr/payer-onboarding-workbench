@@ -482,6 +482,11 @@ class RedactorTest {
         assertEquals("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}]}\"}",
                 Redactor.redact("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVEMBK\\\"}]}\"}"));
         assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"", Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVCUTOFF"));
+        // Pretty-printed JSON embedded in a JSON string: its line breaks are escaped.
+        assertEquals("{\"body\":\"{\\n \\\"kty\\\" :\\n \\\"RSA\\\",\\n \\\"d\\\":\\n\\t\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\n \\\"kty\\\" :\\n \\\"RSA\\\",\\n \\\"d\\\":\\n\\t\\\"PRIVEMBNL\\\"}\"}"));
+        assertEquals("{\"body\":\"{\\\"password\\\":\\n\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"password\\\":\\n\\\"PRIVPW\\\"}\"}"));
         // A JWK inside a JWK: each one's own members, the inner one read before the outer.
         assertEquals("{\"a\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"kty\":\"oct\",\"k\":\"[REDACTED]\"}",
                 Redactor.redact("{\"a\":{\"kty\":\"oct\",\"k\":\"PRIVK1\"},\"kty\":\"oct\",\"k\":\"PRIVK2\"}"));
@@ -599,6 +604,9 @@ class RedactorTest {
         assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer --------"));
         // Eight characters count before a prose colon is dropped.
         assertEquals("Token [REDACTED]", Redactor.redact("Token -------:"));
+        // A scheme kept as prose does not hide the scheme after it.
+        assertEquals("received token DPoP [REDACTED]", Redactor.redact("received token DPoP PHNhbWw6QXNzZXJ0aW9u"));
+        assertEquals("the token Bearer [REDACTED] expired", Redactor.redact("the token Bearer abc123def expired"));
         assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
         // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
         for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",
@@ -611,6 +619,9 @@ class RedactorTest {
     @Test
     void masksAUrlEncodedBearerCredential() {
         assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer%20abc123def"));
+        // One encoded space: a + after it is part of the token.
+        assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer%20++++++++"));
+        assertEquals("Bearer " + Redactor.MASK, Redactor.redact("Bearer+++++++++"));
         // As after a space, the credential runs to the next whitespace, quote, comma, semicolon or backslash.
         assertEquals("cb?auth=Bearer [REDACTED]", Redactor.redact("cb?auth=Bearer+abc123def&x=1"));
         assertEquals("cb?h=Authorization%3A%20Bearer [REDACTED]", Redactor.redact("cb?h=Authorization%3A%20Bearer%20abc123def"));
