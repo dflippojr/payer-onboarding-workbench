@@ -152,6 +152,13 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
 - **`replay.js` still exports `formatMs`, `headers` and `pretty`,** now as re-exports, so the module's exports did not shrink.
 - **The replay's `h` gained the app's `on*` listener branch.** The replay passes no `on*` attributes, so its markup is unchanged.
 
+## One rule for which service a run calls (#297)
+
+- **The run stops at the first service for the hook.** `DiscoveryServicesCheck.firstService` is the rule, and the runner calls it too, so the finding and the timeline cannot name different services. If that service has no id, Discovery fails with "the payer's order-sign service has no id", even when a later service for the hook has one. This is the issue's recommended choice over skipping id-less services.
+- **A number or boolean id counts as no id.** The SDK turns one into a string and would call `/cds-services/7`, so the discovery document decides whether there is an id. An object or array id fails the whole document in the SDK, and Discovery still says the service has no id when it is the first one for the hook. An empty string is still reported as not URL-safe: it is an id the payer sent.
+- **The runner reads the discovery body as the payer sent it, and the check ignores the mask.** The recorded `HttpExchange` is redacted, which can break its JSON (a PEM block gains literal newlines) and puts `[REDACTED]` in a JWT-shaped id. The run calls the id as advertised, and the check judges only the rest of it. A mask anywhere else is the payer's own text and stays unsafe. One case cannot be told apart: a payer that literally sends `eyJa.b.[REDACTED]` passes the check while Discovery refuses it, and the verdict is still FAIL.
+- **A finding says the hook was not sent only when no hook exchange is recorded.** Library callers can pass several required hooks, so a bad id on one does not mean nothing was sent.
+
 ## Report disclaimer for custom endpoints (#298)
 
 - **Two fixed texts, chosen by payer id.** `RunReport.DISCLAIMER_TEXT` stays for synthetic runs, byte for byte. A run whose payer id is `custom-endpoint` gets `CUSTOM_DISCLAIMER_TEXT`, the issue's recommended wording. The replay bundle only records synthetic runs, so it does not change.

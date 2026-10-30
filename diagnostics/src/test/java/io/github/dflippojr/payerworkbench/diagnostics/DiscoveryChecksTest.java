@@ -180,6 +180,114 @@ class DiscoveryChecksTest {
                     + "{\"hook\":\"order-sign\",\"id\":\"bad id\"},{\"hook\":\"patient-view\",\"id\":\"x y\"}]}");
             assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
         }
+
+        /** #297: the issue's own test. */
+        @Test
+        void aServiceWithNoIdBeforeAUsableOneIsNotCalledUnusable() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"prefetch\":{}},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"crd\",\"prefetch\":{}}]}");
+            for (Finding f : new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build())) {
+                assertFalse(f.title().contains("not URL-safe: ''"), f.title());
+                assertFalse(f.explanation().contains("never sent the hook"), f.explanation());
+            }
+        }
+
+        /** #297: a missing id is named as missing, and so is one that is not a string. */
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"", "\"id\":null,", "\"id\":7,", "\"id\":true,",
+                "\"id\":{},", "\"id\":[],"})
+        void aFirstServiceWithoutAStringIdFailsAsHavingNoId(String id) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{" + id + "\"hook\":\"order-sign\",\"prefetch\":{}},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"crd\",\"prefetch\":{}}]}");
+            run.hooks.clear();
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertEquals("The first order-sign service has no id", f.title());
+            assertTrue(f.explanation().contains("never sent the hook"), f.explanation());
+            assertEquals("advertised services: (no id) -> order-sign, crd -> order-sign; "
+                    + "service with no id: the first for order-sign", f.evidence());
+            assertTrue(f.suggestedFix().contains("order-sign"), f.suggestedFix());
+        }
+
+        /** #297: whatever the wording, a finding never says the hook was not sent when an exchange is recorded. */
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"{\"hook\":\"order-sign\"}",
+                "{\"hook\":\"order-sign\",\"id\":\"a/b\"}"})
+        void anUnusableIdNeverSaysTheHookWasNotSentWhenOneIsRecorded(String service) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[" + service + "]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertFalse(f.explanation().contains("never sent"), f.explanation());
+        }
+
+        @Test
+        void anUnsafeIdSaysTheHookWasNotSentWhenNoneIsRecorded() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"a/b\"}]}");
+            run.hooks.clear();
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("never sent the hook"), f.explanation());
+        }
+
+        @Test
+        void aNonStringIdIsListedAsNoId() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"ok-1\"},"
+                    + "{\"hook\":\"order-sign\",\"id\":7}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+            assertEquals("advertised services: ok-1 -> order-sign, (no id) -> order-sign", f.evidence());
+        }
+
+        /** The recorded body is redacted, and the run called the original id. */
+        @Test
+        void aJwtShapedIdIsNotCalledUnsafeForItsMask() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"eyJhbGci.eyJpc3Mi.c2ln\"}]}");
+            assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+        }
+
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"eyJhbGci.eyJpc3Mi.[REDACTED]", "x-eyJhbGci.eyJpc3Mi.[REDACTED]",
+                "a.eyJhbGci.eyJpc3Mi.[REDACTED]"})
+        void whatTheRedactorLeavesOfAJwtIsNotCalledUnsafe(String id) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + id + "\"}]}");
+            assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+        }
+
+        /** The body can be 4 MiB, and no HTTP timeout bounds the matching. Calls the helper, as the fixture redacts. */
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"eyJ", "eyJ-"})
+        void aLongIdOfJwtStartsIsJudgedInLinearTime(String unit) {
+            String id = unit.repeat(40_000);
+            String kept = org.junit.jupiter.api.Assertions.assertTimeout(java.time.Duration.ofSeconds(5),
+                    () -> DiscoveryServicesCheck.withoutJwtMask(id));
+            assertEquals(id, kept);
+        }
+
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"a/b eyJhbGci.eyJpc3Mi.c2ln", "[REDACTED]", "a.[REDACTED]",
+                "xeyJhbGci.eyJpc3Mi.[REDACTED]"})
+        void anUnsafeIdStaysUnsafeBesideAMask(String id) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + id + "\"}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.title().contains("not URL-safe"), f.title());
+        }
+
+        @Test
+        void theFirstServiceForAHookIsTheOneJudged() {
+            var services = Support.parseJson("{\"services\":[{\"hook\":\"patient-view\",\"id\":\"pv\"},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"one\"},{\"hook\":\"order-sign\",\"id\":\"two\"},"
+                    + "{\"hook\":\"order-select\",\"id\":7},{\"hook\":\"order-select\",\"id\":\"three\"},"
+                    + "{\"hook\":\"order-dispatch\"},{\"hook\":\"order-dispatch\",\"id\":\"four\"}]}")
+                    .orElseThrow().path("services");
+            assertEquals("one", DiscoveryServicesCheck.stringId(DiscoveryServicesCheck.firstService(services, "order-sign").orElseThrow()));
+            assertEquals(null, DiscoveryServicesCheck.stringId(DiscoveryServicesCheck.firstService(services, "order-select").orElseThrow()));
+            assertEquals(null, DiscoveryServicesCheck.stringId(DiscoveryServicesCheck.firstService(services, "order-dispatch").orElseThrow()));
+            assertTrue(DiscoveryServicesCheck.firstService(services, "encounter-start").isEmpty());
+        }
     }
 
     @Nested

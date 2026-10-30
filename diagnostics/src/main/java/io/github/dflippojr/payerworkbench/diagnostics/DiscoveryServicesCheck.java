@@ -4,11 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import io.github.dflippojr.payerworkbench.core.DiagnosticCheck;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
+import io.github.dflippojr.payerworkbench.core.Redactor;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
@@ -31,6 +33,13 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
 
     private static final Pattern URL_SAFE_ID = Pattern.compile("[A-Za-z0-9._~-]+");
 
+    /**
+     * What the redactor leaves of a JWT-shaped value; the part it masked was URL-safe. Each run of token characters
+     * is tried once, from its start, because an id can be megabytes of {@code eyJ} with no dots.
+     */
+    private static final Pattern MASKED_JWT = Pattern.compile(
+            "(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*?\\beyJ)[A-Za-z0-9_-]++\\.[A-Za-z0-9_-]*+\\." + Pattern.quote(Redactor.MASK));
+
     private final Set<String> requiredHooks;
 
     public DiscoveryServicesCheck(Set<String> requiredHooks) {
@@ -43,6 +52,25 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
      */
     public static boolean isUrlSafeServiceId(String id) {
         return id != null && URL_SAFE_ID.matcher(id).matches() && !id.equals(".") && !id.equals("..");
+    }
+
+    /**
+     * The service a run calls for a hook, which is the first one listed for it, however many follow.
+     * The runner and this check both go through here, so they cannot judge different services.
+     */
+    public static Optional<JsonNode> firstService(JsonNode services, String hook) {
+        for (JsonNode service : services) {
+            if (hook.equals(service.path("hook").asText(""))) {
+                return Optional.of(service);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** A service's id, or {@code null} when it is missing or is not a string. */
+    public static String stringId(JsonNode service) {
+        JsonNode id = service.path("id");
+        return id.isTextual() ? id.textValue() : null;
     }
 
     @Override
@@ -81,7 +109,8 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
             }
             String hook = service.path("hook").asText("");
             advertised.add(hook);
-            lines.add(service.path("id").asText("(no id)") + " -> " + (hook.isEmpty() ? "(no hook)" : hook));
+            String id = stringId(service);
+            lines.add((id == null ? "(no id)" : id) + " -> " + (hook.isEmpty() ? "(no hook)" : hook));
         }
         String evidence = "advertised services: " + (lines.isEmpty() ? "none" : lines.join(", "));
         if (notObjects > 0) {
@@ -112,21 +141,28 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
                     "Ask the payer whether they support " + String.join(", ", missing)
                             + " in this environment, or drop it from the hooks this integration calls."));
         }
+        // Only a run with no hook exchange may say the hook was not sent.
+        String consequence = obs.hookResponses().isEmpty() ? "so the client cannot build the request URL and never "
+                + "sent the hook." : "so the client cannot build the request URL.";
         for (String hook : new TreeSet<>(requiredHooks)) {
-            for (JsonNode service : services) {
-                if (hook.equals(service.path("hook").asText(""))) {
-                    // The client calls the first service for a hook, so that is the id that must be usable.
-                    String id = service.path("id").asText("");
-                    if (!isUrlSafeServiceId(id)) {
-                        return List.of(unusableId(hook, id, evidence));
-                    }
-                    break;
-                }
+            // Every required hook is advertised by now, so a null id means its first service has none.
+            String id = firstService(services, hook).map(DiscoveryServicesCheck::stringId).orElse(null);
+            if (id == null) {
+                return List.of(noId(hook, consequence, evidence));
+            }
+            // The body is redacted, and a JWT-shaped id loses its URL-safe last part to the mask. The run called
+            // the original, so only the rest is judged. A mask anywhere else is the payer's own text.
+            if (!isUrlSafeServiceId(withoutJwtMask(id))) {
+                return List.of(unusableId(hook, id, consequence, evidence));
             }
         }
         return List.of(new Finding(CHECK_ID, Severity.PASS, "CRD hooks advertised: " + String.join(", ", crd),
                 "Discovery lists CRD services" + (requiredHooks.isEmpty() ? "." : ", including every required hook."),
                 evidence, null));
+    }
+
+    static String withoutJwtMask(String id) {
+        return MASKED_JWT.matcher(id).replaceAll("x");
     }
 
     private static Finding notObjects(List<String> named, int count, String evidence) {
@@ -143,11 +179,20 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
                         + "drop the entries named here.");
     }
 
-    private static Finding unusableId(String hook, String id, String evidence) {
+    private static Finding noId(String hook, String consequence, String evidence) {
+        return new Finding(CHECK_ID, Severity.FAIL, "The first " + hook + " service has no id",
+                "CDS Hooks Discovery requires every service to have an id, a string, because a CDS service is "
+                        + "called at /cds-services/{id}. The workbench calls the first service listed for a hook "
+                        + "and does not move on to a later one. This one has no string id, " + consequence,
+                evidence + "; service with no id: the first for " + hook,
+                "Ask the payer to give their first " + hook + " service an id made only of letters, digits, '-', "
+                        + "'_', '.' or '~', or to list the service they want called first.");
+    }
+
+    private static Finding unusableId(String hook, String id, String consequence, String evidence) {
         return new Finding(CHECK_ID, Severity.FAIL, "Service id for " + hook + " is not URL-safe: '" + id + "'",
                 "A CDS service is called at /cds-services/{id}, so its id has to be usable as one URL path "
-                        + "segment. This one has characters that are not allowed there, so the client cannot "
-                        + "build the request URL and never sent the hook.",
+                        + "segment. This one has characters that are not allowed there, " + consequence,
                 evidence + "; unusable id: '" + id + "'",
                 "Ask the payer to advertise an id made only of letters, digits, '-', '_', '.' or '~' for "
                         + hook + ".");

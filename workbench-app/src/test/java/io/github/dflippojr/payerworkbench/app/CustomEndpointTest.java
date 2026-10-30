@@ -1053,6 +1053,119 @@ class CustomEndpointTest {
         assertFalse(run.steps().getLast().ok(), "diagnostics must not pass a broken run");
     }
 
+    /**
+     * #297: the run stops at the first service for the hook. With no id there, Discovery fails, the POST
+     * never goes to the next service, and the finding and the step describe the same service.
+     */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"", "\"id\":null,", "\"id\":7,", "\"id\":{},", "\"id\":[],"})
+    void aFirstServiceWithNoIdFailsDiscoveryAndTheNextServiceIsNotCalled(String id) throws Exception {
+        List<String> posts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/first/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("POST")) {
+                posts.add(exchange.getRequestURI().getPath());
+                respond(exchange, "{\"cards\":[]}");
+            } else {
+                respond(exchange, "{\"services\":[{" + id + "\"hook\":\"order-sign\",\"title\":\"t\",\"description\":\"d\","
+                        + "\"prefetch\":{}},{\"hook\":\"order-sign\",\"id\":\"crd\",\"title\":\"t\","
+                        + "\"description\":\"d\",\"prefetch\":{}}]}");
+            }
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/first",
+                AuthType.NONE, null, null, null));
+
+        assertEquals(List.of(), posts);
+        StepResult discovery = run.steps().get(1);
+        assertFalse(discovery.ok());
+        assertEquals("The payer's order-sign service has no id", discovery.summary());
+        assertEquals("skipped", run.steps().get(2).details().get("status"));
+        var finding = run.findings().stream().filter(f -> f.checkId().equals("discovery.services")).findFirst()
+                .orElseThrow();
+        assertEquals(io.github.dflippojr.payerworkbench.core.Severity.FAIL, finding.severity());
+        assertEquals("The first order-sign service has no id", finding.title());
+        assertFalse(run.steps().getLast().ok(), "diagnostics must not pass a broken run");
+    }
+
+    /** #297: the recorded discovery document is redacted, but the run calls the id the payer advertised. */
+    @Test
+    void aJwtShapedServiceIdIsCalledAsAdvertisedAndPasses() throws Exception {
+        String id = "eyJhbGci.eyJpc3Mi.c2ln";
+        List<String> posts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/jwt/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("POST")) {
+                posts.add(exchange.getRequestURI().getPath());
+                respond(exchange, "{\"cards\":[]}");
+            } else {
+                respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + id + "\",\"prefetch\":{}}]}");
+            }
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/jwt",
+                AuthType.NONE, null, null, null));
+
+        assertEquals(List.of("/jwt/cds-services/" + id), posts);
+        assertTrue(run.steps().get(1).ok(), run.steps().get(1)::summary);
+        var finding = run.findings().stream().filter(f -> f.checkId().equals("discovery.services")).findFirst()
+                .orElseThrow();
+        assertEquals(io.github.dflippojr.payerworkbench.core.Severity.PASS, finding.severity(), finding::title);
+    }
+
+    /** #297: redacting a PEM block breaks the recorded JSON, so the run reads the id's type from the original. */
+    @Test
+    void aNonStringIdIsNotCalledWhenRedactionBreaksTheRecordedDocument() throws Exception {
+        List<String> posts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/pem/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("POST")) {
+                posts.add(exchange.getRequestURI().getPath());
+                respond(exchange, "{\"cards\":[]}");
+            } else {
+                respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":7,\"prefetch\":{},\"description\":"
+                        + "\"-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\"}]}");
+            }
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/pem",
+                AuthType.NONE, null, null, null));
+
+        assertEquals(List.of(), posts);
+        assertEquals("The payer's order-sign service has no id", run.steps().get(1).summary());
+    }
+
+    /** #297: a usable first service is the one called, whatever follows it. */
+    @Test
+    void theFirstServiceForTheHookIsCalledWhenItHasAnId() throws Exception {
+        List<String> posts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/first/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("POST")) {
+                posts.add(exchange.getRequestURI().getPath());
+                respond(exchange, "{\"cards\":[]}");
+            } else {
+                respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"crd\",\"prefetch\":{}},"
+                        + "{\"hook\":\"order-sign\",\"prefetch\":{}}]}");
+            }
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/first",
+                AuthType.NONE, null, null, null));
+
+        assertEquals(List.of("/first/cds-services/crd"), posts);
+        assertTrue(run.steps().get(1).ok(), run.steps().get(1)::summary);
+        assertEquals("crd", run.steps().get(1).details().get("selectedService"));
+    }
+
     @Test
     void plantedCredentialNeverLeaves(CapturedOutput output) throws Exception {
         String secret = "PLANTED-" + secret();

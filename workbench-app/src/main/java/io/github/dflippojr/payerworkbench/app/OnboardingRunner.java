@@ -589,6 +589,7 @@ public class OnboardingRunner {
                 return Outcome.fail(unreadableDiscovery());
             }
             List<Map<String, Object>> listed = new ArrayList<>();
+            CdsServiceDescriptor first = null;
             for (CdsServiceDescriptor service : services) {
                 if (listed.size() < MAX_VIEWS) {
                     Map<String, Object> view = new LinkedHashMap<>();
@@ -600,17 +601,23 @@ public class OnboardingRunner {
                     putNotShown(view, "prefetchKeysNotShown", service.prefetch().size() - keys.size());
                     listed.add(view);
                 }
-                if (serviceId == null && sample.hook().equals(service.hook())) {
-                    serviceId = service.id();
-                    prefetchKeys = service.prefetch().keySet();
+                if (first == null && sample.hook().equals(service.hook())) {
+                    first = service;
                 }
             }
             details.put("services", listed);
             putNotShown(details, "servicesNotShown", services.size() - listed.size());
-            if (serviceId == null) {
+            if (first == null) {
                 return Outcome.fail("The payer advertises no " + sample.hook() + " service, which sample "
                         + sample.id() + " needs");
             }
+            // The first service for the hook is the one called, as discovery.services judges it. The SDK turns a
+            // number or boolean id into a string, so the document decides whether there is an id.
+            if (first.id() == null || firstServiceHasNoId(discoveryDocument())) {
+                return Outcome.fail(noServiceId());
+            }
+            serviceId = first.id();
+            prefetchKeys = first.prefetch().keySet();
             details.put("selectedService", TextLimit.cut(serviceId));
             if (!DiscoveryServicesCheck.isUrlSafeServiceId(serviceId)) {
                 return Outcome.fail("The payer advertises service id '" + TextLimit.cut(serviceId) + "' for "
@@ -623,8 +630,24 @@ public class OnboardingRunner {
             return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
 
+        /** The discovery body as the payer sent it; {@code discovery} is redacted, which can break its JSON. */
+        private JsonNode discoveryDocument() {
+            List<PayerExchange> events = recorder.events(PayerCallPhase.DISCOVERY);
+            return events.isEmpty() ? null : readJson(events.getLast().responseBody());
+        }
+
+        private String noServiceId() {
+            return "The payer's " + sample.hook() + " service has no id";
+        }
+
+        /** Whether the discovery document lists a service for the hook first whose id is missing or not a string. */
+        private boolean firstServiceHasNoId(JsonNode json) {
+            return json != null && DiscoveryServicesCheck.firstService(json.path("services"), sample.hook())
+                    .filter(service -> DiscoveryServicesCheck.stringId(service) == null).isPresent();
+        }
+
         private String unreadableDiscovery() {
-            JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
+            JsonNode json = discoveryDocument();
             if (json == null) {
                 return "The payer's discovery response is not JSON the client library can read";
             }
@@ -632,6 +655,10 @@ public class OnboardingRunner {
                 if (!service.isObject()) {
                     return UNREADABLE_SERVICES;
                 }
+            }
+            // The library rejects an object or array id, and the discovery.services finding names it as missing.
+            if (firstServiceHasNoId(json)) {
+                return noServiceId();
             }
             return "The client library could not read the payer's discovery document: a service's hook, id, title "
                     + "or description is not a string, or its prefetch is not an object of query strings";
