@@ -178,6 +178,16 @@ public final class Redactor {
     /** {@link #JWK_TYPE} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(BACKSLASH + "\"kty" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
+    /** The {@link #JWK_PRIVATE_MEMBERS} names, as a regex alternation. */
+    private static final String JWK_PRIVATE_NAMES = "(?:" + String.join("|", JWK_PRIVATE_MEMBERS) + ")";
+
+    /** The name of a {@link #JWK_PRIVATE_MEMBERS} field, through its colon. */
+    private static final Pattern JWK_PRIVATE_NAME = Pattern.compile("\"" + JWK_PRIVATE_NAMES + "\"\\s*:");
+
+    /** {@link #JWK_PRIVATE_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
+    private static final Pattern EMBEDDED_JWK_PRIVATE_NAME = Pattern.compile(
+            BACKSLASH + "\"" + JWK_PRIVATE_NAMES + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
+
     /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
     static final Set<String> SENSITIVE_HEADERS = Set.of(
             "authorization", "proxy-authorization", "cookie", "set-cookie",
@@ -575,19 +585,16 @@ public final class Redactor {
     /** {@link #startOfObject} and {@link #objects}: the budget is spent. */
     private static final int OUT_OF_TIME = -3;
 
-    /** Where the name of every {@link #JWK_PRIVATE_MEMBERS} field in the text starts, in a JWK or not. */
+    /**
+     * Where the name of every {@link #JWK_PRIVATE_MEMBERS} field in the text starts, in a JWK or not. Only
+     * the names are matched, not the values before them: in malformed text a value can end at the quote
+     * that opens the next name ({@code "x":""d":}), and a search for whole fields would skip that name.
+     */
     private static TreeSet<Integer> everyPrivateMember(String text, boolean embedded) {
         TreeSet<Integer> names = new TreeSet<>();
-        List<Pattern> fields = embedded
-                ? List.of(EMBEDDED_JSON_FIELD, EMBEDDED_JSON_FIELD_STRUCTURE)
-                : List.of(JSON_FIELD, JSON_FIELD_STRUCTURE);
-        for (Pattern field : fields) {
-            Matcher m = field.matcher(text);
-            while (m.find()) {
-                if (JWK_PRIVATE_MEMBERS.contains(m.group(1))) {
-                    names.add(m.start());
-                }
-            }
+        Matcher m = (embedded ? EMBEDDED_JWK_PRIVATE_NAME : JWK_PRIVATE_NAME).matcher(text);
+        while (m.find()) {
+            names.add(m.start());
         }
         return names;
     }
