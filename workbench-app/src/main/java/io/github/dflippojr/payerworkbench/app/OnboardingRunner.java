@@ -589,6 +589,7 @@ public class OnboardingRunner {
                 return Outcome.fail(unreadableDiscovery());
             }
             List<Map<String, Object>> listed = new ArrayList<>();
+            CdsServiceDescriptor first = null;
             for (CdsServiceDescriptor service : services) {
                 if (listed.size() < MAX_VIEWS) {
                     Map<String, Object> view = new LinkedHashMap<>();
@@ -600,17 +601,25 @@ public class OnboardingRunner {
                     putNotShown(view, "prefetchKeysNotShown", service.prefetch().size() - keys.size());
                     listed.add(view);
                 }
-                if (serviceId == null && sample.hook().equals(service.hook())) {
-                    serviceId = service.id();
-                    prefetchKeys = service.prefetch().keySet();
+                if (first == null && sample.hook().equals(service.hook())) {
+                    first = service;
                 }
             }
             details.put("services", listed);
             putNotShown(details, "servicesNotShown", services.size() - listed.size());
-            if (serviceId == null) {
+            if (first == null) {
                 return Outcome.fail("The payer advertises no " + sample.hook() + " service, which sample "
                         + sample.id() + " needs");
             }
+            // The first service for the hook is the one called, as discovery.services judges it. The SDK turns a
+            // number or boolean id into a string, so the id comes from the document, not from the descriptor.
+            JsonNode document = discovery == null ? null : readJson(discovery.responseBody());
+            serviceId = document == null ? first.id()
+                    : DiscoveryServicesCheck.firstServiceId(document.path("services"), sample.hook());
+            if (serviceId == null) {
+                return Outcome.fail("The payer's " + sample.hook() + " service has no id");
+            }
+            prefetchKeys = first.prefetch().keySet();
             details.put("selectedService", TextLimit.cut(serviceId));
             if (!DiscoveryServicesCheck.isUrlSafeServiceId(serviceId)) {
                 return Outcome.fail("The payer advertises service id '" + TextLimit.cut(serviceId) + "' for "

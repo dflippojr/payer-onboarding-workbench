@@ -238,6 +238,19 @@ class DiscoveryChecksTest {
             Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
             assertEquals("advertised services: ok-1 -> order-sign, (no id) -> order-sign", f.evidence());
         }
+
+        @Test
+        void aServiceIdIsTheFirstServicesStringIdForTheHook() {
+            var services = Support.parseJson("{\"services\":[{\"hook\":\"patient-view\",\"id\":\"pv\"},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"one\"},{\"hook\":\"order-sign\",\"id\":\"two\"},"
+                    + "{\"hook\":\"order-select\",\"id\":7},{\"hook\":\"order-select\",\"id\":\"three\"},"
+                    + "{\"hook\":\"order-dispatch\"},{\"hook\":\"order-dispatch\",\"id\":\"four\"}]}")
+                    .orElseThrow().path("services");
+            assertEquals("one", DiscoveryServicesCheck.firstServiceId(services, "order-sign"));
+            assertEquals(null, DiscoveryServicesCheck.firstServiceId(services, "order-select"));
+            assertEquals(null, DiscoveryServicesCheck.firstServiceId(services, "order-dispatch"));
+            assertEquals(null, DiscoveryServicesCheck.firstServiceId(services, "encounter-start"));
+        }
     }
 
     @Nested

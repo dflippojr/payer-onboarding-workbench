@@ -151,3 +151,9 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
 - **The canonical file lives with the app, and the export copies it.** Spring serves it at `/shared/present.js` with no build step. `scripts/export-replays.mjs` copies it to `site-dist/shared/present.js`, beside `replay.js`, so `./shared/present.js` resolves the same way in both. `vendor-into-site.mjs` already copies every bundle file. `replay/replay.js` does not run from `replay/` itself; the bundle does.
 - **`replay.js` still exports `formatMs`, `headers` and `pretty`,** now as re-exports, so the module's exports did not shrink.
 - **The replay's `h` gained the app's `on*` listener branch.** The replay passes no `on*` attributes, so its markup is unchanged.
+
+## One rule for which service a run calls (#297)
+
+- **The run stops at the first service for the hook.** `DiscoveryServicesCheck.firstServiceId` is the rule, and the runner calls it too, so the finding and the timeline cannot name different services. If that service has no id, Discovery fails with "the payer's order-sign service has no id", even when a later service for the hook has one. This is the issue's recommended choice over skipping id-less services.
+- **A number or boolean id counts as no id.** The SDK turns one into a string and would call `/cds-services/7`, so the runner reads the id from the discovery document, not from the descriptor. An empty string is still reported as not URL-safe: it is an id the payer sent.
+- **A finding says the hook was not sent only when no hook exchange is recorded.** Library callers can pass several required hooks, so a bad id on one does not mean nothing was sent.

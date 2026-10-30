@@ -15,7 +15,7 @@ Thresholds and expectations are set with `DiagnosticsConfig`: the hooks the call
 | checkId | Detects | Severities |
 |---|---|---|
 | `discovery.reachable` | The discovery endpoint (`GET .../cds-services`) is unreachable, returns a status other than 200, isn't JSON, or has no `services` array. | FAIL / PASS |
-| `discovery.services` | An entry in `services` is not a JSON object; no CRD hooks advertised; hooks the caller needs (`DiagnosticsConfig.requiredHooks`) are missing. | FAIL / PASS |
+| `discovery.services` | An entry in `services` is not a JSON object; no CRD hooks advertised; hooks the caller needs (`DiagnosticsConfig.requiredHooks`) are missing; the first service for a needed hook, the one a run calls, has no string id or an id that is not URL-safe. | FAIL / PASS |
 | `discovery.prefetch-keys` | Prefetch keys other than the standard `patient`, `encounter`, `coverage` that the router library builds. Each key is mapped to the standard key its FHIR query implies. Reported, not failed. | INFO / PASS |
 | `auth.token` | Token endpoint unreachable, 401 / `invalid_client`, 400 `invalid_scope`, other OAuth2 errors, no `access_token`, missing `token_type` or one other than Bearer, missing `expires_in` (WARN). | FAIL / WARN / PASS |
 | `auth.client-assertion` | SMART Backend Services assertion accepted (PASS), or identity (`iss`/`sub`), exact `aud`, lifetime (`exp`/`iat`), replay (`jti`), and signature rejection explained from allowed claims and payer `error_description`. | FAIL / PASS |
