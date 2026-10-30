@@ -27,8 +27,11 @@ const isSecretKey = name => isSecretField(name) || SENSITIVE_HEADERS.has(name.to
 /** The private members of a JWK, which Redactor masks in a JSON object with a kty member (#262). */
 const JWK_PRIVATE_MEMBERS = new Set(['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']);
 
+/** Whitespace in JSON, also escaped (\n, \t) where the JSON is embedded in a JSON string. */
+const JSON_SPACE = String.raw`(?:\s|\\+[nrt])*`;
+
 /** A kty member, also in JSON embedded in a JSON string at any depth. */
-const JWK_TYPE = /\\*"kty\\*"\s*:/;
+const JWK_TYPE = new RegExp(String.raw`\\*"kty\\*"${JSON_SPACE}:`);
 
 /** Whether text has a kty member, searched once per text rather than once per member. */
 let jwkTypeText = null;
@@ -114,7 +117,7 @@ const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
  * A scheme, its credential and anything after it to a separator, as in Redactor's AUTH_SCHEME. After
  * Bearer the space may be URL-encoded (Bearer%20, Bearer+).
  */
-const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)(?:\s+|(?<=Bearer)(?:%20|\+)+)(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
+const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)(?:\s+|(?<=Bearer)(?:%20|\+))(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
 
 /** Where a scheme starts, as in Redactor: also right after a URL escape (%3A%20Bearer%20). */
 const AUTH_START = String.raw`(?:${WORD_START}|(?<=%[0-9A-F]{2})(?=Bearer))`;
@@ -183,20 +186,22 @@ const TEXT_CHECKS = [
   // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
   // backslash, as in Redactor; a JSON escape of a token character (\/, \u002B) is that character, not a
   // backslash, also escaped again (\\/) in a recorded body (#211).
+  // The match ends at the scheme (the rest is read in a lookahead), so a scheme kept as prose does not
+  // hide one right after it (token DPoP <credential>), as in Redactor.
   {
     name: 'Bearer/Basic credential',
-    re: new RegExp(String.raw`${AUTH_START}${AUTH_SCHEME}`, 'gi'),
+    re: new RegExp(String.raw`${AUTH_START}(?=${AUTH_SCHEME})(Bearer|Basic|Token|DPoP)`, 'gi'),
     ok: isAuthProse,
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
   // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART, Bearer [REDACTED]\u002BPART).
-  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${WORD_START}(?:Bearer|Basic|Token|DPoP)\s+\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
+  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
   {
     name: 'JSON secret field',
-    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
+    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
     // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
     // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
     ok: m => {
@@ -214,7 +219,7 @@ const TEXT_CHECKS = [
   // masked values is a recorded header (X-Api-Key: ["[REDACTED]"]).
   {
     name: 'JSON secret structure',
-    re: /\\*"([A-Za-z_-]{1,64})\\*"\s*:\s*([{[])/g,
+    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
     ok: m => !(isSecretKey(m[1]) || isJwkMember(m[1], m.input)) || (m[2] === '['
       && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))),
   },

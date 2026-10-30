@@ -93,7 +93,7 @@ public final class Redactor {
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)(?:" + WORD_START + "|(?<=%[0-9A-F]{2})(?=Bearer))(Bearer|Basic|Token|DPoP)"
-                    + "(?:\\s+|(?<=Bearer)(?:%20|\\+)++)(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
+                    + "(?:\\s+|(?<=Bearer)(?:%20|\\+))(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
                     + "((?:[A-Za-z0-9\\-._~+/%]++|" + ESCAPED_TOKEN_CHAR + ")++=*)"
                     + "((?:[^\\s\"',;\\\\]++|" + ESCAPED_TOKEN_CHAR + ")*+)");
 
@@ -148,6 +148,9 @@ public final class Redactor {
     /** Any character but a quote or backslash, as a regex. */
     private static final String PLAIN = "[^\"\\\\]";
 
+    /** Whitespace in JSON embedded in a JSON string, where a line break or tab is escaped. */
+    private static final String EMBEDDED_SPACE = "(?:\\s|" + BACKSLASH + "[nrt])*+";
+
     /**
      * The same inside JSON that is itself embedded in a JSON string ({@code {\"key\": \"value\"}}),
      * where the inner string's own escapes are escaped again: an inner {@code \\} is four backslashes
@@ -157,7 +160,8 @@ public final class Redactor {
      * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(\\s*:\\s*)(?:" + BACKSLASH + "\"((?:" + PLAIN + "++"
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
+                    + BACKSLASH + "\"((?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
                     + "|" + BACKSLASH + PLAIN + ")*+)(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
                     + JSON_SCALAR + ")");
@@ -167,10 +171,10 @@ public final class Redactor {
 
     /** The same inside JSON embedded in a JSON string. */
     private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"\\s*:\\s*(?=[{\\[])");
+            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
 
     /** {@link #JWK_TYPE} inside JSON embedded in a JSON string; it starts at the backslash. */
-    private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(BACKSLASH + "\"kty" + BACKSLASH + "\"\\s*:");
+    private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(BACKSLASH + "\"kty" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
     /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
     static final Set<String> SENSITIVE_HEADERS = Set.of(
@@ -257,9 +261,7 @@ public final class Redactor {
                 Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK + "\n-----END " + m.group(1) + "-----"));
         out = UNTERMINATED_PEM_KEY.matcher(out).replaceAll(m ->
                 Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK));
-        out = AUTH_SCHEME.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isProse(m)
-                ? m.group()
-                : m.group(1) + " " + MASK));
+        out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
@@ -275,6 +277,29 @@ public final class Redactor {
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
         return out;
+    }
+
+    /**
+     * Masks every credential {@link #AUTH_SCHEME} finds, keeping the scheme ({@code Bearer [REDACTED]}).
+     * A match kept as prose ({@link #isProse}) is read again from its word, so a scheme there
+     * ({@code token DPoP <credential>}) is found too.
+     */
+    private static String maskSchemeCredentials(String text) {
+        Matcher m = AUTH_SCHEME.matcher(text);
+        StringBuilder out = null;
+        int copied = 0;
+        int from = 0;
+        while (from < text.length() && m.find(from)) {
+            if (isProse(m)) {
+                from = m.end(1);
+                continue;
+            }
+            out = out == null ? new StringBuilder(text.length()) : out;
+            out.append(text, copied, m.start()).append(m.group(1)).append(' ').append(MASK);
+            copied = m.end();
+            from = copied;
+        }
+        return out == null ? text : out.append(text, copied, text.length()).toString();
     }
 
     /**
