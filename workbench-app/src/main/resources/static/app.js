@@ -90,8 +90,9 @@ async function init() {
     $('payers').replaceChildren(h('p', { class: 'muted' }, `Could not load payers: ${e.message}`));
     return;
   }
-  customEnabled = await api('api/features').then(f => !!f.customEndpoints, () => false);
-  if (customEnabled) renderCustomEndpointNotice();
+  const features = await api('api/features').catch(() => null);
+  customEnabled = !!features && !!features.customEndpoints;
+  if (features) renderPayerNotice();
   renderPayers();
   renderSamples();
   renderFaults(payers[0] ? payers[0].faults : Object.keys(FAULTS));
@@ -289,12 +290,20 @@ function selectedPayer() {
   return payers.find(p => checked && p.payerId === checked.value);
 }
 
-/** The page's fixed text says no real payer is involved, which stops being true once a run can name its own endpoint. */
-function renderCustomEndpointNotice() {
-  const caveat = 'Passing here does not by itself establish interoperability.';
+/**
+ * The page's fixed text claims nothing about which payers a run can reach. Only the server's answer can
+ * say no real payer is involved: with custom endpoints on, a run can name its own.
+ */
+function renderPayerNotice() {
+  if (customEnabled) {
+    $('banner-text').replaceChildren(h('strong', {}, 'Passing here does not by itself establish interoperability.'),
+      ' The three synthetic payers run inside this app with generated credentials. A run against your own endpoint '
+      + 'uses synthetic requests, and its report includes that endpoint\'s responses with credentials redacted.');
+    return;
+  }
+  const caveat = 'Synthetic payers only; passing here does not prove real-payer interoperability.';
   $('banner-text').replaceChildren(h('strong', {}, caveat),
-    ' The three synthetic payers run inside this app with generated credentials. A run against your own endpoint '
-    + 'uses synthetic requests, and its report includes that endpoint\'s responses with credentials redacted.');
+    ' All three synthetic payers run inside this app with generated credentials; no real payer, patient or PHI is involved.');
   $('footer-note').textContent = caveat;
 }
 

@@ -155,5 +155,5 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
 ## Report disclaimer for custom endpoints (#298)
 
 - **Two fixed texts, chosen by payer id.** `RunReport.DISCLAIMER_TEXT` stays for synthetic runs, byte for byte. A run whose payer id is `custom-endpoint` gets `CUSTOM_DISCLAIMER_TEXT`, the issue's recommended wording. The replay bundle only records synthetic runs, so it does not change.
-- **The UI swaps its text from the features response.** `index.html` keeps the synthetic-only text, and `app.js` replaces the banner and footer when `/api/features` says custom endpoints are on. If that call fails the page keeps the synthetic text, the same way it hides the custom option.
+- **The UI claims "no real payer" only after the server confirms it.** `index.html` holds neutral text that is true in every mode, which stays up while the page loads and if `/api/features` fails. `app.js` then sets the synthetic text when custom endpoints are off, or the custom text when they are on.
 - **The tests scan for the claim, not only the disclaimer.** `CustomEndpointTest` and `reference-runs.mjs` search each whole rendered report, and `custom-endpoint-form.ts` the whole page, so text added elsewhere that is only true of a synthetic payer fails too. The JS and Java patterns are separate copies, like the redaction rules, but have no shared corpus.
