@@ -584,8 +584,8 @@ class RedactorTest {
         }
         // A run of backslashes skipped at once costs what reading it does: three searches back over 1000
         // of them spend 3000, not 1021.
-        String run = "\\".repeat(1000) + "\"kty\":\"".repeat(3) + "{\"d\":\"x\"}";
-        assertTrue(Redactor.maskJwks(run, false, 1200).endsWith("{\"d\":\"[REDACTED]\"}"));
+        String run = "{\"d\":\"x\"}" + "\\".repeat(1000) + "\"kty\":\"".repeat(3);
+        assertTrue(Redactor.maskJwks(run, false, 1200).startsWith("{\"d\":\"[REDACTED]\"}"));
     }
 
     @Test

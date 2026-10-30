@@ -517,7 +517,7 @@ public final class Redactor {
         int[] budget = {characters};
         while (type.find()) {
             int member = type.start();
-            if (member < readEnd || !opensName(text, member, embedded)) {
+            if (member < readEnd || !opensName(text, member, embedded, budget)) {
                 continue;
             }
             int start = startOfObject(text, member, embedded, matching, outside, outsideResult, budget);
@@ -594,10 +594,13 @@ public final class Redactor {
 
     /**
      * Whether the quote at {@code member} opens a string rather than being escaped inside one: one
-     * backslash before it in embedded JSON ({@code \"}, not {@code \\\"}), none in plain JSON.
+     * backslash before it in embedded JSON ({@code \"}, not {@code \\\"}), none in plain JSON. The
+     * backslashes it reads are charged to the budget.
      */
-    private static boolean opensName(String text, int member, boolean embedded) {
-        return embedded ? backslashesBefore(text, member + 1) % 4 == 1 : backslashesBefore(text, member) % 2 == 0;
+    private static boolean opensName(String text, int member, boolean embedded, int[] budget) {
+        int run = backslashesBefore(text, embedded ? member + 1 : member);
+        budget[0] -= run;
+        return embedded ? run % 4 == 1 : run % 2 == 0;
     }
 
     /** A JSON object found by {@link #objects}: where it starts and where each of its own members' names starts. */
@@ -607,7 +610,8 @@ public final class Redactor {
     /**
      * Where the JSON object that holds the member whose name starts at {@code member} starts, or
      * {@link #NOT_IN_BRACKETS} or {@link #IN_ARRAY} if it is not in an object, or {@link #OUT_OF_TIME}
-     * once the searches have read {@code budget[0]} characters in all. Reads back from the member,
+     * once the searches have read {@code budget[0]} characters in all, a run of backslashes before a
+     * quote included. Reads back from the member,
      * skipping strings and closed brackets, and jumping over each pair of brackets already matched, by
      * an earlier search (which adds each pair it matches to {@code matching}) or by {@link #objects}.
      * Reading back to {@code outside}, a member found not to be in an object (its search ended with
@@ -628,6 +632,10 @@ public final class Redactor {
             char c = text.charAt(i);
             if (c == '"') {
                 int run = backslashesBefore(text, i);
+                budget[0] -= run;
+                if (budget[0] < 0) {
+                    return OUT_OF_TIME;
+                }
                 if (embedded && run % 2 == 0) {
                     return NOT_IN_BRACKETS;
                 }
