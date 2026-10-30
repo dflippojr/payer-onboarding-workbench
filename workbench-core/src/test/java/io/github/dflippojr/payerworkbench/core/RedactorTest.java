@@ -607,11 +607,16 @@ class RedactorTest {
         // A scheme kept as prose does not hide the scheme after it.
         assertEquals("received token DPoP [REDACTED]", Redactor.redact("received token DPoP PHNhbWw6QXNzZXJ0aW9u"));
         assertEquals("the token Bearer [REDACTED] expired", Redactor.redact("the token Bearer abc123def expired"));
+        assertEquals("a bearer token\neyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.[REDACTED]",
+                Redactor.redact("a bearer token\neyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.SIGNATURE1"));
+        assertEquals("Token [REDACTED]", Redactor.redact("Token\t9944b09199c62bcf"));
         assertEquals("sent dpop [REDACTED], twice", Redactor.redact("sent dpop eyJhbGciOiJFUzI1NiJ9.e30.SIG, twice"));
         // Prose, as after Bearer; after Token a word may end with a colon (token endpoint: <url>).
         for (String text : List.of("Token expired.", "DPoP proof required", "the access token was revoked",
                 "token endpoint: https://payer.example/token\ntoken response: error=invalid_client",
-                "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms")) {
+                "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms",
+                // The next line is not the credential of an ordinary word.
+                "issue a token\n2 times per hour", "DPoP\r\nproof-v2 required")) {
             assertEquals(text, Redactor.redact(text));
         }
     }

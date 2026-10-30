@@ -115,9 +115,9 @@ const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
 /**
  * A scheme, its credential and anything after it to a separator, as in Redactor's AUTH_SCHEME. After
- * Bearer the space may be URL-encoded (Bearer%20, Bearer+).
+ * Bearer the space may be URL-encoded (Bearer%20, Bearer+); after Token and DPoP it may not be a line break.
  */
-const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)(?:\s+|(?<=Bearer)(?:%20|\+))(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
+const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
 
 /** Where a scheme starts, as in Redactor: also right after a URL escape (%3A%20Bearer%20). */
 const AUTH_START = String.raw`(?:${WORD_START}|(?<=%[0-9A-F]{2})(?=Bearer))`;
@@ -195,7 +195,7 @@ const TEXT_CHECKS = [
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
   // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART, Bearer [REDACTED]\u002BPART).
-  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
+  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").

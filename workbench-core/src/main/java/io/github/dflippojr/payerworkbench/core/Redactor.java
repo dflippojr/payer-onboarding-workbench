@@ -85,7 +85,9 @@ public final class Redactor {
      * A scheme (group 1), its token68 part (group 2, which may be URL-encoded) and anything else up to
      * the next whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is
      * masked whole. After {@code Bearer} the space may be URL-encoded too ({@code Bearer%20},
-     * {@code Bearer+}), also right after another escape ({@code %3A%20Bearer%20}). Both parts read a
+     * {@code Bearer+}), also right after another escape ({@code %3A%20Bearer%20}). After {@code Token}
+     * and {@code DPoP}, ordinary words, only spaces and tabs are: a word on the next line
+     * ({@code a bearer token}, then a JWT) is not their credential. Both parts read a
      * JSON escape of a token character ({@link #ESCAPED_TOKEN_CHAR}) as the character it stands for,
      * so a token quoted by a serializer that escapes some of its characters
      * ({@code tok\/en}, {@code tok}{@code \}{@code u002Ben}) is masked whole too. Case-insensitive, so
@@ -93,7 +95,7 @@ public final class Redactor {
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)(?:" + WORD_START + "|(?<=%[0-9A-F]{2})(?=Bearer))(Bearer|Basic|Token|DPoP)"
-                    + "(?:\\s+|(?<=Bearer)(?:%20|\\+))(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
+                    + "(?:[ \\t]++|(?<=Bearer|Basic)\\s+|(?<=Bearer)(?:%20|\\+))(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
                     + "((?:[A-Za-z0-9\\-._~+/%]++|" + ESCAPED_TOKEN_CHAR + ")++=*)"
                     + "((?:[^\\s\"',;\\\\]++|" + ESCAPED_TOKEN_CHAR + ")*+)");
 

@@ -84,6 +84,7 @@
     {"id": "prose-token", "rule": "PROSE_WORD", "input": "Token expired."},
     {"id": "prose-token-endpoint", "rule": "PROSE_WORD", "input": "token endpoint: https://payer.example/token\ntoken response: error=invalid_client"},
     {"id": "prose-dpop", "rule": "PROSE_WORD", "input": "DPoP proof required"},
+    {"id": "token-at-line-end", "rule": "AUTH_SCHEME", "input": "issue a token\n2 times per hour; DPoP\nproof-v2 required"},
     {"id": "token-url-then-arrow", "rule": "PROSE_WORD", "input": "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms"},
     {"id": "prose-bearer-plus-encoded", "rule": "PROSE_WORD", "input": "q=missing+bearer+token"},
     {"id": "pgp-private-key-block-in-prose", "rule": "UNTERMINATED_PEM_KEY", "input": "paste the PGP PRIVATE KEY BLOCK into the vault, not here"}
