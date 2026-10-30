@@ -136,6 +136,23 @@ test('custom form hides faults and retains connection edits @custom', async ({ p
   await customEndpointForm(page, () => shot(page, info, 'custom'));
 });
 
+test('a suffix with a dot-segment is refused before any run @suffix', async ({ page }, info) => {
+  await choose(page);
+  await openDrawer(page, 'Connection overrides');
+  await page.locator('#baseUrlSuffix').fill('/%2e%2e/admin');
+  const runs = await page.locator('#recent-runs option').count();
+  const response = page.waitForResponse(r => r.url().endsWith('/api/runs') && r.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run onboarding' }).click();
+  expect((await response).status()).toBe(400);
+  await expect(page.locator('#run-status')).toContainText('Run failed: baseUrlSuffix may only add path segments');
+  await expect(page.locator('#recent-runs option')).toHaveCount(runs);
+  await expect.poll(async () => (await readFile('.ui-test/app.log', 'utf8')).split('\n')
+    .filter(line => line.includes(' : audit ') && line.includes('"run.completed"'))
+    .map(line => JSON.parse(line.slice(line.indexOf(' : audit ') + 9))).at(-1)?.metadata?.reasonCode)
+    .toBe('invalid_connection_edit');
+  await shot(page, info, 'suffix');
+});
+
 // Not a feature: a deliberate failure used by cleanup.test.mjs to prove cleanup after a failed drive.
 test('deliberate drive failure @selftest-fail', async ({ page }) => {
   await ready(page);

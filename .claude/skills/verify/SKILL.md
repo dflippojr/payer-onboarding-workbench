@@ -53,6 +53,7 @@ The doctor never prints variable values or interface addresses. If doctor fails,
 | `compare` | `/` Changes since run section (Compare with) | healthy run, then the Discovery-down run, then pick the healthy run in Compare with | Verdict tile Pass → Fail Worse, `discovery.reachable` Newly failing in the Checks that changed table, the one-sided group collapsed, `run.read` audit for the compared run; Stop comparing hides it and focuses Compare with |
 
 | `custom` | `/` custom endpoint form | browser-only feature flag, select a synthetic fault then Your own endpoint, fill connection edits, submit to the still-disabled disposable backend, switch back | faults hidden only for custom selection, correct endpoint hints, edits present and faults absent in the POST, real API rejects with 400; synthetic fault selection restored on return |
+| `suffix` | `/` Connection overrides, `POST /api/runs` | Northwind synthetic with Base URL suffix `/%2e%2e/admin`, Run onboarding | POST answers 400, "Run failed: baseUrlSuffix may only add path segments", no new entry in Recent runs, last `run.completed` audit has reason `invalid_connection_edit` |
 
 When you change something outside this map, add a row and a tagged test in `drive/main-path.spec.ts`. Keep larger journeys in `tests/ui` (see the contract's "Journeys" section). The `selftest-fail` tag is not a feature. It fails on purpose so that `cleanup.test.mjs` can exercise cleanup.
 

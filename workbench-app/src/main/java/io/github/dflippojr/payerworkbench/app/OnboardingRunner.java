@@ -351,7 +351,8 @@ public class OnboardingRunner {
     }
 
     private static final String SUFFIX_RULE = "baseUrlSuffix may only add path segments to the base URL: "
-            + "it must start with / and can't contain @, ?, #, \\, whitespace or control characters";
+            + "it must start with / and can't contain . or .. segments (raw or as %2e), "
+            + "@, ?, #, \\, whitespace or control characters";
 
     /**
      * Refuses a {@code baseUrlSuffix} that would send the run anywhere but a path under the base URL,
@@ -371,7 +372,8 @@ public class OnboardingRunner {
 
     /**
      * {@code baseUrl} with {@code suffix} appended, as long as the result keeps the base URL's scheme,
-     * host and port and gains no user info, query or fragment.
+     * host and port and gains no user info, query or fragment, and the suffix has no {@code .} or
+     * {@code ..} segment, which the payer's server would resolve to a path outside the base URL's.
      *
      * @throws IllegalArgumentException otherwise
      */
@@ -380,6 +382,12 @@ public class OnboardingRunner {
         if (!trimmed.startsWith("/") || trimmed.chars().anyMatch(c -> c == '@' || c == '?' || c == '#' || c == '\\'
                 || Character.isWhitespace(c) || Character.isISOControl(c))) {
             throw new IllegalArgumentException(SUFFIX_RULE);
+        }
+        for (String segment : trimmed.split("/", -1)) {
+            String decoded = segment.replaceAll("(?i)%2e", ".");
+            if (decoded.equals(".") || decoded.equals("..")) {
+                throw new IllegalArgumentException(SUFFIX_RULE);
+            }
         }
         String combined = baseUrl + trimmed;
         java.net.URI before;

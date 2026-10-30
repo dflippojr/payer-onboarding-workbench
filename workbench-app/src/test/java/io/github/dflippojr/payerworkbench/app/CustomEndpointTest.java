@@ -1114,7 +1114,8 @@ class CustomEndpointTest {
         server.start();
         String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/ok";
         for (String suffix : List.of("?x=1#", "#", "/r4?x", "@127.0.0.1:1", "/user@host",
-                "/r4#fragment", "/bad\\path", "/two words", "/control\npath")) {
+                "/r4#fragment", "/bad\\path", "/two words", "/control\npath",
+                "/..", "/.", "/../x", "/x/..", "/%2e%2e/x", "/%2E/x")) {
             RunRequest request = new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null,
                     new RunRequest.ConnectionOverrides(suffix, null, null),
                     new RunRequest.CustomEndpoint(base, AuthType.NONE, null, null, null, null, null));
