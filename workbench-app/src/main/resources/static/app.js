@@ -301,10 +301,9 @@ function renderPayerNotice() {
       + 'uses synthetic requests, and its report includes that endpoint\'s responses with credentials redacted.');
     return;
   }
-  const caveat = 'Synthetic payers only; passing here does not prove real-payer interoperability.';
-  $('banner-text').replaceChildren(h('strong', {}, caveat),
-    ' All three synthetic payers run inside this app with generated credentials; no real payer, patient or PHI is involved.');
-  $('footer-note').textContent = caveat;
+  const notice = $('synthetic-notice').content.cloneNode(true);
+  $('footer-note').textContent = notice.querySelector('strong').textContent;
+  $('banner-text').replaceChildren(notice);
 }
 
 function customSelected() {
