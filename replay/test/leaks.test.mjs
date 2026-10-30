@@ -152,9 +152,28 @@ test('flags a sensitive header value Redactor would not leave (#261)', () => {
     assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
   }
 });
+test('flags a word in front of a masked non-authorization header list item (#292)', () => {
+  // Redactor masks every value of a sensitive header other than Authorization whole, so a prefix that
+  // looks like a scheme (tail [REDACTED]) is the start of the secret.
+  for (const name of ['Cookie', 'Set-Cookie']) {
+    const text = `{"${name}":["tail [REDACTED]"]}`;
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+    const record = { requestHeaders: { [name]: ['[REDACTED]', 'tail [REDACTED]'] } };
+    assert.ok(findTextLeaks(JSON.stringify(record)).length > 0, `not flagged: ${JSON.stringify(record)}`);
+    assert.equal(findJsonLeaks(record).length, 1, JSON.stringify(record));
+  }
+});
 test('accepts a recorded header list of masked values', () => {
-  assert.deepEqual(findTextLeaks(JSON.stringify({ requestHeaders: { 'X-Api-Key': ['[REDACTED]'], 'Api-Key': ['Bearer [REDACTED]'] } })), []);
+  // Bare masks only (#292).
+  const record = { requestHeaders: { 'X-Api-Key': ['[REDACTED]'], Cookie: ['[REDACTED]', '[REDACTED]'], 'Set-Cookie': ['[REDACTED]'] } };
+  assert.deepEqual(findTextLeaks(JSON.stringify(record)), []);
+  assert.deepEqual(findJsonLeaks(record), []);
+  assert.ok(findTextLeaks(JSON.stringify({ requestHeaders: { 'Api-Key': ['Bearer [REDACTED]'] } })).length > 0);
   assert.ok(findTextLeaks('{"api_key":["[REDACTED]","LEAKED"]}').length > 0);
+});
+test('accepts a scheme in front of a masked authorization header list item', () => {
+  const record = { requestHeaders: { Authorization: ['Bearer [REDACTED]'], 'Proxy-Authorization': ['SCRAM-SHA-256 [REDACTED]'] } };
+  assert.deepEqual(findTextLeaks(JSON.stringify(record)), []);
 });
 
 // Class-level check (#160): generated secrets of every shape, placed in headers, bodies and query
