@@ -152,13 +152,17 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
             }
             // The body is redacted, and a JWT-shaped id loses its URL-safe last part to the mask. The run called
             // the original, so only the rest is judged. A mask anywhere else is the payer's own text.
-            if (!isUrlSafeServiceId(MASKED_JWT.matcher(id).replaceAll("x"))) {
+            if (!isUrlSafeServiceId(withoutJwtMask(id))) {
                 return List.of(unusableId(hook, id, consequence, evidence));
             }
         }
         return List.of(new Finding(CHECK_ID, Severity.PASS, "CRD hooks advertised: " + String.join(", ", crd),
                 "Discovery lists CRD services" + (requiredHooks.isEmpty() ? "." : ", including every required hook."),
                 evidence, null));
+    }
+
+    static String withoutJwtMask(String id) {
+        return MASKED_JWT.matcher(id).replaceAll("x");
     }
 
     private static Finding notObjects(List<String> named, int count, String evidence) {

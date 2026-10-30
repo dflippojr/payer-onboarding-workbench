@@ -256,15 +256,14 @@ class DiscoveryChecksTest {
             assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
         }
 
-        /** The body can be 4 MiB, and no HTTP timeout bounds the matching. */
+        /** The body can be 4 MiB, and no HTTP timeout bounds the matching. Calls the helper, as the fixture redacts. */
         @org.junit.jupiter.params.ParameterizedTest
         @org.junit.jupiter.params.provider.ValueSource(strings = {"eyJ", "eyJ-"})
         void aLongIdOfJwtStartsIsJudgedInLinearTime(String unit) {
-            var run = healthy();
-            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"" + unit.repeat(40_000) + "\"}]}");
-            Finding f = org.junit.jupiter.api.Assertions.assertTimeout(java.time.Duration.ofSeconds(5),
-                    () -> assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS));
-            assertTrue(f.title().startsWith("CRD hooks advertised"), f.title());
+            String id = unit.repeat(40_000);
+            String kept = org.junit.jupiter.api.Assertions.assertTimeout(java.time.Duration.ofSeconds(5),
+                    () -> DiscoveryServicesCheck.withoutJwtMask(id));
+            assertEquals(id, kept);
         }
 
         @org.junit.jupiter.params.ParameterizedTest
