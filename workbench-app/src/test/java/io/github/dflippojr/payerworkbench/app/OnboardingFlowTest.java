@@ -22,14 +22,24 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.SocketTimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Function;
+import java.util.regex.Pattern;
 import io.github.dflippojr.payerworkbench.samples.SampleCatalog;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static io.github.dflippojr.payerworkbench.app.SyntheticPayers.FABRIKAM_ID;
@@ -60,6 +70,11 @@ class OnboardingFlowTest {
     private static final String NO_PREFETCH_SAMPLE = "order-sign-missing-prefetch";
     /** Everything the tests logged, for the class-level check. */
     private static final StringBuilder LOG = new StringBuilder();
+    private static final List<String> ALL_PAYERS = List.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID);
+    private static final Path README = Path.of("..", "README.md");
+    private static final String FAULT_TABLE_HEADING = "### What each fault and misconfiguration fails";
+    /** The run behind each row of the README's fault table, keyed by the row's first cell. */
+    private static final Map<String, FaultTableRun> FAULT_TABLE_RUNS = faultTableRuns();
 
     @Autowired
     OnboardingRunner runner;
@@ -223,6 +238,7 @@ class OnboardingFlowTest {
         runner.run(request(payerId, HEALTHY_SAMPLE, List.of()));
         OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, List.of(fault.id())));
         assertEquals("discovery", firstFailedStep(run));
+        assertEquals(Set.of("discovery.reachable", "tls.handshake"), Set.copyOf(failIds(run)));
         Finding finding = run.findings().stream().filter(f -> f.checkId().equals("tls.handshake")).findFirst().orElseThrow();
         assertEquals(Severity.FAIL, finding.severity());
         assertTrue(finding.title().contains(cause), finding::toString);
@@ -525,6 +541,94 @@ class OnboardingFlowTest {
         assertThrows(IllegalArgumentException.class, () -> runner.run(request(NORTHWIND_ID, "nothing", List.of())));
         assertThrows(IllegalArgumentException.class,
                 () -> runner.run(request(NORTHWIND_ID, HEALTHY_SAMPLE, List.of("set-on-fire"))));
+    }
+
+    private record FaultTableRow(String run, String breaksAt, String failIds) {
+    }
+
+    private record FaultTableRun(List<String> payerIds, Function<String, RunRequest> request) {
+    }
+
+    private static Map<String, FaultTableRun> faultTableRuns() {
+        Map<String, FaultTableRun> runs = new LinkedHashMap<>();
+        runs.put("none (healthy run)", onAllPayers(payerId -> request(payerId, HEALTHY_SAMPLE, List.of())));
+        for (Fault fault : List.of(Fault.SLOW_RESPONSE, Fault.EXPIRED_TOKEN_401, Fault.RATE_LIMITED_429,
+                Fault.MALFORMED_CARD, Fault.DISCOVERY_500, Fault.UNTRUSTED_CERTIFICATE, Fault.EXPIRED_CERTIFICATE,
+                Fault.HOSTNAME_MISMATCH)) {
+            runs.put("`" + fault.id() + "`", onAllPayers(payerId -> request(payerId, HEALTHY_SAMPLE, List.of(fault.id()))));
+        }
+        Map<String, String> payerNames = Map.of("Northwind", NORTHWIND_ID, "Fabrikam", FABRIKAM_ID, "Tailspin", TAILSPIN_ID);
+        payerNames.forEach((name, payerId) -> {
+            runs.put("`wrong-audience-reject`, " + name, new FaultTableRun(List.of(payerId),
+                    id -> request(id, HEALTHY_SAMPLE, List.of(Fault.WRONG_AUDIENCE_REJECT.id()))));
+            runs.put("wrong client id, " + name, new FaultTableRun(List.of(payerId),
+                    id -> edited(id, new RunRequest.ConnectionOverrides(null, null, "someone-else"))));
+        });
+        runs.put("`coverage-info-incomplete` (all payers, `order-sign`)", onAllPayers(
+                payerId -> request(payerId, HEALTHY_SAMPLE, List.of(Fault.COVERAGE_INFO_INCOMPLETE.id()))));
+        runs.put("`prefetch-missing-400`, with sample `order-sign-missing-prefetch`", onAllPayers(
+                payerId -> request(payerId, NO_PREFETCH_SAMPLE, List.of(Fault.PREFETCH_MISSING_400.id()))));
+        runs.put("base URL suffix `/r4`", onAllPayers(
+                payerId -> edited(payerId, new RunRequest.ConnectionOverrides("/r4", null, null))));
+        runs.put("`igVersion` `1.0.0`", onAllPayers(
+                payerId -> edited(payerId, new RunRequest.ConnectionOverrides(null, "1.0.0", null))));
+        runs.put("environment `PRODUCTION` (no record)", onAllPayers(
+                payerId -> new RunRequest(payerId, Environment.PRODUCTION, HEALTHY_SAMPLE, List.of(), null, null)));
+        return runs;
+    }
+
+    private static FaultTableRun onAllPayers(Function<String, RunRequest> request) {
+        return new FaultTableRun(ALL_PAYERS, request);
+    }
+
+    /** The rows of the README's fault table, without its header and separator lines. */
+    static List<FaultTableRow> faultTableRows() throws IOException {
+        List<String> lines = Files.readAllLines(README);
+        int heading = lines.indexOf(FAULT_TABLE_HEADING);
+        assertTrue(heading >= 0, () -> README + " has no heading: " + FAULT_TABLE_HEADING);
+        List<FaultTableRow> rows = lines.subList(heading + 1, lines.size()).stream()
+                .dropWhile(line -> !line.startsWith("|"))
+                .takeWhile(line -> line.startsWith("|"))
+                .skip(2)
+                .map(line -> Arrays.stream(line.split("\\|")).map(String::trim).toList())
+                .map(cells -> new FaultTableRow(cells.get(1), cells.get(2), cells.get(3)))
+                .toList();
+        assertFalse(rows.isEmpty(), () -> "no rows under " + FAULT_TABLE_HEADING);
+        return rows;
+    }
+
+    /** The ids a FAIL cell names. A parenthesis is a note on the id before it, so its backticks are not ids. */
+    private static Set<String> faultTableFailIds(String cell) {
+        Set<String> ids = Pattern.compile("`([^`]+)`").matcher(cell.replaceAll("\\([^)]*\\)", "")).results()
+                .map(match -> match.group(1)).collect(Collectors.toCollection(TreeSet::new));
+        assertEquals(ids.isEmpty(), cell.equals("none"), () -> "a FAIL cell names ids or says none: " + cell);
+        return ids;
+    }
+
+    /** The step a Breaks at cell names; a row that breaks at no request step has none, as in firstFailedStep. */
+    private static String faultTableStep(String cell) {
+        return cell.startsWith("(") || cell.equals("nothing") || cell.equals("diagnostics")
+                ? null : cell.replace(' ', '-');
+    }
+
+    /** "The integration tests hold the app to this table" is only true while a test reads the table (#300). */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("faultTableRows")
+    void faultTableRowMatchesWhatARunFails(FaultTableRow row) {
+        FaultTableRun scenario = FAULT_TABLE_RUNS.get(row.run());
+        assertTrue(scenario != null, () -> "README fault table row with no run in faultTableRuns: " + row.run());
+        for (String payerId : scenario.payerIds()) {
+            OnboardingRun run = runner.run(scenario.request().apply(payerId));
+
+            assertEquals(faultTableFailIds(row.failIds()), new TreeSet<>(failIds(run)), payerId + ": " + row.run());
+            assertEquals(faultTableStep(row.breaksAt()), firstFailedStep(run), payerId + ": " + row.run());
+        }
+    }
+
+    @Test
+    void everyFaultTableRunHasARow() throws IOException {
+        Set<String> rows = new TreeSet<>(faultTableRows().stream().map(FaultTableRow::run).toList());
+        assertEquals(new TreeSet<>(FAULT_TABLE_RUNS.keySet()), rows);
     }
 
     /** A run that FAILs, by a failed step or a failing check, shows at least one FAIL finding. */

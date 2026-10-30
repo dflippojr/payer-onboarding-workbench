@@ -186,7 +186,7 @@ curl -s "localhost:8080/api/runs/$RUN_ID/report?format=md" -o report.md
 
 ### What each fault and misconfiguration fails
 
-The integration tests (`OnboardingFlowTest`) hold the app to this table on all three payers.
+`OnboardingFlowTest` reads this table and runs each row, on the payer it names or on all three when it names none. A run must fail exactly the listed `checkId`s and stop at the listed step. A note in parentheses describes the `checkId` before it.
 
 | Fault or edit | Breaks at | FAIL `checkId` |
 |---|---|---|
@@ -196,19 +196,19 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on all t
 | `rate-limited-429` | hook request | `perf.rate-limit` (`Retry-After: 30`, backoff advice) |
 | `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
 | `wrong-audience-reject`, Northwind | hook request | `auth.hook-rejected` |
-| `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`) |
+| `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`), `auth.token` |
 | `coverage-info-incomplete` (all payers, `order-sign`) | diagnostics | `response.coverage-information` |
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
 | `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
-| `untrusted-certificate` | discovery | `tls.handshake` (untrusted CA) |
-| `expired-certificate` | discovery | `tls.handshake` (expired certificate) |
-| `hostname-mismatch` | discovery | `tls.handshake` (different host) |
+| `untrusted-certificate` | discovery | `tls.handshake` (untrusted CA), `discovery.reachable` |
+| `expired-certificate` | discovery | `tls.handshake` (expired certificate), `discovery.reachable` |
+| `hostname-mismatch` | discovery | `tls.handshake` (different host), `discovery.reachable` |
 | base URL suffix `/r4` | discovery | `discovery.reachable` |
 | `igVersion` `1.0.0` | (steps pass) | `ig.version` |
 | wrong client id, Northwind | authenticate | `auth.token` |
 | wrong client id, Tailspin | authenticate | `auth.token`, `auth.client-assertion` |
-| wrong client id, Fabrikam | hook request | `response.schema` |
+| wrong client id, Fabrikam | hook request | `auth.hook-rejected` |
 | environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
 
 `response.coverage-information` validates every coverage-information extension in system actions and card suggestions using the router's Da Vinci CRD 2.2.1 validator. Evidence identifies the resource, extension location, and each violation's path and message. ERROR violations produce FAIL, WARNING violations produce WARN, and conformant content produces PASS. Healthy Northwind and Tailspin pass; healthy Fabrikam warns about its legacy `identifier` name without failing. With no coverage information, the check adds no finding.
