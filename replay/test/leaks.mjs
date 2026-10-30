@@ -132,13 +132,14 @@ const isAuthLineProse = (name, v) => {
 };
 
 /**
- * A list of masked values, each optionally after a scheme, as redactTree leaves a header-named list, or
- * an empty list (redactHeaders keeps one for a header with no values). Any token is a scheme for an
- * authorization list (SCRAM-SHA-256 [REDACTED]); for any other name only letters are, as before #261.
+ * A list of masked values, as redactTree leaves a header-named list, or an empty list (redactHeaders
+ * keeps one for a header with no values). An authorization list item may have any token as a scheme in
+ * front of the mask (SCRAM-SHA-256 [REDACTED]); Redactor masks any other header's values whole, so
+ * their items are bare masks (#292).
  */
-const maskedList = scheme => new RegExp(String.raw`^\s*(?:\]|\\*"(?:${scheme} )?\[REDACTED\]\\*"\s*(?:,\s*\\*"(?:${scheme} )?\[REDACTED\]\\*"\s*)*\])`);
-const MASKED_AUTHORIZATION_LIST = maskedList(SCHEME);
-const MASKED_LIST = maskedList('[A-Za-z]+');
+const maskedList = item => new RegExp(String.raw`^\s*(?:\]|\\*"${item}\\*"\s*(?:,\s*\\*"${item}\\*"\s*)*\])`);
+const MASKED_AUTHORIZATION_LIST = maskedList(String.raw`(?:${SCHEME} )?\[REDACTED\]`);
+const MASKED_LIST = maskedList(String.raw`\[REDACTED\]`);
 
 /**
  * How many backslashes escaped the line break before a header line at `index`, as Redactor counts
@@ -287,8 +288,10 @@ export function findJsonLeaks(value, path = '$') {
       if (/headers$/i.test(k) && x && typeof x === 'object' && !Array.isArray(x)) {
         for (const [name, values] of Object.entries(x)) {
           if (!SENSITIVE_HEADERS.has(name.toLowerCase())) continue;
+          // Only an authorization value keeps a scheme in front of the mask, as in redactHeaders.
+          const masked = /authorization$/i.test(name) ? /^(?:[A-Za-z]+\s+)?\[REDACTED\]$/ : /^\[REDACTED\]$/;
           for (const hv of [].concat(values)) {
-            if (!/^(?:[A-Za-z]+\s+)?\[REDACTED\]$/.test(String(hv))) {
+            if (!masked.test(String(hv))) {
               leaks.push({ check: 'sensitive header', match: `${p}.${k}.${name}` });
             }
           }

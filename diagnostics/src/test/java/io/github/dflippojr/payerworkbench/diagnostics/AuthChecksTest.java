@@ -326,6 +326,33 @@ class AuthChecksTest {
         }
 
         @Test
+        void defaultPortWrittenExplicitlyIsNotPortMinusOne() {
+            String text = JwtAudienceCheck.difference("https://h.test/x", "https://h.test:443/x");
+            assertFalse(text.contains("-1"), text);
+            assertTrue(text.contains("default port"), text);
+            assertTrue(JwtAudienceCheck.difference("https://h.test:443/x", "https://h.test/x").contains("default port"));
+            assertTrue(JwtAudienceCheck.difference("https://h.test:8443/x", "https://h.test/x").contains("8443"));
+        }
+
+        @Test
+        void describesPortsByTheirEffectiveNumbers() {
+            assertEquals("the URL writes the default port :443 explicitly, which aud leaves out",
+                    JwtAudienceCheck.difference("https://h.test/x", "https://h.test:443/x"));
+            assertEquals("aud writes the default port :443 explicitly, which the URL leaves out",
+                    JwtAudienceCheck.difference("https://h.test:443/x", "https://h.test/x"));
+            assertEquals("aud writes the default port :80 explicitly, which the URL leaves out",
+                    JwtAudienceCheck.difference("http://h.test:80/x", "http://h.test/x"));
+            assertEquals("aud names port 8443 but the request went to port 443",
+                    JwtAudienceCheck.difference("https://h.test:8443/x", "https://h.test/x"));
+            assertEquals("aud names port 80 but the request went to port 8080",
+                    JwtAudienceCheck.difference("http://h.test/x", "http://h.test:8080/x"));
+            assertEquals("aud names port 8443 but the request went to port 9443",
+                    JwtAudienceCheck.difference("https://h.test:8443/x", "https://h.test:9443/x"));
+            assertEquals("aud names no port but the request went to port 21",
+                    JwtAudienceCheck.difference("ftp://h.test/x", "ftp://h.test:21/x"));
+        }
+
+        @Test
         void hookJwtWithTrailingSlashFailsOn401() {
             var run = healthy();
             HookResponse call = orderSign(hook(401, "{\"error\":\"unauthorized\"}", 300), ORDER_SIGN_URL + "/");
