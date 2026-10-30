@@ -239,17 +239,33 @@ class DiscoveryChecksTest {
             assertEquals("advertised services: ok-1 -> order-sign, (no id) -> order-sign", f.evidence());
         }
 
+        /** The recorded body is redacted, and the run called the original id. */
         @Test
-        void aServiceIdIsTheFirstServicesStringIdForTheHook() {
+        void aJwtShapedIdIsNotCalledUnsafeForItsMask() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"eyJhbGci.eyJpc3Mi.c2ln\"}]}");
+            assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+        }
+
+        @Test
+        void anUnsafeIdStaysUnsafeBesideAMask() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"a/b eyJhbGci.eyJpc3Mi.c2ln\"}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.title().contains("not URL-safe"), f.title());
+        }
+
+        @Test
+        void theFirstServiceForAHookIsTheOneJudged() {
             var services = Support.parseJson("{\"services\":[{\"hook\":\"patient-view\",\"id\":\"pv\"},"
                     + "{\"hook\":\"order-sign\",\"id\":\"one\"},{\"hook\":\"order-sign\",\"id\":\"two\"},"
                     + "{\"hook\":\"order-select\",\"id\":7},{\"hook\":\"order-select\",\"id\":\"three\"},"
                     + "{\"hook\":\"order-dispatch\"},{\"hook\":\"order-dispatch\",\"id\":\"four\"}]}")
                     .orElseThrow().path("services");
-            assertEquals("one", DiscoveryServicesCheck.firstServiceId(services, "order-sign"));
-            assertEquals(null, DiscoveryServicesCheck.firstServiceId(services, "order-select"));
-            assertEquals(null, DiscoveryServicesCheck.firstServiceId(services, "order-dispatch"));
-            assertEquals(null, DiscoveryServicesCheck.firstServiceId(services, "encounter-start"));
+            assertEquals("one", DiscoveryServicesCheck.stringId(DiscoveryServicesCheck.firstService(services, "order-sign").orElseThrow()));
+            assertEquals(null, DiscoveryServicesCheck.stringId(DiscoveryServicesCheck.firstService(services, "order-select").orElseThrow()));
+            assertEquals(null, DiscoveryServicesCheck.stringId(DiscoveryServicesCheck.firstService(services, "order-dispatch").orElseThrow()));
+            assertTrue(DiscoveryServicesCheck.firstService(services, "encounter-start").isEmpty());
         }
     }
 

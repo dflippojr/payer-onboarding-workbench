@@ -4,11 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import io.github.dflippojr.payerworkbench.core.DiagnosticCheck;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
+import io.github.dflippojr.payerworkbench.core.Redactor;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
@@ -46,21 +48,20 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
     }
 
     /**
-     * The id of the service a run calls for a hook, which is the first one listed for it, however
-     * many follow. {@code null} when that service's id is missing or is not a string, or when no
-     * service lists the hook. The runner and this check both go through here, so they cannot judge
-     * different services.
+     * The service a run calls for a hook, which is the first one listed for it, however many follow.
+     * The runner and this check both go through here, so they cannot judge different services.
      */
-    public static String firstServiceId(JsonNode services, String hook) {
+    public static Optional<JsonNode> firstService(JsonNode services, String hook) {
         for (JsonNode service : services) {
             if (hook.equals(service.path("hook").asText(""))) {
-                return stringId(service);
+                return Optional.of(service);
             }
         }
-        return null;
+        return Optional.empty();
     }
 
-    private static String stringId(JsonNode service) {
+    /** A service's id, or {@code null} when it is missing or is not a string. */
+    public static String stringId(JsonNode service) {
         JsonNode id = service.path("id");
         return id.isTextual() ? id.textValue() : null;
     }
@@ -137,12 +138,14 @@ public final class DiscoveryServicesCheck implements DiagnosticCheck {
         String consequence = obs.hookResponses().isEmpty() ? "so the client cannot build the request URL and never "
                 + "sent the hook." : "so the client cannot build the request URL.";
         for (String hook : new TreeSet<>(requiredHooks)) {
-            // Every required hook is advertised by now, so null here means its first service has no id.
-            String id = firstServiceId(services, hook);
+            // Every required hook is advertised by now, so a null id means its first service has none.
+            String id = firstService(services, hook).map(DiscoveryServicesCheck::stringId).orElse(null);
             if (id == null) {
                 return List.of(noId(hook, consequence, evidence));
             }
-            if (!isUrlSafeServiceId(id)) {
+            // The body is redacted, and a JWT-shaped id loses its URL-safe last part to the mask. The run called
+            // the original, so only the part the mask left is judged.
+            if (!isUrlSafeServiceId(id.replace(Redactor.MASK, "x"))) {
                 return List.of(unusableId(hook, id, consequence, evidence));
             }
         }

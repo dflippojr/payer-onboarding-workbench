@@ -612,13 +612,12 @@ public class OnboardingRunner {
                         + sample.id() + " needs");
             }
             // The first service for the hook is the one called, as discovery.services judges it. The SDK turns a
-            // number or boolean id into a string, so the id comes from the document, not from the descriptor.
-            JsonNode document = discovery == null ? null : readJson(discovery.responseBody());
-            serviceId = document == null ? first.id()
-                    : DiscoveryServicesCheck.firstServiceId(document.path("services"), sample.hook());
-            if (serviceId == null) {
-                return Outcome.fail("The payer's " + sample.hook() + " service has no id");
+            // number or boolean id into a string, so the document decides whether there is an id; the value comes
+            // from the descriptor because the recorded document is redacted.
+            if (first.id() == null || firstServiceHasNoId()) {
+                return Outcome.fail(noServiceId());
             }
+            serviceId = first.id();
             prefetchKeys = first.prefetch().keySet();
             details.put("selectedService", TextLimit.cut(serviceId));
             if (!DiscoveryServicesCheck.isUrlSafeServiceId(serviceId)) {
@@ -632,6 +631,17 @@ public class OnboardingRunner {
             return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
 
+        private String noServiceId() {
+            return "The payer's " + sample.hook() + " service has no id";
+        }
+
+        /** Whether the discovery document lists a service for the hook first whose id is missing or not a string. */
+        private boolean firstServiceHasNoId() {
+            JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
+            return json != null && DiscoveryServicesCheck.firstService(json.path("services"), sample.hook())
+                    .filter(service -> DiscoveryServicesCheck.stringId(service) == null).isPresent();
+        }
+
         private String unreadableDiscovery() {
             JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
             if (json == null) {
@@ -641,6 +651,10 @@ public class OnboardingRunner {
                 if (!service.isObject()) {
                     return UNREADABLE_SERVICES;
                 }
+            }
+            // The library rejects an object or array id, and the discovery.services finding names it as missing.
+            if (firstServiceHasNoId()) {
+                return noServiceId();
             }
             return "The client library could not read the payer's discovery document: a service's hook, id, title "
                     + "or description is not a string, or its prefetch is not an object of query strings";

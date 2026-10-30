@@ -150,7 +150,7 @@ class DiscoveryDocumentPropertyTest {
         Arbitrary<String> hook = Arbitraries.frequencyOf(
                 net.jqwik.api.Tuple.of(5, Arbitraries.just("\"hook\":\"order-sign\",")),
                 net.jqwik.api.Tuple.of(1, Arbitraries.just("\"hook\":\"patient-view\",")));
-        Arbitrary<String> id = Arbitraries.of("\"id\":\"crd\"", "\"id\":\"crd-2\"", "\"id\":\"bad id\"", "\"id\":\"..\"",
+        Arbitrary<String> id = Arbitraries.of("\"id\":\"crd\"", "\"id\":\"crd-2\"", "\"id\":\"eyJhbGci.eyJpc3Mi.c2ln\"", "\"id\":[]", "\"id\":\"bad id\"", "\"id\":\"..\"",
                 "\"id\":\"\"", "\"id\":7", "\"id\":true", "\"id\":null", "\"id\":{}", "\"title\":\"no id\"");
         return Combinators.combine(hook, id).as((h, i) -> "{" + h + i + ",\"prefetch\":{}}").list().ofMinSize(1).ofMaxSize(4);
     }
@@ -174,8 +174,8 @@ class DiscoveryDocumentPropertyTest {
         JsonNode id = first == null ? MAPPER.missingNode() : first.path("id");
         boolean usable = id.isTextual() && !id.textValue().isEmpty() && !id.textValue().equals("bad id")
                 && !id.textValue().equals("..");
-        // An id that is an object fails the whole document in the client library, wherever it is.
-        boolean readable = !document.contains("\"id\":{}");
+        // An id that is an object or array fails the whole document in the client library, wherever it is.
+        boolean readable = !document.contains("\"id\":{}") && !document.contains("\"id\":[]");
 
         assertEquals(usable && readable ? List.of("/p/cds-services/" + id.textValue()) : List.of(), POSTS,
                 document + " -> POSTs");
@@ -186,9 +186,7 @@ class DiscoveryDocumentPropertyTest {
         assertEquals(usable ? Severity.PASS : Severity.FAIL, judged.severity(), document + " -> " + judged.title());
         if (first != null && !id.isTextual()) {
             assertTrue(judged.title().contains("has no id"), document + " -> " + judged.title());
-            if (readable) {
-                assertEquals("The payer's order-sign service has no id", run.steps().get(1).summary(), document);
-            }
+            assertEquals("The payer's order-sign service has no id", run.steps().get(1).summary(), document);
         }
         for (Finding f : run.findings()) {
             assertFalse(!POSTS.isEmpty() && (f.explanation() + f.title()).contains("never sent"),
