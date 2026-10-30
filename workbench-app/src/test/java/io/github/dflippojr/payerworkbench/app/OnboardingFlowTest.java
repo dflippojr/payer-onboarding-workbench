@@ -446,6 +446,20 @@ class OnboardingFlowTest {
         assertThrows(IllegalArgumentException.class, () -> OnboardingRunner.withSuffix("https://payer.example/r4", suffix));
     }
 
+    /** The payers log every call of a run, so the control run proves this log would show a refused run's traffic. */
+    @ParameterizedTest
+    @ValueSource(strings = {"/..", "/.", "/../x", "/x/..", "/%2e%2e/x", "/%2E/x"})
+    void dotSegmentSuffixSendsNothingToTheSyntheticPayer(String suffix, CapturedOutput output) {
+        runner.run(edited(NORTHWIND_ID, new RunRequest.ConnectionOverrides("/r4", null, null)));
+        assertTrue(output.getAll().contains(" GET /r4/cds-services -> "), "the payer did not log the control run's call");
+        int before = output.getAll().length();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> runner.run(edited(NORTHWIND_ID, new RunRequest.ConnectionOverrides(suffix, null, null))));
+
+        assertFalse(output.getAll().substring(before).contains("requestId="), "a refused run reached the payer");
+    }
+
     @Test
     void hostChangingSuffixNeverOpensAConnection() throws Exception {
         try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
