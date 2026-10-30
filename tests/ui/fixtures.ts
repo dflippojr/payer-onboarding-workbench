@@ -1,7 +1,8 @@
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type Page, type Request } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { readFile, access } from 'node:fs/promises';
 import { once } from 'node:events';
+import { loadavg } from 'node:os';
 
 type Instance = { baseURL: string; generation: number; used: boolean; restart(): Promise<void> };
 type Handle = { baseURL: string; stop(): Promise<void> };
@@ -91,12 +92,50 @@ export const test = base.extend<{ freshInstance: boolean; expectedErrors: RegExp
 });
 export { expect };
 
-export async function ready(page: Page) {
-  await page.goto('/');
-  await expect(page.getByRole('radio')).toHaveCount(3);
-  await expect(page.locator('#sample option')).toHaveCount(6);
-  await expect(page.getByRole('button', { name: 'Run onboarding' })).toBeEnabled();
-  await expect(page.locator('#recent-runs')).not.toContainText('Loading');
+/** Records each request's outcome, so a startup that times out can say what it was waiting for (#306). */
+function watchRequests(page: Page) {
+  const open = new Map<Request, number>();
+  const answered: string[] = [];
+  const failed: string[] = [];
+  const label = (request: Request, startedAt: number) =>
+    request.method() + ' ' + new URL(request.url()).pathname + ' (' + (Date.now() - startedAt) + ' ms)';
+  const onRequest = (request: Request) => { open.set(request, Date.now()); };
+  const settle = (list: string[]) => (request: Request) => {
+    list.push(label(request, open.get(request) ?? Date.now()));
+    open.delete(request);
+  };
+  const onFinished = settle(answered);
+  const onFailed = settle(failed);
+  page.on('request', onRequest);
+  page.on('requestfinished', onFinished);
+  page.on('requestfailed', onFailed);
+  return {
+    stop() {
+      page.off('request', onRequest);
+      page.off('requestfinished', onFinished);
+      page.off('requestfailed', onFailed);
+    },
+    report: () => [
+      'No answer: ' + ([...open].map(([request, startedAt]) => label(request, startedAt)).join(', ') || 'none'),
+      'Failed: ' + (failed.join(', ') || 'none'),
+      'Answered: ' + (answered.join(', ') || 'none'),
+      'Host load: ' + loadavg()[0].toFixed(1),
+    ].join('\n'),
+  };
+}
+
+/** Pass timeout only to test the report; everyone else waits the configured expect timeout. */
+export async function ready(page: Page, timeout?: number) {
+  const requests = watchRequests(page);
+  try {
+    await page.goto('/');
+    await expect(page.getByRole('radio')).toHaveCount(3, { timeout });
+    await expect(page.locator('#sample option')).toHaveCount(6, { timeout });
+    await expect(page.getByRole('button', { name: 'Run onboarding' })).toBeEnabled({ timeout });
+    await expect(page.locator('#recent-runs')).not.toContainText('Loading', { timeout });
+  } catch (error) {
+    throw new Error((error as Error).message + '\n' + requests.report(), { cause: error });
+  } finally { requests.stop(); }
   await expect.poll(() => page.evaluate(() => {
     const dark = matchMedia('(prefers-color-scheme: dark)').matches;
     return getComputedStyle(document.documentElement).getPropertyValue('--paper').trim() === (dark ? '#151b18' : '#f6f3eb');
