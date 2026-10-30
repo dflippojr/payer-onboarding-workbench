@@ -90,7 +90,9 @@ async function init() {
     $('payers').replaceChildren(h('p', { class: 'muted' }, `Could not load payers: ${e.message}`));
     return;
   }
-  customEnabled = await api('api/features').then(f => !!f.customEndpoints, () => false);
+  const features = await api('api/features').catch(() => null);
+  customEnabled = !!features && !!features.customEndpoints;
+  if (features) renderPayerNotice();
   renderPayers();
   renderSamples();
   renderFaults(payers[0] ? payers[0].faults : Object.keys(FAULTS));
@@ -286,6 +288,22 @@ function renderPendingSteps() {
 function selectedPayer() {
   const checked = form.querySelector('input[name="payerId"]:checked');
   return payers.find(p => checked && p.payerId === checked.value);
+}
+
+/**
+ * The page's fixed text claims nothing about which payers a run can reach. Only the server's answer can
+ * say no real payer is involved: with custom endpoints on, a run can name its own.
+ */
+function renderPayerNotice() {
+  if (customEnabled) {
+    $('banner-text').replaceChildren(h('strong', {}, 'Passing here does not by itself establish interoperability.'),
+      ' The three synthetic payers run inside this app with generated credentials. A run against your own endpoint '
+      + 'uses synthetic requests, and its report includes that endpoint\'s responses with credentials redacted.');
+    return;
+  }
+  const notice = $('synthetic-notice').content.cloneNode(true);
+  $('footer-note').textContent = notice.querySelector('strong').textContent;
+  $('banner-text').replaceChildren(notice);
 }
 
 function customSelected() {

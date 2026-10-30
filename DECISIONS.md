@@ -151,3 +151,9 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
 - **The canonical file lives with the app, and the export copies it.** Spring serves it at `/shared/present.js` with no build step. `scripts/export-replays.mjs` copies it to `site-dist/shared/present.js`, beside `replay.js`, so `./shared/present.js` resolves the same way in both. `vendor-into-site.mjs` already copies every bundle file. `replay/replay.js` does not run from `replay/` itself; the bundle does.
 - **`replay.js` still exports `formatMs`, `headers` and `pretty`,** now as re-exports, so the module's exports did not shrink.
 - **The replay's `h` gained the app's `on*` listener branch.** The replay passes no `on*` attributes, so its markup is unchanged.
+
+## Report disclaimer for custom endpoints (#298)
+
+- **Two fixed texts, chosen by payer id.** `RunReport.DISCLAIMER_TEXT` stays for synthetic runs, byte for byte. A run whose payer id is `custom-endpoint` gets `CUSTOM_DISCLAIMER_TEXT`, the issue's recommended wording. The replay bundle only records synthetic runs, so it does not change.
+- **The UI claims "no real payer" only after the server confirms it.** `index.html` holds neutral text that is true in every mode, which stays up while the page loads and if `/api/features` fails. `app.js` then shows the synthetic text, kept in an inert `<template>`, when custom endpoints are off, or the custom text when they are on.
+- **The tests scan for the claim, not only the disclaimer.** `CustomEndpointTest` and `reference-runs.mjs` search each whole rendered report, and `custom-endpoint-form.ts` the whole page, so text added elsewhere that is only true of a synthetic payer fails too. The JS and Java patterns are separate copies, like the redaction rules, but have no shared corpus.
