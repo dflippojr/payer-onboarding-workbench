@@ -21,7 +21,7 @@ const STEP_HELP = {
 };
 const OVERRIDES = { baseUrlSuffix: 'Base URL suffix', igVersion: 'igVersion', clientId: 'Client id' };
 const FAULTS = {
-  'slow-response': ['Payer is slow', 'Every response is held past the latency budget (about 11 s by default).'],
+  'slow-response': ['Payer is slow', 'Hook calls are held past the latency budget (about 11 s by default); discovery and the token request stay fast.'],
   'rate-limited-429': ['Payer rate limit', 'Hook calls get 429 with Retry-After: 30; back off before retrying.'],
   'expired-token-401': ['Token rejected as expired', 'Hook calls get 401 invalid_token, "expired".'],
   'wrong-audience-reject': ['Payer expects another audience', 'The payer checks tokens against a different aud.'],
@@ -442,7 +442,7 @@ function showRunning(payer, request) {
   const context = [request.environment, sample && sample.title,
     faults.length > 0 && `${faults.length === 1 ? 'fault' : 'faults'} on: ${faults.join(', ')}`].filter(Boolean).join(' · ');
   $('run-meta').textContent = `${context}. ${request.faults.includes('slow-response')
-    ? 'The slow-response fault holds each response for about 11 s; the steps appear when the run finishes.'
+    ? 'The slow-response fault holds each hook call for about 11 s; discovery and the token request stay fast. The steps appear when the run finishes.'
     : 'The steps appear when the run finishes.'}`;
   $('run-meta').removeAttribute('title');
   $('run-track').hidden = false;

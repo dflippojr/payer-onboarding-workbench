@@ -207,6 +207,8 @@ test('running state shows the pending steps and hides the previous run', async (
   await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
   const previous = await runOnboarding(page);
   await openDrawer(page, 'Payer faults');
+  await expect(page.locator('label.check').filter({ hasText: 'slow-response' }))
+    .toContainText('Hook calls are held past the latency budget (about 11 s by default); discovery and the token request stay fast.');
   await page.getByRole('checkbox', { name: 'Payer is slow' }).check();
   // Hold the POST so the running state can be inspected, then send it without the slow fault so the
   // test does not wait about 11 s per call. The page built its running copy from the form as submitted.
@@ -225,7 +227,7 @@ test('running state shows the pending steps and hides the previous run', async (
   await expect(page.locator('#verdict-word')).toHaveText('Running');
   await expect(page.locator('#results-heading')).toHaveText('Onboarding Northwind Health (synthetic)');
   await expect(page.locator('#run-meta')).toContainText('SANDBOX · ');
-  await expect(page.locator('#run-meta')).toContainText('fault on: Payer is slow. The slow-response fault holds each response for about 11 s');
+  await expect(page.locator('#run-meta')).toContainText('fault on: Payer is slow. The slow-response fault holds each hook call for about 11 s; discovery and the token request stay fast.');
   const pending = page.locator('#running-steps .step.pending');
   await expect(pending.locator('h3')).toHaveText(
     ['Resolve connection', 'Discovery', 'Authenticate', 'Send sample hook request', 'Parse response', 'Run diagnostics']);
