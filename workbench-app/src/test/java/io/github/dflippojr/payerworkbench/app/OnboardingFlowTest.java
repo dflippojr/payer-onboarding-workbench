@@ -432,11 +432,18 @@ class OnboardingFlowTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"@127.0.0.1:1", "@evil.example", ":1", "?x=1", "#x", "/r4?x", "/r4#x", "r4",
-            "/r4\\x", "/r 4", "/r4\n/x", "/%zz"})
+            "/r4\\x", "/r 4", "/r4\n/x", "/%zz", "/..", "/.", "/../x", "/x/..", "/%2e%2e/x", "/%2E/x",
+            "/../admin", "/%2e%2e/admin", "/%2E%2E", "/./x/..", "/.%2e/x", "/x/%2e./y", "/x/./"})
     void suffixThatLeavesThePathIsRefused(String suffix) {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> runner.run(edited(NORTHWIND_ID, new RunRequest.ConnectionOverrides(suffix, null, null))));
         assertTrue(e.getMessage().startsWith("baseUrlSuffix may only add path segments"), e.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/..", "/../admin", "/%2e%2e/admin", "/%2E%2E", "/./x/.."})
+    void dotSegmentSuffixIsRefused(String suffix) {
+        assertThrows(IllegalArgumentException.class, () -> OnboardingRunner.withSuffix("https://payer.example/r4", suffix));
     }
 
     @Test
@@ -454,6 +461,10 @@ class OnboardingFlowTest {
     void suffixKeepsTheBaseUrlsOrigin() {
         assertEquals("http://127.0.0.1:9/ok/r4", OnboardingRunner.withSuffix("http://127.0.0.1:9/ok", " /r4 "));
         assertEquals("https://127.0.0.1:9/", OnboardingRunner.withSuffix("https://127.0.0.1:9", "/"));
+        assertEquals("https://127.0.0.1:9/ok/r4/", OnboardingRunner.withSuffix("https://127.0.0.1:9/ok", "/r4/"));
+        // Dots inside a segment are just part of its name.
+        assertEquals("https://127.0.0.1:9/ok/a.b/..c/.../.x/x.",
+                OnboardingRunner.withSuffix("https://127.0.0.1:9/ok", "/a.b/..c/.../.x/x."));
         assertThrows(IllegalArgumentException.class, () -> OnboardingRunner.withSuffix("https://127.0.0.1:9", "@10.0.0.5:22"));
     }
 
