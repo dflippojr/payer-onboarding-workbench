@@ -91,6 +91,7 @@ async function init() {
     return;
   }
   customEnabled = await api('api/features').then(f => !!f.customEndpoints, () => false);
+  if (customEnabled) renderCustomEndpointNotice();
   renderPayers();
   renderSamples();
   renderFaults(payers[0] ? payers[0].faults : Object.keys(FAULTS));
@@ -286,6 +287,15 @@ function renderPendingSteps() {
 function selectedPayer() {
   const checked = form.querySelector('input[name="payerId"]:checked');
   return payers.find(p => checked && p.payerId === checked.value);
+}
+
+/** The page's fixed text says no real payer is involved, which stops being true once a run can name its own endpoint. */
+function renderCustomEndpointNotice() {
+  const caveat = 'Passing here does not by itself establish interoperability.';
+  $('banner-text').replaceChildren(h('strong', {}, caveat),
+    ' The three synthetic payers run inside this app with generated credentials. A run against your own endpoint '
+    + 'uses synthetic requests, and its report includes that endpoint\'s responses with credentials redacted.');
+  $('footer-note').textContent = caveat;
 }
 
 function customSelected() {

@@ -19,7 +19,7 @@
     </div>
     <p class="banner" role="note">
       <svg class="icon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10 2.5l8 14.5H2z"/><path d="M10 8v4M10 14.5v.5"/></svg>
-      <span><strong>Synthetic payers only; passing here does not prove real-payer interoperability.</strong>
+      <span id="banner-text"><strong>Synthetic payers only; passing here does not prove real-payer interoperability.</strong>
       All three synthetic payers run inside this app with generated credentials; no real payer, patient or PHI is involved.</span>
     </p>
   </header>
@@ -166,7 +166,7 @@
               </select>
             </label>
             <a class="button ghost" id="report-link" href="#" download>Download report <span aria-hidden="true">↓</span></a>
-            <span class="muted small">Redacted, with the synthetic-data disclaimer.</span>
+            <span class="muted small">Redacted, with a disclaimer of what the run was made against.</span>
           </div>
         </div>
       </section>
@@ -188,7 +188,7 @@
   </main>
 
   <footer class="muted small">
-    Synthetic payers only; passing here does not prove real-payer interoperability.
+    <span id="footer-note">Synthetic payers only; passing here does not prove real-payer interoperability.</span>
     Request and response bodies are shown after redaction.
   </footer>
 </body>
