@@ -612,9 +612,8 @@ public class OnboardingRunner {
                         + sample.id() + " needs");
             }
             // The first service for the hook is the one called, as discovery.services judges it. The SDK turns a
-            // number or boolean id into a string, so the document decides whether there is an id; the value comes
-            // from the descriptor because the recorded document is redacted.
-            if (first.id() == null || firstServiceHasNoId(discovery == null ? null : readJson(discovery.responseBody()))) {
+            // number or boolean id into a string, so the document decides whether there is an id.
+            if (first.id() == null || firstServiceHasNoId(discoveryDocument())) {
                 return Outcome.fail(noServiceId());
             }
             serviceId = first.id();
@@ -631,6 +630,12 @@ public class OnboardingRunner {
             return Outcome.pass("Found " + services.size() + " services; " + sample.hook() + " is served by " + serviceId);
         }
 
+        /** The discovery body as the payer sent it; {@code discovery} is redacted, which can break its JSON. */
+        private JsonNode discoveryDocument() {
+            List<PayerExchange> events = recorder.events(PayerCallPhase.DISCOVERY);
+            return events.isEmpty() ? null : readJson(events.getLast().responseBody());
+        }
+
         private String noServiceId() {
             return "The payer's " + sample.hook() + " service has no id";
         }
@@ -642,7 +647,7 @@ public class OnboardingRunner {
         }
 
         private String unreadableDiscovery() {
-            JsonNode json = discovery == null ? null : readJson(discovery.responseBody());
+            JsonNode json = discoveryDocument();
             if (json == null) {
                 return "The payer's discovery response is not JSON the client library can read";
             }

@@ -1117,6 +1117,30 @@ class CustomEndpointTest {
         assertEquals(io.github.dflippojr.payerworkbench.core.Severity.PASS, finding.severity(), finding::title);
     }
 
+    /** #297: redacting a PEM block breaks the recorded JSON, so the run reads the id's type from the original. */
+    @Test
+    void aNonStringIdIsNotCalledWhenRedactionBreaksTheRecordedDocument() throws Exception {
+        List<String> posts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        open.add(() -> server.stop(0));
+        server.createContext("/pem/cds-services", exchange -> {
+            if (exchange.getRequestMethod().equals("POST")) {
+                posts.add(exchange.getRequestURI().getPath());
+                respond(exchange, "{\"cards\":[]}");
+            } else {
+                respond(exchange, "{\"services\":[{\"hook\":\"order-sign\",\"id\":7,\"prefetch\":{},\"description\":"
+                        + "\"-----BEGIN CERTIFICATE-----\\nabc\\n-----END CERTIFICATE-----\"}]}");
+            }
+        });
+        server.start();
+
+        OnboardingRun run = runner.run(custom("http://127.0.0.1:" + server.getAddress().getPort() + "/pem",
+                AuthType.NONE, null, null, null));
+
+        assertEquals(List.of(), posts);
+        assertEquals("The payer's order-sign service has no id", run.steps().get(1).summary());
+    }
+
     /** #297: a usable first service is the one called, whatever follows it. */
     @Test
     void theFirstServiceForTheHookIsCalledWhenItHasAnId() throws Exception {
