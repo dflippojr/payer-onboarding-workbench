@@ -217,12 +217,14 @@ const TEXT_CHECKS = [
     },
   },
   // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
-  // masked values is a recorded header (X-Api-Key: ["[REDACTED]"]).
+  // masked values is a secret-named list redactTree masked item by item (X-Api-Key: ["[REDACTED]"]);
+  // it masks a JWK private member's list whole, so no list of masks is left there.
   {
     name: 'JSON secret structure',
     re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
-    ok: m => !(isSecretKey(m[1]) || isJwkMember(m[1], m.input)) || (m[2] === '['
-      && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))),
+    ok: m => isSecretKey(m[1])
+      ? m[2] === '[' && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
+      : !isJwkMember(m[1], m.input),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
