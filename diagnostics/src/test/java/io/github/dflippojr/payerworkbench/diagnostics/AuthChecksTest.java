@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
+import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.JwtClaims;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.TokenResponseMetadata;
@@ -30,6 +31,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import org.junit.jupiter.api.Nested;
@@ -398,6 +400,112 @@ class AuthChecksTest {
             // The hook call's aud matches, and its rejection does not cite the audience: someone else's finding.
             assertTrue(check.evaluate(run.build()).isEmpty());
             assertFalse(JwtAudienceCheck.explains(call));
+        }
+
+        @Test
+        void echoedAudClaimInAnExpiredTokenErrorIsNotAnAudienceMismatch() {
+            var run = healthy();
+            HookResponse call = orderSign(hook(401, "{\"error\":\"invalid_token\",\"error_description\":\"token expired\","
+                    + "\"claims\":{\"aud\":[\"" + ORDER_SIGN_URL + "\"]}}", 300), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertFalse(JwtAudienceCheck.explains(call));
+            // The hook call is the only JWT this check inspects, and it was rejected for another reason.
+            assertTrue(check.evaluate(run.build()).isEmpty());
+            Finding f = Fixtures.assertOnly(new HookRejectedCheck().evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("token expired"), f::explanation);
+        }
+
+        @Test
+        void audienceOutsideTheErrorAuthParamsIsNotCited() {
+            var run = healthy();
+            HookResponse call = orderSign(rejected("Bearer realm=\"audience-api\", scope=\"aud\", error=\"invalid_token\", "
+                    + "error_description=\"token expired\"", "{}"), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertFalse(JwtAudienceCheck.explains(call));
+            assertTrue(check.evaluate(run.build()).isEmpty());
+        }
+
+        @Test
+        void audienceMismatchInWwwAuthenticateFails() {
+            var run = healthy();
+            HookResponse call = orderSign(rejected("Bearer error=\"invalid_token\", error_description=\"audience mismatch\"",
+                    "{\"error\":\"invalid_token\"}"), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertTrue(JwtAudienceCheck.explains(call));
+            assertEquals("Payer expects a different JWT audience", assertOnly(check.evaluate(run.build()), Severity.FAIL).title());
+            assertTrue(new HookRejectedCheck().evaluate(run.build()).isEmpty());
+        }
+
+        @Test
+        void audienceErrorCodeInWwwAuthenticateFails() {
+            var run = healthy();
+            HookResponse call = orderSign(rejected("Bearer error=\"invalid_audience\"", ""), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertTrue(JwtAudienceCheck.explains(call));
+            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+        }
+
+        @Test
+        void audienceErrorCodeInJsonBodyFails() {
+            var run = healthy();
+            HookResponse call = orderSign(hook(401, "{\"error\":\"invalid_audience\",\"error_description\":\"rejected\"}",
+                    300), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertTrue(JwtAudienceCheck.explains(call));
+            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+        }
+
+        @Test
+        void plainTextAudienceErrorFails() {
+            var run = healthy();
+            HookResponse call = orderSign(rejected(null, "invalid audience"), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertTrue(JwtAudienceCheck.explains(call));
+            assertOnly(check.evaluate(run.build()), Severity.FAIL);
+        }
+
+        @Test
+        void nonStringErrorFieldsAreNotRead() {
+            var run = healthy();
+            HookResponse call = orderSign(hook(401, "{\"error\":{\"code\":\"audience\"},\"error_description\":[\"aud\"]}",
+                    300), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            assertFalse(JwtAudienceCheck.explains(call));
+            assertTrue(check.evaluate(run.build()).isEmpty());
+        }
+
+        @Test
+        void urlNamedByPayerComesFromTheErrorText() {
+            var run = healthy();
+            String expected = "https://crd.elsewhere.test/cds-services/crd-order-sign";
+            HookResponse call = orderSign(hook(401, "{\"issuer\":\"https://idp.elsewhere.test/\",\"error\":\"invalid_token\","
+                    + "\"error_description\":\"aud must be " + expected + "\"}", 300), ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("apparently " + expected), f::explanation);
+            assertFalse(f.evidence().contains("URL named in the payer's error: https://idp"), f::evidence);
+        }
+
+        @Test
+        void urlNamedOnlyInWwwAuthenticateIsReported() {
+            var run = healthy();
+            String expected = "https://crd.elsewhere.test/cds-services/crd-order-sign";
+            HookResponse call = orderSign(rejected("Bearer error=\"invalid_token\", error_description=\"aud must be "
+                    + expected + "\"", "{\"error\":\"invalid_token\",\"see\":\"https://docs.elsewhere.test/\"}"),
+                    ORDER_SIGN_URL);
+            run.hooks = new ArrayList<>(List.of(call));
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.evidence().contains("URL named in the payer's error: " + expected), f::evidence);
+        }
+
+        /** A 401 hook response with this {@code WWW-Authenticate} header (none if null) and body. */
+        private static HttpExchange rejected(String wwwAuthenticate, String body) {
+            Map<String, List<String>> headers = wwwAuthenticate == null
+                    ? Fixtures.headers("Content-Type", "text/plain")
+                    : Fixtures.headers("Content-Type", "application/json", "WWW-Authenticate", wwwAuthenticate);
+            return new HttpExchange("POST", ORDER_SIGN_URL, 401, Duration.ofMillis(300),
+                    Fixtures.headers("Authorization", "Bearer synthetic", "Content-Type", "application/json"),
+                    "{\"hook\":\"order-sign\"}", headers, body, null);
         }
 
         @Test
