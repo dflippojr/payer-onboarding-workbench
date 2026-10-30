@@ -180,6 +180,64 @@ class DiscoveryChecksTest {
                     + "{\"hook\":\"order-sign\",\"id\":\"bad id\"},{\"hook\":\"patient-view\",\"id\":\"x y\"}]}");
             assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
         }
+
+        /** #297: the issue's own test. */
+        @Test
+        void aServiceWithNoIdBeforeAUsableOneIsNotCalledUnusable() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"prefetch\":{}},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"crd\",\"prefetch\":{}}]}");
+            for (Finding f : new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build())) {
+                assertFalse(f.title().contains("not URL-safe: ''"), f.title());
+                assertFalse(f.explanation().contains("never sent the hook"), f.explanation());
+            }
+        }
+
+        /** #297: a missing id is named as missing, and so is one that is not a string. */
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"", "\"id\":null,", "\"id\":7,", "\"id\":true,",
+                "\"id\":{},", "\"id\":[],"})
+        void aFirstServiceWithoutAStringIdFailsAsHavingNoId(String id) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{" + id + "\"hook\":\"order-sign\",\"prefetch\":{}},"
+                    + "{\"hook\":\"order-sign\",\"id\":\"crd\",\"prefetch\":{}}]}");
+            run.hooks.clear();
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertEquals("The first order-sign service has no id", f.title());
+            assertTrue(f.explanation().contains("never sent the hook"), f.explanation());
+            assertEquals("advertised services: (no id) -> order-sign, crd -> order-sign; "
+                    + "service with no id: the first for order-sign", f.evidence());
+            assertTrue(f.suggestedFix().contains("order-sign"), f.suggestedFix());
+        }
+
+        /** #297: whatever the wording, a finding never says the hook was not sent when an exchange is recorded. */
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(strings = {"{\"hook\":\"order-sign\"}",
+                "{\"hook\":\"order-sign\",\"id\":\"a/b\"}"})
+        void anUnusableIdNeverSaysTheHookWasNotSentWhenOneIsRecorded(String service) {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[" + service + "]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertFalse(f.explanation().contains("never sent"), f.explanation());
+        }
+
+        @Test
+        void anUnsafeIdSaysTheHookWasNotSentWhenNoneIsRecorded() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"a/b\"}]}");
+            run.hooks.clear();
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.FAIL);
+            assertTrue(f.explanation().contains("never sent the hook"), f.explanation());
+        }
+
+        @Test
+        void aNonStringIdIsListedAsNoId() {
+            var run = healthy();
+            run.discovery = discovery(200, "{\"services\":[{\"hook\":\"order-sign\",\"id\":\"ok-1\"},"
+                    + "{\"hook\":\"order-sign\",\"id\":7}]}");
+            Finding f = assertOnly(new DiscoveryServicesCheck(Set.of("order-sign")).evaluate(run.build()), Severity.PASS);
+            assertEquals("advertised services: ok-1 -> order-sign, (no id) -> order-sign", f.evidence());
+        }
     }
 
     @Nested

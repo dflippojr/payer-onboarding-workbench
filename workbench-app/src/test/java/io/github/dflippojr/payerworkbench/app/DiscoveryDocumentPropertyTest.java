@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import net.jqwik.api.Arbitraries;
 import net.jqwik.api.Arbitrary;
@@ -36,12 +37,18 @@ import net.jqwik.api.lifecycle.BeforeContainer;
  * lists mix service objects (with string, number, object, array and null hooks, ids and prefetch
  * maps) with entries that are not objects at all. Every entry that is not an object must be named
  * by a {@code discovery.services} FAIL.
+ *
+ * <p>Class-level check (#297): the check and the runner judge the same service. Whatever the
+ * document, a POST goes only to the first service for the hook, under its string id; a
+ * {@code discovery.services} FAIL means no POST went out; and no finding says the hook was not sent
+ * when one was.
  */
 class DiscoveryDocumentPropertyTest {
 
     private static final String SAMPLE = "order-sign-hospital-bed";
     private static final AtomicReference<String> DOCUMENT = new AtomicReference<>("{\"services\":[]}");
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final List<String> POSTS = new CopyOnWriteArrayList<>();
 
     private static HttpServer server;
     private static SyntheticPayers payers;
@@ -52,6 +59,9 @@ class DiscoveryDocumentPropertyTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/p/cds-services", exchange -> {
             exchange.getRequestBody().readAllBytes();
+            if (exchange.getRequestMethod().equals("POST")) {
+                POSTS.add(exchange.getRequestURI().getPath());
+            }
             String body = exchange.getRequestMethod().equals("GET") ? DOCUMENT.get()
                     : "{\"cards\":[{\"summary\":\"s\",\"indicator\":\"info\",\"source\":{\"label\":\"l\"}}]}";
             byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
@@ -131,6 +141,58 @@ class DiscoveryDocumentPropertyTest {
         for (int i = 0; i < entries.size(); i++) {
             assertEquals(!entries.get(i).isObject(), named.evidence().contains("services[" + i + "]: "),
                     document + " -> services[" + i + "] in " + named.evidence());
+        }
+    }
+
+    /** Service lists that often hold several order-sign services, with every kind of id. */
+    @Provide
+    Arbitrary<List<String>> sameHookServices() {
+        Arbitrary<String> hook = Arbitraries.frequencyOf(
+                net.jqwik.api.Tuple.of(5, Arbitraries.just("\"hook\":\"order-sign\",")),
+                net.jqwik.api.Tuple.of(1, Arbitraries.just("\"hook\":\"patient-view\",")));
+        Arbitrary<String> id = Arbitraries.of("\"id\":\"crd\"", "\"id\":\"crd-2\"", "\"id\":\"bad id\"", "\"id\":\"..\"",
+                "\"id\":\"\"", "\"id\":7", "\"id\":true", "\"id\":null", "\"id\":{}", "\"title\":\"no id\"");
+        return Combinators.combine(hook, id).as((h, i) -> "{" + h + i + ",\"prefetch\":{}}").list().ofMinSize(1).ofMaxSize(4);
+    }
+
+    @Property(tries = 200)
+    void theRunAndTheCheckJudgeTheSameService(@ForAll("sameHookServices") List<String> services) throws Exception {
+        String document = "{\"services\":[" + String.join(",", services) + "]}";
+        DOCUMENT.set(document);
+        POSTS.clear();
+        OnboardingRun run = runner.run(new RunRequest(null, Environment.SANDBOX, SAMPLE, List.of(), null, null,
+                new RunRequest.CustomEndpoint("http://127.0.0.1:" + server.getAddress().getPort() + "/p",
+                        AuthType.NONE, null, null, null, NorthwindPayer.builder().build().igVersion(), null)));
+
+        JsonNode first = null;
+        for (JsonNode entry : MAPPER.readTree(document).path("services")) {
+            if (entry.path("hook").asText("").equals("order-sign")) {
+                first = entry;
+                break;
+            }
+        }
+        JsonNode id = first == null ? MAPPER.missingNode() : first.path("id");
+        boolean usable = id.isTextual() && !id.textValue().isEmpty() && !id.textValue().equals("bad id")
+                && !id.textValue().equals("..");
+        // An id that is an object fails the whole document in the client library, wherever it is.
+        boolean readable = !document.contains("\"id\":{}");
+
+        assertEquals(usable && readable ? List.of("/p/cds-services/" + id.textValue()) : List.of(), POSTS,
+                document + " -> POSTs");
+        assertEquals(usable && readable, run.steps().get(1).ok(),
+                document + " -> Discovery: " + run.steps().get(1).summary());
+        Finding judged = run.findings().stream().filter(f -> f.checkId().equals("discovery.services")).findFirst()
+                .orElseThrow(() -> new AssertionError(document + " -> no discovery.services"));
+        assertEquals(usable ? Severity.PASS : Severity.FAIL, judged.severity(), document + " -> " + judged.title());
+        if (first != null && !id.isTextual()) {
+            assertTrue(judged.title().contains("has no id"), document + " -> " + judged.title());
+            if (readable) {
+                assertEquals("The payer's order-sign service has no id", run.steps().get(1).summary(), document);
+            }
+        }
+        for (Finding f : run.findings()) {
+            assertFalse(!POSTS.isEmpty() && (f.explanation() + f.title()).contains("never sent"),
+                    document + " -> " + f.title());
         }
     }
 }
