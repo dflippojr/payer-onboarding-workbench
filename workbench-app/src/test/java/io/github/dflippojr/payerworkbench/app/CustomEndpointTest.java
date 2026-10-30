@@ -1240,6 +1240,30 @@ class CustomEndpointTest {
         assertEquals(0, calls.get(), "invalid edits are refused before any payer call");
     }
 
+    /**
+     * #298: a real run through the API, whole rendered report scanned, so any text a report adds
+     * later that only holds for a synthetic payer fails here too, not only the disclaimer.
+     */
+    @Test
+    void noReportFormatOfACustomRunClaimsASyntheticPayer() throws Exception {
+        String secret = secret();
+        NorthwindPayer payer = northwind(secret);
+        String body = mapper.writeValueAsString(Map.of("sampleId", SAMPLE, "customEndpoint", Map.of(
+                "baseUrl", payer.baseUrl(), "authType", "OAUTH2_CLIENT_CREDENTIALS", "clientId", "payer-workbench",
+                "tokenEndpoint", payer.tokenEndpoint(), "igVersion", igVersion, "credential", secret)));
+
+        HttpResponse<String> posted = send("POST", "/api/runs", body);
+
+        assertEquals(200, posted.statusCode(), posted.body());
+        String runId = mapper.readTree(posted.body()).path("runId").asText();
+        for (String format : List.of("md", "html", "json")) {
+            String report = send("GET", "/api/runs/" + runId + "/report?format=" + format, null).body();
+            assertTrue(report.contains("user-supplied endpoint"), format);
+            var claim = RunReportTest.SYNTHETIC_ONLY_CLAIM.matcher(report);
+            assertFalse(claim.find(), () -> format + " claims: " + claim.group());
+        }
+    }
+
     private static final String igVersion = NorthwindPayer.builder().build().igVersion();
 
     private static RunRequest custom(String baseUrl, AuthType auth, String tokenEndpoint, String keyId, String credential) {
