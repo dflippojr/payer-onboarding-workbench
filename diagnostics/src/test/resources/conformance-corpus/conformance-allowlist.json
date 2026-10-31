@@ -27,15 +27,6 @@
       "issue": "https://github.com/dflippojr/fhir-crd-router/issues/96"
     },
     {
-      "id": "unknown-relative-sub-extension",
-      "check": "response.coverage-information",
-      "items": [
-        { "id": "mutant-ci-unknown-sub-extension", "workbench": "OK", "validator": "FAIL" }
-      ],
-      "reason": "Router bug: CoverageInformationValidator accepts a relative sub-extension url the profile does not define ('made-up-flag'); the validator reports Extension_EXT_SubExtension_Invalid. Fixing it belongs to fhir-crd-router.",
-      "issue": "https://github.com/dflippojr/fhir-crd-router/issues/125"
-    },
-    {
       "id": "tools-model-looser-than-cds-hooks",
       "check": "response.schema",
       "items": [

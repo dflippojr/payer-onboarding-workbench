@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 
 $repoUrl = if ($env:CRD_ROUTER_REPO_URL) { $env:CRD_ROUTER_REPO_URL } else { 'https://github.com/dflippojr/fhir-crd-router.git' }
-$commit = 'a5f013eed94024b72ccc2bf4fd89c73b5460da12'
+$commit = '808abc0abf0427b2a41a5e8c7a88f85430431548'
 
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root '.deps\fhir-crd-router'
@@ -24,7 +24,7 @@ Invoke-Checked git @('-C', $dest, 'checkout', '--quiet', '--detach', $commit)
 
 Push-Location $dest
 try {
-    Invoke-Checked (Join-Path $dest 'mvnw.cmd') @('-q', 'install', '-DskipTests')
+    Invoke-Checked (Join-Path $dest 'mvnw.cmd') @('-q', 'install', '-DskipTests', '-DskipITs')
 } finally {
     Pop-Location
 }
