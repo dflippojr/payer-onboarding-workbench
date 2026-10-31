@@ -40,7 +40,7 @@ public final class HookRejectedCheck implements DiagnosticCheck {
             String error = value(challenges, body, "error");
             String reason = value(challenges, body, "error_description");
             String scope = value(challenges, body, "scope");
-            String scheme = header.isBlank() ? "unspecified" : header.strip().split("\\s+", 2)[0];
+            String scheme = AuthChallenge.scheme(challenges).orElse("unspecified");
             // A run with authType NONE sends no Authorization header; say so rather than blame a token.
             boolean unauthenticated = hook.clientJwt() == null
                     && Support.header(exchange.requestHeaders(), "Authorization").isEmpty();

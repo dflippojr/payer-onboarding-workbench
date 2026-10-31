@@ -97,4 +97,21 @@ class AuthChallengeTest {
     void parametersComeFromTheFirstChallengeCarryingAnError(String header, String name, String expected) {
         assertEquals(Optional.ofNullable(expected), AuthChallenge.param(AuthChallenge.parse(header), name));
     }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "Basic realm=\"a\", Bearer error=\"invalid_token\"|Bearer",
+            "Basic realm=\"a\", Bearer realm=\"b\"|Basic",
+            "error=\"invalid_token\", Bearer realm=\"b\"|Bearer",
+            "Bearer|Bearer",
+    })
+    void schemeComesFromTheChallengeTheParametersAreReadFrom(String header, String scheme) {
+        assertEquals(Optional.of(scheme), AuthChallenge.scheme(AuthChallenge.parse(header)));
+    }
+
+    @Test
+    void noSchemeWhenTheHeaderNamesNone() {
+        assertEquals(Optional.empty(), AuthChallenge.scheme(AuthChallenge.parse("error=\"invalid_token\"")));
+        assertEquals(Optional.empty(), AuthChallenge.scheme(AuthChallenge.parse("")));
+    }
 }

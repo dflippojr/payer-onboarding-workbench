@@ -75,6 +75,16 @@ record AuthChallenge(String scheme, Map<String, String> params) {
         return challenges.stream().map(c -> c.params().get(key)).filter(v -> v != null).findFirst();
     }
 
+    /**
+     * The scheme of the challenge {@link #param} reads from: the first challenge that carries an {@code error}
+     * parameter, else the first challenge that names a scheme.
+     */
+    static Optional<String> scheme(List<AuthChallenge> challenges) {
+        return challenges.stream().filter(c -> c.params().containsKey("error") && !c.scheme().isEmpty())
+                .map(AuthChallenge::scheme).findFirst()
+                .or(() -> challenges.stream().map(AuthChallenge::scheme).filter(s -> !s.isEmpty()).findFirst());
+    }
+
     private static boolean isSpace(char c) {
         return c == ' ' || c == '\t';
     }
