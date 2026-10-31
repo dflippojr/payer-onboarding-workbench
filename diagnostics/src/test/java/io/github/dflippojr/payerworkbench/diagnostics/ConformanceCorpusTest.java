@@ -54,6 +54,16 @@ class ConformanceCorpusTest {
         }
     }
 
+    /** Router #125: was an allowlisted disagreement (workbench OK, validator FAIL) until the pin moved past the fix. */
+    @Test
+    void anUnknownRelativeSubExtensionFailsCoverageInformation() {
+        ConformanceCorpus.Item item = ConformanceCorpus.find(ConformanceCorpus.items(), "mutant-ci-unknown-sub-extension");
+        DiagnosticCheck check = ConformanceMapping.CHECKS.stream()
+                .filter(c -> c.id().equals("response.coverage-information")).findFirst().orElseThrow();
+        assertEquals(ConformanceMapping.Verdict.FAIL, ConformanceMapping.workbenchVerdict(
+                ConformanceMapping.findings(check, item.body().toString())));
+    }
+
     @Test
     void allowlistIsSmallExplainedAndTrueOnTheWorkbenchSide() {
         List<ConformanceCorpus.Item> items = ConformanceCorpus.items();
