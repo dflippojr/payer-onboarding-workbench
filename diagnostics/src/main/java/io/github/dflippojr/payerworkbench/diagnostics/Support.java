@@ -141,24 +141,6 @@ final class Support {
         }
     }
 
-    /** A claim's string values; a JSON array (as {@code aud} may be) yields each element. */
-    static List<String> stringValues(JsonNode node) {
-        List<String> out = new ArrayList<>();
-        if (node == null) {
-            return out;
-        }
-        if (node.isArray()) {
-            node.forEach(n -> {
-                if (n.isTextual()) {
-                    out.add(n.asText());
-                }
-            });
-        } else if (node.isTextual()) {
-            out.add(node.asText());
-        }
-        return out;
-    }
-
     static String lower(String s) {
         return s == null ? "" : s.toLowerCase(Locale.ROOT);
     }

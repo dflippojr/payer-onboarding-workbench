@@ -61,10 +61,8 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                         "The payer answered the hook call with an error status instead of a CDS Hooks response, "
                                 + "so there are no cards (the messages a payer shows the clinician) to check.",
                         Support.describe(exchange),
-                        exchange.status() == 401 || exchange.status() == 403
-                                ? "Check the access token sent on hook calls and the auth.* findings."
-                                : "Compare the request (hook, context and prefetch) with the payer's onboarding "
-                                        + "guide; the response body usually names the field it rejected."));
+                        "Compare the request (hook, context and prefetch) with the payer's onboarding "
+                                + "guide; the response body usually names the field it rejected."));
                 continue;
             }
             Optional<JsonNode> json = Support.parseJson(exchange.responseBody());
