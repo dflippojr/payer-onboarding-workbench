@@ -1,5 +1,6 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -15,6 +16,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import net.jqwik.api.Arbitraries;
@@ -247,6 +250,27 @@ class RedactorPropertyTest {
                             : IntStream.rangeClosed(0, c.length() - PIECE).mapToObj(i -> c.substring(i, i + PIECE)))
                     .toList();
         }
+    }
+
+    /**
+     * #310 changed how the JWT rule searches, not what it masks. This is that rule as it was before, and it is
+     * quadratic, so the generated text stays short.
+     */
+    private static final Pattern JWT_BEFORE_310 = Pattern.compile(
+            "(?:\\b|(?<=\\\\[nrtbf]))(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
+
+    @Property(tries = 5000)
+    void theJwtRuleMasksWhatItMaskedBeforeItWasMadeLinear(@ForAll("jwtLikeText") String text) {
+        assertEquals(JWT_BEFORE_310.matcher(text).replaceAll("$1.$2." + Matcher.quoteReplacement(Redactor.MASK)),
+                Redactor.redact(text), text);
+    }
+
+    /** Text built from the pieces the JWT rule looks at, and no other rule does. */
+    @Provide
+    Arbitrary<String> jwtLikeText() {
+        return Arbitraries.of("eyJ", "eyJ", "eyJa", "e", "yJ", "-", "_", "x", "9", ".", ".", ".", "\\n", "\\t", "\\q", "\\", " ", "\n", "(")
+                .list().ofMaxSize(14)
+                .map(pieces -> String.join("", pieces));
     }
 
     @Property(tries = 3000)
