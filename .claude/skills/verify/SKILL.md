@@ -54,6 +54,7 @@ The doctor never prints variable values or interface addresses. If doctor fails,
 
 | `custom` | `/` custom endpoint form | browser-only feature flag, select a synthetic fault then Your own endpoint, fill connection edits, submit to the still-disabled disposable backend, switch back | faults hidden only for custom selection, correct endpoint hints, edits present and faults absent in the POST, real API rejects with 400; synthetic fault selection restored on return |
 | `suffix` | `/` Connection overrides, `POST /api/runs` | Northwind synthetic with Base URL suffix `/%2e%2e/admin`, Run onboarding | POST answers 400, "Run failed: baseUrlSuffix may only add path segments", no new entry in Recent runs, last `run.completed` audit has reason `invalid_connection_edit` |
+| `malformed` | `/`, `POST /api/runs` | Northwind synthetic, Run onboarding, with the POST body rewritten to an unknown `environment` | POST answers 400, "Run failed: environment must be one of ...", last `run.completed` audit has reason `invalid_body` |
 
 When you change something outside this map, add a row and a tagged test in `drive/main-path.spec.ts`. Keep larger journeys in `tests/ui` (see the contract's "Journeys" section). The `selftest-fail` tag is not a feature. It fails on purpose so that `cleanup.test.mjs` can exercise cleanup.
 

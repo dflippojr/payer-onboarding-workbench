@@ -153,6 +153,22 @@ test('a suffix with a dot-segment is refused before any run @suffix', async ({ p
   await shot(page, info, 'suffix');
 });
 
+test('a malformed run body shows the field the server names @malformed', async ({ page }, info) => {
+  await choose(page);
+  await page.route('**/api/runs', route => route.request().method() === 'POST'
+    ? route.continue({ postData: JSON.stringify({ payerId: PAYER, sampleId: SAMPLE, environment: 'NOPE' }) })
+    : route.continue());
+  const response = page.waitForResponse(r => r.url().endsWith('/api/runs') && r.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Run onboarding' }).click();
+  expect((await response).status()).toBe(400);
+  await expect(page.locator('#run-status')).toContainText('Run failed: environment must be one of ');
+  await expect.poll(async () => (await readFile('.ui-test/app.log', 'utf8')).split('\n')
+    .filter(line => line.includes(' : audit ') && line.includes('"run.completed"'))
+    .map(line => JSON.parse(line.slice(line.indexOf(' : audit ') + 9))).at(-1)?.metadata?.reasonCode)
+    .toBe('invalid_body');
+  await shot(page, info, 'malformed');
+});
+
 // Not a feature: a deliberate failure used by cleanup.test.mjs to prove cleanup after a failed drive.
 test('deliberate drive failure @selftest-fail', async ({ page }) => {
   await ready(page);
