@@ -72,7 +72,8 @@ class AuditApiTest {
                 "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"environment\":\"" + SECRET + "\"}",
                 "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"connection\":{\"baseUrlSuffix\":\"/%2e%2e/x\"}}",
                 "{\"sampleId\":\"" + SAMPLE + "\",\"connection\":{\"baseUrlSuffix\":\"/..\"},"
-                        + "\"customEndpoint\":{\"baseUrl\":\"http://127.0.0.1:9/r4\",\"authType\":\"NONE\"}}");
+                        + "\"customEndpoint\":{\"baseUrl\":\"http://127.0.0.1:9/r4\",\"authType\":\"NONE\"}}",
+                "[]", "null", "{\"payerId\":\"northwind-synthetic\",\"sampleId\":\"" + SAMPLE + "\",\"faults\":[null]}");
         for (String body : bodies) { assertEquals(400, post(body).statusCode()); }
         List<JsonNode> events = events(output, bodies.size());
         List<JsonNode> starts = action(events, "run.requested");
@@ -80,7 +81,7 @@ class AuditApiTest {
         assertEquals(bodies.size(), starts.size()); assertEquals(bodies.size(), ends.size());
         assertEquals(List.of("invalid_body", "missing_input", "unknown_payer", "unknown_sample", "unknown_fault",
                 "invalid_connection_edit", "destination_rejected", "invalid_body", "invalid_connection_edit",
-                "invalid_connection_edit"), ends.stream().map(e -> e.path("metadata").path("reasonCode").asText()).toList());
+                "invalid_connection_edit", "invalid_body", "invalid_body", "invalid_body"), ends.stream().map(e -> e.path("metadata").path("reasonCode").asText()).toList());
         for (JsonNode end : ends) {
             assertEquals(1, starts.stream().filter(e -> e.path("requestId").equals(end.path("requestId"))).count());
             assertTrue(end.path("runId").isNull()); assertEquals("rejected", end.path("outcome").asText());

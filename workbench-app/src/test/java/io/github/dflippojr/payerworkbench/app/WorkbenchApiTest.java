@@ -178,6 +178,57 @@ class WorkbenchApiTest {
         assertEquals(400, post("/api/runs", "{\"payerId\":\"northwind-synthetic\"}").statusCode());
     }
 
+    /** #328: a body Jackson can't bind gets a problem detail that names what is wrong, not Spring's bare 400. */
+    @Test
+    void malformedRunBodiesGetAProblemDetailNamingTheField() throws Exception {
+        String valid = "\"payerId\":\"northwind-synthetic\",\"sampleId\":\"order-sign-hospital-bed\"";
+        java.util.Map<String, String> expected = new java.util.LinkedHashMap<>();
+        expected.put("[]", "Request body must be a JSON object");
+        expected.put("null", "Request body must be a JSON object");
+        expected.put("", "Request body must be a JSON object");
+        expected.put("{" + valid + ",\"environment\":\"NOPE\"}", "environment must be one of ");
+        expected.put("{" + valid + ",\"faults\":[null]}", "faults must not contain null");
+        expected.put("{" + valid + ",\"faults\":\"discovery-500\"}", "faults has the wrong type");
+        expected.put("{" + valid + ",\"faults\":[{}]}", "faults[0] has the wrong type");
+        expected.put("{" + valid + ",\"slowResponseDelayMs\":\"soon\"}", "slowResponseDelayMs has the wrong type");
+        expected.put("{" + valid + ",\"connection\":{\"igVersion\":[1]}}", "connection.igVersion has the wrong type");
+        expected.put("{" + valid + ",\"customEndpoint\":{\"authType\":\"NOPE\"}}", "customEndpoint.authType must be one of ");
+        expected.put("{" + valid, "Request body is not valid JSON");
+        for (var entry : expected.entrySet()) {
+            HttpResponse<String> response = post("/api/runs", entry.getKey());
+            assertEquals(400, response.statusCode(), entry.getKey());
+            assertEquals("application/problem+json", response.headers().firstValue("Content-Type").orElse(""), entry.getKey());
+            JsonNode problem = mapper.readTree(response.body());
+            assertEquals(400, problem.path("status").asInt(), response.body());
+            assertTrue(problem.path("detail").asText().startsWith(entry.getValue()), entry.getKey() + " -> " + response.body());
+        }
+    }
+
+    /** The body may hold a credential, and the UI and API echo the detail, so a detail carries no submitted text. */
+    @Test
+    void malformedRunBodyDetailsNeverEchoWhatWasSubmitted() throws Exception {
+        String secret = "SYNTHETIC_SECRET_VALUE";
+        List<String> bodies = List.of(
+                "{\"environment\":\"" + secret + "\"}",
+                "{\"slowResponseDelayMs\":\"" + secret + "\"}",
+                "{\"faults\":\"" + secret + "\"}",
+                "{\"connection\":\"" + secret + "\"}",
+                "{\"customEndpoint\":{\"authType\":\"" + secret + "\"}}",
+                "{\"customEndpoint\":{\"credential\":{\"pem\":\"" + secret + "\"}}}",
+                "{\"customEndpoint\":{\"credential\":[\"" + secret + "\"]}}",
+                // An ignored field's name, and a syntax error inside its value or after a secret-bearing one.
+                "{\"" + secret + "\":tru}",
+                "{\"" + secret + "\":{\"a\":}}",
+                "{\"customEndpoint\":{\"credential\":\"" + secret + "\"",
+                "\"" + secret + "\"");
+        for (String body : bodies) {
+            HttpResponse<String> response = post("/api/runs", body);
+            assertEquals(400, response.statusCode(), body);
+            assertFalse(mapper.readTree(response.body()).path("detail").asText().isBlank(), body + " -> " + response.body());
+            assertFalse(response.body().contains(secret), body + " -> " + response.body());
+        }
+    }
+
     @Test
     void suffixThatChangesTheHostIsRefusedAndNoRunIsStored() throws Exception {
         int before = mapper.readTree(get("/api/runs").body()).size();

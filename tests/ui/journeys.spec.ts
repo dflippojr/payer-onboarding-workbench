@@ -395,6 +395,34 @@ test('synthetic banner and incomplete coverage fault explain the supported scena
   await expect(page.locator('#verdict-check, #findings .finding.FAIL').filter({ hasText: 'response.coverage-information' })).toHaveCount(1);
 });
 
+test.describe('a malformed run body', () => {
+  test.use({ expectedErrors: [/\b400\b/] });
+
+  // The form can only send a well-formed body, so each case rewrites the POST on its way to the real server.
+  const valid = { payerId: 'northwind-synthetic', sampleId: 'order-sign-hospital-bed' };
+  for (const [name, body, status] of [
+    ['an array', '[]', /^Run failed: Request body must be a JSON object$/],
+    ['null', 'null', /^Run failed: Request body must be a JSON object$/],
+    ['an unknown environment', JSON.stringify({ ...valid, environment: 'NOPE' }), /^Run failed: environment must be one of \w+/],
+    ['a null fault', JSON.stringify({ ...valid, faults: [null] }), /^Run failed: faults must not contain null$/],
+  ] as const) {
+    test(`the status line shows the server's detail for ${name}`, async ({ page }) => {
+      await ready(page);
+      await page.locator('input[value="northwind-synthetic"]').check();
+      await page.getByLabel('Sample request').selectOption('order-sign-hospital-bed');
+      await page.route('**/api/runs', route => route.request().method() === 'POST'
+        ? route.continue({ postData: body })
+        : route.continue());
+      const refused = page.waitForResponse(r => r.url().endsWith('/api/runs') && r.request().method() === 'POST');
+      await page.getByRole('button', { name: 'Run onboarding' }).click();
+      expect((await refused).status()).toBe(400);
+      await expect(page.locator('#run-status')).toHaveText(status);
+      await expect(page.getByRole('button', { name: 'Run onboarding' })).toBeEnabled();
+      await page.unroute('**/api/runs');
+    });
+  }
+});
+
 test.describe('the payer is busy', () => {
   test.use({ expectedErrors: [/\b409\b/] });
 
