@@ -26,6 +26,7 @@ import java.security.Principal;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
@@ -38,11 +39,16 @@ public final class TestTls {
     private final Map<String, X509Certificate[]> chains;
 
     public TestTls() {
+        this(Clock.systemUTC());
+    }
+
+    /** @param clock when these identities count as created; their validity is measured from it */
+    TestTls(Clock clock) {
         try {
             KeyPair trustedKey = key();
             KeyPair otherKey = key();
             serverKey = key();
-            Instant now = Instant.now();
+            Instant now = clock.instant();
             Instant before = now.minus(30, ChronoUnit.DAYS);
             Instant after = now.plus(30, ChronoUnit.DAYS);
             ca = certificate("Workbench test CA", trustedKey, "Workbench test CA", trustedKey, before, after, true, false);
@@ -81,6 +87,12 @@ public final class TestTls {
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("Cannot initialize mock payer TLS", e);
         }
+    }
+
+    /** A copy of the named chain, leaf first, or {@code null} if there is none. */
+    X509Certificate[] chain(String alias) {
+        X509Certificate[] chain = chains.get(alias);
+        return chain == null ? null : chain.clone();
     }
 
     private static KeyPair key() throws GeneralSecurityException {
@@ -144,8 +156,7 @@ public final class TestTls {
 
         @Override
         public X509Certificate[] getCertificateChain(String alias) {
-            X509Certificate[] chain = chains.get(alias);
-            return chain == null ? null : chain.clone();
+            return chain(alias);
         }
 
         @Override
