@@ -116,14 +116,22 @@ class FirstRunWarmup implements SmartInitializingSingleton {
             return; // no web server to wait for, as in a test with a mock web environment
         }
         try (HttpClient http = HttpClient.newHttpClient()) {
-            URI uri = URI.create("http://127.0.0.1:" + port.get(10, TimeUnit.SECONDS) + "/api/runs");
-            http.send(HttpRequest.newBuilder(uri)
-                            .timeout(Duration.ofSeconds(10))
-                            .header("Content-Type", "application/json")
-                            .header(InternalRequestToken.HEADER, internal.issue())
-                            .POST(HttpRequest.BodyPublishers.ofString("{}"))
-                            .build(),
-                    HttpResponse.BodyHandlers.discarding());
+            URI uri = requestPathUri(context.getEnvironment().getProperty("server.address"),
+                    port.get(10, TimeUnit.SECONDS));
+            String value = internal.issue();
+            try {
+                http.send(HttpRequest.newBuilder(uri)
+                                .timeout(Duration.ofSeconds(10))
+                                .header("Content-Type", "application/json")
+                                .header(InternalRequestToken.HEADER, value)
+                                .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                                .build(),
+                        HttpResponse.BodyHandlers.discarding());
+            } finally {
+                // The audit filter has used the value if the request reached it. Any other way out
+                // (a refused connection, a timeout, a refusal before that filter) must not leave it pending.
+                internal.withdraw(value);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             LOG.warn("First-run warm-up of the request path was interrupted");
@@ -131,5 +139,14 @@ class FirstRunWarmup implements SmartInitializingSingleton {
             LOG.warn("First-run warm-up of the request path failed; the first request will be slower: {}",
                     e.toString());
         }
+    }
+
+    /**
+     * Where this app can reach itself: {@code server.address} in the form {@link HostCheckFilter} allows in
+     * {@code Host}, so the request gets past that filter, or 127.0.0.1 when it is unset or a wildcard.
+     */
+    static URI requestPathUri(String serverAddress, int port) {
+        String bound = HostCheckFilter.boundLiteral(serverAddress == null ? "" : serverAddress);
+        return URI.create("http://" + (bound == null ? "127.0.0.1" : bound) + ":" + port + "/api/runs");
     }
 }

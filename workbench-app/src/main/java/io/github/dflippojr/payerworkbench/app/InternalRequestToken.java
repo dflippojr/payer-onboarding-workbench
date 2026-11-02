@@ -39,4 +39,9 @@ final class InternalRequestToken {
         return MessageDigest.isEqual(expected, presented.getBytes(StandardCharsets.US_ASCII))
                 && pending.compareAndSet(expected, null);
     }
+
+    /** Clears this value if it is still pending; a newer value, or none, is left as it is. */
+    void withdraw(String value) {
+        consume(value);
+    }
 }
