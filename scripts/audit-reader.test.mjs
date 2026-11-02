@@ -328,3 +328,34 @@ test('class check: segments of every digit width verify and review in numeric or
     assert.deepEqual(cli(dir).stdout.trim().split('\n').map(row => JSON.parse(row).runId), numbers.map(n => `run-${n}`));
   } finally { rmSync(dir, { recursive: true }); }
 });
+
+// Only a segment above the highest one the manifest lists can be the open or crashed segment. An unlisted segment below it
+// means the manifest and the directory disagree, as with a restored or edited directory: a problem, and the review still
+// reads it.
+test('verify reports an unlisted segment older than the highest listed one as unlisted, and exits nonzero', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-older-'));
+  try {
+    const sealed = writeSegment(dir, 'audit-000002', [event('run-new', 'run.completed', '2026-10-08T12:00:01Z')]);
+    writeSegment(dir, 'audit-000001', [event('run-old', 'run.requested', '2026-10-08T12:00:00Z')]);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, operatorLabel: null, segments: [sealed] }));
+    const verified = cli(dir, '--verify');
+    assert.equal(verified.status, 1);
+    assert.equal(verified.stdout, '{"segment":"audit-000001","status":"unlisted"}\n{"segment":"audit-000002","status":"ok"}\n');
+    assert.equal(verified.stderr, 'Journal segments with problems: 1\n');
+    const reviewed = cli(dir);
+    assert.equal(reviewed.status, 0, reviewed.stderr);
+    assert.deepEqual(reviewed.stdout.trim().split('\n').map(row => JSON.parse(row).runId), ['run-old', 'run-new']);
+  } finally { rmSync(dir, { recursive: true }); }
+});
+// The same rule compares the numbers, not their text: as text, audit-999999 sorts after audit-1000000.
+test('verify compares segment numbers by value: an unlisted audit-999999 below a listed audit-1000000 is unlisted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-width-older-'));
+  try {
+    const sealed = writeSegment(dir, 'audit-1000000', [event('run-new', 'run.completed', '2026-10-08T12:00:01Z')]);
+    writeSegment(dir, 'audit-999999', [event('run-old', 'run.requested', '2026-10-08T12:00:00Z')]);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, operatorLabel: null, segments: [sealed] }));
+    const verified = cli(dir, '--verify');
+    assert.equal(verified.status, 1);
+    assert.equal(verified.stdout, '{"segment":"audit-999999","status":"unlisted"}\n{"segment":"audit-1000000","status":"ok"}\n');
+  } finally { rmSync(dir, { recursive: true }); }
+});
