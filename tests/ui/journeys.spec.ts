@@ -147,8 +147,8 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
   await expect(compare.locator('option[value="' + failed.runId + '"]')).toHaveCount(0);
   // Run labels: UTC time · payer short name · environment · verdict word, whole in both selects at 390 px.
   const recent = page.getByLabel('Recent runs');
-  await expect(recent.locator('option[value="' + failed.runId + '"]')).toHaveText(/^\d\d:\d\d:\d\d · Northwind · SANDBOX · Fail$/);
-  await expect(compare.locator('option[value="' + healthy.runId + '"]')).toHaveText(/^\d\d:\d\d:\d\d · Northwind · SANDBOX · Pass$/);
+  await expect(recent.locator('option[value="' + failed.runId + '"]')).toHaveText(/^\d\d:\d\d:\d\d UTC · Northwind · SANDBOX · Fail$/);
+  await expect(compare.locator('option[value="' + healthy.runId + '"]')).toHaveText(/^\d\d:\d\d:\d\d UTC · Northwind · SANDBOX · Pass$/);
   const viewport = page.viewportSize()!;
   await page.setViewportSize({ width: 390, height: 844 });
   for (const select of [recent, compare]) {
@@ -162,7 +162,7 @@ test('J05 compare a healthy run with a Discovery-down run', async ({ page }) => 
       context.font = `${style.fontSize} Arial, "Liberation Sans"`;
       const inner = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
       const labels = [...el.options].filter(o => o.value).map(o => o.text)
-        .concat('00:00:00 · Northwind · SANDBOX · Warn', '00:00:00 · Northwind · PRODUCTION · Fail').map(text => context.measureText(text).width);
+        .concat('00:00:00 UTC · Northwind · SANDBOX · Warn', '00:00:00 UTC · Northwind · PRODUCTION · Fail').map(text => context.measureText(text).width);
       return inner - Math.max(...labels);
     });
     expect(room).toBeGreaterThan(20);

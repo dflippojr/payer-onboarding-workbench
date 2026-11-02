@@ -59,8 +59,8 @@ test('run labels fall back to the short run id and the payer id, and name custom
   await ready(page);
   await expect(recent(page).locator('option').filter({ hasText: / · / })).toHaveText([
     'run aaaaaaaa · Northwind · SANDBOX · Fail',
-    '12:00:00 · retired-payer · SANDBOX · Pass',
-    '12:00:00 · Custom · STAGING · Warn',
+    '12:00:00 UTC · retired-payer · SANDBOX · Pass',
+    '12:00:00 UTC · Custom · STAGING · Warn',
   ]);
 });
 
