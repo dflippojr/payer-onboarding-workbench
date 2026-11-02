@@ -15,7 +15,6 @@ import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
@@ -45,7 +44,11 @@ class WarmupRequestPathTest {
         "::1, http://[::1]:8080/api/runs",
         "[::1], http://[::1]:8080/api/runs",
         "2001:db8::10, http://[2001:db8::10]:8080/api/runs",
+        "0:0:0:0:0:0:0:1, http://[0:0:0:0:0:0:0:1]:8080/api/runs",
+        "2001:DB8::10, http://[2001:DB8::10]:8080/api/runs",
+        "fe80::1%1, http://[fe80::1%1]:8080/api/runs",
         "workbench.example, http://workbench.example:8080/api/runs",
+        "Workbench.Example, http://Workbench.Example:8080/api/runs",
         "0.0.0.0, http://127.0.0.1:8080/api/runs",
         "::, http://127.0.0.1:8080/api/runs",
         "[::], http://127.0.0.1:8080/api/runs",
@@ -54,13 +57,13 @@ class WarmupRequestPathTest {
         "'', http://127.0.0.1:8080/api/runs",
     })
     void theAddressMapsToTheUri(String serverAddress, String expected) {
-        assertEquals(URI.create(expected), FirstRunWarmup.requestPathUri(serverAddress, 8080));
+        assertEquals(expected, FirstRunWarmup.requestPathUri(serverAddress, 8080).toString());
     }
 
-    /** A spelling other than the one {@link HostCheckFilter} allows would be refused with a 403. */
+    /** An address written the way a browser writes it gets past {@link HostCheckFilter} rather than a 403. */
     @ParameterizedTest
-    @CsvSource({"192.0.2.10", "::1", "0:0:0:0:0:0:0:1", "2001:DB8::10", "Workbench.Example"})
-    void theUrisHostIsOneTheHostCheckAllows(String serverAddress) {
+    @CsvSource({"192.0.2.10", "::1", "2001:db8::10", "workbench.example"})
+    void aCanonicalAddressIsOneTheHostCheckAllows(String serverAddress) {
         String host = FirstRunWarmup.requestPathUri(serverAddress, 8080).getHost();
         assertTrue(HostCheckFilter.allowedHosts(serverAddress, "").contains(host), host);
     }

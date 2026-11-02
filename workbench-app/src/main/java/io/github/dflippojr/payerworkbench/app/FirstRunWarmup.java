@@ -142,11 +142,19 @@ class FirstRunWarmup implements SmartInitializingSingleton {
     }
 
     /**
-     * Where this app can reach itself: {@code server.address} in the form {@link HostCheckFilter} allows in
-     * {@code Host}, so the request gets past that filter, or 127.0.0.1 when it is unset or a wildcard.
+     * Where this app can reach itself: {@code server.address} as written, with an IPv6 literal in brackets,
+     * or 127.0.0.1 when it is unset or a wildcard.
      */
     static URI requestPathUri(String serverAddress, int port) {
-        String bound = HostCheckFilter.boundLiteral(serverAddress == null ? "" : serverAddress);
-        return URI.create("http://" + (bound == null ? "127.0.0.1" : bound) + ":" + port + "/api/runs");
+        String address = serverAddress == null ? "" : serverAddress.strip();
+        String host;
+        if (HostCheckFilter.boundLiteral(address) == null) {
+            host = "127.0.0.1";
+        } else if (address.indexOf(':') >= 0 && !address.startsWith("[")) {
+            host = "[" + address + "]";
+        } else {
+            host = address;
+        }
+        return URI.create("http://" + host + ":" + port + "/api/runs");
     }
 }
