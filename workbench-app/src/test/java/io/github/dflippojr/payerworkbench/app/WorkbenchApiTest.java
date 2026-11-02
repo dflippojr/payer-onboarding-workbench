@@ -189,6 +189,7 @@ class WorkbenchApiTest {
         expected.put("{" + valid + ",\"environment\":\"NOPE\"}", "environment must be one of ");
         expected.put("{" + valid + ",\"faults\":[null]}", "faults must not contain null");
         expected.put("{" + valid + ",\"faults\":\"discovery-500\"}", "faults has the wrong type");
+        expected.put("{" + valid + ",\"faults\":[{}]}", "faults[0] has the wrong type");
         expected.put("{" + valid + ",\"slowResponseDelayMs\":\"soon\"}", "slowResponseDelayMs has the wrong type");
         expected.put("{" + valid + ",\"connection\":{\"igVersion\":[1]}}", "connection.igVersion has the wrong type");
         expected.put("{" + valid + ",\"customEndpoint\":{\"authType\":\"NOPE\"}}", "customEndpoint.authType must be one of ");
