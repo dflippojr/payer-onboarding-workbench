@@ -45,6 +45,8 @@ async function serve(route: Route) {
 }
 
 async function openReplay(page: Page) {
+  // The widest host width the cases use is 1200 px, and the widget never outgrows its page.
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.route(`${HOST}/**`, serve);
   await page.goto(`${HOST}/`);
   await expect(page.locator('.pw-choice')).toHaveCount(MANIFEST.runs.length);
