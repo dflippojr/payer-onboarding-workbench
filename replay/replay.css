@@ -164,14 +164,19 @@
 .pw-choice-payer { color: var(--pw-muted); font-size: 0.85rem; }
 .pw-choice-line {
   align-self: end;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   align-items: end;
-  gap: 0.5rem;
+  gap: 0.25rem 0.5rem;
   padding-top: 0.4rem;
   font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
+/* The teaser shares the chip's row only while it keeps 4rem; in a narrower card it drops below
+   the chip and takes the full width. The chip's words may wrap too, so a chip wider than the card
+   stays inside it (a host can force scenario cards this narrow inside a wide widget). */
+.pw-choice-teaser { flex: 1 1 4rem; min-width: 0; }
+.pw-choice-line .pw-badge { white-space: normal; }
 
 .pw-status { color: var(--pw-muted); font-size: 0.875rem; margin: 0.75rem 0; }
 
