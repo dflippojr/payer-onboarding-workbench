@@ -16,6 +16,7 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -112,6 +113,16 @@ class WarmupRequestPathTest {
     @Test
     void aResponseFromBeforeTheAuditFilterWithdrawsTheValue() throws Exception {
         assertFalse(valueAfterAPeerThatAnswers("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"));
+    }
+
+    /** A refusal is an ordinary response, so nothing else would say that the request path was not warmed. */
+    @Test
+    void aStatusOtherThanTheApps400IsWarned() throws Throwable {
+        List<String> warnings = WarmupSelfRequestChecks.warningsDuring(
+                () -> valueAfterAPeerThatAnswers("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"));
+
+        assertEquals(1, warnings.size(), warnings::toString);
+        assertTrue(warnings.getFirst().contains("403"), warnings::toString);
     }
 
     /** Whether the value the warm-up really sent to a peer that never consumes it is still usable. */
