@@ -58,9 +58,16 @@ async function setHostWidth(page: Page, px: number) {
   await expect.poll(() => page.locator('#replay').evaluate(el => Math.round(el.getBoundingClientRect().width))).toBe(px);
 }
 
-/** The first card: its content width, its row height, and the chip and teaser boxes. */
-function measureFirstCard(page: Page) {
-  return page.locator('.pw-choice').first().evaluate(card => {
+/** Turns the grid's stretch off, so each card keeps its own height instead of the row's. */
+async function stretchOff(page: Page) {
+  await page.locator('.pw-choices').evaluate(grid => {
+    (grid as HTMLElement).style.alignItems = 'start';
+  });
+}
+
+/** Every card in the row: its content width, its own height, the chip and teaser boxes, and the teaser's line height. */
+function measureCards(page: Page) {
+  return page.locator('.pw-choice').evaluateAll(cards => cards.map(card => {
     const rect = (el: Element) => {
       const r = el.getBoundingClientRect();
       return { left: r.left, top: r.top, width: r.width, height: r.height, right: r.right, bottom: r.bottom };
@@ -86,31 +93,40 @@ function measureFirstCard(page: Page) {
     return {
       contentWidth, cardHeight: rect(card).height, badge: rect(badge), teaser: rect(teaser), gap,
       longestWord, firstFourCharacters, teaserText: teaser.textContent,
+      teaserLineHeight: parseFloat(teaserStyle.lineHeight),
     };
-  });
+  }));
 }
 
 test('a card about 170 px wide inside keeps its teaser readable beside a Pass with warnings chip', async ({ page }) => {
   await openReplay(page);
   await setHostWidth(page, 1200);
-  const normal = await measureFirstCard(page);
+  await stretchOff(page);
+  const [normal] = await measureCards(page);
   await setHostWidth(page, 824);
-  const narrow = await measureFirstCard(page);
+  const cards = await measureCards(page);
+  const [narrow] = cards;
 
   // The reproduction: about 170 px inside the card, and the teaser's word is the one that breaks.
   expect(narrow.contentWidth, 'card content width').toBeGreaterThanOrEqual(160);
   expect(narrow.contentWidth, 'card content width').toBeLessThanOrEqual(180);
   expect(narrow.teaserText).toBe('Healthy connection');
-  // The teaser is wider than the first few characters of its longest word, so no word is broken letter by letter.
-  expect(narrow.teaser.width, 'teaser width').toBeGreaterThan(narrow.firstFourCharacters);
-  // The row stays within one card's normal height above it.
-  expect(narrow.cardHeight, 'card height at 170 px').toBeLessThanOrEqual(2 * normal.cardHeight);
+  // In every card of the row, the teaser is wider than the first few characters of its longest word,
+  // so no word is broken letter by letter.
+  cards.forEach((card, index) => {
+    expect(card.teaser.width, `teaser width in card ${index + 1}`).toBeGreaterThan(card.firstFourCharacters);
+  });
+  // With grid stretch off, the badge-and-teaser card is at most its normal height at a wide viewport plus one
+  // teaser line. The line height comes from the teaser's computed style, not a fixed number of pixels.
+  expect(narrow.teaserLineHeight, 'teaser line height from computed style').toBeGreaterThan(0);
+  expect(narrow.cardHeight, 'card height at 170 px, grid stretch off')
+    .toBeLessThanOrEqual(normal.cardHeight + narrow.teaserLineHeight);
 });
 
 test('at wider card widths the chip and the teaser stay on one row, as before', async ({ page }) => {
   await openReplay(page);
   await setHostWidth(page, 1200);
-  const wide = await measureFirstCard(page);
+  const [wide] = await measureCards(page);
 
   expect(wide.badge.top, 'chip and teaser share a row').toBeLessThan(wide.teaser.bottom);
   expect(wide.teaser.top, 'chip and teaser share a row').toBeLessThan(wide.badge.bottom);
