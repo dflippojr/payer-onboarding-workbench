@@ -333,8 +333,11 @@ node scripts/audit-reader.mjs /var/lib/workbench-audit --verify
   line by line at any size; a segment that exists but cannot be read fails the review with a nonzero exit, and
   only a missing segment is skipped. `--verify`
   prints one `{"segment":...,"status":...}` line per segment: `ok`, `missing`, `checksum_mismatch`,
-  `truncated`, `malformed`, `event_count_mismatch`, or `unsealed` (a segment the manifest does not
-  list yet, such as the one being written or left by a crash; not a failure). It exits nonzero on any
+  `truncated`, `malformed`, `event_count_mismatch`, `unlisted`, or `unsealed`. `unsealed` is a segment the
+  manifest does not list yet, numbered above the highest listed segment (or any segment when none is
+  listed), such as the one being written or left by a crash; not a failure. `unlisted` is a segment the
+  manifest does not list but that is numbered below the highest listed one: the manifest and the directory
+  disagree, as after a restore or an edit, and it is a problem. It exits nonzero on any
   problem and never prints event content. Checksums detect accidental corruption, truncation and
   missing files. They do **not** stop anyone with write access from changing a segment and the
   manifest together; the machine owner is trusted, and there is no signing or WORM storage.

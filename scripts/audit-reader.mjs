@@ -114,11 +114,14 @@ async function digest(path) {
 export async function verify(dir, write) {
   const manifest = await loadManifest(dir);
   const listed = new Map(manifest.segments.map(s => [s.file, s]));
+  // Only a segment above the highest one the manifest lists can be the open or crashed one (unsealed). An unlisted segment
+  // below it means the manifest and the directory disagree, as with a restored or edited directory (unlisted, a problem).
+  const highest = manifest.segments.reduce((top, s) => (top === null || sequence(s.file) > top ? sequence(s.file) : top), null);
   let problems = 0;
   for (const file of await journalSegments(dir, manifest)) {
     const entry = listed.get(file);
     let status = 'ok';
-    if (!entry) status = 'unsealed';
+    if (!entry) status = highest === null || sequence(file) > highest ? 'unsealed' : 'unlisted';
     else {
       const path = join(dir, file);
       let sealed = null;
