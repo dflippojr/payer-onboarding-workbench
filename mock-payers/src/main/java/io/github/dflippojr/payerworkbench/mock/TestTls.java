@@ -28,12 +28,15 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.Map;
 
 /** Synthetic certificate authorities and server identities, held exclusively in memory. */
 public final class TestTls {
+    private static final int VALIDITY_YEARS = 10;
+
     private final KeyPair serverKey;
     private final X509Certificate ca;
     private final Map<String, X509Certificate[]> chains;
@@ -50,7 +53,8 @@ public final class TestTls {
             serverKey = key();
             Instant now = clock.instant();
             Instant before = now.minus(30, ChronoUnit.DAYS);
-            Instant after = now.plus(30, ChronoUnit.DAYS);
+            // SyntheticPayers builds one TestTls at startup and live TLS contexts hold it, so these must outlast any uptime.
+            Instant after = now.atOffset(ZoneOffset.UTC).plusYears(VALIDITY_YEARS).toInstant();
             ca = certificate("Workbench test CA", trustedKey, "Workbench test CA", trustedKey, before, after, true, false);
             X509Certificate other = certificate("Other test CA", otherKey, "Other test CA", otherKey, before, after, true, false);
             chains = Map.of(
