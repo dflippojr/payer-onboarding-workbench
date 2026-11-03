@@ -49,18 +49,20 @@ async function hold(page: Page, id: string) {
   };
 }
 
-test('run labels fall back to the short run id and the payer id, and name custom runs Custom', async ({ page }) => {
+test('run labels show the UTC time or the short run id, and write PRODUCTION as PROD', async ({ page }) => {
   const summary = { environment: 'SANDBOX', startedAt: '2026-10-01T12:00:00Z' };
   await page.route('**/api/runs', route => isGet(route) ? route.fulfill({ json: [
     { ...summary, runId: 'aaaaaaaa-0000', payerId: 'northwind-synthetic', startedAt: null, verdict: 'FAIL' },
     { ...summary, runId: 'bbbbbbbb-0000', payerId: 'retired-payer', verdict: 'PASS' },
     { ...summary, runId: 'cccccccc-0000', payerId: 'custom-endpoint', environment: 'STAGING', verdict: 'PASS_WITH_WARNINGS' },
+    { ...summary, runId: 'dddddddd-0000', payerId: 'northwind-synthetic', environment: 'PRODUCTION', verdict: 'FAIL' },
   ] }) : route.fallback());
   await ready(page);
   await expect(recent(page).locator('option').filter({ hasText: / · / })).toHaveText([
-    'run aaaaaaaa · Northwind · SANDBOX · Fail',
-    '12:00:00 UTC · retired-payer · SANDBOX · Pass',
-    '12:00:00 UTC · Custom · STAGING · Warn',
+    'run aaaaaaaa · SANDBOX · Fail',
+    '12:00:00 UTC · SANDBOX · Pass',
+    '12:00:00 UTC · STAGING · Warn',
+    '12:00:00 UTC · PROD · Fail',
   ]);
 });
 
