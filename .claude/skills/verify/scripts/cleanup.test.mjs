@@ -47,6 +47,12 @@ function spawnStub(tag = 'stub') {
   return child.pid;
 }
 
+// Stubs have no children, so the plain PID is enough on every platform (Windows has no process groups).
+async function stopStub(pid) {
+  try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+  for (let i = 0; i < 50 && alive(pid); i++) await new Promise(r => setTimeout(r, 100));
+}
+
 function writeLaunch(dir, launch) {
   writeFileSync(join(dir, 'launch.json'), JSON.stringify({ ownsHandle: false, ...launch }, null, 2));
 }
@@ -62,7 +68,7 @@ test('cleanup skips a recorded PID that now belongs to a different process', asy
     assert.match(check.detail, /skipped/);
     assert.match(check.detail, /does not match/);
   } finally {
-    try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    await stopStub(pid);
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -82,7 +88,7 @@ test('cleanup kills a recorded PID whose identity matches, and a second run is s
     assert.ok(second.ok, 'a second run must succeed');
     assert.equal(second.checks.find(c => c.name === 'pid-drive').detail, pid + ' exited');
   } finally {
-    try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    await stopStub(pid);
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -96,7 +102,7 @@ test('cleanup skips a live recorded PID when launch.json recorded no identity fo
     assert.equal(alive(pid), true, 'an unidentified process must not be killed');
     assert.match(result.checks.find(c => c.name === 'pid-drive').detail, /skipped: .*recorded no identity/);
   } finally {
-    try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    await stopStub(pid);
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -109,8 +115,8 @@ test('identify tells apart two processes and returns null for a PID that is gone
     assert.notEqual(identify(a), identify(b));
     assert.equal(identify(a), identify(a), 'the identity of one process is stable');
   } finally {
-    for (const pid of [a, b]) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    for (const pid of [a, b]) await stopStub(pid);
   }
-  for (let i = 0; i < 50 && alive(a); i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal(alive(a), false);
   assert.equal(identify(a), null);
 });
