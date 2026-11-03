@@ -161,4 +161,12 @@ class ClientAssertionCheckTest {
         Finding f = assertOnly(check.evaluate(obs), Severity.FAIL);
         assertEquals("Client assertion rejected: unknown kid", f.title());
     }
+    @Test void configuredToleranceIsTheBoundary() {
+        var wide = new ClientAssertionCheck(java.time.Duration.ofSeconds(120));
+        Finding at = assertOnly(wide.evaluate(rejected(401, tokenError("invalid_client", null), 120)), Severity.FAIL);
+        assertFalse(at.title().contains("payer clock"), at.title());
+        Finding over = assertOnly(wide.evaluate(rejected(401, tokenError("invalid_client", null), 121)), Severity.FAIL);
+        assertTrue(over.title().contains("payer clock"), over.title());
+        assertThrows(NullPointerException.class, () -> new ClientAssertionCheck(null));
+    }
 }
