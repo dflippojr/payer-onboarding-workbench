@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Body of {@code POST /api/runs}.
@@ -38,8 +39,18 @@ public record RunRequest(
     public RunRequest {
         payerId = customEndpoint == null ? payerId : CUSTOM_PAYER_ID;
         environment = environment == null ? Environment.SANDBOX : environment;
+        if (faults != null && faults.stream().anyMatch(Objects::isNull)) {
+            throw new InvalidField("faults must not contain null");
+        }
         faults = faults == null ? List.of() : List.copyOf(faults);
         connection = connection == null ? ConnectionOverrides.NONE : connection;
+    }
+
+    /** A field this record refuses when it is built. The message is fixed text, so it is safe to show the caller. */
+    static final class InvalidField extends IllegalArgumentException {
+        InvalidField(String message) {
+            super(message);
+        }
     }
 
     /**

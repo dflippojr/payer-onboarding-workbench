@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -171,6 +172,12 @@ public class WorkbenchApiController {
     @ExceptionHandler(IllegalArgumentException.class)
     ProblemDetail badRequest(IllegalArgumentException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+
+    /** A run body that can't be bound. {@link AuditRequestFilter} audits the 400 as {@code invalid_body}. */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ProblemDetail unreadableBody(HttpMessageNotReadableException e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, RunBodyProblem.describe(e.getCause()));
     }
 
     /** Another run held the synthetic payer for the whole wait: 409, and no run was started. */
