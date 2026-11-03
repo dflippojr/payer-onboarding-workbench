@@ -234,10 +234,33 @@ final class ConformanceCorpus {
             new Mutation("suggestion-action-description-removed", "required element removed",
                     "description removed from a card suggestion's action (CDS Hooks 2.0 Action: description "
                             + "REQUIRED; HL7 tools invariant cds-resp-5)", true,
-                    body -> ((ObjectNode) suggestionActions(body).path(0)).remove("description")));
+                    body -> ((ObjectNode) suggestionActions(body).path(0)).remove("description")),
+            secondCard("suggestion-label-removed", "required element removed",
+                    "a second card with a suggestion that has no label (CDS Hooks 2.0 Suggestion: label REQUIRED)",
+                    suggestions -> suggestions.addObject().put("isRecommended", true)),
+            secondCard("suggestion-not-an-object", "wrong suggestion structure",
+                    "a second card whose suggestion is the number 1 (CDS Hooks 2.0 Suggestion: an object)",
+                    suggestions -> suggestions.add(1)),
+            secondCard("suggestion-null", "wrong suggestion structure",
+                    "a second card whose suggestion is null (CDS Hooks 2.0 Suggestion: an object)",
+                    ArrayNode::addNull));
 
     private static Mutation card(String id, String rule, String description, Consumer<ObjectNode> edit) {
         return new Mutation(id, rule, description, false, body -> edit.accept((ObjectNode) body.path("cards").path(0)));
+    }
+
+    /**
+     * Adds a card with suggestions to the systemActions base. On the suggestions base each mutant would also carry
+     * the known legacy-identifier disagreement on {@code response.coverage-information}, which has nothing to do
+     * with the rule being broken.
+     */
+    private static Mutation secondCard(String id, String rule, String description, Consumer<ArrayNode> edit) {
+        return new Mutation(id, rule, description, false, body -> {
+            ObjectNode card = ((ObjectNode) body.path("cards").path(0)).deepCopy();
+            card.put("selectionBehavior", "any");
+            edit.accept(card.putArray("suggestions"));
+            ((ArrayNode) body.path("cards")).add(card);
+        });
     }
 
     private static Mutation action(String id, String rule, String description, Consumer<ObjectNode> edit) {

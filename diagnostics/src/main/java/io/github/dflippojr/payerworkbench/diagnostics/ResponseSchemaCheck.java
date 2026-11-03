@@ -19,7 +19,8 @@ import java.util.Set;
  * ({@code info}, {@code warning} or {@code critical}). A card with suggestions also needs a
  * {@code selectionBehavior} of {@code at-most-one} or {@code any} (CDS Hooks 2.0 Card; HL7 tools invariant
  * {@code cds-resp-6}). {@code systemActions}, and a card's {@code suggestions} and each suggestion's
- * {@code actions}, when present, must be lists. Each action, in either list, must be a CDS Hooks 2.0 Action:
+ * {@code actions}, when present, must be lists. Each suggestion must be a CDS Hooks 2.0 Suggestion: an object
+ * with a {@code label}. Each action, in either list, must be a CDS Hooks 2.0 Action:
  * an object with a {@code type} of {@code create}, {@code update} or {@code delete}, a {@code description}
  * (HL7 tools invariant {@code cds-resp-5} for suggestions) and, for create and update, a {@code resource}
  * object. A delete without a {@code resourceId}, or with a {@code resource}, only warns: the spec says
@@ -107,7 +108,8 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             findings.add(new Finding(CHECK_ID, Severity.PASS, "Hook responses are well-formed",
                     "Every hook response was valid CDS Hooks JSON, and every card had a summary, a valid "
                             + "indicator, a source label and, when it offered suggestions, a selection behavior; "
-                            + "every action had a type, a description and the resource it acts on.",
+                            + "every suggestion had a label, and every action had a type, a description and the "
+                            + "resource it acts on.",
                     okCalls + " response(s), " + cardCount + " card(s) checked", null));
         }
         return findings;
@@ -141,12 +143,7 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             problems.add(path + ".suggestions is not an array");
         } else if (suggestions.isArray()) {
             for (int s = 0; s < suggestions.size(); s++) {
-                JsonNode actions = suggestions.get(s).path("actions");
-                if (isPresent(actions) && !actions.isArray()) {
-                    problems.add(path + ".suggestions[" + s + "].actions is not an array");
-                } else if (actions.isArray()) {
-                    validateActions(actions, path + ".suggestions[" + s + "].actions", problems, warnings);
-                }
+                validateSuggestion(suggestions.get(s), path + ".suggestions[" + s + "]", problems, warnings);
             }
         }
         // A JSON null is an absent value: the CRD reference server writes every unset field as null.
@@ -156,6 +153,24 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
             problems.add(path + ".selectionBehavior is \"" + behavior.asText() + "\" (must be at-most-one or any)");
         } else if (absent && card.path("suggestions").isArray() && !card.path("suggestions").isEmpty()) {
             problems.add(path + ".selectionBehavior is missing (required when the card has suggestions)");
+        }
+    }
+
+    /** A CDS Hooks 2.0 Suggestion: an object with a {@code label} and, when present, a list of actions. */
+    private static void validateSuggestion(JsonNode suggestion, String path, CappedLines problems, CappedLines warnings) {
+        if (!suggestion.isObject()) {
+            problems.add(path + " is not a JSON object");
+            return;
+        }
+        JsonNode label = suggestion.path("label");
+        if (!label.isTextual() || label.asText().isBlank()) {
+            problems.add(path + ".label is missing");
+        }
+        JsonNode actions = suggestion.path("actions");
+        if (isPresent(actions) && !actions.isArray()) {
+            problems.add(path + ".actions is not an array");
+        } else if (actions.isArray()) {
+            validateActions(actions, path + ".actions", problems, warnings);
         }
     }
 
@@ -205,7 +220,8 @@ public final class ResponseSchemaCheck implements DiagnosticCheck {
                 "The response does not follow the CDS Hooks card format. Each card (a message the payer wants "
                         + "shown to the clinician) needs a summary, an indicator of info, warning or critical, "
                         + "and a source label naming the payer, and a card with suggestions needs a selection "
-                        + "behavior (at-most-one or any). Each action (CDS Hooks 2.0 Action, in systemActions or a "
+                        + "behavior (at-most-one or any). Each suggestion needs a label, the text on the button "
+                        + "the clinician presses. Each action (CDS Hooks 2.0 Action, in systemActions or a "
                         + "suggestion) needs a type of create, update or delete, a description, and for create "
                         + "or update the resource itself. EHRs may drop or refuse cards and actions that lack them.",
                 problems + "\n" + Support.describe(exchange),
