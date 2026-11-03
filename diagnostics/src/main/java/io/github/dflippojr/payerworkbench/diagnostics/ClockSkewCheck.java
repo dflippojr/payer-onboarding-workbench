@@ -131,7 +131,7 @@ public final class ClockSkewCheck implements DiagnosticCheck {
         }
 
         boolean skewOverTolerance(Duration tolerance) {
-            return iat != null && Math.abs(skewSeconds()) > tolerance.toSeconds();
+            return Support.iatOffsetOverTolerance(iat, serverNow, tolerance);
         }
 
         boolean expired() {

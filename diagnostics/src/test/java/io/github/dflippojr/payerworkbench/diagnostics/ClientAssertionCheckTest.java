@@ -54,7 +54,7 @@ class ClientAssertionCheckTest {
     @Test void recordedExpiryComparedWithPayerClockFails() {
         JwtClaims expired = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.minusSeconds(1), NOW.minusSeconds(301), "jti", "kid", CLIENT_ID);
         assertTrue(assertOnly(check.evaluate(run(expired, "invalid assertion")), Severity.FAIL).title().contains("payer clock"));
-        JwtClaims future = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(301), NOW.plusSeconds(1), "jti", "kid", CLIENT_ID);
+        JwtClaims future = new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(361), NOW.plusSeconds(61), "jti", "kid", CLIENT_ID);
         assertTrue(assertOnly(check.evaluate(run(future, "invalid assertion")), Severity.FAIL).title().contains("payer clock"));
     }
     /** RFC 7523 §3 allows clock skew: a payer that issued a token accepted the assertion, whatever its Date says. */
@@ -97,5 +97,76 @@ class ClientAssertionCheckTest {
         var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(healthyClaims())
                 .tokenResponse(tokenError("invalid_scope", "unknown scope")).build();
         assertTrue(check.evaluate(obs).isEmpty());
+    }
+
+    // #234: the payer clock is blamed only for a rejection that points at the assertion, past tolerance.
+    private static RunObservations rejected(int status, TokenResponseMetadata token, long payerBehindSeconds) {
+        return RunObservations.builder(connection("2.2.1", false)).clientAssertion(
+                        new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(300), NOW, "unique", "kid", CLIENT_ID))
+                .exchange(token(status, null, "{}", NOW.minusSeconds(payerBehindSeconds)))
+                .tokenResponse(token).build();
+    }
+    @Test void invalidScopeWithPayerClockOneSecondBehindHasNoFinding() {
+        assertTrue(check.evaluate(rejected(400, tokenError("invalid_scope", "unknown scope"), 1)).isEmpty());
+    }
+    @Test void serverErrorWithPayerClockOneSecondBehindHasNoFinding() {
+        assertTrue(check.evaluate(rejected(503, null, 1)).isEmpty());
+        assertTrue(check.evaluate(rejected(503, tokenError("temporarily_unavailable", null), 1)).isEmpty());
+    }
+    @Test void invalidClientKeepsPayerDescriptionWithinTolerance() {
+        Finding f = assertOnly(check.evaluate(rejected(401, tokenError("invalid_client", "unknown kid"), 1)), Severity.FAIL);
+        assertTrue(f.title().contains("unknown kid"), f.title());
+        assertFalse(f.title().contains("payer clock"), f.title());
+    }
+    @Test void invalidClientWithoutDescriptionWithinToleranceUsesGenericCause() {
+        Finding f = assertOnly(check.evaluate(rejected(401, tokenError("invalid_client", null), 30)), Severity.FAIL);
+        assertEquals("Client assertion rejected: The payer rejected the client assertion", f.title());
+    }
+    @Test void invalidClientBeyondToleranceBlamesPayerClockAndKeepsDescription() {
+        Finding f = assertOnly(check.evaluate(rejected(401, tokenError("invalid_client", "assertion not accepted"), 120)), Severity.FAIL);
+        assertTrue(f.title().contains("payer clock"), f.title());
+        assertTrue(f.evidence().contains("payer error_description: assertion not accepted"), f.evidence());
+    }
+    @Test void offsetExactlyAtToleranceIsNotOverIt() {
+        Finding at = assertOnly(check.evaluate(rejected(401, tokenError("invalid_client", null), 60)), Severity.FAIL);
+        assertFalse(at.title().contains("payer clock"), at.title());
+        Finding over = assertOnly(check.evaluate(rejected(401, tokenError("invalid_client", null), 61)), Severity.FAIL);
+        assertTrue(over.title().contains("payer clock"), over.title());
+    }
+    @Test void payerClockAheadBeyondToleranceIsAlsoBlamed() {
+        Finding f = assertOnly(check.evaluate(rejected(401, tokenError("invalid_client", null), -301)), Severity.FAIL);
+        assertTrue(f.title().contains("payer clock"), f.title());
+    }
+    @ParameterizedTest @ValueSource(strings = {"exp is too far ahead", "IAT rejected", "nbf check failed", "assertion Expired"})
+    void otherErrorNamingAssertionTimeBeyondToleranceBlamesPayerClock(String description) {
+        Finding f = assertOnly(check.evaluate(rejected(400, tokenError("invalid_grant", description), 120)), Severity.FAIL);
+        assertTrue(f.title().contains("payer clock"), f.title());
+    }
+    @Test void otherErrorCodeNamingExpBeyondToleranceBlamesPayerClock() {
+        Finding f = assertOnly(check.evaluate(rejected(400, tokenError("exp", null), 120)), Severity.FAIL);
+        assertTrue(f.title().contains("payer clock"), f.title());
+    }
+    @ParameterizedTest @ValueSource(strings = {"assertion rejected", "expiry", "token_expired", "exponent"})
+    void otherErrorWithoutAssertionTimeWordHasNoFinding(String description) {
+        assertTrue(check.evaluate(rejected(400, tokenError("invalid_grant", description), 120)).isEmpty());
+    }
+    @Test void otherErrorNamingExpWithinToleranceHasNoFinding() {
+        assertTrue(check.evaluate(rejected(400, tokenError("invalid_grant", "exp is too far ahead"), 30)).isEmpty());
+    }
+    @Test void invalidClientBeyondToleranceWithExpWithinPayerWindowKeepsPayerCause() {
+        // iat 120 s before the payer's Date, exp still inside the payer's 5-minute window: offset alone is not blame.
+        var obs = RunObservations.builder(connection("2.2.1", false)).clientAssertion(
+                        new JwtClaims(CLIENT_ID, List.of(TOKEN_URL), NOW.plusSeconds(100), NOW.minusSeconds(120), "unique", "kid", CLIENT_ID))
+                .exchange(token(401, null, "{}", NOW)).tokenResponse(tokenError("invalid_client", "unknown kid")).build();
+        Finding f = assertOnly(check.evaluate(obs), Severity.FAIL);
+        assertEquals("Client assertion rejected: unknown kid", f.title());
+    }
+    @Test void configuredToleranceIsTheBoundary() {
+        var wide = new ClientAssertionCheck(java.time.Duration.ofSeconds(120));
+        Finding at = assertOnly(wide.evaluate(rejected(401, tokenError("invalid_client", null), 120)), Severity.FAIL);
+        assertFalse(at.title().contains("payer clock"), at.title());
+        Finding over = assertOnly(wide.evaluate(rejected(401, tokenError("invalid_client", null), 121)), Severity.FAIL);
+        assertTrue(over.title().contains("payer clock"), over.title());
+        assertThrows(NullPointerException.class, () -> new ClientAssertionCheck(null));
     }
 }
