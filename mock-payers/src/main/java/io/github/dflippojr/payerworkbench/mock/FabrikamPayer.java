@@ -107,6 +107,11 @@ public final class FabrikamPayer extends MockPayer {
         return SERVICES;
     }
 
+    /** The jtis this payer is holding against replay, for tests. */
+    int replayCacheSize() {
+        return usedJtis.size();
+    }
+
     private static Map<String, String> riPrefetch() {
         Map<String, String> prefetch = new LinkedHashMap<>();
         prefetch.put("coverageBundle", "Coverage?patient={{context.patientId}}&status=active");

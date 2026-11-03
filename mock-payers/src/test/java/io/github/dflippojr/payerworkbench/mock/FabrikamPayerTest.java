@@ -18,13 +18,18 @@ import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.URI;
 import java.net.http.HttpResponse;
 import java.security.KeyPair;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
@@ -157,6 +162,75 @@ class FabrikamPayerTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(longs = {301, 3600, 31_536_000}) // just over five minutes, an hour, a year
+    void assertionLifetimeLongerThanFiveMinutesIsRejectedAndNotCached(long lifetimeSeconds) throws Exception {
+        try (PayerFixture fixture = PayerFixture.fabrikam()) {
+            KeyPair key = publishKey(fixture);
+            Instant now = Instant.now();
+            HttpResponse<String> response = post(fixture, signed(key, assertionClaims(audience(fixture), now,
+                    now.plusSeconds(lifetimeSeconds), UUID.randomUUID().toString())));
+
+            assertEquals(401, response.statusCode(), response.body());
+            assertTrue(response.body().contains("at most 5 minutes"), response.body());
+            assertEquals(0, ((FabrikamPayer) fixture.payer).replayCacheSize());
+        }
+    }
+
+    @Test
+    void assertionWithFiveMinuteLifetimeIsAccepted() throws Exception {
+        try (PayerFixture fixture = PayerFixture.fabrikam()) {
+            KeyPair key = publishKey(fixture);
+            Instant now = Instant.now();
+            HttpResponse<String> response = post(fixture, signed(key, assertionClaims(audience(fixture), now,
+                    now.plusSeconds(300), UUID.randomUUID().toString())));
+
+            assertEquals(200, response.statusCode(), response.body());
+        }
+    }
+
+    @Test
+    void assertionWithoutIatIsRejected() throws Exception {
+        try (PayerFixture fixture = PayerFixture.fabrikam()) {
+            KeyPair key = publishKey(fixture);
+            JWTClaimsSet claims = new JWTClaimsSet.Builder().issuer(PayerFixture.CLIENT_ID)
+                    .audience(audience(fixture)).expirationTime(Date.from(Instant.now().plusSeconds(120)))
+                    .jwtID(UUID.randomUUID().toString()).build();
+            HttpResponse<String> response = post(fixture, signed(key, claims));
+
+            assertEquals(401, response.statusCode(), response.body());
+            assertTrue(response.body().contains("no iat"), response.body());
+            assertEquals(0, ((FabrikamPayer) fixture.payer).replayCacheSize());
+        }
+    }
+
+    @Test
+    void expiredJtisAreEvictedFromTheReplayCache() throws Exception {
+        Instant start = Instant.parse("2026-11-03T12:00:00Z");
+        ManualClock clock = new ManualClock(start);
+        try (PayerFixture fixture = PayerFixture.fabrikam(FabrikamPayer.builder().clock(clock))) {
+            KeyPair key = publishKey(fixture);
+            FabrikamPayer payer = (FabrikamPayer) fixture.payer;
+            String first = signed(key, assertionClaims(audience(fixture), start, start.plusSeconds(300), "evict-1"));
+
+            assertEquals(200, post(fixture, first).statusCode());
+            assertEquals(1, payer.replayCacheSize());
+
+            clock.set(start.plusSeconds(299));
+            assertEquals(200, post(fixture, signed(key, assertionClaims(audience(fixture), clock.instant(),
+                    start.plusSeconds(599), "evict-2"))).statusCode());
+            assertEquals(2, payer.replayCacheSize());
+            HttpResponse<String> reused = post(fixture, first);
+            assertEquals(401, reused.statusCode());
+            assertTrue(reused.body().contains("replay"), reused.body());
+
+            clock.set(start.plusSeconds(301));
+            assertEquals(200, post(fixture, signed(key, assertionClaims(audience(fixture), clock.instant(),
+                    start.plusSeconds(601), "evict-3"))).statusCode());
+            assertEquals(2, payer.replayCacheSize(), "evict-1 passed its exp at +300s and must be gone");
+        }
+    }
+
     @Test
     void unknownIssuerIsRejected() throws Exception {
         try (PayerFixture fixture = PayerFixture.fabrikam()) {
@@ -234,6 +308,53 @@ class FabrikamPayerTest {
                 .keyID(PayerFixture.KEY_ID).build(), claims(issuer, audience, expiry, jti));
         jwt.sign(signer);
         return jwt.serialize();
+    }
+
+    /** The claims of a client assertion with an explicit iat and exp, as a client signs them. */
+    private static JWTClaimsSet assertionClaims(String audience, Instant issuedAt, Instant expiry, String jti) {
+        return new JWTClaimsSet.Builder()
+                .issuer(PayerFixture.CLIENT_ID)
+                .audience(audience)
+                .issueTime(Date.from(issuedAt))
+                .expirationTime(Date.from(expiry))
+                .jwtID(jti)
+                .build();
+    }
+
+    /** Signs the claims with the key published under the fixture's kid, as {@link #jwt} does. */
+    private static String signed(KeyPair key, JWTClaimsSet claims) throws Exception {
+        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS384).type(JOSEObjectType.JWT)
+                .keyID(PayerFixture.KEY_ID).build(), claims);
+        jwt.sign(new RSASSASigner(key.getPrivate()));
+        return jwt.serialize();
+    }
+
+    /** A payer clock the test moves by hand. */
+    private static final class ManualClock extends Clock {
+        private Instant now;
+
+        ManualClock(Instant now) {
+            this.now = now;
+        }
+
+        void set(Instant to) {
+            now = to;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
     }
 
     private static JWTClaimsSet claims(String issuer, String audience, Instant expiry, String jti) {
