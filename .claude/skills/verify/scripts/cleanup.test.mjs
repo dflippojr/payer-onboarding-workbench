@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { alive, cleanup } from './cleanup.mjs';
+import { alive, cleanup, identify } from './cleanup.mjs';
 import { handlePath, listening, root } from './doctor.mjs';
 
 const run = promisify(execFile);
@@ -41,8 +41,8 @@ test('cleanup succeeds after a deliberately failed drive step', { skip: !built &
 
 // A recorded PID can be reused by an unrelated process once the recorded one exits. A stub process stands
 // in for that stranger: its PID is in launch.json, but the recorded identity belongs to someone else.
-function spawnStub() {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore', windowsHide: true });
+function spawnStub(tag = 'stub') {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', tag], { detached: true, stdio: 'ignore', windowsHide: true });
   child.unref();
   return child.pid;
 }
@@ -65,4 +65,52 @@ test('cleanup skips a recorded PID that now belongs to a different process', asy
     try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('cleanup kills a recorded PID whose identity matches, and a second run is still safe', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-cleanup-'));
+  const pid = spawnStub();
+  try {
+    const identity = identify(pid);
+    assert.match(identity, /^start=\S.* cmd=.*setInterval/);
+    writeLaunch(dir, { pids: { drive: pid }, identities: { drive: identity } });
+    const first = await cleanup(dir);
+    assert.equal(alive(pid), false, 'the recorded process must be killed');
+    assert.ok(first.ok);
+    assert.equal(first.checks.find(c => c.name === 'pid-drive').detail, pid + ' exited');
+    const second = await cleanup(dir);
+    assert.ok(second.ok, 'a second run must succeed');
+    assert.equal(second.checks.find(c => c.name === 'pid-drive').detail, pid + ' exited');
+  } finally {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cleanup skips a live recorded PID when launch.json recorded no identity for it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-cleanup-'));
+  const pid = spawnStub();
+  try {
+    writeLaunch(dir, { pids: { drive: pid } });
+    const result = await cleanup(dir);
+    assert.equal(alive(pid), true, 'an unidentified process must not be killed');
+    assert.match(result.checks.find(c => c.name === 'pid-drive').detail, /skipped: .*recorded no identity/);
+  } finally {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('identify tells apart two processes and returns null for a PID that is gone', async () => {
+  // Started in the same clock tick, two processes can share a start time; the command line still differs.
+  const a = spawnStub('first');
+  const b = spawnStub('second');
+  try {
+    assert.notEqual(identify(a), identify(b));
+    assert.equal(identify(a), identify(a), 'the identity of one process is stable');
+  } finally {
+    for (const pid of [a, b]) try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ }
+  }
+  for (let i = 0; i < 50 && alive(a); i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal(identify(a), null);
 });
