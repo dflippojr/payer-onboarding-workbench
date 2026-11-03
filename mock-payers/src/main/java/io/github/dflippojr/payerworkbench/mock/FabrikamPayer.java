@@ -19,6 +19,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Payer B, "Fabrikam Benefits (synthetic)": quirky but realistic, modeled on
@@ -87,9 +90,13 @@ public final class FabrikamPayer extends MockPayer {
             new ServiceDefinition("order-select-crd", "order-select", "Fabrikam order-select CRD",
                     "Fabrikam coverage guidance for selected orders.", riPrefetch()));
 
+    /** How often a running payer drops expired jtis, so an idle payer does not keep them. */
+    static final Duration SWEEP_INTERVAL = Duration.ofSeconds(1);
+
     private final Map<String, URI> jwksUrls;
     private final RegisteredJwks verifier;
     private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
+    private volatile ScheduledExecutorService sweeper;
 
     private FabrikamPayer(Builder builder) {
         super(builder);
@@ -104,7 +111,29 @@ public final class FabrikamPayer extends MockPayer {
     @Override
     public synchronized FabrikamPayer start(int port) throws IOException {
         super.start(port);
+        sweeper = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "fabrikam-replay-sweep");
+            thread.setDaemon(true);
+            return thread;
+        });
+        long interval = SWEEP_INTERVAL.toMillis();
+        sweeper.scheduleAtFixedRate(this::sweepExpiredJtis, interval, interval, TimeUnit.MILLISECONDS);
         return this;
+    }
+
+    @Override
+    public synchronized void stop() {
+        super.stop();
+        if (sweeper != null) {
+            sweeper.shutdownNow();
+            sweeper = null;
+        }
+    }
+
+    /** Drops every jti whose exp has passed on the payer's clock. */
+    void sweepExpiredJtis() {
+        Instant now = clock.instant();
+        usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
     }
 
     @Override
@@ -207,8 +236,9 @@ public final class FabrikamPayer extends MockPayer {
             throw unauthorized("JWT has no jti");
         }
         // Each entry is kept until its exp: at most five minutes after iat, and iat is at most an hour ahead of
-        // now, so an entry lives at most about 65 minutes past the current time. Expired entries are swept here.
-        usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
+        // now, so an entry lives at most about 65 minutes past the current time. The sweeper removes expired
+        // entries even when no request arrives; this sweep keeps the map tidy on every authenticated request too.
+        sweepExpiredJtis();
         if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
             throw unauthorized("jti '" + jti + "' was already used (replay)");
         }
