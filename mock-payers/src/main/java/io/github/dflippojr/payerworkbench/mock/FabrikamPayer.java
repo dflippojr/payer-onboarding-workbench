@@ -35,8 +35,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *       URL the payer fetches (and refetches when it sees an unknown {@code kid}).
  *       It checks the signature (RS384 or ES384 only), {@code iss}, that
  *       {@code aud} is exactly the URL of the service called. Its times must be valid: an
- *       {@code iat} is required, {@code exp} minus {@code iat} is at most five minutes, and a
- *       {@code jti} is never reused while its assertion is still valid. Discovery is open.</li>
+ *       {@code iat} is required and at most an hour ahead of the payer's clock, {@code exp} minus
+ *       {@code iat} is at most five minutes, and a {@code jti} is never reused while its assertion is
+ *       still valid. Discovery is open.</li>
  * </ul>
  *
  * <p>Outcomes by code: E0250 is conditional, with prior authorization and clinical
@@ -65,6 +66,12 @@ public final class FabrikamPayer extends MockPayer {
      * caps it at five minutes; this is the mock's profile choice, not a CDS Hooks rule.
      */
     private static final Duration MAX_ASSERTION_LIFETIME = Duration.ofMinutes(5);
+
+    /**
+     * How far an assertion's iat may be ahead of the payer's clock. The payer's clock behind by an hour (the
+     * matrix's clock/cds-hooks-jwt-payer-behind-1h row) is the widest skew accepted; anything further is refused.
+     */
+    private static final Duration MAX_ISSUED_AHEAD = Duration.ofHours(1);
 
     private static final Map<String, CoverageDetermination> RULES = Map.of(
             "E0250", new CoverageDetermination("conditional", "auth-needed", List.of("clinical"),
@@ -186,12 +193,21 @@ public final class FabrikamPayer extends MockPayer {
             throw unauthorized("JWT lifetime (exp minus iat) must be positive and at most 5 minutes, got "
                     + lifetime.toSeconds() + " seconds");
         }
+        // Without this bound a future iat keeps the five-minute lifetime but moves the whole window far ahead
+        // of the payer's clock, and its jti would stay cached for as long as that. The matrix's one-hour-behind
+        // payer clock needs an iat an hour ahead, so that is the largest lead accepted.
+        Duration ahead = Duration.between(now, claims.getIssueTime().toInstant());
+        if (ahead.compareTo(MAX_ISSUED_AHEAD) > 0) {
+            throw unauthorized("JWT iat is ahead of the payer's clock by more than 1 hour, got "
+                    + ahead.toSeconds() + " seconds");
+        }
 
         String jti = claims.getJWTID();
         if (jti == null || jti.isBlank()) {
             throw unauthorized("JWT has no jti");
         }
-        // Each entry is kept only until its exp, at most five minutes after iat, so the cache holds only recent jtis.
+        // Each entry is kept until its exp: at most five minutes after iat, and iat is at most an hour ahead of
+        // now, so an entry lives at most about 65 minutes past the current time. Expired entries are swept here.
         usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
         if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
             throw unauthorized("jti '" + jti + "' was already used (replay)");
