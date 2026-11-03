@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
 import java.text.ParseException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,8 +34,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>Auth is the CDS Hooks 2.0 client JWT. Each registered issuer has a JWKS
  *       URL the payer fetches (and refetches when it sees an unknown {@code kid}).
  *       It checks the signature (RS384 or ES384 only), {@code iss}, that
- *       {@code aud} is exactly the URL of the service called, {@code exp}, and
- *       that a {@code jti} is never reused. Discovery is open.</li>
+ *       {@code aud} is exactly the URL of the service called. Its times must be valid: an
+ *       {@code iat} is required, {@code exp} minus {@code iat} is at most five minutes, and a
+ *       {@code jti} is never reused while its assertion is still valid. Discovery is open.</li>
  * </ul>
  *
  * <p>Outcomes by code: E0250 is conditional, with prior authorization and clinical
@@ -57,6 +59,12 @@ public final class FabrikamPayer extends MockPayer {
     static final String CARD_TYPE_SYSTEM = "http://hl7.org/fhir/us/davinci-crd/CodeSystem/temp";
 
     private static final Set<JWSAlgorithm> ALLOWED_ALGORITHMS = Set.of(JWSAlgorithm.RS384, JWSAlgorithm.ES384);
+
+    /**
+     * The longest client assertion this mock accepts, measured as exp minus iat. SMART Backend Services
+     * caps it at five minutes; this is the mock's profile choice, not a CDS Hooks rule.
+     */
+    private static final Duration MAX_ASSERTION_LIFETIME = Duration.ofMinutes(5);
 
     private static final Map<String, CoverageDetermination> RULES = Map.of(
             "E0250", new CoverageDetermination("conditional", "auth-needed", List.of("clinical"),
@@ -162,6 +170,9 @@ public final class FabrikamPayer extends MockPayer {
         if (claims.getExpirationTime() == null) {
             throw unauthorized("JWT has no exp");
         }
+        if (claims.getIssueTime() == null) {
+            throw unauthorized("JWT has no iat");
+        }
         Instant expiry = claims.getExpirationTime().toInstant();
         if (faults().isEnabled(Fault.EXPIRED_TOKEN_401)) {
             throw unauthorized("JWT expired").fault(Fault.EXPIRED_TOKEN_401);
@@ -169,11 +180,18 @@ public final class FabrikamPayer extends MockPayer {
         if (!now.isBefore(expiry)) {
             throw unauthorized("JWT expired at " + expiry);
         }
+        // Checked before the jti is recorded, so a refused assertion never occupies the replay cache.
+        Duration lifetime = Duration.between(claims.getIssueTime().toInstant(), expiry);
+        if (lifetime.isNegative() || lifetime.isZero() || lifetime.compareTo(MAX_ASSERTION_LIFETIME) > 0) {
+            throw unauthorized("JWT lifetime (exp minus iat) must be positive and at most 5 minutes, got "
+                    + lifetime.toSeconds() + " seconds");
+        }
 
         String jti = claims.getJWTID();
         if (jti == null || jti.isBlank()) {
             throw unauthorized("JWT has no jti");
         }
+        // Each entry is kept only until its exp, at most five minutes after iat, so the cache holds only recent jtis.
         usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
         if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
             throw unauthorized("jti '" + jti + "' was already used (replay)");
