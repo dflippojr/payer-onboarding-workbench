@@ -244,7 +244,8 @@ node --test scripts/audit-reader.test.mjs
 ```
 
 The reader accepts one named capture, ignores unrelated logs, and emits matching events
-as JSON lines. UTC `--since`/`--until` boundaries are inclusive, including nanoseconds.
+as JSON lines. A capture is read as UTF-8 unless it starts with a UTF-16 BOM (LE or BE), which is
+what Windows PowerShell 5.1's `>` writes. UTF-16 without a BOM is not detected. UTC `--since`/`--until` boundaries are inclusive, including nanoseconds.
 A run filter selects credential/terminal/report events; the initial request event has no
 run ID yet, so correlate it using the terminal's request ID in the unfiltered capture.
 Malformed audit lines produce a count on stderr and a nonzero exit without echoing contents.

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { options, review } from './audit-reader.mjs';
+import { captureText, options, review } from './audit-reader.mjs';
 
 const event = (runId = 'run-one', action = 'run.completed', occurredAt = '2026-10-08T12:00:00Z') =>
   ({ schemaVersion: 1, eventId: 'synthetic-event', runId, action, occurredAt });
@@ -357,5 +357,102 @@ test('verify compares segment numbers by value: an unlisted audit-999999 below a
     const verified = cli(dir, '--verify');
     assert.equal(verified.status, 1);
     assert.equal(verified.stdout, '{"segment":"audit-999999","status":"unlisted"}\n{"segment":"audit-1000000","status":"ok"}\n');
+  } finally { rmSync(dir, { recursive: true }); }
+});
+
+// Windows PowerShell 5.1's `>` writes UTF-16LE with a BOM. These bytes are built here, so no Windows host is needed.
+const UTF16 = {
+  'UTF-16LE': text => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]),
+  'UTF-16BE': text => Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]),
+};
+function captureCli(bytes, ...args) {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-capture-'));
+  try {
+    const file = join(dir, 'capture.log');
+    writeFileSync(file, bytes);
+    return spawnSync(process.execPath, ['scripts/audit-reader.mjs', file, ...args], { encoding: 'utf8' });
+  } finally { rmSync(dir, { recursive: true }); }
+}
+const wide = { ...event(), note: 'naïve 😀' };
+// The first line is bare JSON: a BOM left on it would hide the event, as the line would no longer start with `{`.
+const bareFirst = [JSON.stringify(event('run-bare')), 'unrelated', line(wide), line(event('run-two'))].join('\r\n') + '\r\n';
+for (const [encoding, encode] of Object.entries(UTF16)) {
+  test(`a ${encoding} capture with a BOM prints what the same capture in UTF-8 prints`, () => {
+    const expected = captureCli(Buffer.from(bareFirst));
+    assert.equal(expected.status, 0, expected.stderr);
+    assert.deepEqual(expected.stdout.trim().split('\n').map(row => JSON.parse(row).runId), ['run-bare', 'run-one', 'run-two']);
+    const result = captureCli(encode(bareFirst));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    assert.equal(result.stdout, expected.stdout);
+    assert.equal(JSON.parse(result.stdout.split('\n')[1]).note, 'naïve 😀');
+  });
+  test(`a ${encoding} capture applies filters and counts malformed lines without echoing them`, () => {
+    const text = line(event('run-a')) + '\n' + line(event('run-b')) + '\naudit SYNTHETIC_SECRET\n';
+    const result = captureCli(encode(text), '--run', 'run-b');
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, 'Malformed audit lines: 1\n');
+    assert.equal(JSON.parse(result.stdout).runId, 'run-b');
+  });
+  test(`a ${encoding} capture past one read chunk loses no event and splits no line`, () => {
+    // Long enough to cross several 64 KiB stream reads, so a line, a CRLF and a character each span a boundary at some point.
+    const rows = Array.from({ length: 2000 }, (_, i) => line({ ...event(`run-${i}`), note: '😀'.repeat(i % 7) }));
+    const result = captureCli(encode(rows.join('\r\n') + '\r\n'));
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n').map(row => JSON.parse(row).runId), rows.map((_, i) => `run-${i}`));
+  });
+}
+test('a capture without a BOM behaves as before', () => {
+  // UTF-8 with LF, CRLF or CR, including invalid bytes on an unrelated line.
+  const invalid = Buffer.concat([Buffer.from('unrelated '), Buffer.from([0xff, 0xfe]), Buffer.from('\n' + line(event()) + '\n')]);
+  assert.equal(JSON.parse(captureCli(invalid).stdout).runId, 'run-one');
+  for (const end of ['\n', '\r\n', '\r']) {
+    const result = captureCli(Buffer.from(line(event()) + end + line(event('run-two')) + end));
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n').map(row => JSON.parse(row).runId), ['run-one', 'run-two']);
+  }
+  // UTF-16 without a BOM is not guessed at: no event, and exit 0, as before.
+  for (const bytes of [Buffer.from(line(event()) + '\n', 'utf16le'), Buffer.from(line(event()) + '\n', 'utf16le').swap16()]) {
+    const result = captureCli(bytes);
+    assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
+  }
+  // Files too short to hold a BOM.
+  for (const bytes of [Buffer.alloc(0), Buffer.from('x'), Buffer.from([0xff])]) {
+    assert.deepEqual([captureCli(bytes).status, captureCli(bytes).stdout], [0, '']);
+  }
+});
+// A named pipe can deliver any split, so a BOM, a code unit and a surrogate pair can each arrive across chunks.
+test('captureText decodes the same text however the bytes are split', async () => {
+  const collect = async chunks => { const parts = []; for await (const part of captureText(chunks)) parts.push(part); return parts; };
+  const text = 'a😀\r\nb';
+  for (const bytes of [UTF16['UTF-16LE'](text), UTF16['UTF-16BE'](text), Buffer.from(text)]) {
+    for (const size of [1, 2, 3, 5, bytes.length]) {
+      const chunks = [];
+      for (let at = 0; at < bytes.length; at += size) chunks.push(bytes.subarray(at, at + size));
+      const parts = await collect(chunks);
+      assert.equal(parts.join(''), text);
+      // An empty part would make fileLines forget a \r that ended the part before it.
+      assert.ok(parts.every(part => part.length > 0));
+    }
+  }
+  assert.deepEqual(await collect([]), []);
+  assert.equal((await collect([Buffer.from('x')])).join(''), 'x');
+  // A BOM alone is an empty capture. A cut-off last character becomes U+FFFD, so an event line ending in one is malformed.
+  assert.deepEqual(await collect([Buffer.from([0xff, 0xfe])]), []);
+  assert.equal((await collect([Buffer.from([0xff, 0xfe, 0x61, 0x00, 0x62])])).join(''), 'a\ufffd');
+});
+test('a truncated UTF-16 capture counts its cut-off event line as malformed', () => {
+  const whole = UTF16['UTF-16LE'](line(event()) + '\n' + line(event('run-cut')));
+  const result = captureCli(whole.subarray(0, whole.length - 1));
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'Malformed audit lines: 1\n');
+  assert.equal(JSON.parse(result.stdout).runId, 'run-one');
+});
+test('a journal segment is still read as UTF-8, BOM or not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-segment-bom-'));
+  try {
+    writeFileSync(join(dir, 'audit-000001.jsonl'), UTF16['UTF-16LE'](JSON.stringify(event()) + '\n'));
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: 1, operatorLabel: null, segments: [] }));
+    assert.deepEqual([cli(dir).status, cli(dir).stdout], [0, '']);
   } finally { rmSync(dir, { recursive: true }); }
 });

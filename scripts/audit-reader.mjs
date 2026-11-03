@@ -4,6 +4,7 @@ import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
 
 // Preserve Java Instant nanoseconds when applying inclusive boundaries.
@@ -150,6 +151,40 @@ export async function verify(dir, write) {
 const MAX_LINE = 16 * 1024 * 1024;
 const TRUNCATED = '\u0000';
 
+const UTF16_BOMS = { fffe: 'utf-16le', feff: 'utf-16be' };
+
+// No BOM means UTF-8, whatever the bytes look like: an encoding is never guessed.
+function captureDecoder(head) {
+  const label = UTF16_BOMS[head.subarray(0, 2).toString('hex')];
+  if (label) {
+    // TextDecoder drops the BOM.
+    const utf16 = new TextDecoder(label);
+    return { write: bytes => utf16.decode(bytes, { stream: true }), end: () => utf16.decode() };
+  }
+  return new StringDecoder('utf8');
+}
+
+// The text of a capture from its raw chunks. Windows PowerShell 5.1's `>` writes UTF-16LE with a BOM, so the first two bytes
+// pick the decoder. They are read from the one stream, not a second open, so a named pipe still works, and a pipe may
+// deliver them in separate chunks. A chunk that holds only part of a character decodes to nothing and is not yielded.
+export async function* captureText(chunks) {
+  let decoder = null;
+  let head = Buffer.alloc(0);
+  for await (let bytes of chunks) {
+    if (!decoder) {
+      head = Buffer.concat([head, bytes]);
+      if (head.length < 2) continue;
+      decoder = captureDecoder(head);
+      bytes = head;
+    }
+    const text = decoder.write(bytes);
+    if (text) yield text;
+  }
+  // A file too short to hold a BOM has no decoder yet.
+  const rest = decoder ? decoder.end() : new StringDecoder('utf8').end(head);
+  if (rest) yield rest;
+}
+
 // The lines of a file, read in chunks so memory stays bounded however long the file is. Journal segments end lines with
 // \n only. A capture log is split like readline: \n, \r and \r\n each end a line, even when \r\n spans two chunks.
 async function* fileLines(path, capture = false) {
@@ -157,7 +192,7 @@ async function* fileLines(path, capture = false) {
   let text = '';
   let cut = false;
   let afterCR = false;
-  for await (let chunk of createReadStream(path, { encoding: 'utf8' })) {
+  for await (let chunk of capture ? captureText(createReadStream(path)) : createReadStream(path, { encoding: 'utf8' })) {
     if (afterCR && chunk.startsWith('\n')) chunk = chunk.slice(1);
     afterCR = capture && chunk.endsWith('\r');
     const parts = chunk.split(ends);
