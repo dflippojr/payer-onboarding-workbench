@@ -255,6 +255,30 @@ class FabrikamPayerTest {
         }
     }
 
+    /**
+     * Acceptance criterion: an expired jti is evicted. An idle payer receives no request after the jti's exp, so
+     * only the payer's own sweep can remove it; the test waits for that sweep rather than sending a request.
+     */
+    @Test
+    void expiredJtiIsEvictedEvenWhenNoFurtherRequestArrives() throws Exception {
+        Instant start = Instant.parse("2026-11-03T12:00:00Z");
+        ManualClock clock = new ManualClock(start);
+        try (PayerFixture fixture = PayerFixture.fabrikam(FabrikamPayer.builder().clock(clock))) {
+            KeyPair key = publishKey(fixture);
+            FabrikamPayer payer = (FabrikamPayer) fixture.payer;
+            assertEquals(200, post(fixture, signed(key, assertionClaims(audience(fixture), start,
+                    start.plusSeconds(300), "idle-1"))).statusCode());
+            assertEquals(1, payer.replayCacheSize());
+
+            clock.set(start.plusSeconds(301));
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (payer.replayCacheSize() != 0 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertEquals(0, payer.replayCacheSize(), "idle-1 passed its exp at +300s and must be evicted without another request");
+        }
+    }
+
     @Test
     void expiredJtisAreEvictedFromTheReplayCache() throws Exception {
         Instant start = Instant.parse("2026-11-03T12:00:00Z");
@@ -382,7 +406,7 @@ class FabrikamPayerTest {
 
     /** A payer clock the test moves by hand. */
     private static final class ManualClock extends Clock {
-        private Instant now;
+        private volatile Instant now;
 
         ManualClock(Instant now) {
             this.now = now;
