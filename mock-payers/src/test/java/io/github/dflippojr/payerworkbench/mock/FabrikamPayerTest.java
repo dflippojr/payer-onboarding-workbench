@@ -204,6 +204,57 @@ class FabrikamPayerTest {
         }
     }
 
+    /**
+     * A future iat keeps exp - iat at five minutes while pushing the whole window far ahead of the payer's
+     * clock, so the entry would outlive any bound on retention. The payer must refuse it and cache nothing.
+     */
+    @ParameterizedTest
+    @ValueSource(longs = {3601, 86_400, 31_536_000}) // just over an hour, a day and a year ahead of the payer
+    void assertionIssuedFarAheadOfThePayerClockIsRejectedAndNotCached(long aheadSeconds) throws Exception {
+        Instant start = Instant.parse("2026-11-03T12:00:00Z");
+        ManualClock clock = new ManualClock(start);
+        try (PayerFixture fixture = PayerFixture.fabrikam(FabrikamPayer.builder().clock(clock))) {
+            KeyPair key = publishKey(fixture);
+            Instant issuedAt = start.plusSeconds(aheadSeconds);
+            HttpResponse<String> response = post(fixture, signed(key, assertionClaims(audience(fixture), issuedAt,
+                    issuedAt.plusSeconds(300), UUID.randomUUID().toString())));
+
+            assertEquals(401, response.statusCode(), response.body());
+            assertTrue(response.body().contains("ahead of the payer's clock"), response.body());
+            assertEquals(0, ((FabrikamPayer) fixture.payer).replayCacheSize());
+        }
+    }
+
+    /**
+     * The matrix's clock/cds-hooks-jwt-payer-behind-1h row: the payer's clock is an hour behind the client's,
+     * so an assertion issued now is an hour ahead of the payer. It is accepted, and its jti is kept until exp.
+     */
+    @Test
+    void assertionIssuedAnHourAheadOfThePayerClockIsKeptUntilItsExp() throws Exception {
+        Instant start = Instant.parse("2026-11-03T12:00:00Z");
+        ManualClock clock = new ManualClock(start);
+        try (PayerFixture fixture = PayerFixture.fabrikam(FabrikamPayer.builder().clock(clock))) {
+            KeyPair key = publishKey(fixture);
+            FabrikamPayer payer = (FabrikamPayer) fixture.payer;
+            Instant issuedAt = start.plusSeconds(3600);
+            String ahead = signed(key, assertionClaims(audience(fixture), issuedAt, issuedAt.plusSeconds(300), "ahead-1"));
+
+            assertEquals(200, post(fixture, ahead).statusCode());
+            assertEquals(1, payer.replayCacheSize());
+
+            clock.set(start.plusSeconds(3899));
+            HttpResponse<String> reused = post(fixture, ahead);
+            assertEquals(401, reused.statusCode());
+            assertTrue(reused.body().contains("replay"), reused.body());
+            assertEquals(1, payer.replayCacheSize(), "ahead-1 has not reached its exp yet and must stay cached");
+
+            clock.set(start.plusSeconds(3900));
+            assertEquals(200, post(fixture, signed(key, assertionClaims(audience(fixture), clock.instant(),
+                    clock.instant().plusSeconds(300), "ahead-2"))).statusCode());
+            assertEquals(1, payer.replayCacheSize(), "ahead-1 reached its exp at +3900s and must be gone");
+        }
+    }
+
     @Test
     void expiredJtisAreEvictedFromTheReplayCache() throws Exception {
         Instant start = Instant.parse("2026-11-03T12:00:00Z");
