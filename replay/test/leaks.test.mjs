@@ -357,6 +357,9 @@ test('reads repeated scheme words, escaped header lines and token runs in linear
     ['"' + '\\nCookie: [REDACTED]'.repeat(n / 20) + '"', false],
     ['eyJ-'.repeat(n / 4), false],
     ['token '.repeat(n / 6) + 'DPoP PHNhbWw6QXNz', true],
+    // The automated review on 85acec5: each dotted run searched the rest of the text for eyJ.
+    ['a.a.a '.repeat(n / 6), false],
+    ['a.a.a '.repeat(n / 12) + 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.SIG', true],
   ];
   for (const [text, leaks] of cases) {
     scanWork.characters = 0;
