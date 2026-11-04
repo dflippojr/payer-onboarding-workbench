@@ -30,8 +30,23 @@ const JWK_PRIVATE_MEMBERS = new Set(['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'
 /** Whitespace in JSON, also escaped (\n, \t) where the JSON is embedded in a JSON string. */
 const JSON_SPACE = String.raw`(?:\s|\\+[nrt])*`;
 
-/** A kty member, also in JSON embedded in a JSON string at any depth. */
-const JWK_TYPE = new RegExp(String.raw`\\*"kty\\*"${JSON_SPACE}:`);
+/**
+ * A JSON member name as Redactor reads one: letters, _ and -, each character also as a \u escape
+ * ("kt\u0079" is kty), its backslash escaped again at any depth. decodeName gives the name compared.
+ */
+const NAME = String.raw`((?:[A-Za-z_-]|\\+u[0-9A-Fa-f]{4}){1,64})`;
+
+/** The name a NAME match spells, each \u escape decoded. */
+const decodeName = name => name.replace(/\\+u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+
+/** `name` as a regex for a JSON member name: each letter as it is or as its \u escape, in either hex case. */
+const spelled = name => [...name].map(c => {
+  const hex = [...c.charCodeAt(0).toString(16).padStart(4, '0')].map(h => /[a-f]/.test(h) ? `[${h}${h.toUpperCase()}]` : h);
+  return String.raw`(?:${c}|\\+u${hex.join('')})`;
+}).join('');
+
+/** A kty member, also spelled with escapes, also in JSON embedded in a JSON string at any depth. */
+const JWK_TYPE = new RegExp(String.raw`\\*"${spelled('kty')}\\*"${JSON_SPACE}:`);
 
 /** Whether text has a kty member, searched once per text rather than once per member. */
 let jwkTypeText = null;
@@ -202,18 +217,19 @@ const TEXT_CHECKS = [
   // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
   {
     name: 'JSON secret field',
-    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
+    re: new RegExp(String.raw`\\*"${NAME}\\*"${JSON_SPACE}:${JSON_SPACE}(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
     // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
     // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
     ok: m => {
-      if (!isSecretKey(m[1]) && !isJwkMember(m[1], m.input)) return true;
+      const name = decodeName(m[1]);
+      if (!isSecretKey(name) && !isJwkMember(name, m.input)) return true;
       if (m[2] === undefined) return false;
       // Counted in the input: an earlier match can end inside the run of backslashes before the key.
       const quote = m.index + m[0].indexOf('"');
       let escaped = 0;
       while (m.input[quote - 1 - escaped] === '\\') escaped++;
       const rest = m.input.slice(m.index + m[0].length - m[2].length);
-      return isMaskedValue(m[1], rest.slice(0, valueEnd(rest, escaped + 1, false))) && !maskCutShort(m);
+      return isMaskedValue(name, rest.slice(0, valueEnd(rest, escaped + 1, false))) && !maskCutShort(m);
     },
   },
   // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
@@ -221,10 +237,10 @@ const TEXT_CHECKS = [
   // it masks a JWK private member's list whole, so no list of masks is left there.
   {
     name: 'JSON secret structure',
-    re: new RegExp(String.raw`\\*"([A-Za-z_-]{1,64})\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
-    ok: m => isSecretKey(m[1])
-      ? m[2] === '[' && (/authorization$/i.test(m[1]) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
-      : !isJwkMember(m[1], m.input),
+    re: new RegExp(String.raw`\\*"${NAME}\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
+    ok: m => isSecretKey(decodeName(m[1]))
+      ? m[2] === '[' && (/authorization$/i.test(decodeName(m[1])) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
+      : !isJwkMember(decodeName(m[1]), m.input),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },

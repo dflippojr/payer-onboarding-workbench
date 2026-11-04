@@ -43,14 +43,17 @@ import java.util.stream.IntStream;
  * embedded in a JSON string; see {@link #isSecretField(String)}). The value of a
  * credential header ({@link #isSensitiveHeader(String)}, such as {@code Cookie}) is
  * masked in a header map, in a {@code Name: value} line of free text and in a JSON field
- * of that name. It is a safety net, not a guarantee: callers should still avoid passing
- * secrets around in the first place.
+ * of that name. A JSON member name is read as JSON reads it, a {@code \\u} escape as the
+ * character it spells ({@code "kt\\u0079"} is {@code kty}). It is a safety net, not a
+ * guarantee: callers should still avoid passing secrets around in the first place.
  *
  * <p>Out of scope (#262): other schemes in free text, such as {@code Digest response=...}
  * (an {@code Authorization} header or line is still masked whole); URL-encoded separators
  * after any scheme but {@code Bearer}; JWK member names outside an object with a
  * {@code kty} member, so an ordinary field named {@code d} or {@code k} is kept (except in
- * text too tangled to find the JWKs in linear time, where every such name is masked).
+ * text too tangled to find the JWKs in linear time, where every such name is masked); in a
+ * name in embedded JSON, a {@code \\u} escape whose own {@code u} or hex digits the outer
+ * string spells as escapes too.
  */
 public final class Redactor {
 
@@ -126,8 +129,30 @@ public final class Redactor {
      */
     static final Set<String> JWK_PRIVATE_MEMBERS = Set.of("d", "p", "q", "dp", "dq", "qi", "oth", "k");
 
+    /** A literal backslash, as a regex. */
+    private static final String BACKSLASH = "\\\\";
+
+    /**
+     * A character of a JSON member name: a letter, {@code _} or {@code -}, or the {@code \\u} escape of
+     * any character, as JSON may spell one ({@code "kt\\u0079"} is {@code kty}). {@link #decodeName}
+     * gives the name the escapes spell, which is the one compared.
+     */
+    private static final String NAME_CHAR = "(?:[A-Za-z_-]|" + BACKSLASH + "u[0-9A-Fa-f]{4})";
+
+    /**
+     * {@link #NAME_CHAR} in JSON embedded in a JSON string: the inner escape's backslash is escaped
+     * ({@code \\\\u0064}), or the outer string spells the character itself ({@code \\u0064}).
+     */
+    private static final String EMBEDDED_NAME_CHAR = "(?:[A-Za-z_-]|" + BACKSLASH + "{1,2}u[0-9A-Fa-f]{4})";
+
+    /** A {@code \\u} escape in a name matched with {@link #NAME_CHAR} or {@link #EMBEDDED_NAME_CHAR}. */
+    private static final Pattern NAME_ESCAPE = Pattern.compile(BACKSLASH + "++u([0-9A-Fa-f]{4})");
+
+    /** The {@code kty} member name, each letter also as a {@code \\u} escape; it starts at the opening quote. */
+    private static final Pattern KTY_NAME = Pattern.compile("\"" + spelled("kty", false) + "\"");
+
     /** The {@code kty} member that makes a JSON object a JWK; it starts at the name's opening quote. */
-    private static final Pattern JWK_TYPE = Pattern.compile("\"kty\"\\s*:");
+    private static final Pattern JWK_TYPE = Pattern.compile(KTY_NAME.pattern() + "\\s*:");
 
     /** A JSON number, {@code true} or {@code false}: a secret-named field holding one is masked too. */
     private static final String JSON_SCALAR = "-?+\\d[\\d.eE+-]*+|true\\b|false\\b";
@@ -141,11 +166,8 @@ public final class Redactor {
      * long values.
      */
     private static final Pattern JSON_FIELD = Pattern.compile(
-            "\"([A-Za-z_-]{1,64})\"(\\s*:\\s*)(?:\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))|"
+            "\"(" + NAME_CHAR + "{1,64})\"(\\s*:\\s*)(?:\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))|"
                     + JSON_SCALAR + ")");
-
-    /** A literal backslash, as a regex. */
-    private static final String BACKSLASH = "\\\\";
 
     /** Any character but a quote or backslash, as a regex. */
     private static final String PLAIN = "[^\"\\\\]";
@@ -162,31 +184,33 @@ public final class Redactor {
      * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
+            BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
                     + BACKSLASH + "\"((?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
                     + "|" + BACKSLASH + PLAIN + ")*+)(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
                     + JSON_SCALAR + ")");
 
     /** A JSON field whose value is an object or array; group 1 is the name. */
-    private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"([A-Za-z_-]{1,64})\"\\s*:\\s*(?=[{\\[])");
+    private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"(" + NAME_CHAR + "{1,64})\"\\s*:\\s*(?=[{\\[])");
 
     /** The same inside JSON embedded in a JSON string. */
     private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
-            BACKSLASH + "\"([A-Za-z_-]{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
+            BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE
+                    + "(?=[{\\[])");
+
+    /** {@link #KTY_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
+    private static final Pattern EMBEDDED_KTY_NAME = Pattern.compile(
+            BACKSLASH + "\"" + spelled("kty", true) + BACKSLASH + "\"");
 
     /** {@link #JWK_TYPE} inside JSON embedded in a JSON string; it starts at the backslash. */
-    private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(BACKSLASH + "\"kty" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
+    private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(EMBEDDED_KTY_NAME.pattern() + EMBEDDED_SPACE + ":");
 
-    /** The {@link #JWK_PRIVATE_MEMBERS} names, as a regex alternation. */
-    private static final String JWK_PRIVATE_NAMES = "(?:" + String.join("|", JWK_PRIVATE_MEMBERS) + ")";
-
-    /** The name of a {@link #JWK_PRIVATE_MEMBERS} field, through its colon. */
-    private static final Pattern JWK_PRIVATE_NAME = Pattern.compile("\"" + JWK_PRIVATE_NAMES + "\"\\s*:");
+    /** The name of a {@link #JWK_PRIVATE_MEMBERS} field, each letter also as a {@code \\u} escape, through its colon. */
+    private static final Pattern JWK_PRIVATE_NAME = Pattern.compile("\"" + privateNames(false) + "\"\\s*:");
 
     /** {@link #JWK_PRIVATE_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_JWK_PRIVATE_NAME = Pattern.compile(
-            BACKSLASH + "\"" + JWK_PRIVATE_NAMES + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
+            BACKSLASH + "\"" + privateNames(true) + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
     /** Header names whose values are always masked, lower case (see {@link #isSensitiveHeader(String)}). */
     static final Set<String> SENSITIVE_HEADERS = Set.of(
@@ -262,6 +286,35 @@ public final class Redactor {
     }
 
     /**
+     * {@code name} (lower-case letters) as a regex for a JSON member name: each letter as it is, or as
+     * its {@code \\u} escape in either hex case, its backslash as in {@link #NAME_CHAR} or, if
+     * {@code embedded}, {@link #EMBEDDED_NAME_CHAR}.
+     */
+    private static String spelled(String name, boolean embedded) {
+        String escape = embedded ? BACKSLASH + "{1,2}u00" : BACKSLASH + "u00";
+        return name.chars()
+                .mapToObj(c -> "(?:" + (char) c + "|" + escape + "(?i:" + Integer.toHexString(c) + "))")
+                .collect(Collectors.joining());
+    }
+
+    /** The {@link #JWK_PRIVATE_MEMBERS} names, {@link #spelled} as in JSON, as a regex alternation. */
+    private static String privateNames(boolean embedded) {
+        return JWK_PRIVATE_MEMBERS.stream().map(name -> spelled(name, embedded)).collect(Collectors.joining("|", "(?:", ")"));
+    }
+
+    /**
+     * The member name a name matched with {@link #NAME_CHAR} or {@link #EMBEDDED_NAME_CHAR} spells, each
+     * {@code \\u} escape decoded: the name JSON reads, so {@code "\\u0064"} is {@code d}.
+     */
+    static String decodeName(String name) {
+        if (name.indexOf('\\') < 0) {
+            return name;
+        }
+        return NAME_ESCAPE.matcher(name).replaceAll(m ->
+                Matcher.quoteReplacement(String.valueOf((char) Integer.parseInt(m.group(1), 16))));
+    }
+
+    /**
      * Returns {@code text} with credential material masked, or {@code null} if
      * {@code text} is {@code null}.
      */
@@ -277,11 +330,11 @@ public final class Redactor {
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
-        out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(m.group(1))
-                ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + masked(m.group(1), m.group(3)) + "\""
+        out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(decodeName(m.group(1)))
+                ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + masked(decodeName(m.group(1)), m.group(3)) + "\""
                 : m.group()));
-        out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(m.group(1))
-                ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(m.group(1), m.group(3)) + "\\\""
+        out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(decodeName(m.group(1)))
+                ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(decodeName(m.group(1)), m.group(3)) + "\\\""
                 : m.group()));
         out = maskJwks(out, false);
         out = maskJwks(out, true);
@@ -457,7 +510,7 @@ public final class Redactor {
         int from = 0;
         while (from < text.length() && m.find(from)) {
             from = m.end();
-            if (isSecretKey(m.group(1))) {
+            if (isSecretKey(decodeName(m.group(1)))) {
                 String quote = embedded ? "\\\"" : "\"";
                 out = out == null ? new StringBuilder(text.length()) : out;
                 out.append(text, copied, m.end()).append(quote).append(MASK).append(quote);
@@ -515,7 +568,7 @@ public final class Redactor {
     /** {@link #maskJwks(String, boolean)} with a budget of {@code characters} to read. */
     static String maskJwks(String text, boolean embedded, int characters) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
-        String kty = embedded ? "\\\"kty\\\"" : "\"kty\"";
+        Matcher kty = (embedded ? EMBEDDED_KTY_NAME : KTY_NAME).matcher(text);
         // Where the text read by objects() so far ends: every object before it is known.
         int readEnd = 0;
         Map<Integer, Integer> matching = new HashMap<>();
@@ -548,7 +601,7 @@ public final class Redactor {
             }
             readEnd = end;
             for (JsonObject object : objects) {
-                if (object.names().stream().anyMatch(name -> text.startsWith(kty, name))) {
+                if (object.names().stream().anyMatch(name -> kty.region(name, text.length()).lookingAt())) {
                     names.addAll(object.names());
                 }
             }
@@ -565,10 +618,10 @@ public final class Redactor {
             if (name < copied) {
                 continue;
             }
-            if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(structure.group(1))) {
+            if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
                 out.append(text, copied, structure.end()).append(masked);
                 copied = endOfStructure(text, structure.end(), embedded);
-            } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(field.group(1))) {
+            } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
                 out.append(text, copied, field.end(2)).append(masked);
                 copied = field.end();
             }

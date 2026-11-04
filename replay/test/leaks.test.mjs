@@ -122,6 +122,27 @@ test('accepts what Redactor leaves for a JWK, a Token or DPoP credential and a U
   }
   assert.deepEqual(findJsonLeaks({ jwk: { kty: 'RSA', n: 'N1', d: MASK } }), []);
 });
+test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
+  for (const text of [
+    String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
+    String.raw`{"body":"{\"kt\\u0079\":\"oct\",\"\\u006B\":\"[REDACTED]\"}"}`,
+    String.raw`{"client_s\u0065cret":"[REDACTED]","\u0041uthorization":"SCRAM-SHA-256 [REDACTED]"}`,
+    String.raw`{"\u0064":"2026-11-03"}`,
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+  for (const text of [
+    String.raw`{"kt\u0079":"RSA","d":"LEAKED"}`,
+    String.raw`{"kty":"RSA","\u0064":"LEAKED"}`,
+    String.raw`{"\u006B\u0074\u0079":"oct","\u006b":"LEAKED"}`,
+    String.raw`{"kty":"RSA","\u006fth":[{"r":"LEAKED"}]}`,
+    String.raw`{"body":"{\"kt\\u0079\":\"RSA\",\"\\u0064\":\"LEAKED\"}"}`,
+    String.raw`{"client_s\u0065cret":"LEAKED"}`,
+    String.raw`{"\u0041uthorization":"SCRAM-SHA-256 LEAKED"}`,
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, text);
+  }
+});
 test('flags a JWK private member, Token or DPoP credential Redactor would not leave (#262)', () => {
   for (const text of [
     '{"kty":"RSA","d":"LEAKED"}',
