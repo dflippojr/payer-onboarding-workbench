@@ -525,6 +525,49 @@ class RedactorTest {
     }
 
     @Test
+    void masksJwkMembersWhoseNamesAreSpelledWithEscapes() {
+        // JSON may spell any character of a member name as a \\u escape, in either hex case: "kt\\u0079" is
+        // kty and "\\u0064" is d.
+        assertEquals("{\"kt\\u0079\":\"RSA\",\"n\":\"N1\",\"d\":\"[REDACTED]\"}",
+                Redactor.redact("{\"kt\\u0079\":\"RSA\",\"n\":\"N1\",\"d\":\"PRIVD\"}"));
+        assertEquals("{\"kty\":\"RSA\",\"\\u0064\":\"[REDACTED]\",\"\\u0064p\":\"[REDACTED]\",\"n\":\"N1\"}",
+                Redactor.redact("{\"kty\":\"RSA\",\"\\u0064\":\"PRIVD\",\"\\u0064p\":\"PRIVDP\",\"n\":\"N1\"}"));
+        assertEquals("{\"\\u006B\\u0074\\u0079\":\"oct\",\"\\u006b\":\"[REDACTED]\"}",
+                Redactor.redact("{\"\\u006B\\u0074\\u0079\":\"oct\",\"\\u006b\":\"PRIVK\"}"));
+        assertEquals("{\"kty\":\"RSA\",\"\\u006fth\":\"[REDACTED]\"}",
+                Redactor.redact("{\"kty\":\"RSA\",\"\\u006fth\":[{\"r\":\"PRIVR\"}]}"));
+        assertEquals("{\"keys\":[{\"k\\u0074y\":\"oct\",\"\\u006B\":\"[REDACTED]\"}]}",
+                Redactor.redact("{\"keys\":[{\"k\\u0074y\":\"oct\",\"\\u006B\":\"PRIVK\"}]}"));
+        // In JSON embedded in a JSON string the inner escape's backslash is escaped (\\\\u0064), or the
+        // outer string spells the letter itself (\\u0064).
+        assertEquals("{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"RSA\\\",\\\"\\\\u0064\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"RSA\\\",\\\"\\\\u0064\\\":\\\"PRIVD\\\"}\"}"));
+        assertEquals("{\"body\":\"{\\\"kt\\u0079\\\":\\\"RSA\\\",\\\"\\u0064\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"kt\\u0079\\\":\\\"RSA\\\",\\\"\\u0064\\\":\\\"PRIVD\\\"}\"}"));
+        // Once the budget is spent, every private member name is found, also spelled with escapes.
+        assertEquals("{\"\\u0064\":\"[REDACTED]\",\"kty\":\"RSA\"}",
+                Redactor.maskJwks("{\"\\u0064\":\"PRIVD\",\"kty\":\"RSA\"}", false, 0));
+        assertEquals("{\\\"\\\\u0064\\\":\\\"[REDACTED]\\\",\\\"kty\\\":\\\"RSA\\\"}",
+                Redactor.maskJwks("{\\\"\\\\u0064\\\":\\\"PRIVD\\\",\\\"kty\\\":\\\"RSA\\\"}", true, 0));
+        // Without kty the names stay, and an escaped backslash is not an escape: "\\\\u0064" is not d.
+        for (String text : List.of("{\"\\u0064\":\"x\"}", "{\"kty\":\"RSA\",\"\\\\u0064\":\"x\"}",
+                "{\"\\\\u006bty\":\"RSA\",\"d\":\"x\"}")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
+    void masksSecretFieldsWhoseNamesAreSpelledWithEscapes() {
+        assertEquals("{\"client_s\\u0065cret\":\"[REDACTED]\"}", Redactor.redact("{\"client_s\\u0065cret\":\"PRIVS\"}"));
+        assertEquals("{\"body\":\"{\\\"client_s\\\\u0065cret\\\":\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"client_s\\\\u0065cret\\\":\\\"PRIVS\\\"}\"}"));
+        assertEquals("{\"private_k\\u0065y\":\"[REDACTED]\"}", Redactor.redact("{\"private_k\\u0065y\":{\"kty\":\"oct\"}}"));
+        // An Authorization-style name keeps the scheme, also spelled with an escape.
+        assertEquals("{\"\\u0041uthorization\":\"SCRAM-SHA-256 [REDACTED]\"}",
+                Redactor.redact("{\"\\u0041uthorization\":\"SCRAM-SHA-256 PRIVSCRAM\"}"));
+    }
+
+    @Test
     void findsJwksInLinearTime() {
         // About 1 MB each: linear time takes well under a second, quadratic time minutes.
         int n = 80_000;

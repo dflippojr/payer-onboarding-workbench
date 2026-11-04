@@ -61,6 +61,9 @@
     {"id": "bearer-plus-encoded", "rule": "AUTH_SCHEME", "input": "auth=Bearer+FAKE-bearer-plus-0070&next=1", "secrets": ["FAKE-bearer-plus-0070"]},
     {"id": "scheme-after-prose-token", "rule": "AUTH_SCHEME", "input": "received token DPoP FAKEdpopAfterToken0072", "secrets": ["FAKEdpopAfterToken0072"]},
     {"id": "jwk-embedded-escaped-newline", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\n \\\"kty\\\": \\\"oct\\\",\\n \\\"k\\\":\\n \\\"FAKE-embedded-nl-k-0073\\\"\\n}\"}", "secrets": ["FAKE-embedded-nl-k-0073"]},
+    {"id": "jwk-escaped-member-names", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"kt\\u0079\":\"RSA\",\"n\":\"FAKEN\",\"\\u0064\":\"FAKE-escaped-jwk-d-0074\",\"\\u0064p\":\"FAKE-escaped-jwk-dp-0075\"}", "secrets": ["FAKE-escaped-jwk-d-0074", "FAKE-escaped-jwk-dp-0075"]},
+    {"id": "jwk-escaped-member-names-in-json-string", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"oct\\\",\\\"\\\\u006b\\\":\\\"FAKE-embedded-escaped-jwk-k-0076\\\"}\"}", "secrets": ["FAKE-embedded-escaped-jwk-k-0076"]},
+    {"id": "json-field-escaped-name", "rule": "JSON_FIELD", "input": "{\"client_s\\u0065cret\":\"FAKE-escaped-name-secret-0077\"}", "secrets": ["FAKE-escaped-name-secret-0077"]},
     {"id": "pgp-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nFAKE-PGP-KEY-NOT-REAL-0071", "secrets": ["FAKE-PGP-KEY-NOT-REAL-0071"]}
   ],
   "harmless": [
@@ -80,6 +83,7 @@
     {"id": "authorization-line-prose", "rule": "HEADER_LINE", "input": "Authorization: Bearer access token required"},
     {"id": "json-ordinary-headers", "rule": "JSON_FIELD", "input": "{\"headers\":{\"Accept\":\"application/fhir+json\",\"Content-Type\":\"application/json\"}}"},
     {"id": "jwk-public", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"RS384\",\"n\":\"FAKEPUBLICMODULUS\",\"e\":\"AQAB\"},{\"kty\":\"EC\",\"crv\":\"P-384\",\"x\":\"FAKEX\",\"y\":\"FAKEY\"}]}"},
+    {"id": "jwk-escaped-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"\\u0064\":\"2026-11-03\",\"\\u006b\":[1,2]}"},
     {"id": "jwk-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"d\":\"2026-10-29\",\"p\":0.05,\"q\":\"query\",\"k\":[1,2]}"},
     {"id": "prose-token", "rule": "PROSE_WORD", "input": "Token expired."},
     {"id": "prose-token-endpoint", "rule": "PROSE_WORD", "input": "token endpoint: https://payer.example/token\ntoken response: error=invalid_client"},
