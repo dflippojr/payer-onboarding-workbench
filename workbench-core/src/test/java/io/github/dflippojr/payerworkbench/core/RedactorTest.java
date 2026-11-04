@@ -844,6 +844,18 @@ class RedactorTest {
     }
 
     @Test
+    void masksManyPrivateKeyBlocksInLinearTime() {
+        // The automated review on ac1759e: 16,000 terminated private key blocks (about 900 KB) took 14 s there, each
+        // search for an unterminated header reading on to the end of the text. 64,000 (about 4 MB) take well under
+        // a second in linear time.
+        String block = "-----BEGIN PRIVATE KEY-----\\nFAKEKEY\\n-----END PRIVATE KEY-----";
+        String text = block.repeat(64_000) + "-----BEGIN PGP PRIVATE KEY BLOCK-----\\nFAKETAIL";
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(4), () -> Redactor.redact(text));
+        assertFalse(out.contains("FAKEKEY"), out.substring(0, 200));
+        assertTrue(out.endsWith("-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]"), out.substring(out.length() - 80));
+    }
+
+    @Test
     void masksAChainPastTheNestingCapWhoseStringIsQuotedWithUnicodeEscapes() {
         // Codex security round 5: past NESTED_LEVELS, a string whose quotes are spelled \\u0022 in the text has no
         // bare quote to find it by; 6304ec0 masked it, and so must the fallback now.
