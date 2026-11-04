@@ -27,8 +27,13 @@ const isSecretKey = name => isSecretField(name) || SENSITIVE_HEADERS.has(name.to
 /** The private members of a JWK, which Redactor masks in a JSON object with a kty member (#262). */
 const JWK_PRIVATE_MEMBERS = new Set(['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']);
 
-/** A JWK private member's name, also with a stray backslash or quote in it (malformed JSON). */
-const isPrivateName = name => JWK_PRIVATE_MEMBERS.has(name) || JWK_PRIVATE_MEMBERS.has(name.replace(/["\\]/g, ''));
+/**
+ * Whether a member name is a JWK private member's. A decoded name is compared exactly ("\\k" is the extension
+ * member \k); only a malformed one (it did not decode, or a stray backslash precedes its quote) is compared with
+ * its quotes and backslashes taken out.
+ */
+const isPrivateName = (name, malformed) => JWK_PRIVATE_MEMBERS.has(name)
+  || (malformed && JWK_PRIVATE_MEMBERS.has(name.replace(/["\\]/g, '')));
 
 /**
  * The most levels of JSON in JSON strings the scanner reads: the top level and 16 below it, as Redactor reads.
@@ -353,7 +358,7 @@ function judge(owner, ctx) {
         : value.kind === 'scalar' ? value.value === 'null'
           : value.kind === 'array' && !value.nested && value.items.every(item => isMaskedItem(value.name, item));
       if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
-    } else if (owner.kty && isPrivateName(value.name)) {
+    } else if (owner.kty && isPrivateName(value.name, value.malformed)) {
       const masked = value.kind === 'string' ? (value.value === MASK || value.value === '') && !value.cutShort
         : value.kind === 'scalar' && value.value === 'null';
       if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
@@ -454,13 +459,13 @@ function scanJson(text, level, ctx) {
         // A value with a colon after it is still the member's value (Redactor masks it and keeps the colon).
         if (member) {
           member.owner.values.push({
-            name: member.name, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
+            name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
           });
         }
         const name = decoded ?? literal.body;
         const o = owner();
         if (name === 'kty') o.kty = true;
-        member = { name, owner: o };
+        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
         i = next + 1;
@@ -469,7 +474,7 @@ function scanJson(text, level, ctx) {
       const stray = literal.terminated && !endsValue(text[next]);
       if (member) {
         member.owner.values.push({
-          name: member.name, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
+          name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
           cutShort: literal.terminated && !endsValue(text[literal.end + 1]),
         });
         member = null;
@@ -490,7 +495,7 @@ function scanJson(text, level, ctx) {
     if (c === '{' || c === '[') {
       const container = { owner: newOwner(), list: null };
       if (member) {
-        const value = { name: member.name, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
+        const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
         member.owner.values.push(value);
         if (c === '[') container.list = value;
         member = null;
@@ -513,7 +518,7 @@ function scanJson(text, level, ctx) {
       // A scalar value runs to the next delimiter.
       let end = i;
       while (end < text.length && !endsScalar(text[end])) end++;
-      if (end > i) member.owner.values.push({ name: member.name, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
+      if (end > i) member.owner.values.push({ name: member.name, malformed: member.malformed, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
       member = null;
       ctx.work += end - i;
       i = Math.max(end, i + 1);
