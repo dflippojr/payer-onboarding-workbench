@@ -355,12 +355,13 @@ function scanJson(text, level, ctx) {
     if (c === '"' && i >= quotesFrom) {
       const literal = readLiteral(text, i, ctx);
       if (literal.aborted) {
-        // A member's value cut off at a line break (before a note appended to a cut body) is still its value.
+        // A member's value cut off at a line break (before a note appended to a cut body) is still its value, and
+        // JSON in it is read like any other.
+        const cut = decodeLiteral(literal, ctx);
         if (member) {
-          member.owner.values.push({
-            name: member.name, kind: 'string', value: decodeLiteral(literal, ctx), text: literal.body, cutShort: false,
-          });
+          member.owner.values.push({ name: member.name, kind: 'string', value: cut, text: literal.body, cutShort: false });
         }
+        nested(cut, literal);
         // Every quote before the line break would open a string that runs into it too.
         member = null;
         i = literal.end;
@@ -381,6 +382,8 @@ function scanJson(text, level, ctx) {
         const o = owner();
         if (name === 'kty') o.kty = true;
         member = { name, owner: o };
+        // A name is a string too: JSON serialized into one is read like any other.
+        nested(decoded, literal);
         i = next + 1;
         continue;
       }

@@ -322,6 +322,9 @@ test('reads JSON serialized into a member name', () => {
   // What Redactor leaves for each.
   assertAccepted('{"{\\"password\\":\\"[REDACTED]\\"}":1}');
   assertAccepted('{"{\\"kty\\":\\"oct\\",\\"k\\":\\"[REDACTED]\\"}":1}');
+  // So is JSON in a value cut off at a line break, before a truncation note.
+  assertFlagged('{"body":"{\\"password\\":\\"LEAKED\\"}\n[truncated at 1 MB]');
+  assertAccepted('{"body":"{\\"password\\":\\"[REDACTED]\\"}\n[truncated at 1 MB]');
 });
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
