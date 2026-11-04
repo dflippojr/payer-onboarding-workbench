@@ -584,8 +584,44 @@ class RedactorTest {
                 "{" + "\"x\":\"kty\":1,".repeat(n) + "\"d\":\"y\"}",
                 "\"kty\":\"".repeat(n),
                 "\"kty\":\"".repeat(n / 2) + "\"x\":\"\"d\":\"y\",".repeat(n / 2),
-                "{\"b\":\"" + "[".repeat(n / 2) + "\\\"kty\\\":1],".repeat(n / 2) + "\"}");
+                "{\"b\":\"" + "[".repeat(n / 2) + "\\\"kty\\\":1],".repeat(n / 2) + "\"}",
+                // JWK shapes nested two and three escape levels deep, and one long run of backslashes before kty,
+                // which every level reads again: there are at most log2 of its length levels.
+                nested(nested("{\"kty\":1,".repeat(n / 2))),
+                nested(nested(nested("{" + "\"kty\":1,".repeat(n / 4) + "\"d\":\"y\"}"))),
+                "{\"b\":\"" + "\\".repeat(1 << 20) + "\\\"kty\\\":1\"}");
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
+    }
+
+    @Test
+    void masksJwksEmbeddedAtAnyDepth() {
+        // The security review's shape: a JWK in a JSON string in a JSON string.
+        String review = nested(nested("{\"kty\":\"oct\",\"k\":\"FAKE_PRIVATE_KEY_293\"}"));
+        assertFalse(Redactor.redact(review).contains("FAKE_PRIVATE_KEY_293"), Redactor.redact(review));
+        // Masking a JWK nested k levels deep gives the nested masked JWK: the mask comes with the quotes of its level.
+        for (String jwk : List.of(
+                "{\"kty\":\"RSA\",\"n\":\"N1\",\"e\":\"AQAB\",\"d\":\"PRIVD\",\"p\":\"PRIVP\",\"q\":\"PRIVQ\","
+                        + "\"dp\":\"PRIVDP\",\"dq\":\"PRIVDQ\",\"qi\":\"PRIVQI\",\"oth\":[{\"r\":\"PRIVR\",\"d\":\"PRIVOD\"}]}",
+                "{\"keys\":[{\"kty\":\"oct\",\"k\":\"PRIVK\"},{\"crv\":\"P-256\",\"x\":\"X1\",\"d\":\"PRIVEC\",\"kty\":\"EC\"}]}",
+                "{\n  \"kty\" : \"oct\",\n  \"k\" :\n\t\"PRIVK\"\n}",
+                "{\"kt\\u0079\":\"RSA\",\"\\u0064\":\"PRIVD\",\"\\u006B\":{\"x\":\"PRIVKOBJ\"}}",
+                "{\"a\":{\"kty\":\"oct\",\"k\":\"PRIVK1\"},\"kty\":\"oct\",\"k\":\"PRIVK2\"}",
+                "{\"kty\":\"RSA\",\"meta\":{\"d\":\"keep\"},\"n\":\"N1\",\"d\":\"PRIVCUTOFF",
+                "{\"d\":\"keep\",\"note\":\"the \\\"kty\\\": member\"}")) {
+            String masked = Redactor.redact(jwk);
+            String in = jwk;
+            String out = masked;
+            for (int depth = 1; depth <= 4; depth++) {
+                in = nested(in);
+                out = nested(out);
+                assertEquals(out, Redactor.redact(in), "depth " + depth + ": " + jwk);
+            }
+        }
+    }
+
+    /** {@code text} as the value of a JSON string member, escaped as a serializer escapes it. */
+    private static String nested(String text) {
+        return "{\"body\":" + JSON.writeValueAsString(text) + "}";
     }
 
     @Test
@@ -654,6 +690,34 @@ class RedactorTest {
         jwk.put("oth", List.of(Map.of("r", "PRIVR")));
         assertEquals(Map.of("kty", "RSA", "n", "N1", "d", "[REDACTED]", "oth", "[REDACTED]"), Redactor.redactTree(jwk));
         assertEquals(Map.of("d", "x"), Redactor.redactTree(Map.of("d", "x")));
+    }
+
+    @Test
+    void masksShortPunctuationCredentials() {
+        // The security review's inputs: a credential of token punctuation is still a credential.
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer -._~+/="));
+        assertEquals("Token [REDACTED]", Redactor.redact("Token -._~+/="));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer%20-._~+/="));
+        assertEquals("Authorization: Bearer [REDACTED]", Redactor.redact("Authorization: Bearer -._~+/="));
+        // One to seven characters after every scheme and separator; the property tests read 8-character pieces.
+        String punctuation = "-._~+/";
+        for (int length = 1; length <= 7; length++) {
+            StringBuilder credential = new StringBuilder();
+            for (int i = 0; i < length; i++) {
+                credential.append(punctuation.charAt(i % punctuation.length()));
+            }
+            for (String prefix : List.of("Bearer ", "Basic ", "Token ", "DPoP ", "Bearer%20", "Bearer+",
+                    "Authorization: Bearer ", "Authorization: Basic ")) {
+                String text = prefix + credential;
+                String out = Redactor.redact(text);
+                assertTrue(out.endsWith(Redactor.MASK), () -> text + " became " + out);
+            }
+        }
+        // The arrow after a token URL in the app's own log lines stays prose; after any other scheme it does not.
+        assertEquals("POST https://payer.example/oauth/token -> HTTP 401 in 12 ms",
+                Redactor.redact("POST https://payer.example/oauth/token -> HTTP 401 in 12 ms"));
+        assertEquals("Bearer [REDACTED] HTTP 401", Redactor.redact("Bearer -> HTTP 401"));
+        assertEquals("Authorization: Bearer [REDACTED]", Redactor.redact("Authorization: Bearer ->"));
     }
 
     @Test

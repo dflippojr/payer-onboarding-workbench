@@ -122,6 +122,21 @@ test('accepts what Redactor leaves for a JWK, a Token or DPoP credential and a U
   }
   assert.deepEqual(findJsonLeaks({ jwk: { kty: 'RSA', n: 'N1', d: MASK } }), []);
 });
+test('accepts what Redactor leaves for a JWK nested two and three levels deep, and flags a leak there', () => {
+  const nest = text => JSON.stringify({ body: text });
+  for (const jwk of [
+    '{"kty":"oct","k":"[REDACTED]"}',
+    '{"kty":"RSA","n":"N1","d":"[REDACTED]","oth":"[REDACTED]"}',
+    '{"d":"2026-11-03","k":[1,2]}',
+  ]) {
+    assert.deepEqual(findTextLeaks(nest(nest(jwk))), [], nest(nest(jwk)));
+    assert.deepEqual(findTextLeaks(nest(nest(nest(jwk)))), [], nest(nest(nest(jwk))));
+  }
+  for (const jwk of ['{"kty":"oct","k":"LEAKED"}', '{"kty":"RSA","d":"[REDACTED]","p":"LEAKED"}', '{"kty":"RSA","oth":[{"r":"LEAKED"}]}']) {
+    assert.ok(findTextLeaks(nest(nest(jwk))).length > 0, nest(nest(jwk)));
+    assert.ok(findTextLeaks(nest(nest(nest(jwk)))).length > 0, nest(nest(nest(jwk))));
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
@@ -159,6 +174,13 @@ test('flags a JWK private member, Token or DPoP credential Redactor would not le
     'Authorization: Token abc',
     'DPoP [REDACTED]:TAIL',
     'Token -------:',
+    // A short punctuation credential is not prose (Codex security review r1); only Token -> is.
+    'Bearer -._~+/=',
+    'Token -._~+/=',
+    'Bearer%20-._~+/=',
+    'Authorization: Bearer -._~+/=',
+    'Bearer -> HTTP 401',
+    'Authorization: Bearer ->',
     'cb?auth=Bearer+LEAKED123',
     'received token DPoP LEAKEDtok123',
     'the token Bearer LEAKEDtok123',
