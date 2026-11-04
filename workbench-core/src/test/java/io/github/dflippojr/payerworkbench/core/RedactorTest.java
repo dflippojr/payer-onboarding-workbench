@@ -714,6 +714,17 @@ class RedactorTest {
             assertTrue(out.length() <= in.length(), () -> links + ": " + out.length() + " > " + in.length());
             assertTrue(JSON.readTree(out).has("body"), out);
         }
+        // A sibling holding an escaped quote, or a stray quote in prose before the JSON, must not shift which quotes
+        // bound the string that holds the chain (the review on 2334a77).
+        String chain = "\\u005c" + "u005c".repeat(40) + "u0022";
+        String chainJwk = "{" + chain + "kty" + chain + ":" + chain + "oct" + chain + "," + chain + "k" + chain + ":" + chain
+                + "PRIVATECHAINVALUE" + chain + "}";
+        for (String in : List.of("{\"label\":\"a\\\"b\",\"body\":\"" + chainJwk + "\"}",
+                "payer said 5\" screen: {\"body\":\"" + chainJwk + "\"}")) {
+            String out = Redactor.redact(in);
+            assertFalse(out.contains("PRIVATECHAINVALUE"), out);
+            assertTrue(out.length() <= in.length(), out);
+        }
         // About 1 MB of chain: a fixed number of levels is read, so time stays linear.
         String quote = "\\u005c" + "u005c".repeat(40_000) + "u0022";
         String in = "{\"body\":\"{" + quote + "kty" + quote + ":" + quote + "oct" + quote + "," + quote + "k" + quote + ":"
