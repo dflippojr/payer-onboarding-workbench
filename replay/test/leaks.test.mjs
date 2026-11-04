@@ -156,6 +156,15 @@ test('reads embedded JSON spelled with unicode escapes (\\u0022, \\u005c, \\u002
     assert.ok(findTextLeaks(text).length > 0, text);
   }
 });
+test('reads unicode-escaped embedded JSON after prose, also in a report field', () => {
+  const leaked = String.raw`{"body":"{\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022LEAKED\u0022}"}`;
+  const masked = String.raw`{"body":"{\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\"[REDACTED]\"}"}`;
+  assert.ok(findTextLeaks(`evidence: ${leaked}`).length > 0);
+  assert.ok(findTextLeaks(`evidence: ${leaked} (twice: ${leaked})`).length > 0);
+  assert.ok(findJsonLeaks({ responseBody: `evidence: ${leaked}` }).length > 0);
+  assert.deepEqual(findTextLeaks(`evidence: ${masked}`), []);
+  assert.deepEqual(findJsonLeaks({ responseBody: `evidence: ${masked}` }), []);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

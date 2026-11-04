@@ -677,6 +677,33 @@ class RedactorTest {
         assertEquals(plain, Redactor.redact(plain));
     }
 
+    @Test
+    void masksEscapeChainsWithoutBlowingUp() {
+        // The review's shape: each quote of a JWK in a JSON string spelled \\u005c, then u005c again and again,
+        // then u0022, so every level decoded shows one more escape. Shallow or deep, the private value goes,
+        // the output is no longer than the input, and the text stays valid JSON.
+        for (int links : List.of(1, 8, 40, 400)) {
+            String quote = "\\u005c" + "u005c".repeat(links) + "u0022";
+            String jwk = "{" + quote + "kty" + quote + ":" + quote + "oct" + quote + "," + quote + "k" + quote + ":" + quote
+                    + "PRIVATECHAINVALUE" + quote + "}";
+            String in = "{\"body\":\"" + jwk + "\"}";
+            String out = assertTimeout(Duration.ofSeconds(5), () -> Redactor.redact(in));
+            assertFalse(out.contains("PRIVATECHAINVALUE"), () -> links + ": " + out);
+            assertTrue(out.length() <= in.length(), () -> links + ": " + out.length() + " > " + in.length());
+            assertTrue(JSON.readTree(out).has("body"), out);
+        }
+        // About 1 MB of chain: a fixed number of levels is read, so time stays linear.
+        String quote = "\\u005c" + "u005c".repeat(40_000) + "u0022";
+        String in = "{\"body\":\"{" + quote + "kty" + quote + ":" + quote + "oct" + quote + "," + quote + "k" + quote + ":"
+                + quote + "PRIVATECHAINVALUE" + quote + "}\"}";
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(in));
+        assertFalse(out.contains("PRIVATECHAINVALUE"));
+        assertTrue(out.length() <= in.length());
+        // Embedded JSON after prose in a string is read as well.
+        String prose = "{\"evidence\":\"payer said: {\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}";
+        assertFalse(Redactor.redact(prose).contains("PRIVK"), Redactor.redact(prose));
+    }
+
     /** {@link #nested}, with each quote in the string escaped as {@code \\u0022}. */
     private static String nestedEscapingQuotes(String text) {
         return "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\u0022") + "\"}";
