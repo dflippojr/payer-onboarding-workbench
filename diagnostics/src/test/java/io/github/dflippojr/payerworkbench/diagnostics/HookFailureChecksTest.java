@@ -73,6 +73,7 @@ class HookFailureChecksTest {
                 "{}").build()), Severity.FAIL);
         assertTrue(f.explanation().contains("Reason: invalid_token. Required scope: system/*.read."),
                 f::explanation);
+        assertTrue(f.explanation().contains("access token using Bearer authentication"), f::explanation);
         assertTrue(f.suggestedFix().contains("fresh access token"), f::suggestedFix);
     }
 
