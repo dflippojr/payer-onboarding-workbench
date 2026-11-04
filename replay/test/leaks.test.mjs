@@ -236,6 +236,15 @@ test('scopes kty in a bounded number of passes, however many backslash counts th
   // A member at a count no serializer writes counts as a JWK member: its value must be the mask.
   assert.ok(findTextLeaks('{"kty":"oct",\\\\"k\\\\":"LEAKED"}').length > 0);
 });
+test('decodes a name escape only at a backslash count an escape has at its depth', () => {
+  // An escaped backslash is not an escape: this name is the text \u006bty, not kty, so d is an ordinary field.
+  const literal = String.raw`{"\\u006bty":"RSA","d":"2026-11-04"}`;
+  assert.deepEqual(findTextLeaks(literal), []);
+  assert.deepEqual(findTextLeaks(JSON.stringify({ responseBody: literal })), []);
+  assert.deepEqual(findJsonLeaks({ responseBody: literal }), []);
+  assert.deepEqual(findTextLeaks(String.raw`{"body":"{\"\\\\u006bty\":\"RSA\",\"d\":\"x\"}"}`), []);
+  assert.ok(findTextLeaks(String.raw`{"\u006bty":"RSA","d":"LEAKED"}`).length > 0);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
