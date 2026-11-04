@@ -74,6 +74,7 @@ const backslashesBefore = (text, i) => {
  * object open at that depth) when b % (r + 1) != r, and is escaped inside a string otherwise.
  */
 function membersInJwks(text, run) {
+  jwkScopeWork.characters += text.length;
   const kind = b => {
     if (b % (2 * run + 2) === run) return 'quote';
     return b % (run + 1) === run ? 'escaped' : 'end';
@@ -147,6 +148,9 @@ function membersInJwks(text, run) {
   while (open.length > 0) close();
   return result;
 }
+
+/** How many characters membersInJwks has read, so tests can bound the scoping work without a clock. */
+export const jwkScopeWork = { characters: 0 };
 
 /** membersInJwks for the text last asked about, one map per escape depth. */
 let jwkMembersText = null;

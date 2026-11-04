@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { findJsonLeaks, findTextLeaks } from './leaks.mjs';
+import { findJsonLeaks, findTextLeaks, jwkScopeWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
 
 const MASK = '[REDACTED]';
@@ -215,6 +215,26 @@ test('reports escapes still unread after the levels Redactor reads, as Redactor 
   assert.ok(findTextLeaks(text).length > 0);
   assert.ok(findJsonLeaks(JSON.parse(text)).length > 0);
   assert.deepEqual(findTextLeaks('{"body":"[REDACTED]"}'), []);
+});
+test('scopes kty in a bounded number of passes, however many backslash counts the members use', () => {
+  // Codex security round 2: each member quoted with a different number of backslashes after a kty.
+  const fields = [];
+  for (let run = 1; run <= 400; run++) {
+    const quote = '\\'.repeat(run) + '"';
+    fields.push(`${quote}k${quote}:"[REDACTED]"`);
+  }
+  const body = `{"kty":"oct",${fields.join(',')}}`;
+  for (const text of [body, JSON.stringify({ responseBody: body })]) {
+    jwkScopeWork.characters = 0;
+    findTextLeaks(text);
+    assert.ok(jwkScopeWork.characters <= 17 * text.length,
+      `read ${jwkScopeWork.characters} characters of a ${text.length}-character text`);
+  }
+  jwkScopeWork.characters = 0;
+  findJsonLeaks({ responseBody: body });
+  assert.ok(jwkScopeWork.characters <= 17 * body.length, `read ${jwkScopeWork.characters}`);
+  // A member at a count no serializer writes counts as a JWK member: its value must be the mask.
+  assert.ok(findTextLeaks('{"kty":"oct",\\\\"k\\\\":"LEAKED"}').length > 0);
 });
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
