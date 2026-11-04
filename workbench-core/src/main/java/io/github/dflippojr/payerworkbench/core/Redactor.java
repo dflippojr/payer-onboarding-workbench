@@ -37,10 +37,11 @@ import java.util.stream.IntStream;
  * {@code Bearer} one also URL-encoded, {@code Bearer%20} or {@code Bearer+}), JWT signatures
  * (the header and payload stay readable because their claims are useful for diagnosis), PEM
  * blocks and PGP private key blocks, the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
- * of a JSON object with a {@code kty} member), and the values of well-known secret fields such
- * as {@code client_secret}, {@code access_token} and {@code private_key} in form and query
- * bodies and in JSON (any value, including an object such as a private JWK, also in JSON
- * embedded in a JSON string; see {@link #isSecretField(String)}). The value of a
+ * of a JSON object with a {@code kty} member, also in JSON nested in JSON strings at any
+ * depth), and the values of well-known secret fields such as {@code client_secret},
+ * {@code access_token} and {@code private_key} in form and query bodies and in JSON (any
+ * value, including an object such as a private JWK, also in JSON embedded one level deep in
+ * a JSON string; see {@link #isSecretField(String)}). The value of a
  * credential header ({@link #isSensitiveHeader(String)}, such as {@code Cookie}) is
  * masked in a header map, in a {@code Name: value} line of free text and in a JSON field
  * of that name. A JSON member name is read as JSON reads it, a {@code \\u} escape as the
@@ -104,12 +105,6 @@ public final class Redactor {
 
     /** Short all-letter words after a scheme are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
-
-    /**
-     * A few characters with no letter or digit after a scheme ({@code ->}) are not a credential either;
-     * eight or more are masked, as any token is.
-     */
-    private static final Pattern PUNCTUATION = Pattern.compile("[^A-Za-z0-9]{1,7}");
 
     /**
      * A signed JWT. Each run of token characters is tried once, from its start, up to its first {@code eyJ} at a word
@@ -345,6 +340,7 @@ public final class Redactor {
                 : m.group()));
         out = maskJwks(out, false);
         out = maskJwks(out, true);
+        out = maskNestedJwks(out);
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
@@ -481,16 +477,18 @@ public final class Redactor {
      * Whether a scheme match is prose ("Missing bearer token", "Basic authentication is required")
      * rather than a credential: one short all-letter word, and for {@code Basic} not the base64 of a
      * {@code user:pass} pair (RFC 7617), which can be all letters too ({@code dXNlcjpwYXNz}), even
-     * with the period that ends a sentence after it. So is a short run of punctuation ({@link #PUNCTUATION}),
-     * as in {@code POST /oauth/token -> 200}.
+     * with the period that ends a sentence after it. So is an arrow after {@code Token}, as the app's own
+     * log lines put one after a token endpoint ({@code POST /oauth/token -> 200}); any other punctuation, and
+     * an arrow after any other scheme, may be a credential ({@code Bearer -._~+/=}).
      */
     private static boolean isProse(MatchResult m) {
         String word = m.group(2) + m.group(3);
-        if (PUNCTUATION.matcher(word).matches()) {
+        boolean token = m.group(1).equalsIgnoreCase("Token");
+        if (token && word.equals("->")) {
             return true;
         }
         // Token is also an ordinary word, as in "token endpoint: <url>".
-        if (m.group(1).equalsIgnoreCase("Token") && word.endsWith(":")) {
+        if (token && word.endsWith(":")) {
             word = word.substring(0, word.length() - 1);
         }
         return PROSE_WORD.matcher(word).matches()
@@ -574,6 +572,25 @@ public final class Redactor {
 
     /** {@link #maskJwks(String, boolean)} with a budget of {@code characters} to read. */
     static String maskJwks(String text, boolean embedded, int characters) {
+        List<int[]> values = jwkValues(text, embedded, characters);
+        if (values.isEmpty()) {
+            return text;
+        }
+        String masked = embedded ? "\\\"" + MASK + "\\\"" : "\"" + MASK + "\"";
+        StringBuilder out = new StringBuilder(text.length());
+        int copied = 0;
+        for (int[] value : values) {
+            out.append(text, copied, value[0]).append(masked);
+            copied = value[1];
+        }
+        return out.append(text, copied, text.length()).toString();
+    }
+
+    /**
+     * Where the value of each JWK private member that {@link #maskJwks(String, boolean, int)} masks starts and
+     * ends, in order and apart: the opening quote (or bracket) through the closing quote (or bracket).
+     */
+    private static List<int[]> jwkValues(String text, boolean embedded, int characters) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
         Matcher kty = (embedded ? EMBEDDED_KTY_NAME : KTY_NAME).matcher(text);
         // Where the text read by objects() so far ends: every object before it is known.
@@ -613,27 +630,119 @@ public final class Redactor {
                 }
             }
         }
-        if (names.isEmpty()) {
-            return text;
-        }
+        List<int[]> values = new ArrayList<>();
         Matcher field = (embedded ? EMBEDDED_JSON_FIELD : JSON_FIELD).matcher(text);
         Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : JSON_FIELD_STRUCTURE).matcher(text);
-        String masked = embedded ? "\\\"" + MASK + "\\\"" : "\"" + MASK + "\"";
-        StringBuilder out = new StringBuilder(text.length());
         int copied = 0;
         for (int name : names) {
             if (name < copied) {
                 continue;
             }
             if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
-                out.append(text, copied, structure.end()).append(masked);
                 copied = endOfStructure(text, structure.end(), embedded);
+                values.add(new int[] {structure.end(), copied});
             } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
-                out.append(text, copied, field.end(2)).append(masked);
                 copied = field.end();
+                values.add(new int[] {field.end(2), copied});
             }
         }
+        return values;
+    }
+
+    /**
+     * Masks the {@link #JWK_PRIVATE_MEMBERS} of the JWKs nested in JSON strings two or more levels deep (a JWK
+     * in a JSON string in a JSON string), which {@link #maskJwks(String, boolean)} does not reach: there a quote
+     * of the JWK has {@code 2^d - 1} backslashes before it at depth {@code d}. Each round takes one level of
+     * string escaping off a view of the text ({@link #unescaped}), so the next level down reads as JSON
+     * embedded one level deep, and masks that view's JWKs as {@code maskJwks} does, a mask quoted as its level
+     * needs. A round reads at most {@code 4m + 1024} characters of a view of length {@code m <= n}, and each
+     * round halves the backslashes before every quote, so there are at most {@code log2 n} rounds.
+     */
+    private static String maskNestedJwks(String text) {
+        return maskNestedJwks(text, -1);
+    }
+
+    /**
+     * {@link #maskNestedJwks(String)} with a budget of {@code characters} to read in each round, or
+     * {@code 4m + 1024} for a view of length {@code m} if it is negative.
+     */
+    static String maskNestedJwks(String text, int characters) {
+        // No quote with three backslashes before it: nothing is nested two levels deep.
+        if (!text.contains("\\\\\\\"")) {
+            return text;
+        }
+        // Each mask: where it starts and ends in the text, and its depth.
+        List<int[]> masks = new ArrayList<>();
+        String view = text;
+        int[] origin = null;
+        for (int depth = 2; ; depth++) {
+            int[][] next = new int[1][];
+            view = unescaped(view, origin, next);
+            origin = next[0];
+            if (!view.contains("\\\"")) {
+                break;
+            }
+            int budget = characters < 0 ? 4 * view.length() + 1024 : characters;
+            for (int[] value : jwkValues(view, true, budget)) {
+                masks.add(new int[] {origin[value[0]], origin[value[1]], depth});
+            }
+        }
+        if (masks.isEmpty()) {
+            return text;
+        }
+        // A value inside one masked at another level goes with it; values that only overlap are masked as one.
+        masks.sort((a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(b[1], a[1]));
+        StringBuilder out = new StringBuilder(text.length());
+        int copied = 0;
+        for (int i = 0; i < masks.size(); i++) {
+            int[] mask = masks.get(i);
+            int end = mask[1];
+            while (i + 1 < masks.size() && masks.get(i + 1)[0] < end) {
+                end = Math.max(end, masks.get(++i)[1]);
+            }
+            String quote = "\\".repeat((1 << mask[2]) - 1) + "\"";
+            out.append(text, copied, mask[0]).append(quote).append(MASK).append(quote);
+            copied = end;
+        }
         return out.append(text, copied, text.length()).toString();
+    }
+
+    /**
+     * {@code view} with one level of JSON string escaping taken off: each {@code \\} becomes {@code \}
+     * and each {@code \"} a quote; any other escape is kept as it is, so an escaped line break still reads
+     * as whitespace and a name's {@code \\u} escape as an escape. {@code origin} says where each character
+     * of {@code view} starts in the text ({@code null}: at its own index); {@code next[0]} is set to the same
+     * for the result, one longer than it, so the end of the result maps to the end of the text.
+     */
+    private static String unescaped(String view, int[] origin, int[][] next) {
+        StringBuilder out = new StringBuilder(view.length());
+        int[] to = new int[view.length() + 1];
+        int i = 0;
+        while (i < view.length()) {
+            if (view.charAt(i) != '\\') {
+                to[out.length()] = origin == null ? i : origin[i];
+                out.append(view.charAt(i++));
+                continue;
+            }
+            int run = i;
+            while (run < view.length() && view.charAt(run) == '\\') {
+                run++;
+            }
+            for (int k = i; k + 1 < run; k += 2) {
+                to[out.length()] = origin == null ? k : origin[k];
+                out.append('\\');
+            }
+            if ((run - i) % 2 == 1) {
+                to[out.length()] = origin == null ? run - 1 : origin[run - 1];
+                boolean quote = run < view.length() && view.charAt(run) == '"';
+                out.append(quote ? '"' : '\\');
+                run += quote ? 1 : 0;
+            }
+            i = run;
+        }
+        to[out.length()] = origin == null ? view.length() : origin[view.length()];
+        next[0] = to;
+        return out.toString();
     }
 
     /** {@link #startOfObject}: no open bracket before the member, to the start of the text or the string. */

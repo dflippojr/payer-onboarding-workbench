@@ -607,7 +607,9 @@ class RedactorTest {
                 "{\"kt\\u0079\":\"RSA\",\"\\u0064\":\"PRIVD\",\"\\u006B\":{\"x\":\"PRIVKOBJ\"}}",
                 "{\"a\":{\"kty\":\"oct\",\"k\":\"PRIVK1\"},\"kty\":\"oct\",\"k\":\"PRIVK2\"}",
                 "{\"kty\":\"RSA\",\"meta\":{\"d\":\"keep\"},\"n\":\"N1\",\"d\":\"PRIVCUTOFF",
-                "{\"d\":\"keep\",\"note\":\"the \\\"kty\\\": member\"}")) {
+                "{\"d\":\"keep\",\"note\":\"the \\\"kty\\\": member\"}",
+                // A JWK in a JSON string that is itself a private member: masked with it, one level up.
+                "{\"kty\":\"oct\",\"k\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVINNER\\\"}\",\"kid\":\"k1\"}")) {
             String masked = Redactor.redact(jwk);
             String in = jwk;
             String out = masked;
@@ -617,6 +619,15 @@ class RedactorTest {
                 assertEquals(out, Redactor.redact(in), "depth " + depth + ": " + jwk);
             }
         }
+        // Once a level's budget is spent, every private member name at that level is masked.
+        String tangled = nested(nested("{\"jwk\":{\"kty\":\"oct\",\"k\":\"PRIVK\"},\"d\":\"x\"}"));
+        assertEquals(nested(nested("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"[REDACTED]\"}")),
+                Redactor.maskNestedJwks(tangled, 0));
+        assertEquals(nested(nested("{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"},\"d\":\"x\"}")),
+                Redactor.maskNestedJwks(tangled, 1000));
+        // Text with no JSON nested two levels deep is returned as it is.
+        String plain = "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"}\"}";
+        assertTrue(plain == Redactor.maskNestedJwks(plain, 0));
     }
 
     /** {@code text} as the value of a JSON string member, escaped as a serializer escapes it. */
