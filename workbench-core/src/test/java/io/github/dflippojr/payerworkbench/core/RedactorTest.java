@@ -830,6 +830,35 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateKeyBlockThatStartsInsideAJwkMember() {
+        // Codex security round 5: masking the JWK first must not erase a block's header before the block is masked.
+        // 6304ec0 left none of the key material in any of these; neither may the JWK-first order.
+        String terminated = "{\"kty\":\"RSA\",\"d\":\"-----BEGIN PRIVATE KEY-----\",\"note\":\"FAKEKEYMATERIAL_293\\n-----END PRIVATE KEY-----\"}";
+        String unterminated = "{\"kty\":\"RSA\",\"d\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\",\"note\":\"FAKEKEYMATERIAL_293\"}";
+        String rawAfter = "{\"kty\":\"RSA\",\"d\":\"-----BEGIN PRIVATE KEY-----\"} FAKEKEYMATERIAL_293\n-----END PRIVATE KEY-----";
+        for (String in : List.of(terminated, unterminated, rawAfter, nested(terminated), nested(unterminated),
+                nested(nested(terminated)))) {
+            String out = Redactor.redact(in);
+            assertFalse(out.contains("FAKEKEYMATERIAL_293"), () -> in + "\n became " + out);
+        }
+    }
+
+    @Test
+    void masksAChainPastTheNestingCapWhoseStringIsQuotedWithUnicodeEscapes() {
+        // Codex security round 5: past NESTED_LEVELS, a string whose quotes are spelled \\u0022 in the text has no
+        // bare quote to find it by; 6304ec0 masked it, and so must the fallback now.
+        String quote = "\\u005c" + "u005c".repeat(40) + "u0022";
+        String jwk = "{" + quote + "kty" + quote + ":" + quote + "oct" + quote + "," + quote + "k" + quote + ":" + quote
+                + "PRIVATECHAINVALUE" + quote + "}";
+        for (String in : List.of("\\u0022" + jwk + "\\u0022", "{\\u0022body\\u0022:\\u0022" + jwk + "\\u0022}",
+                "\\u005cu0022" + jwk + "\\u005cu0022")) {
+            String out = Redactor.redact(in);
+            assertFalse(out.contains("PRIVATECHAINVALUE"), () -> in.substring(0, 40) + " became " + out.substring(0, Math.min(80, out.length())));
+            assertTrue(out.length() <= in.length());
+        }
+    }
+
+    @Test
     void masksBothPrivateMembersThatShareAQuoteOnceTheBudgetIsSpent() {
         // d's empty value closes on the quote that opens p: masking d must not skip p's value.
         assertEquals("{\"d\":\"[REDACTED]\"p\":\"[REDACTED]\",\"kty\":\"RSA\"}",
