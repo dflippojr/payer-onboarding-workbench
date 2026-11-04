@@ -252,6 +252,53 @@ test('scopes kty in embedded JSON after its structure is decoded', () => {
   assert.deepEqual(findTextLeaks(JSON.stringify({ report: ok })), []);
   assert.ok(findTextLeaks(String.raw`{"body":"{\"jwk\":{\"kty\":\"oct\"\u007D,\"d\":\"keep\",\"x\":{\"kty\":\"RSA\",\"d\":\"LEAKED\"}}"}`).length > 0);
 });
+// Codex security rounds 1-3 (#262), each with its report form and what Redactor leaves for it.
+const reportForm = text => JSON.stringify({ responseBody: text });
+const nestedIn = (text, levels) => {
+  let out = text;
+  for (let level = 0; level < levels; level++) out = JSON.stringify({ body: out });
+  return out;
+};
+// findJsonLeaks reads JSON in a string field; prose credentials in one are left to findTextLeaks over the file.
+const assertFlagged = (text, field = true) => {
+  assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text.slice(0, 120)}`);
+  assert.ok(findTextLeaks(reportForm(text)).length > 0, `report form not flagged: ${text.slice(0, 120)}`);
+  if (field) assert.ok(findJsonLeaks({ responseBody: text }).length > 0, `field not flagged: ${text.slice(0, 120)}`);
+};
+const assertAccepted = text => {
+  assert.deepEqual(findTextLeaks(text), [], text.slice(0, 120));
+  assert.deepEqual(findTextLeaks(reportForm(text)), [], text.slice(0, 120));
+  assert.deepEqual(findJsonLeaks({ responseBody: text }), [], text.slice(0, 120));
+};
+test('r1: a JWK nested two levels deep, and a short punctuation credential', () => {
+  assertFlagged(nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 2));
+  assertAccepted(nestedIn('{"kty":"oct","k":"[REDACTED]"}', 2));
+  assertFlagged('Bearer -._~+/=', false);
+  assertAccepted('Bearer [REDACTED]');
+});
+test('r3: a JWK nested 17 levels deep behind an unrelated unicode escape', () => {
+  const prefix = String.raw`payer said A: `;
+  assertFlagged(prefix + nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 17));
+  // Redactor masks whole the string that holds JSON nested past the levels it reads.
+  assertAccepted(prefix + nestedIn('{"body":"[REDACTED]"}', 16));
+  // 16 levels are read: a masked JWK there passes, an unmasked one does not.
+  assertAccepted(prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 16));
+  assertFlagged(prefix + nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 16));
+});
+test('r3: a stray quote in prose does not hide the JSON after it', () => {
+  assertFlagged('evidence: 5" screen {"kty":"oct","k":"LEAKED"}');
+  // What Redactor leaves for it.
+  assertAccepted('evidence: 5" screen {"kty":"oct","k":"[REDACTED]"}');
+});
+test('r3: one long backslash run is scanned in linear work', () => {
+  const body = JSON.stringify({ k: '[REDACTED]', padding: '\\'.repeat(16384) + 'x', kty: 'oct' });
+  for (const text of [body, reportForm(body)]) {
+    jwkScopeWork.characters = 0;
+    assert.deepEqual(findTextLeaks(text), []);
+    assert.ok(jwkScopeWork.characters <= 40 * text.length + 4096, `read ${jwkScopeWork.characters} of ${text.length}`);
+  }
+  assertFlagged(JSON.stringify({ k: 'LEAKED', padding: '\\'.repeat(16384) + 'x', kty: 'oct' }));
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
