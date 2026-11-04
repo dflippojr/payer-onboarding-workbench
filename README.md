@@ -339,7 +339,10 @@ node scripts/audit-reader.mjs /var/lib/workbench-audit --verify
   line by line at any size; a segment that exists but cannot be read fails the review with a nonzero exit, and
   only a missing segment is skipped. `--verify`
   prints one `{"segment":...,"status":...}` line per segment: `ok`, `missing`, `checksum_mismatch`,
-  `truncated`, `malformed`, `event_count_mismatch`, `unlisted`, or `unsealed`. `unsealed` is a segment the
+  `truncated`, `malformed`, `event_count_mismatch`, `unlisted`, `seal_failed`, or `unsealed`. `seal_failed` is a
+  segment the manifest lists with `"sha256":"unsealed"` because the app could not checksum it when closing it; it
+  cannot be verified and is a problem, but the other segments still verify and review still prints its events.
+  `unsealed` is a segment the
   manifest does not list yet, numbered above the highest listed segment (or any segment when none is
   listed), such as the one being written or left by a crash; not a failure. `unlisted` is a segment the
   manifest does not list but that is numbered below the highest listed one: the manifest and the directory
