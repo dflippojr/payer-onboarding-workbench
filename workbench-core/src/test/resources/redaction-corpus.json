@@ -98,6 +98,7 @@
     {"id": "jwk-escaped-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"\\u0064\":\"2026-11-03\",\"\\u006b\":[1,2]}"},
     {"id": "jwk-member-names-without-kty-nested-two-levels", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"d\\\\\\\":\\\\\\\"2026-11-03\\\\\\\",\\\\\\\"k\\\\\\\":[1,2]}\\\"}\"}"},
     {"id": "jwk-member-names-without-kty-unicode-escaped-quotes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\u0022d\\u0022:\\u0022x\\u0022,\\u0022k\\u0022:[1,2]}\"}"},
+    {"id": "jwk-member-names-in-a-sibling-object", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"jwk\":{\"kty\":\"RSA\",\"n\":\"N1\"},\"data\":{\"d\":\"2026-11-04\",\"k\":[1,2]}}"},
     {"id": "jwk-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"d\":\"2026-10-29\",\"p\":0.05,\"q\":\"query\",\"k\":[1,2]}"},
     {"id": "prose-token", "rule": "PROSE_WORD", "input": "Token expired."},
     {"id": "prose-token-endpoint", "rule": "PROSE_WORD", "input": "token endpoint: https://payer.example/token\ntoken response: error=invalid_client"},

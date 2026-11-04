@@ -171,6 +171,36 @@ test('reads JSON after prose in a parsed report string, whatever its escapes wer
   assert.deepEqual(findJsonLeaks({ evidence: 'payer said: {"kty":"oct","k":"[REDACTED]"}' }), []);
   assert.deepEqual(findTextLeaks(String.raw`{"evidence":"payer said: {\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022[REDACTED]\u0022}"}`), []);
 });
+test('reads unicode-escaped embedded JSON that is cut off or repeats a member', () => {
+  assert.ok(findTextLeaks(String.raw`{"body":"{\u0022kty\u0022:\u0022RSA\u0022,\u0022d\u0022:\u0022LEAKED`).length > 0);
+  assert.ok(findJsonLeaks({ body: '{"kty":"RSA","d":"LEAKED' }).length > 0);
+  assert.ok(findTextLeaks(String.raw`{"body":"{\u0022kty\u0022:\u0022RSA\u0022,\u0022d\u0022:\u0022LEAKED\u0022,\u0022d\u0022:\u0022[REDACTED]\u0022}"}`).length > 0);
+  assert.ok(findJsonLeaks({ body: '{"kty":"RSA","d":"LEAKED","d":"[REDACTED]"}' }).length > 0);
+});
+test('treats a private member name as secret only in an object with its own kty', () => {
+  for (const text of [
+    '{"jwk":{"kty":"RSA","d":"[REDACTED]"},"data":{"d":"2026-11-04"}}',
+    '{"data":{"d":"2026-11-04","items":[{"k":"v"}]},"jwk":{"kty":"oct","k":"[REDACTED]"}}',
+    '{"kty":"RSA","meta":{"d":"keep"},"d":"[REDACTED]"}',
+    '{"body":"{\\"jwk\\":{\\"kty\\":\\"RSA\\",\\"d\\":\\"[REDACTED]\\"},\\"data\\":{\\"d\\":\\"2026-11-04\\"}}"}',
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+  for (const text of [
+    '{"jwk":{"kty":"RSA","d":"LEAKED"},"data":{"d":"2026-11-04"}}',
+    '{"data":{"x":1},"jwk":{"d":"LEAKED","kty":"RSA"}}',
+    '{"body":"{\\"data\\":{\\"d\\":\\"x\\"},\\"jwk\\":{\\"kty\\":\\"RSA\\",\\"d\\":\\"LEAKED\\"}}"}',
+  ]) {
+    assert.ok(findTextLeaks(text).length > 0, text);
+  }
+});
+test('scans unclosed brackets after a unicode escape in linear time', () => {
+  const text = String.raw`{"body":"\u0041` + '['.repeat(200_000) + '"}';
+  const start = performance.now();
+  findTextLeaks(text);
+  findJsonLeaks({ body: `x ${'['.repeat(200_000)}` });
+  assert.ok(performance.now() - start < 3000, `took ${Math.round(performance.now() - start)} ms`);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
