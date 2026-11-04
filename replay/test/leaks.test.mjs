@@ -367,6 +367,14 @@ test('reads repeated scheme words, escaped header lines and token runs in linear
     assert.ok(scanWork.characters <= 40 * text.length + 4096, `read ${scanWork.characters} of ${text.length}`);
   }
 });
+test('compares a decoded member name exactly: an extension member with a backslash is not a private one', () => {
+  // The automated review on 69a1e64: "\\k" is the name \k, which Redactor keeps.
+  assertAccepted('{"kty":"oct","\\\\k":"keep","k":"[REDACTED]"}');
+  assertAccepted('{"kty":"oct","k\\\\":"keep","d\\"":"keep","k":"[REDACTED]"}');
+  assertFlagged('{"kty":"oct","\\\\k":"keep","k":"LEAKED"}');
+  // A name whose quote has a stray backslash before it, outside any string, is malformed and still read as one.
+  assert.ok(findTextLeaks('{"kty":"oct",\\\\"k\\\\":"LEAKED"}').length > 0);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
