@@ -36,8 +36,13 @@ const JSON_SPACE = String.raw`(?:\s|\\+[nrt])*`;
  */
 const NAME = String.raw`((?:[A-Za-z_-]|\\+u[0-9A-Fa-f]{4}){1,64})`;
 
-/** The name a NAME match spells, each \u escape decoded. */
-const decodeName = name => name.replace(/\\+u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+/** The name a NAME match spells, each \u escape decoded at the depth of the name's quote. */
+const decodeName = (name, run = 0) => name.replace(/(\\+)u([0-9A-Fa-f]{4})/g, (escape, backslashes, hex) => {
+  // At a name whose quote has r backslashes before it (2^d - 1 at depth d), an escape that some level reads
+  // has 1, 2, 4 ... up to 2^d backslashes; any other count holds an escaped backslash, so it is not one.
+  const b = backslashes.length;
+  return (b & (b - 1)) === 0 && b <= run + 1 ? String.fromCharCode(parseInt(hex, 16)) : escape;
+});
 
 /** `name` as a regex for a JSON member name: each letter as it is or as its \u escape, in either hex case. */
 const spelled = name => [...name].map(c => {
@@ -141,7 +146,7 @@ function membersInJwks(text, run) {
       nameNext = false;
     } else {
       inString = false;
-      if (name >= 0 && decodeName(text.slice(name + run + 1, i - run)) === 'kty') open[open.length - 1].kty = true;
+      if (name >= 0 && decodeName(text.slice(name + run + 1, i - run), run) === 'kty') open[open.length - 1].kty = true;
       name = -1;
     }
   }
@@ -356,13 +361,12 @@ const TEXT_CHECKS = [
     // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
     // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
     ok: m => {
-      const name = decodeName(m[1]);
       // Counted in the input: an earlier match can end inside the run of backslashes before the key.
       const quote = m.index + m[0].indexOf('"');
+      const escaped = backslashesBefore(m.input, quote);
+      const name = decodeName(m[1], escaped);
       if (!isSecretKey(name) && !isJwkMember(name, m.input, quote)) return true;
       if (m[2] === undefined) return false;
-      let escaped = 0;
-      while (m.input[quote - 1 - escaped] === '\\') escaped++;
       const rest = m.input.slice(m.index + m[0].length - m[2].length);
       return isMaskedValue(name, rest.slice(0, valueEnd(rest, escaped + 1, false))) && !maskCutShort(m);
     },
@@ -373,9 +377,13 @@ const TEXT_CHECKS = [
   {
     name: 'JSON secret structure',
     re: new RegExp(String.raw`\\*"${NAME}\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
-    ok: m => isSecretKey(decodeName(m[1]))
-      ? m[2] === '[' && (/authorization$/i.test(decodeName(m[1])) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
-      : !isJwkMember(decodeName(m[1]), m.input, m.index + m[0].indexOf('"')),
+    ok: m => {
+      const quote = m.index + m[0].indexOf('"');
+      const name = decodeName(m[1], backslashesBefore(m.input, quote));
+      return isSecretKey(name)
+        ? m[2] === '[' && (/authorization$/i.test(name) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
+        : !isJwkMember(name, m.input, quote);
+    },
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
@@ -400,14 +408,19 @@ const TEXT_CHECKS = [
 /** Returns one {check, match} per suspected leak in `text`. */
 export function findTextLeaks(text) {
   const leaks = [];
-  const scan = view => {
+  // A decoded view (embedded) adds only the JSON it newly shows, nested in a string there: its quotes are
+  // escaped. Quotes it shows bare were read already, and unescaping can make an escaped backslash look like an
+  // escape there.
+  const scan = (view, embedded) => {
     for (const check of TEXT_CHECKS) {
+      if (embedded && !check.name.startsWith('JSON secret')) continue;
       for (const m of view.matchAll(check.re)) {
+        if (embedded && backslashesBefore(view, m.index + m[0].indexOf('"')) === 0) continue;
         if (!check.ok || !check.ok(m)) leaks.push({ check: check.name, match: m[0].slice(0, 80) });
       }
     }
   };
-  scan(text);
+  scan(text, false);
   // The text checks find embedded JSON by its literal quotes, colons and braces. A JSON string may spell any of
   // them as a unicode escape (a backslash and u0022, u003A, u0020..., as .NET's default encoder writes a quote),
   // so text with one is also scanned level by level as Redactor reads it: decoded, then one level of escaping
@@ -415,7 +428,7 @@ export function findTextLeaks(text) {
   let view = text;
   for (let level = 0; level < 16 && UNICODE_ESCAPE.test(view); level++) {
     const decoded = decodedUnicode(view);
-    if (decoded !== view) scan(decoded);
+    if (decoded !== view) scan(decoded, true);
     view = unescapedOnce(decoded);
   }
   // Redactor masks whole each string that still holds escapes after the levels it reads, so any left is a leak.
