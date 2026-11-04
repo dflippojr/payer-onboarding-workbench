@@ -77,12 +77,16 @@ record AuthChallenge(String scheme, Map<String, String> params) {
 
     /**
      * The scheme of the challenge {@link #param} reads from: the first challenge that carries an {@code error}
-     * parameter, else the first challenge that names a scheme.
+     * parameter, else the first challenge that names a scheme. Empty when that challenge names none, as when
+     * the error comes before any scheme.
      */
     static Optional<String> scheme(List<AuthChallenge> challenges) {
-        return challenges.stream().filter(c -> c.params().containsKey("error") && !c.scheme().isEmpty())
-                .map(AuthChallenge::scheme).findFirst()
-                .or(() -> challenges.stream().map(AuthChallenge::scheme).filter(s -> !s.isEmpty()).findFirst());
+        for (AuthChallenge challenge : challenges) {
+            if (challenge.params().containsKey("error")) {
+                return Optional.of(challenge.scheme()).filter(s -> !s.isEmpty());
+            }
+        }
+        return challenges.stream().map(AuthChallenge::scheme).filter(s -> !s.isEmpty()).findFirst();
     }
 
     private static boolean isSpace(char c) {

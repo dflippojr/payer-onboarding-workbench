@@ -102,7 +102,7 @@ class AuthChallengeTest {
     @CsvSource(delimiter = '|', value = {
             "Basic realm=\"a\", Bearer error=\"invalid_token\"|Bearer",
             "Basic realm=\"a\", Bearer realm=\"b\"|Basic",
-            "error=\"invalid_token\", Bearer realm=\"b\"|Bearer",
+            "realm=\"r\", Bearer realm=\"b\"|Bearer",
             "Bearer|Bearer",
     })
     void schemeComesFromTheChallengeTheParametersAreReadFrom(String header, String scheme) {
@@ -113,5 +113,10 @@ class AuthChallengeTest {
     void noSchemeWhenTheHeaderNamesNone() {
         assertEquals(Optional.empty(), AuthChallenge.scheme(AuthChallenge.parse("error=\"invalid_token\"")));
         assertEquals(Optional.empty(), AuthChallenge.scheme(AuthChallenge.parse("")));
+        // The error is read from the unnamed first challenge, so no later scheme is named for it.
+        assertEquals(Optional.empty(), AuthChallenge.scheme(AuthChallenge.parse(
+                "error=\"invalid_token\", Basic error=\"insufficient_scope\"")));
+        assertEquals(Optional.empty(), AuthChallenge.scheme(AuthChallenge.parse(
+                "error=\"invalid_token\", Bearer realm=\"b\"")));
     }
 }
