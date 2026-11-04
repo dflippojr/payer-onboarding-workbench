@@ -334,8 +334,15 @@ public final class Redactor {
         // together: masking either first would hide the other (an unterminated block masked to the end of the
         // text may hold the JWK's kty; a JWK member's mask may hold the block's header).
         List<Mask> masks = jwkMasks(text);
-        masks.addAll(pemMasks(text));
+        List<Mask> pem = pemMasks(text);
+        masks.addAll(pem);
         String out = applyMasks(text, masks);
+        // A stray quote in a masked block may have hidden a JWK member from that read ({"kty":"RSA","note":
+        // "-----BEGIN PRIVATE KEY-----"-----END PRIVATE KEY-----","d":...}): with the blocks masked, the JWKs are
+        // found once more, with the same budgets and fallbacks. This only adds masks.
+        if (!pem.isEmpty()) {
+            out = applyMasks(out, jwkMasks(out));
+        }
         out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
