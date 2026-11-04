@@ -375,6 +375,18 @@ test('compares a decoded member name exactly: an extension member with a backsla
   // A name whose quote has a stray backslash before it, outside any string, is malformed and still read as one.
   assert.ok(findTextLeaks('{"kty":"oct",\\\\"k\\\\":"LEAKED"}').length > 0);
 });
+test('r5: a key block starting in a JWK member, and a chain past the cap in a unicode-quoted string', () => {
+  // Redactor's input is flagged in every form, and what it leaves for it passes.
+  assertFlagged('{"kty":"RSA","d":"-----BEGIN PRIVATE KEY-----","note":"FAKEKEYMATERIAL_293\\n-----END PRIVATE KEY-----"}');
+  assertFlagged('{"kty":"RSA","d":"-----BEGIN PGP PRIVATE KEY BLOCK-----","note":"FAKEKEYMATERIAL_293"}');
+  assertAccepted('{"kty":"RSA","d":"[REDACTED]""}');
+  assertAccepted('{"kty":"RSA","d":"[REDACTED]"');
+  const quote = String.raw`\u005c` + 'u005c'.repeat(40) + 'u0022';
+  const jwk = `{${quote}kty${quote}:${quote}oct${quote},${quote}k${quote}:${quote}PRIVATECHAINVALUE${quote}}`;
+  assertFlagged(String.raw`\u0022` + jwk + String.raw`\u0022`);
+  assertFlagged(String.raw`{\u0022body\u0022:\u0022` + jwk + String.raw`\u0022}`);
+  assertAccepted('[REDACTED]');
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

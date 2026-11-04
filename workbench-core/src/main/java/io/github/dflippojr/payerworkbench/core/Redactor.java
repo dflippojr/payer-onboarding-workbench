@@ -330,18 +330,12 @@ public final class Redactor {
         if (text == null || text.isEmpty()) {
             return text;
         }
-        // JWKs first, on the text as it came: a secret field's mask can end at the next member's quote, and an
-        // unterminated private key block is masked to the end of the text, which may hold the JWK's kty.
-        String out = maskJwks(text, false);
-        if (!UNICODE_ESCAPE.matcher(out).find()) {
-            // With a unicode escape, a quote may be spelled two ways; maskNestedJwks reads that level decoded.
-            out = maskJwks(out, true);
-        }
-        out = maskNestedJwks(out);
-        out = PEM_BLOCK.matcher(out).replaceAll(m ->
-                Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK + "\n-----END " + m.group(1) + "-----"));
-        out = UNTERMINATED_PEM_KEY.matcher(out).replaceAll(m ->
-                Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK));
+        // The JWKs' private members and the PEM and PGP blocks are found in the text as it came, and masked
+        // together: masking either first would hide the other (an unterminated block masked to the end of the
+        // text may hold the JWK's kty; a JWK member's mask may hold the block's header).
+        List<Mask> masks = jwkMasks(text);
+        masks.addAll(pemMasks(text));
+        String out = applyMasks(text, masks);
         out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
@@ -575,13 +569,9 @@ public final class Redactor {
      * its close bracket. Only the JWK's own members count, not those of an object inside or next to it.
      * Finding the JWKs reads at most {@code 4n + 1024} characters of a text of length {@code n}, then
      * masks every private member name in the text instead, in a JWK or not: text that spends that budget
-     * is nothing a payer would send, so it is over-masked rather than read for longer.
+     * is nothing a payer would send, so it is over-masked rather than read for longer. {@code characters} is the
+     * budget; {@link #redact(String)} gives {@code 4n + 1024}. {@code embedded}: JSON embedded in a JSON string.
      */
-    private static String maskJwks(String text, boolean embedded) {
-        return maskJwks(text, embedded, 4 * text.length() + 1024);
-    }
-
-    /** {@link #maskJwks(String, boolean)} with a budget of {@code characters} to read. */
     static String maskJwks(String text, boolean embedded, int characters) {
         List<JwkValue> values = jwkValues(text, embedded, characters);
         if (values.isEmpty()) {
@@ -671,12 +661,12 @@ public final class Redactor {
     private record JwkValue(int start, int end, int name) {
     }
 
-    /** The most levels of JSON nested in JSON strings that {@link #maskNestedJwks(String)} reads one by one. */
+    /** The most levels of JSON nested in JSON strings that {@link #maskNestedJwks(String, int)} reads one by one. */
     static final int NESTED_LEVELS = 16;
 
     /**
      * Masks the {@link #JWK_PRIVATE_MEMBERS} of the JWKs nested in JSON strings that {@link #maskJwks(String,
-     * boolean)} does not reach: two or more levels deep (a JWK in a JSON string in a JSON string), or spelled
+     * boolean, int)} does not reach: two or more levels deep (a JWK in a JSON string in a JSON string), or spelled
      * with unicode escapes ({@code \\u0022} for a quote, {@code \\u003A} for a colon). Each round reads the
      * next level down as JSON embedded one level deep: it decodes the unicode escapes of the outermost string
      * of a view of the text ({@link #normalized}), masks that view's JWKs as {@code maskJwks} does, then takes
@@ -684,23 +674,21 @@ public final class Redactor {
      * as the text spells it, so it is never longer than what it replaces. There are at most
      * {@link #NESTED_LEVELS} rounds, each reading at most {@code 4n + 1024} characters of a view no longer than
      * the text; JSON nested deeper than that is nothing a payer sends, and each string that holds it is masked
-     * whole instead.
-     */
-    private static String maskNestedJwks(String text) {
-        return maskNestedJwks(text, -1);
-    }
-
-    /**
-     * {@link #maskNestedJwks(String)} with a budget of {@code characters} to read in each round, or
-     * {@code 4m + 1024} for a view of length {@code m} if it is negative.
+     * whole instead. {@code characters} is the budget to read in each round, or {@code 4m + 1024} for a view
+     * of length {@code m} if it is negative, as {@link #redact(String)} reads.
      */
     static String maskNestedJwks(String text, int characters) {
-        // No quote with three backslashes before it and no unicode escape: every JWK is plain or one level
-        // deep, where maskJwks found it.
-        if (!text.contains("\\\\\\\"") && !UNICODE_ESCAPE.matcher(text).find()) {
-            return text;
-        }
+        return applyMasks(text, nestedJwkMasks(text, characters));
+    }
+
+    /** What {@link #maskNestedJwks(String, int)} masks, as masks on the text. */
+    private static List<Mask> nestedJwkMasks(String text, int characters) {
         List<Mask> masks = new ArrayList<>();
+        // No quote with three backslashes before it and no unicode escape: every JWK is plain or one level
+        // deep, where maskJwks finds it.
+        if (!text.contains("\\\\\\\"") && !UNICODE_ESCAPE.matcher(text).find()) {
+            return masks;
+        }
         View view = new View(text, null);
         for (int depth = 1; ; depth++) {
             View normal = normalized(view);
@@ -717,15 +705,98 @@ public final class Redactor {
                 break;
             }
             if (depth == NESTED_LEVELS) {
-                masks.addAll(stringsHoldingEscapes(text));
+                List<Mask> strings = stringsHoldingEscapes(text);
+                masks.addAll(strings);
+                // A string found only in a view (its quotes spelled as unicode escapes in the text) has no bare
+                // quote to bound it by: with an escape still unread outside every string found, mask the text
+                // whole.
+                if (!holdsEveryEscape(strings, normal)) {
+                    masks.add(new Mask(0, text.length(), MASK));
+                }
                 break;
             }
             view = unescaped(normal);
         }
+        return masks;
+    }
+
+    /**
+     * Whether every backslash still in {@code view} (an escape no level read) starts inside one of the
+     * {@code strings}, as positions in the text.
+     */
+    private static boolean holdsEveryEscape(List<Mask> strings, View view) {
+        List<Mask> sorted = new ArrayList<>(strings);
+        sorted.sort((a, b) -> Integer.compare(a.start(), b.start()));
+        String json = view.text();
+        int next = 0;
+        int coveredTo = -1;
+        for (int i = json.indexOf('\\'); i >= 0; i = json.indexOf('\\', i + 1)) {
+            int at = view.at(i);
+            while (next < sorted.size() && sorted.get(next).start() <= at) {
+                coveredTo = Math.max(coveredTo, sorted.get(next++).end());
+            }
+            if (at >= coveredTo) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Every JWK private member's value in the text, as masks on it: in plain JSON, in JSON embedded in a JSON
+     * string, and nested deeper ({@link #maskNestedJwks(String, int)}).
+     */
+    private static List<Mask> jwkMasks(String text) {
+        List<Mask> masks = new ArrayList<>();
+        for (JwkValue value : jwkValues(text, false, 4 * text.length() + 1024)) {
+            masks.add(new Mask(value.start(), value.end(), "\"" + MASK + "\""));
+        }
+        // With a unicode escape, a quote may be spelled two ways; nestedJwkMasks reads that level decoded.
+        if (!UNICODE_ESCAPE.matcher(text).find()) {
+            for (JwkValue value : jwkValues(text, true, 4 * text.length() + 1024)) {
+                masks.add(new Mask(value.start(), value.end(), "\\\"" + MASK + "\\\""));
+            }
+        }
+        masks.addAll(nestedJwkMasks(text, -1));
+        return masks;
+    }
+
+    /**
+     * Every PEM block and PGP private key block in the text, as masks on it: a terminated block keeps its armor
+     * around the mask; an unterminated private key header is masked to the end of the text, unless it is in a
+     * terminated block or already masked.
+     */
+    private static List<Mask> pemMasks(String text) {
+        List<Mask> masks = new ArrayList<>();
+        Matcher block = PEM_BLOCK.matcher(text);
+        List<int[]> blocks = new ArrayList<>();
+        while (block.find()) {
+            masks.add(new Mask(block.start(), block.end(),
+                    "-----BEGIN " + block.group(1) + "-----\n" + MASK + "\n-----END " + block.group(1) + "-----"));
+            blocks.add(new int[] {block.start(), block.end()});
+        }
+        Matcher unterminated = UNTERMINATED_PEM_KEY.matcher(text);
+        int from = 0;
+        while (from < text.length() && unterminated.find(from)) {
+            int start = unterminated.start();
+            int[] inBlock = blocks.stream().filter(b -> b[0] <= start && start < b[1]).findFirst().orElse(null);
+            if (inBlock == null) {
+                masks.add(new Mask(start, text.length(), "-----BEGIN " + unterminated.group(1) + "-----\n" + MASK));
+                break;
+            }
+            from = inBlock[1];
+        }
+        return masks;
+    }
+
+    /**
+     * {@code text} with each mask's stretch replaced: a mask inside another goes with it, and masks that only
+     * overlap are masked as one, by the first one's replacement.
+     */
+    private static String applyMasks(String text, List<Mask> masks) {
         if (masks.isEmpty()) {
             return text;
         }
-        // A value inside one masked at another level goes with it; values that only overlap are masked as one.
         masks.sort((a, b) -> a.start() != b.start() ? Integer.compare(a.start(), b.start()) : Integer.compare(b.end(), a.end()));
         StringBuilder out = new StringBuilder(text.length());
         int copied = 0;
