@@ -207,9 +207,11 @@ const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.cha
  * The JSON string literal whose opening quote is at `start`: where it ends (its closing quote, or the end of
  * the text or of a line, for a string cut off there, as Redactor writes a truncated body) and its content. A
  * backslash always takes the next character with it, so no run of backslashes is counted. A raw line break
- * inside it means the quote opens no JSON string: then only where that line break is ({aborted, end}).
+ * inside it means the quote opens no JSON string: then only where that line break is ({aborted, end}). A
+ * member's value (`value`) is read through raw line breaks to its closing quote, or to the end of the text, as
+ * Redactor reads and masks it, so no part of it goes unjudged.
  */
-function readLiteral(text, start, ctx) {
+function readLiteral(text, start, ctx, value = false) {
   let i = start + 1;
   let terminated = false;
   while (i < text.length) {
@@ -218,13 +220,13 @@ function readLiteral(text, start, ctx) {
       terminated = true;
       break;
     }
-    if (c === '\n' || c === '\r') {
+    if ((c === '\n' || c === '\r') && !value) {
       ctx.work += i - start;
       return { aborted: true, start, end: i, terminated: false, body: text.slice(start + 1, i) };
     }
     if (c === '\\') {
       // A backslash before a line break: a value cut there, before a note appended to the cut body.
-      if (text[i + 1] === '\n' || text[i + 1] === '\r') {
+      if (!value && (text[i + 1] === '\n' || text[i + 1] === '\r')) {
         i++;
         break;
       }
@@ -287,6 +289,12 @@ function judge(owner, ctx) {
 /** Whether a character can follow a JSON string: what Redactor leaves after a mask, or a stray quote's sign. */
 const endsValue = c => c === undefined || c === ',' || c === '}' || c === ']' || c === ':' || c === '\\' || c === '"'
   || c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+/**
+ * Whether a character ends a scalar token: a delimiter, or a quote or open bracket, where scanning resumes, so
+ * malformed JSON after a scalar ({"x":0"password":...}) is read as the members it holds.
+ */
+const endsScalar = c => isSpace(c) || c === ',' || c === '}' || c === ']' || c === '"' || c === '{' || c === '[';
 
 /** Whether a character is JSON whitespace. */
 const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
@@ -353,15 +361,11 @@ function scanJson(text, level, ctx) {
     }
     const c = text[i];
     if (c === '"' && i >= quotesFrom) {
-      const literal = readLiteral(text, i, ctx);
+      const literal = readLiteral(text, i, ctx, member !== null);
       if (literal.aborted) {
-        // A member's value cut off at a line break (before a note appended to a cut body) is still its value, and
-        // JSON in it is read like any other.
-        const cut = decodeLiteral(literal, ctx);
-        if (member) {
-          member.owner.values.push({ name: member.name, kind: 'string', value: cut, text: literal.body, cutShort: false });
-        }
-        nested(cut, literal);
+        // A string (no member's value: that reads through line breaks) cut off at a line break: JSON in it is
+        // read like any other.
+        nested(decodeLiteral(literal, ctx), literal);
         // Every quote before the line break would open a string that runs into it too.
         member = null;
         i = literal.end;
@@ -425,7 +429,7 @@ function scanJson(text, level, ctx) {
     } else if (!member && stack.length > 0 && stack[stack.length - 1].list && !isSpace(c) && c !== ',' && c !== ':') {
       // A number, true, false or null in a secret-named list is no mask.
       let end = i;
-      while (end < text.length && !isSpace(text[end]) && text[end] !== ',' && text[end] !== '}' && text[end] !== ']') end++;
+      while (end < text.length && !endsScalar(text[end])) end++;
       stack[stack.length - 1].list.items.push({ scalar: text.slice(i, end) });
       ctx.work += end - i;
       i = Math.max(end, i + 1);
@@ -433,7 +437,7 @@ function scanJson(text, level, ctx) {
     } else if (member && !isSpace(c)) {
       // A scalar value runs to the next delimiter.
       let end = i;
-      while (end < text.length && !isSpace(text[end]) && text[end] !== ',' && text[end] !== '}' && text[end] !== ']') end++;
+      while (end < text.length && !endsScalar(text[end])) end++;
       if (end > i) member.owner.values.push({ name: member.name, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
       member = null;
       ctx.work += end - i;
