@@ -67,74 +67,104 @@ const backslashesBefore = (text, i) => {
 };
 
 /**
- * Whether the JSON object holding the member whose name's quote is at `quote` has a kty member of its own, as
- * Redactor masks only a JWK's own members. It is read at that member's escape depth: with r backslashes before
- * the member's quote (2^d - 1 at depth d), a quote with b before it delimits a string there when
- * b % (2r + 2) == r, ends the string the JSON is embedded in when b % (r + 1) != r, and is escaped inside a
- * string otherwise. A member with no object around it at that depth counts as in a JWK, the stricter answer.
+ * For each member name read at escape depth `run` (r backslashes before its quote, 2^d - 1 at depth d), whether
+ * the JSON object holding it has a kty member of its own, as Redactor masks only a JWK's own members: a map
+ * from the index of the name's opening quote. One pass over the text: a quote with b backslashes before it
+ * delimits a string at that depth when b % (2r + 2) == r, ends the string the JSON is embedded in (and every
+ * object open at that depth) when b % (r + 1) != r, and is escaped inside a string otherwise.
  */
-function inObjectWithKty(text, quote) {
-  const run = backslashesBefore(text, quote);
-  const kind = i => {
-    const b = backslashesBefore(text, i);
+function membersInJwks(text, run) {
+  const kind = b => {
     if (b % (2 * run + 2) === run) return 'quote';
     return b % (run + 1) === run ? 'escaped' : 'end';
   };
-  let start = -1;
-  let depth = 0;
+  const result = new Map();
+  // The open objects and arrays, innermost last: an object as {kty, names}, an array as null.
+  const open = [];
+  const close = () => {
+    const object = open.pop();
+    if (object) object.names.forEach(name => result.set(name, object.kty));
+  };
   let inString = false;
-  for (let i = quote - 1 - run; i >= 0; i--) {
-    const c = text[i];
-    if (c === '"') {
-      const k = kind(i);
-      if (k === 'end') return true;
-      if (k === 'quote') inString = !inString;
-      i -= backslashesBefore(text, i);
-    } else if (inString) {
-      continue;
-    } else if (c === '}' || c === ']') {
-      depth++;
-    } else if (c === '{' || c === '[') {
-      if (depth === 0) {
-        if (c === '[') return true;
-        start = i;
-        break;
-      }
-      depth--;
-    }
-  }
-  if (start < 0) return true;
-  depth = 0;
-  inString = false;
-  let nameNext = true;
+  let nameNext = false;
   let name = -1;
-  for (let i = start + 1; i < text.length; i++) {
+  for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (c === '"') {
-      const k = kind(i);
-      if (k === 'end') return false;
-      if (k === 'escaped') continue;
-      if (!inString) {
-        inString = true;
-        if (depth === 0 && nameNext) name = i + 1;
-      } else {
-        inString = false;
-        if (name >= 0 && decodeName(text.slice(name, i - backslashesBefore(text, i))) === 'kty') return true;
-        name = -1;
-        nameNext = false;
+    if (c === '\\') {
+      let j = i;
+      while (text[j] === '\\') j++;
+      if (text[j] !== '"') {
+        i = j - 1;
+        continue;
       }
-    } else if (inString || c === '\\') {
+      const k = kind(j - i);
+      i = j;
+      if (k === 'escaped') continue;
+      if (k === 'end') {
+        while (open.length > 0) close();
+        inString = false;
+        nameNext = false;
+        name = -1;
+        continue;
+      }
+    } else if (c !== '"') {
+      if (inString) continue;
+      if (c === '{') {
+        open.push({ kty: false, names: [] });
+        nameNext = true;
+      } else if (c === '[') {
+        open.push(null);
+        nameNext = false;
+      } else if ((c === '}' || c === ']') && open.length > 0) {
+        close();
+        nameNext = false;
+      } else if (c === ',') {
+        nameNext = open.length > 0 && open[open.length - 1] !== null;
+      }
       continue;
-    } else if (c === '{' || c === '[') {
-      depth++;
-    } else if (c === '}' || c === ']') {
-      if (depth === 0) return false;
-      depth--;
-    } else if (c === ',' && depth === 0) {
-      nameNext = true;
+    } else if (kind(0) !== 'quote') {
+      // A bare quote at depth 1 or deeper ends the embedded JSON.
+      while (open.length > 0) close();
+      inString = false;
+      nameNext = false;
+      name = -1;
+      continue;
+    }
+    // A string delimiter at this depth: i is its quote, run backslashes before it.
+    if (!inString) {
+      inString = true;
+      if (nameNext && open.length > 0) {
+        name = i - run;
+        open[open.length - 1].names.push(name);
+      }
+      nameNext = false;
+    } else {
+      inString = false;
+      if (name >= 0 && decodeName(text.slice(name + run + 1, i - run)) === 'kty') open[open.length - 1].kty = true;
+      name = -1;
     }
   }
-  return false;
+  while (open.length > 0) close();
+  return result;
+}
+
+/** membersInJwks for the text last asked about, one map per escape depth. */
+let jwkMembersText = null;
+let jwkMembers = new Map();
+
+/**
+ * Whether the member whose name's quote is at `quote` is in an object with a kty member of its own. A member
+ * the pass did not read as one (no object around it at its depth) counts as in a JWK, the stricter answer.
+ */
+function inObjectWithKty(text, quote) {
+  if (text !== jwkMembersText) {
+    jwkMembersText = text;
+    jwkMembers = new Map();
+  }
+  const run = backslashesBefore(text, quote);
+  if (!jwkMembers.has(run)) jwkMembers.set(run, membersInJwks(text, run));
+  const result = jwkMembers.get(run).get(quote - run);
+  return result === undefined ? true : result;
 }
 
 /** Whether a field whose name's quote is at `quote` holds a JWK's own private member. */
@@ -376,6 +406,8 @@ export function findTextLeaks(text) {
     if (decoded !== view) scan(decoded);
     view = unescapedOnce(decoded);
   }
+  // Redactor masks whole each string that still holds escapes after the levels it reads, so any left is a leak.
+  if (UNICODE_ESCAPE.test(view)) leaks.push({ check: 'escapes nested past 16 levels', match: view.slice(0, 80) });
   return leaks;
 }
 
