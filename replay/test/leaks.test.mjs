@@ -316,6 +316,13 @@ test('judges a value cut at a line break, a list of numbers, and a value a colon
   assertFlagged('{"kty":"oct","k":"LEAKED":0}');
   assertAccepted('{"kty":"oct","k":"[REDACTED]":0}');
 });
+test('reads JSON serialized into a member name', () => {
+  assertFlagged('{"{\\"password\\":\\"LEAKED\\"}":1}');
+  assertFlagged('{"{\\"kty\\":\\"oct\\",\\"k\\":\\"LEAKED\\"}":1}');
+  // What Redactor leaves for each.
+  assertAccepted('{"{\\"password\\":\\"[REDACTED]\\"}":1}');
+  assertAccepted('{"{\\"kty\\":\\"oct\\",\\"k\\":\\"[REDACTED]\\"}":1}');
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
