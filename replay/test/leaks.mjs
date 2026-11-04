@@ -141,45 +141,107 @@ function lineDepth(text, index) {
 }
 
 /**
- * Where a value inside a JSON string escaped to `depth` (1 in a JSON string, 2 in JSON embedded in one)
- * ends, as in Redactor's endOfEscapedLine: c backslashes before a quote end the string when
- * c % 2d < d, and, with `lineBreaks`, before n or r are a line break when c % 2d == d. In plain text
- * (depth 0) only a JSON line-break escape ends it (an odd run before n or r), as in HEADER_LINE.
+ * Where a header line's value that starts at `start` ends, at a JSON string escaped to `depth` (1 in a JSON
+ * string, 2 in JSON embedded in one), as in Redactor's endOfEscapedLine: c backslashes before a quote end the
+ * string when c % 2d < d, and before n or r are a line break when c % 2d == d. In plain text (depth 0) only a
+ * JSON line-break escape ends it (an odd run before n or r), as in HEADER_LINE; a raw line break always does.
+ * It reads only the value, so header lines that follow each other on one raw line cost their own length each.
  */
-function valueEnd(value, depth, lineBreaks = true) {
+function valueEndAt(text, start, depth, ctx) {
   const d = depth || 1;
-  for (let i = 0; i < value.length; i++) {
-    if (depth > 0 && value[i] === '"') return i;
-    if (value[i] !== '\\') continue;
-    const run = i;
-    while (value[i] === '\\') i++;
-    const escapes = (i - run) % (2 * d);
-    if ((lineBreaks && /[nr]/.test(value[i] ?? '') && escapes === d) || (depth > 0 && value[i] === '"' && escapes < d)) {
-      return run;
+  let i = start;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '\n' || c === '\r' || (depth > 0 && c === '"')) break;
+    if (c !== '\\') {
+      i++;
+      continue;
     }
+    const run = i;
+    while (text[i] === '\\') i++;
+    const escapes = (i - run) % (2 * d);
+    if (((text[i] === 'n' || text[i] === 'r') && escapes === d) || (depth > 0 && text[i] === '"' && escapes < d)) {
+      i = run;
+      break;
+    }
+    if (text[i] === '\n' || text[i] === '\r') break;
+    i++;
   }
-  return value.length;
+  ctx.work += i - start;
+  return Math.min(i, text.length);
 }
 
-/** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
+/** Whether a character can be in a JWT part (base64url). */
+const isTokenChar = c => c !== undefined && /[A-Za-z0-9_-]/.test(c);
+
+/** Where the run of token characters from `start` ends. */
+const runEnd = (text, start) => {
+  let i = start;
+  while (i < text.length && isTokenChar(text[i])) i++;
+  return i;
+};
+
+/** Where the first eyJ at a word start (or right after a JSON escape such as \n) in [start, end) is, or -1. */
+function jwtStart(text, start, end) {
+  for (let j = text.indexOf('eyJ', start); j >= 0 && j + 3 <= end; j = text.indexOf('eyJ', j + 1)) {
+    const before = text[j - 1];
+    if (j === 0 || !/\w/.test(before) || (text[j - 2] === '\\' && 'nrtbf'.includes(before))) return j;
+  }
+  return -1;
+}
+
+/**
+ * Checks over raw text: a regex whose `ok(match)` returning true means the hit is a masked or harmless value, or
+ * a `scan(text, ctx)` that reads the text procedurally, in linear work, and records its own leaks.
+ */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
   { name: 'PEM block', re: /-----BEGIN [A-Z0-9 ]*-----/g },
   // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
   // backslash, as in Redactor; a JSON escape of a token character (\/, \u002B) is that character, not a
   // backslash, also escaped again (\\/) in a recorded body (#211).
-  // The match ends at the scheme (the rest is read in a lookahead), so a scheme kept as prose does not
-  // hide one right after it (token DPoP <credential>), as in Redactor.
+  // As in Redactor, a credential is consumed and the search goes on after it, and a match kept as prose is
+  // read again from after its scheme, so it does not hide a scheme right after it (token DPoP <credential>).
   {
     name: 'Bearer/Basic credential',
-    re: new RegExp(String.raw`${AUTH_START}(?=${AUTH_SCHEME})(Bearer|Basic|Token|DPoP)`, 'gi'),
-    ok: isAuthProse,
+    scan: (text, ctx) => {
+      const word = new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)`, 'gi');
+      const credential = new RegExp(AUTH_SCHEME, 'iy');
+      for (let m = word.exec(text); m !== null; m = word.exec(text)) {
+        credential.lastIndex = m.index;
+        const c = credential.exec(text);
+        if (c === null) continue;
+        ctx.work += c[0].length;
+        if (isAuthProse(c)) continue;
+        ctx.leaks.push({ check: 'Bearer/Basic credential', match: c[0].slice(0, 80) });
+        word.lastIndex = c.index + c[0].length;
+      }
+    },
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
   // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART, Bearer [REDACTED]\u002BPART).
   { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
-  { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
+  // Each run of token characters is read once: it is a JWT's header from its first eyJ at a word start when two
+  // dots follow it with a signature after the second (eyJ-eyJ-... is not retried at each eyJ, as in #310).
+  { name: 'signed JWT', scan: (text, ctx) => {
+    let i = 0;
+    while (i < text.length) {
+      if (!isTokenChar(text[i])) {
+        i++;
+        continue;
+      }
+      const end = runEnd(text, i);
+      ctx.work += end - i;
+      if (text[end] === '.') {
+        const claims = runEnd(text, end + 1);
+        if (text[claims] === '.' && runEnd(text, claims + 1) > claims + 1 && jwtStart(text, i, end) >= 0) {
+          ctx.leaks.push({ check: 'signed JWT', match: text.slice(i, Math.min(claims + 40, i + 80)) });
+        }
+      }
+      i = end;
+    }
+  } },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
   // A sensitive header line (Cookie: sid=...) where a line starts, also after an escaped line break in a
@@ -188,14 +250,19 @@ const TEXT_CHECKS = [
   // prose is not flagged.
   {
     name: 'sensitive header line',
-    // The value is read in a lookahead, so the match ends at the name and a header line on the next
-    // escaped line is scanned on its own; valueEnd finds where the value ends.
+    // The match ends at the name and valueEndAt reads the value from there, so a header line on the next
+    // escaped line is scanned on its own.
     // An escaped tab may indent the line or follow the colon, as in Redactor's ESCAPED_HEADER_LINE.
     // A JSON string's start is a line start too: Redactor saw the body before it was serialized.
-    re: new RegExp(String.raw`(?:^|(?<=\\[nr])|(?<=[:\[,]\s*\\*"))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):(?:[ \t]|\\+t)*(?=([^\r\n]*))`, 'gim'),
-    ok: m => {
-      const v = m[2].slice(0, valueEnd(m[2], lineDepth(m.input, m.index)));
-      return v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v);
+    scan: (text, ctx) => {
+      const re = new RegExp(String.raw`(?:^|(?<=\\[nr])|(?<=[:\[,]\s*\\*"))(?:[ \t]|\\+t)*(${[...SENSITIVE_HEADERS].join('|')}):(?:[ \t]|\\+t)*`, 'gim');
+      for (const m of text.matchAll(re)) {
+        const start = m.index + m[0].length;
+        const v = text.slice(start, valueEndAt(text, start, lineDepth(text, m.index), ctx));
+        if (!(v.trim() === '' || isMaskedValue(m[1], v) || isAuthLineProse(m[1], v))) {
+          ctx.leaks.push({ check: 'sensitive header line', match: m[0].slice(0, 80) });
+        }
+      }
     },
   },
 ];
@@ -458,6 +525,10 @@ function textLeaks(text, level) {
   const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
+      if (check.scan) {
+        check.scan(text, ctx);
+        continue;
+      }
       for (const m of text.matchAll(check.re)) {
         if (!check.ok || !check.ok(m)) ctx.leaks.push({ check: check.name, match: m[0].slice(0, 80) });
       }
