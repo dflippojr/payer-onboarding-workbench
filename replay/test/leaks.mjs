@@ -199,6 +199,44 @@ function valueEnd(value, depth, lineBreaks = true) {
 /** A unicode escape: a backslash, then u and four hex digits. */
 const UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/;
 
+/**
+ * Each JSON object or array in `text` that parses, outermost first: prose before, between or after them is
+ * skipped, so JSON a payer quoted in a sentence is read too.
+ */
+function jsonIn(text) {
+  const found = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{' && text[i] !== '[') continue;
+    const end = closingBracket(text, i);
+    if (end < 0) continue;
+    try {
+      found.push(JSON.parse(text.slice(i, end + 1)));
+      i = end;
+    } catch { /* not JSON from here */ }
+  }
+  return found;
+}
+
+/** Where the bracket that closes the one at `start` is, skipping JSON strings, or -1. */
+function closingBracket(text, start) {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') {
+      inString = true;
+    } else if (c === '{' || c === '[') {
+      depth++;
+    } else if ((c === '}' || c === ']') && --depth === 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -276,9 +314,10 @@ export function findTextLeaks(text) {
   }
   // The text checks find embedded JSON by its literal quotes, colons and braces. JSON whose strings spell any of
   // them as a unicode escape (a backslash and u0022, u003A, u0020..., as .NET's default encoder writes a quote),
-  // as Redactor also reads it, is walked parsed too, so every level is decoded.
+  // as Redactor also reads it, is walked parsed too, so every level is decoded: each JSON object or array in the
+  // text, prose around it or not.
   if (UNICODE_ESCAPE.test(text)) {
-    try { leaks.push(...findJsonLeaks(JSON.parse(text))); } catch { /* not JSON */ }
+    for (const json of jsonIn(text)) leaks.push(...findJsonLeaks(json));
   }
   return leaks;
 }
@@ -294,8 +333,10 @@ export function findJsonLeaks(value, path = '$') {
     if (typeof v === 'string') {
       const t = v.trim();
       if (t.startsWith('{') || t.startsWith('[')) {
-        try { walk(JSON.parse(t), `${p}<json>`); } catch { /* not JSON */ }
+        try { walk(JSON.parse(t), `${p}<json>`); return; } catch { /* not JSON as a whole */ }
       }
+      // JSON in a sentence, as findTextLeaks reads it once a unicode escape shows it may hide there.
+      if (UNICODE_ESCAPE.test(v)) jsonIn(v).forEach(json => walk(json, `${p}<json>`));
       return;
     }
     if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`)); return; }

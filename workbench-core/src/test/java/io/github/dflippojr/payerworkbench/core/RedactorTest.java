@@ -635,10 +635,10 @@ class RedactorTest {
     @Test
     void masksJwksWhoseEmbeddedJsonIsSpelledWithUnicodeEscapes() {
         // The review's shape: a serializer that escapes a quote in a string as \\u0022 (as .NET's default encoder
-        // does), also in either hex case and mixed with \".
-        assertEquals("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\\"[REDACTED]\\\"}\"}",
+        // does), also mixed with \". The mask is quoted as its member's name is.
+        assertEquals("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022[REDACTED]\\u0022}\"}",
                 Redactor.redact("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
-        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\\"[REDACTED]\\\"}\"}",
+        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022[REDACTED]\\u0022}\"}",
                 Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
         // Any character of the embedded JSON may be a unicode escape: the space after a colon, the colon itself
         // (the review's shapes), a brace, a comma, a line break.

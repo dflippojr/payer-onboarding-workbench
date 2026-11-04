@@ -591,7 +591,8 @@ public final class Redactor {
 
     /**
      * Where the value of each JWK private member that {@link #maskJwks(String, boolean, int)} masks starts and
-     * ends, in order and apart: the opening quote (or bracket) through the closing quote (or bracket).
+     * ends, in order and apart: the opening quote (or bracket) through the closing quote (or bracket), and
+     * where the member's name starts (its opening quote, or in embedded JSON the backslash before it).
      */
     private static List<int[]> jwkValues(String text, boolean embedded, int characters) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
@@ -643,23 +644,29 @@ public final class Redactor {
             }
             if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
                 copied = endOfStructure(text, structure.end(), embedded);
-                values.add(new int[] {structure.end(), copied});
+                values.add(new int[] {structure.end(), copied, name});
             } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
                 copied = field.end();
-                values.add(new int[] {field.end(2), copied});
+                values.add(new int[] {field.end(2), copied, name});
             }
         }
         return values;
     }
 
+    /** The most levels of JSON nested in JSON strings that {@link #maskNestedJwks(String)} reads one by one. */
+    static final int NESTED_LEVELS = 16;
+
     /**
-     * Masks the {@link #JWK_PRIVATE_MEMBERS} of the JWKs nested in JSON strings two or more levels deep (a JWK
-     * in a JSON string in a JSON string), which {@link #maskJwks(String, boolean)} does not reach: there a quote
-     * of the JWK has {@code 2^d - 1} backslashes before it at depth {@code d}. Each round takes one level of
-     * string escaping off a view of the text ({@link #unescaped}), so the next level down reads as JSON
-     * embedded one level deep, and masks that view's JWKs as {@code maskJwks} does, a mask quoted as its level
-     * needs. A round reads at most {@code 4m + 1024} characters of a view of length {@code m <= n}, and each
-     * round halves the backslashes before every quote, so there are at most {@code log2 n} rounds.
+     * Masks the {@link #JWK_PRIVATE_MEMBERS} of the JWKs nested in JSON strings that {@link #maskJwks(String,
+     * boolean)} does not reach: two or more levels deep (a JWK in a JSON string in a JSON string), or spelled
+     * with unicode escapes ({@code \\u0022} for a quote, {@code \\u003A} for a colon). Each round reads the
+     * next level down as JSON embedded one level deep: it decodes the unicode escapes of the outermost string
+     * of a view of the text ({@link #normalized}), masks that view's JWKs as {@code maskJwks} does, then takes
+     * that level of escaping off ({@link #unescaped}). Each mask is quoted with the quote of its member's name
+     * as the text spells it, so it is never longer than what it replaces. There are at most
+     * {@link #NESTED_LEVELS} rounds, each reading at most {@code 4n + 1024} characters of a view no longer than
+     * the text; JSON nested deeper than that is nothing a payer sends, and each string that holds it is masked
+     * whole instead.
      */
     private static String maskNestedJwks(String text) {
         return maskNestedJwks(text, -1);
@@ -675,139 +682,178 @@ public final class Redactor {
         if (!text.contains("\\\\\\\"") && !UNICODE_ESCAPE.matcher(text).find()) {
             return text;
         }
-        // Each mask: where it starts and ends in the text, and its depth.
-        List<int[]> masks = new ArrayList<>();
-        String view = text;
-        int[] origin = null;
+        List<Mask> masks = new ArrayList<>();
+        View view = new View(text, null);
         for (int depth = 1; ; depth++) {
-            int[][] next = new int[1][];
-            String normal = normalized(view, origin, next);
-            int[] normalOrigin = next[0];
-            // One level deep with no unicode escape to normalize, maskJwks has read this view already.
-            if ((depth > 1 || !normal.equals(view)) && normal.contains("\\\"")) {
-                int budget = characters < 0 ? 4 * normal.length() + 1024 : characters;
-                for (int[] value : jwkValues(normal, true, budget)) {
-                    masks.add(new int[] {at(normalOrigin, value[0]), at(normalOrigin, value[1]), depth});
+            View normal = normalized(view);
+            String json = normal.text();
+            // One level deep with no unicode escape to decode, maskJwks has read this view already.
+            if ((depth > 1 || normal != view) && json.contains("\\\"")) {
+                int budget = characters < 0 ? 4 * json.length() + 1024 : characters;
+                for (int[] value : jwkValues(json, true, budget)) {
+                    String quote = text.substring(normal.at(value[2]), normal.at(value[2] + 2));
+                    masks.add(new Mask(normal.at(value[0]), normal.at(value[1]), quote + MASK + quote));
                 }
             }
-            if (!normal.contains("\\\"") && !UNICODE_ESCAPE.matcher(normal).find()) {
+            if (!json.contains("\\\"") && !UNICODE_ESCAPE.matcher(json).find()) {
                 break;
             }
-            view = unescaped(normal, normalOrigin, next);
-            origin = next[0];
+            view = unescaped(normal);
+            if (depth == NESTED_LEVELS) {
+                masks.addAll(stringsHoldingEscapes(view));
+                break;
+            }
         }
         if (masks.isEmpty()) {
             return text;
         }
         // A value inside one masked at another level goes with it; values that only overlap are masked as one.
-        masks.sort((a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(b[1], a[1]));
+        masks.sort((a, b) -> a.start() != b.start() ? Integer.compare(a.start(), b.start()) : Integer.compare(b.end(), a.end()));
         StringBuilder out = new StringBuilder(text.length());
         int copied = 0;
         for (int i = 0; i < masks.size(); i++) {
-            int[] mask = masks.get(i);
-            int end = mask[1];
-            while (i + 1 < masks.size() && masks.get(i + 1)[0] < end) {
-                end = Math.max(end, masks.get(++i)[1]);
+            Mask mask = masks.get(i);
+            int end = mask.end();
+            while (i + 1 < masks.size() && masks.get(i + 1).start() < end) {
+                end = Math.max(end, masks.get(++i).end());
             }
-            String quote = "\\".repeat((1 << mask[2]) - 1) + "\"";
-            out.append(text, copied, mask[0]).append(quote).append(MASK).append(quote);
+            out.append(text, copied, mask.start()).append(mask.replacement());
             copied = end;
         }
         return out.append(text, copied, text.length()).toString();
     }
 
-    /** Where character {@code i} of a view starts in the text: {@code origin[i]}, or {@code i} if it is {@code null}. */
-    private static int at(int[] origin, int i) {
-        return origin == null ? i : origin[i];
+    /** A stretch of the text to replace: where it starts and ends, and what replaces it. */
+    private record Mask(int start, int end, String replacement) {
+    }
+
+    /**
+     * A view of the text with some levels of escaping taken off or decoded, and where each of its characters
+     * starts in the text ({@code origin}, one longer than the view so its end maps to the text's end;
+     * {@code null}: each character at its own index).
+     */
+    private record View(String text, int[] origin) {
+
+        /** Where character {@code i} of the view starts in the text. */
+        int at(int i) {
+            return origin == null ? i : origin[i];
+        }
+    }
+
+    /**
+     * Each string in {@code view} whose content still holds an escape, so JSON nested deeper than
+     * {@link #NESTED_LEVELS} may be in it: its content, between quotes not escaped in the view, masked whole.
+     * The mask has no quote or backslash, so it needs no escaping at any level.
+     */
+    private static List<Mask> stringsHoldingEscapes(View view) {
+        List<Mask> masks = new ArrayList<>();
+        String json = view.text();
+        int open = -1;
+        boolean escapes = false;
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '\\') {
+                escapes = true;
+                i++;
+            } else if (c == '"' && open < 0) {
+                open = i + 1;
+                escapes = false;
+            } else if (c == '"') {
+                if (escapes) {
+                    masks.add(new Mask(view.at(open), view.at(i), MASK));
+                }
+                open = -1;
+            }
+        }
+        if (open >= 0 && escapes) {
+            masks.add(new Mask(view.at(open), view.at(json.length()), MASK));
+        }
+        return masks;
     }
 
     /**
      * {@code view} with each unicode escape of its outermost string decoded, so JSON embedded in it reads
      * as {@link #maskJwks} reads it, however the string spells it: a quote or backslash ({@code \\u0022},
      * {@code \\u005C}, as .NET's default encoder writes a quote) becomes {@code \"} or {@code \\}, any
-     * other character (a colon, a brace, a space) itself. {@code origin}
-     * and {@code next[0]} work as in {@link #unescaped}; with nothing to rewrite, {@code view} itself is
-     * returned and {@code next[0]} is {@code origin}.
+     * other character (a colon, a brace, a space) itself. With nothing to decode, {@code view} itself is
+     * returned.
      */
-    private static String normalized(String view, int[] origin, int[][] next) {
-        Matcher escape = UNICODE_ESCAPE.matcher(view);
-        next[0] = origin;
+    private static View normalized(View view) {
+        String text = view.text();
+        Matcher escape = UNICODE_ESCAPE.matcher(text);
         if (!escape.find()) {
             return view;
         }
-        StringBuilder out = new StringBuilder(view.length());
-        int[] to = new int[view.length() + 1];
+        StringBuilder out = new StringBuilder(text.length());
+        int[] to = new int[text.length() + 1];
         int i = 0;
-        while (i < view.length()) {
-            if (view.charAt(i) != '\\') {
-                to[out.length()] = at(origin, i);
-                out.append(view.charAt(i++));
+        while (i < text.length()) {
+            if (text.charAt(i) != '\\') {
+                to[out.length()] = view.at(i);
+                out.append(text.charAt(i++));
                 continue;
             }
             int run = i;
-            while (run < view.length() && view.charAt(run) == '\\') {
+            while (run < text.length() && text.charAt(run) == '\\') {
                 run++;
             }
             // Only an odd run ends in an escape of its own: an even one is escaped backslashes before a u.
-            boolean unicode = (run - i) % 2 == 1 && escape.region(run - 1, view.length()).lookingAt();
+            boolean unicode = (run - i) % 2 == 1 && escape.region(run - 1, text.length()).lookingAt();
             int copy = unicode ? run - 1 : run;
             for (int k = i; k < copy; k++) {
-                to[out.length()] = at(origin, k);
+                to[out.length()] = view.at(k);
                 out.append('\\');
             }
             if (unicode) {
                 char c = (char) Integer.parseInt(escape.group(1), 16);
                 if (c == '"' || c == '\\') {
-                    to[out.length()] = at(origin, run - 1);
+                    to[out.length()] = view.at(run - 1);
                     out.append('\\');
                 }
-                to[out.length()] = at(origin, run - 1);
+                to[out.length()] = view.at(run - 1);
                 out.append(c);
                 run = escape.end();
             }
             i = run;
         }
-        to[out.length()] = at(origin, view.length());
-        next[0] = to;
-        return out.toString();
+        to[out.length()] = view.at(text.length());
+        return new View(out.toString(), to);
     }
 
     /**
      * {@code view} with one level of JSON string escaping taken off: each {@code \\} becomes {@code \}
      * and each {@code \"} a quote; any other escape is kept as it is, so an escaped line break still reads
-     * as whitespace and a name's {@code \\u} escape as an escape. {@code origin} says where each character
-     * of {@code view} starts in the text ({@code null}: at its own index); {@code next[0]} is set to the same
-     * for the result, one longer than it, so the end of the result maps to the end of the text.
+     * as whitespace and a name's {@code \\u} escape as an escape.
      */
-    private static String unescaped(String view, int[] origin, int[][] next) {
-        StringBuilder out = new StringBuilder(view.length());
-        int[] to = new int[view.length() + 1];
+    private static View unescaped(View view) {
+        String text = view.text();
+        StringBuilder out = new StringBuilder(text.length());
+        int[] to = new int[text.length() + 1];
         int i = 0;
-        while (i < view.length()) {
-            if (view.charAt(i) != '\\') {
-                to[out.length()] = origin == null ? i : origin[i];
-                out.append(view.charAt(i++));
+        while (i < text.length()) {
+            if (text.charAt(i) != '\\') {
+                to[out.length()] = view.at(i);
+                out.append(text.charAt(i++));
                 continue;
             }
             int run = i;
-            while (run < view.length() && view.charAt(run) == '\\') {
+            while (run < text.length() && text.charAt(run) == '\\') {
                 run++;
             }
             for (int k = i; k + 1 < run; k += 2) {
-                to[out.length()] = origin == null ? k : origin[k];
+                to[out.length()] = view.at(k);
                 out.append('\\');
             }
             if ((run - i) % 2 == 1) {
-                to[out.length()] = origin == null ? run - 1 : origin[run - 1];
-                boolean quote = run < view.length() && view.charAt(run) == '"';
+                to[out.length()] = view.at(run - 1);
+                boolean quote = run < text.length() && text.charAt(run) == '"';
                 out.append(quote ? '"' : '\\');
                 run += quote ? 1 : 0;
             }
             i = run;
         }
-        to[out.length()] = at(origin, view.length());
-        next[0] = to;
-        return out.toString();
+        to[out.length()] = view.at(text.length());
+        return new View(out.toString(), to);
     }
 
     /** {@link #startOfObject}: no open bracket before the member, to the start of the text or the string. */
