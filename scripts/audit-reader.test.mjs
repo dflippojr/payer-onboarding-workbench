@@ -124,6 +124,36 @@ test('verify passes a clean journal and reports damage by segment without echoin
   } finally { rmSync(dir, { recursive: true }); }
 });
 
+// AuditJournal.sealQuietly lists a segment it could not seal with sha256 "unsealed" and zero counts (#273).
+test('a segment whose seal failed is reported alone; the others still verify and review', () => {
+  const dir = makeJournal();
+  try {
+    const name = 'audit-000003.jsonl';
+    writeFileSync(join(dir, name), JSON.stringify({ ...event('run-c', 'run.requested', '2026-10-08T12:00:03Z'), eventId: 'id-2-run-c' }) + '\n');
+    const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+    manifest.segments.push({ id: 'audit-000003', file: name, bytes: 0, events: 0, firstAt: null, lastAt: null, sha256: 'unsealed' });
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+
+    const verified = cli(dir, '--verify');
+    assert.equal(verified.status, 1, verified.stderr);
+    assert.deepEqual(verified.stdout.trim().split('\n').map(JSON.parse), [
+      { segment: 'audit-000001', status: 'ok' },
+      { segment: 'audit-000002', status: 'ok' },
+      { segment: 'audit-000003', status: 'seal_failed' },
+    ]);
+    assert.equal(verified.stderr, 'Journal segments with problems: 1\n');
+
+    const read = cli(dir);
+    assert.equal(read.status, 0, read.stderr);
+    assert.deepEqual(read.stdout.trim().split('\n').map(l => JSON.parse(l).eventId),
+      ['id-0-run-a', 'id-0-run-b', 'id-1-run-a', 'id-2-run-c']);
+
+    // A sealed segment's own damage is still caught beside the failed seal.
+    appendFileSync(join(dir, 'audit-000001.jsonl'), 'x');
+    assert.match(cli(dir, '--verify').stdout, /"segment":"audit-000001","status":"checksum_mismatch"/);
+  } finally { rmSync(dir, { recursive: true }); }
+});
+
 test('verify rejects a manifest that names other files and a non-directory', () => {
   const dir = makeJournal();
   try {
