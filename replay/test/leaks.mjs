@@ -465,6 +465,9 @@ function scanJson(text, level, ctx) {
           });
         }
         const name = decoded ?? literal.body;
+        // A name inside an array is no list item a mask could be: the list is judged as a structure, as Redactor masks
+        // it whole ({"client_secret":["x":"..."]}).
+        if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
         if (name === 'kty' && o.object) o.kty = true;
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
