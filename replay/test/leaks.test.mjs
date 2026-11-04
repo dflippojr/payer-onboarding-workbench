@@ -409,6 +409,21 @@ test('treats kty as a JWK member only in a JSON object, not in loose text or an 
     assertAccepted(masked);
   }
 });
+test('flags member syntax inside a secret-named array (#262)', () => {
+  // The automated review on 79ce506: in ["x":"LEAKED"] no list item is read ("x" is a name), so the empty list passed
+  // as masked. Redactor masks the array whole; each masked form is its output for the leaked one, also embedded.
+  const cases = [
+    ['{"client_secret":["x":"LEAKED"]}', '{"client_secret":"[REDACTED]"}'],
+    ['{"password":["a","x":"LEAKED"]}', '{"password":"[REDACTED]"}'],
+    ['{"kty":"oct","k":["x":"LEAKED"]}', '{"kty":"oct","k":"[REDACTED]"}'],
+  ];
+  for (const [leaked, masked] of [...cases, ...cases.map(([l, m]) => [JSON.stringify({ body: l }), JSON.stringify({ body: m })])]) {
+    assertFlagged(leaked);
+    assertAccepted(masked);
+  }
+  // Member syntax in an array that is no secret's stays as Redactor keeps it.
+  assertAccepted('{"note":["x":"y"]}');
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
