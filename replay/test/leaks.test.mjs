@@ -326,6 +326,27 @@ test('reads JSON serialized into a member name', () => {
   assertFlagged('{"body":"{\\"password\\":\\"LEAKED\\"}\n[truncated at 1 MB]');
   assertAccepted('{"body":"{\\"password\\":\\"[REDACTED]\\"}\n[truncated at 1 MB]');
 });
+test('r4: a scalar does not swallow the member after it', () => {
+  assertFlagged('{"x":0"password":"FAKE_SECRET_293"}');
+  assertFlagged('{"kty":"oct","x":true"k":"FAKE_PRIVATE_KEY_293"}');
+  assertFlagged('{"client_secret":[1"[REDACTED]",{"password":"FAKE_SECRET_293"}]}');
+  // What Redactor leaves for it.
+  assertAccepted('{"x":0"password":"[REDACTED]"}');
+});
+test('r4: a secret value with a raw line break in it is judged whole', () => {
+  for (const line of ['\n', '\r']) {
+    for (const prefix of ['', '[REDACTED]']) {
+      assertFlagged(`{"kty":"oct","k":"${prefix}${line}FAKE_PRIVATE_KEY_293"}`);
+      assertFlagged(`{"password":"${prefix}${line}FAKE_SECRET_293"}`);
+    }
+  }
+  // What Redactor leaves for them, and for a value genuinely cut off by a truncation note.
+  assertAccepted('{"kty":"oct","k":"[REDACTED]"}');
+  assertAccepted('{"password":"[REDACTED]"}');
+  assertFlagged('{"kty":"oct","k":"LEAKED\n[truncated at 1 MB]');
+  assertAccepted('{"kty":"oct","k":"[REDACTED]"');
+  assertAccepted('{"body":"{\\"password\\":\\"[REDACTED]\\"}\n[truncated at 1 MB]');
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
