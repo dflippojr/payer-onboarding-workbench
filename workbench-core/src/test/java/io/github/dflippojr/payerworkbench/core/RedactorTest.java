@@ -21,9 +21,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Keys and tokens are generated at runtime; nothing secret-shaped is committed. */
@@ -628,6 +630,63 @@ class RedactorTest {
         // Text with no JSON nested two levels deep is returned as it is.
         String plain = "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"}\"}";
         assertTrue(plain == Redactor.maskNestedJwks(plain, 0));
+    }
+
+    @Test
+    void masksJwksWhoseEmbeddedQuotesAreUnicodeEscapes() {
+        // The review's shape: a serializer that escapes a quote in a string as \\u0022 (as .NET's default encoder
+        // does), also in either hex case and mixed with \".
+        assertEquals("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
+        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\\"[REDACTED]\\\"}\"}",
+                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
+        // Every mix of escapes one to three levels deep reads back as the masked JWK, whichever way each level
+        // escapes its quotes (\" or \\u0022) and backslashes (\\\\ or \\u005c).
+        List<UnaryOperator<String>> levels = List.of(RedactorTest::nested, RedactorTest::nestedEscapingQuotes,
+                RedactorTest::nestedEscapingBackslashes);
+        for (String jwk : List.of(
+                "{\"kty\":\"RSA\",\"n\":\"N1\",\"d\":\"PRIVD\",\"oth\":[{\"r\":\"PRIVR\"}],\"qi\":\"PRIVQI\"}",
+                "{\"keys\":[{\"k\":\"PRIVK\",\"kty\":\"oct\"}]}",
+                "{\"kty\":\"oct\",\"note\":\"a \\\"quoted\\\" \\\\ word\",\"k\":\"PRIVK\"}")) {
+            String masked = Redactor.redact(jwk);
+            for (UnaryOperator<String> a : levels) {
+                for (UnaryOperator<String> b : levels) {
+                    for (String in : List.of(a.apply(jwk), b.apply(a.apply(jwk)), a.apply(b.apply(a.apply(jwk))))) {
+                        String out = Redactor.redact(in);
+                        assertFalse(out.contains("PRIV"), out);
+                        assertEquals(masked, unnested(out), in);
+                    }
+                }
+            }
+        }
+        // Without kty the names stay.
+        String plain = "{\"body\":\"{\\u0022d\\u0022:\\u0022x\\u0022,\\u0022k\\u0022:[1,2]}\"}";
+        assertEquals(plain, Redactor.redact(plain));
+    }
+
+    /** {@link #nested}, with each quote in the string escaped as {@code \\u0022}. */
+    private static String nestedEscapingQuotes(String text) {
+        return "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\u0022") + "\"}";
+    }
+
+    /** {@link #nested}, with each backslash in the string escaped as {@code \\u005C}. */
+    private static String nestedEscapingBackslashes(String text) {
+        return "{\"body\":\"" + text.replace("\\", "\\u005C").replace("\"", "\\\"") + "\"}";
+    }
+
+    /** The JSON text innermost in {@code text}: the {@code body} string, read as JSON, until it is not JSON with one. */
+    private static String unnested(String text) {
+        String json = text;
+        while (true) {
+            JsonNode body = JSON.readTree(json).get("body");
+            if (body == null || !body.isString()) {
+                return json;
+            }
+            json = body.asString();
+            if (!json.startsWith("{\"body\"")) {
+                return json;
+            }
+        }
     }
 
     /** {@code text} as the value of a JSON string member, escaped as a serializer escapes it. */

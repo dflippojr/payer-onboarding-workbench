@@ -70,6 +70,8 @@
     {"id": "authorization-line-punctuation-credential", "rule": "HEADER_LINE", "input": "Authorization: Bearer -._~+/=", "secrets": ["-._~+/="]},
     {"id": "jwk-nested-two-levels", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"kty\\\\\\\":\\\\\\\"oct\\\\\\\",\\\\\\\"k\\\\\\\":\\\\\\\"FAKE-nested2-jwk-k-0078\\\\\\\"}\\\"}\"}", "secrets": ["FAKE-nested2-jwk-k-0078"]},
     {"id": "jwk-nested-three-levels", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"body\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"kty\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"RSA\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"n\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKEN\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"d\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKE-nested3-jwk-d-0079\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"qi\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKE-nested3-jwk-qi-0080\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}", "secrets": ["FAKE-nested3-jwk-d-0079", "FAKE-nested3-jwk-qi-0080"]},
+    {"id": "jwk-embedded-unicode-escaped-quotes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022FAKE-u0022-jwk-k-0081\\u0022}\"}", "secrets": ["FAKE-u0022-jwk-k-0081"]},
+    {"id": "jwk-nested-unicode-escaped-quotes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\u0022body\\u0022:\\u0022{\\\\u0022kty\\\\u0022:\\\\u0022RSA\\\\u0022,\\\\u0022d\\\\u0022:\\\\u0022FAKE-u0022-nested-jwk-d-0082\\\\u0022}\\u0022}\"}", "secrets": ["FAKE-u0022-nested-jwk-d-0082"]},
     {"id": "pgp-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nFAKE-PGP-KEY-NOT-REAL-0071", "secrets": ["FAKE-PGP-KEY-NOT-REAL-0071"]}
   ],
   "harmless": [
@@ -91,6 +93,7 @@
     {"id": "jwk-public", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"RS384\",\"n\":\"FAKEPUBLICMODULUS\",\"e\":\"AQAB\"},{\"kty\":\"EC\",\"crv\":\"P-384\",\"x\":\"FAKEX\",\"y\":\"FAKEY\"}]}"},
     {"id": "jwk-escaped-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"\\u0064\":\"2026-11-03\",\"\\u006b\":[1,2]}"},
     {"id": "jwk-member-names-without-kty-nested-two-levels", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"d\\\\\\\":\\\\\\\"2026-11-03\\\\\\\",\\\\\\\"k\\\\\\\":[1,2]}\\\"}\"}"},
+    {"id": "jwk-member-names-without-kty-unicode-escaped-quotes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\u0022d\\u0022:\\u0022x\\u0022,\\u0022k\\u0022:[1,2]}\"}"},
     {"id": "jwk-member-names-without-kty", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"d\":\"2026-10-29\",\"p\":0.05,\"q\":\"query\",\"k\":[1,2]}"},
     {"id": "prose-token", "rule": "PROSE_WORD", "input": "Token expired."},
     {"id": "prose-token-endpoint", "rule": "PROSE_WORD", "input": "token endpoint: https://payer.example/token\ntoken response: error=invalid_client"},
