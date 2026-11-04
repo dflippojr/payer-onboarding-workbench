@@ -716,11 +716,11 @@ public final class Redactor {
             if (!json.contains("\\\"") && !UNICODE_ESCAPE.matcher(json).find()) {
                 break;
             }
-            view = unescaped(normal);
             if (depth == NESTED_LEVELS) {
-                masks.addAll(stringsHoldingEscapes(view));
+                masks.addAll(stringsHoldingEscapes(text));
                 break;
             }
+            view = unescaped(normal);
         }
         if (masks.isEmpty()) {
             return text;
@@ -774,32 +774,50 @@ public final class Redactor {
     }
 
     /**
-     * Each string in {@code view} whose content still holds an escape, so JSON nested deeper than
-     * {@link #NESTED_LEVELS} may be in it: its content, between quotes not escaped in the view, masked whole.
-     * The mask has no quote or backslash, so it needs no escaping at any level.
+     * Each string of the text itself whose content holds an escape, so JSON nested deeper than
+     * {@link #NESTED_LEVELS} may be in it: its content masked whole. The strings are read in the text, not in a
+     * view, where an escaped quote of the text has become a bare one and would shift which quotes bound them:
+     * a backslash always takes the next character with it, a string cut off by the end of the text runs to it,
+     * and a quote whose string is followed by something no string is (a stray one, in prose) is read again
+     * from the character after it, without reopening strings at the escaped quotes its span held. The mask has
+     * no quote or backslash, so it needs no escaping at any level.
      */
-    private static List<Mask> stringsHoldingEscapes(View view) {
+    private static List<Mask> stringsHoldingEscapes(String text) {
         List<Mask> masks = new ArrayList<>();
-        String json = view.text();
-        int open = -1;
-        boolean escapes = false;
-        for (int i = 0; i < json.length(); i++) {
-            char c = json.charAt(i);
-            if (c == '\\') {
-                escapes = true;
+        int quotesFrom = 0;
+        int i = 0;
+        while (i < text.length()) {
+            if (text.charAt(i) != '"' || i < quotesFrom) {
                 i++;
-            } else if (c == '"' && open < 0) {
-                open = i + 1;
-                escapes = false;
-            } else if (c == '"') {
-                if (escapes) {
-                    masks.add(new Mask(view.at(open), view.at(i), MASK));
-                }
-                open = -1;
+                continue;
             }
-        }
-        if (open >= 0 && escapes) {
-            masks.add(new Mask(view.at(open), view.at(json.length()), MASK));
+            int close = i + 1;
+            boolean escapes = false;
+            while (close < text.length() && text.charAt(close) != '"') {
+                if (text.charAt(close) == '\\') {
+                    escapes = true;
+                    close++;
+                }
+                close++;
+            }
+            int end = Math.min(close, text.length());
+            if (escapes) {
+                masks.add(new Mask(i + 1, end, MASK));
+            }
+            if (end == text.length()) {
+                break;
+            }
+            int next = end + 1;
+            while (next < text.length() && Character.isWhitespace(text.charAt(next))) {
+                next++;
+            }
+            char after = next < text.length() ? text.charAt(next) : ',';
+            if (after == ',' || after == ':' || after == '}' || after == ']') {
+                i = end + 1;
+            } else {
+                quotesFrom = end;
+                i++;
+            }
         }
         return masks;
     }
