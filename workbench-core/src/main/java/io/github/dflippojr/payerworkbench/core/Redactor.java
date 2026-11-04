@@ -66,11 +66,11 @@ public final class Redactor {
             "-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \\1-----", Pattern.DOTALL);
 
     /**
-     * A private key header, PEM or PGP ({@code PRIVATE KEY BLOCK}), with no matching footer (truncated
-     * paste): mask to the end.
+     * A private key header, PEM or PGP ({@code PRIVATE KEY BLOCK}), not already masked. One that is in no
+     * {@link #PEM_BLOCK} has no matching footer (a truncated paste) and is masked to the end of the text.
      */
     private static final Pattern UNTERMINATED_PEM_KEY = Pattern.compile(
-            "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----(?!\\s*" + Pattern.quote(MASK) + ").*", Pattern.DOTALL);
+            "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----(?!\\s*" + Pattern.quote(MASK) + ")");
 
     /**
      * Where a word starts: a word boundary, or right after a JSON escape such as {@code \n}, which
@@ -775,16 +775,21 @@ public final class Redactor {
                     "-----BEGIN " + block.group(1) + "-----\n" + MASK + "\n-----END " + block.group(1) + "-----"));
             blocks.add(new int[] {block.start(), block.end()});
         }
-        Matcher unterminated = UNTERMINATED_PEM_KEY.matcher(text);
-        int from = 0;
-        while (from < text.length() && unterminated.find(from)) {
-            int start = unterminated.start();
-            int[] inBlock = blocks.stream().filter(b -> b[0] <= start && start < b[1]).findFirst().orElse(null);
-            if (inBlock == null) {
-                masks.add(new Mask(start, text.length(), "-----BEGIN " + unterminated.group(1) + "-----\n" + MASK));
-                break;
+        // The blocks are in order and apart: one pointer walks them as the headers are found, and a header in a
+        // block resumes the search after that block, so the text is read once.
+        Matcher header = UNTERMINATED_PEM_KEY.matcher(text);
+        int next = 0;
+        while (header.find()) {
+            int start = header.start();
+            while (next < blocks.size() && blocks.get(next)[1] <= start) {
+                next++;
             }
-            from = inBlock[1];
+            if (next < blocks.size() && blocks.get(next)[0] <= start) {
+                header.region(blocks.get(next)[1], text.length());
+                continue;
+            }
+            masks.add(new Mask(start, text.length(), "-----BEGIN " + header.group(1) + "-----\n" + MASK));
+            break;
         }
         return masks;
     }
