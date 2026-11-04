@@ -83,8 +83,15 @@ public final class Redactor {
     /** Short all-letter words after "bearer"/"basic" are prose ("missing bearer token."), not credentials. */
     private static final Pattern PROSE_WORD = Pattern.compile("[A-Za-z]{1,15}[.)]*");
 
+    /**
+     * A signed JWT. Each run of token characters is tried once, from its start, up to its first {@code eyJ} at a word
+     * start (#310): every later {@code eyJ} in that run meets the same dots, so it cannot match where the first did
+     * not, and retrying each one makes {@code eyJ-eyJ-eyJ-...} quadratic. Whatever comes before that {@code eyJ} is in
+     * group 1 and goes back unchanged.
+     */
     private static final Pattern JWT = Pattern.compile(
-            WORD_START + "(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
+            "(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?" + WORD_START + "eyJ)[A-Za-z0-9_-]*+)"
+                    + "\\.([A-Za-z0-9_-]*+)\\.[A-Za-z0-9_-]++");
 
     /**
      * JSON field names whose values are always masked, lower case without {@code _} and {@code -}

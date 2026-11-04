@@ -11,6 +11,8 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.net.HttpURLConnection;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -115,15 +117,29 @@ class FirstRunWarmup implements SmartInitializingSingleton {
         if (!(context instanceof WebServerApplicationContext)) {
             return; // no web server to wait for, as in a test with a mock web environment
         }
-        try (HttpClient http = HttpClient.newHttpClient()) {
-            URI uri = URI.create("http://127.0.0.1:" + port.get(10, TimeUnit.SECONDS) + "/api/runs");
-            http.send(HttpRequest.newBuilder(uri)
-                            .timeout(Duration.ofSeconds(10))
-                            .header("Content-Type", "application/json")
-                            .header(InternalRequestToken.HEADER, internal.issue())
-                            .POST(HttpRequest.BodyPublishers.ofString("{}"))
-                            .build(),
-                    HttpResponse.BodyHandlers.discarding());
+        // Direct, whatever the JVM's default proxy: the request carries the internal value, and a proxy
+        // holding that could send its own POST and have it audited as the system actor.
+        try (HttpClient http = HttpClient.newBuilder().proxy(ProxySelector.of(null)).build()) {
+            URI uri = requestPathUri(context.getEnvironment().getProperty("server.address"),
+                    port.get(10, TimeUnit.SECONDS));
+            String value = internal.issue();
+            try {
+                int status = http.send(HttpRequest.newBuilder(uri)
+                                .timeout(Duration.ofSeconds(10))
+                                .header("Content-Type", "application/json")
+                                .header(InternalRequestToken.HEADER, value)
+                                .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                                .build(),
+                        HttpResponse.BodyHandlers.discarding()).statusCode();
+                if (status != HttpURLConnection.HTTP_BAD_REQUEST) {
+                    LOG.warn("First-run warm-up of the request path got HTTP {} instead of the app's 400;"
+                            + " the first request will be slower", status);
+                }
+            } finally {
+                // The audit filter has used the value if the request reached it. Any other way out
+                // (a refused connection, a timeout, a refusal before that filter) must not leave it pending.
+                internal.withdraw(value);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             LOG.warn("First-run warm-up of the request path was interrupted");
@@ -131,5 +147,22 @@ class FirstRunWarmup implements SmartInitializingSingleton {
             LOG.warn("First-run warm-up of the request path failed; the first request will be slower: {}",
                     e.toString());
         }
+    }
+
+    /**
+     * Where this app can reach itself: {@code server.address} as written, with an IPv6 literal in brackets,
+     * or 127.0.0.1 when it is unset or a wildcard.
+     */
+    static URI requestPathUri(String serverAddress, int port) {
+        String address = serverAddress == null ? "" : serverAddress.strip();
+        String host;
+        if (HostCheckFilter.boundLiteral(address) == null) {
+            host = "127.0.0.1";
+        } else if (address.indexOf(':') >= 0 && !address.startsWith("[")) {
+            host = "[" + address + "]";
+        } else {
+            host = address;
+        }
+        return URI.create("http://" + host + ":" + port + "/api/runs");
     }
 }

@@ -5,7 +5,7 @@ The workbench's three response checks are `response.schema`, `response.coverage-
 ## What is here
 
 - **`healthy-<payer>-<sample>.json`.** Northwind, Fabrikam and Tailspin each answer every sample whose hook they serve. The answers come from each mock's own hook handler (`MockPayerHooks`), with the clock fixed at 2026-03-02 and each payer's own prefetch style. The `order-sign-missing-prefetch` sample is skipped because it gets an error, not a response, and `appointment-book-dme-fitting` because no mock serves that hook.
-- **`mutant-<rule>.json`.** A healthy response with one rule broken. The `base` and `rule` fields in `index.json` say which response it starts from and what was broken: a required element removed, cardinality broken, a wrong code or code system, a wrong coverage-information extension structure, or an unknown extension. Most mutants start from Northwind's hospital-bed answer, which carries coverage information in `systemActions`. The suggestion mutants start from Fabrikam's, which carries it in card suggestions.
+- **`mutant-<rule>.json`.** A healthy response with one rule broken. The `base` and `rule` fields in `index.json` say which response it starts from and what was broken: a required element removed, cardinality broken, a wrong code or code system, a wrong coverage-information extension structure, or an unknown extension. Most mutants start from Northwind's hospital-bed answer, which carries coverage information in `systemActions`. The suggestion action and selection-behavior mutants start from Fabrikam's, which carries it in card suggestions. The malformed-suggestion mutants add a second card to Northwind's.
 - **`index.json`.** Every item with its description.
 - **`conformance-allowlist.json`.** The known disagreements (see below).
 
@@ -51,9 +51,10 @@ Issues no check claims are counted in the report under "Validator issues no chec
 
 Before adding an entry, decide which side is wrong:
 
-- **The workbench is wrong.** Fix the check and add a unit test for the case. The PR that added this corpus did that twice:
+- **The workbench is wrong.** Fix the check and add a unit test for the case. These fixes came out of the corpus:
   - `response.coverage-location` passed coverage information placed on a coding inside the order (`mutant-ci-on-coding`).
   - `response.schema` passed cards with suggestions but no `selectionBehavior` (`mutant-card-selection-behavior-removed`).
   - `response.schema` passed actions without a valid `type`, a `description` or the `resource` a create or update needs (`mutant-action-*`, #263).
+  - `response.schema` passed suggestions that were not objects or had no `label` (`mutant-suggestion-label-removed`, `-not-an-object`, `-null`, #327).
 - **A mock is wrong.** Fix the mock and regenerate the corpus. Northwind and Tailspin used a card topic code system that does not exist, and Fabrikam's suggestion cards lacked `selectionBehavior`.
 - **The validator is wrong, or the difference is deliberate.** Add an entry only if neither of the above applies.

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -84,6 +85,15 @@ final class Support {
     /** The payer's clock, from the response {@code Date} header. */
     static Optional<Instant> serverDate(HttpExchange exchange) {
         return header(exchange.responseHeaders(), "Date").flatMap(value -> HttpDate.parse(value, Instant.now()));
+    }
+
+    /**
+     * Whether {@code |payer Date - iat|}, in whole seconds, is strictly greater than {@code tolerance}.
+     * {@code auth.clock-skew} and {@code auth.client-assertion} share it so they cannot disagree
+     * about whether the clocks are off. False when {@code iat} is null.
+     */
+    static boolean iatOffsetOverTolerance(Instant iat, Instant serverNow, Duration tolerance) {
+        return iat != null && Math.abs(Duration.between(serverNow, iat).toSeconds()) > tolerance.toSeconds();
     }
 
     /** The last exchange sent to the connection's token endpoint, if any. */

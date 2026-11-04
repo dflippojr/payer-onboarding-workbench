@@ -37,6 +37,8 @@ const { SEVERITIES, compareRuns, brokeAt, verdictOf, stepStatus } = globalThis.P
 const VERDICT_WORDS = { FAIL: 'Fail', PASS_WITH_WARNINGS: 'Pass with warnings', PASS: 'Pass' };
 // Run labels in Recent runs and Compare with must fit a 390 px select, so warnings get the findings chips' word there.
 const LABEL_VERDICT_WORDS = { ...VERDICT_WORDS, PASS_WITH_WARNINGS: 'Warn' };
+// Run labels write PRODUCTION as PROD, so the UTC time and verdict still fit a 390 px select beside the arrow (#326).
+const LABEL_ENVIRONMENTS = { PRODUCTION: 'PROD' };
 
 const $ = id => document.getElementById(id);
 const form = $('run-form');
@@ -127,18 +129,11 @@ async function refreshHistory() {
   renderCompareOptions();
 }
 
-/** "17:03:55 · Northwind · SANDBOX · Fail": short enough for a Recent runs or Compare with option at 390 px. */
+/** "17:03:55 UTC · SANDBOX · Fail": short enough for a Recent runs or Compare with option at 390 px (#326). */
 function historyLabel(r) {
   const at = typeof r.startedAt === 'string' && !Number.isNaN(Date.parse(r.startedAt))
-    ? new Date(r.startedAt).toISOString().slice(11, 19) : `run ${shortId(r.runId)}`;
-  return [at, payerShortName(r.payerId), r.environment, LABEL_VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
-}
-
-/** "Northwind" for "Northwind Health (synthetic)", "Custom" for a custom endpoint, else the payer id. */
-function payerShortName(payerId) {
-  if (payerId === 'custom-endpoint') return 'Custom';
-  const payer = payers.find(p => p.payerId === payerId);
-  return payer ? payer.displayName.split(/\s+/)[0] : payerId;
+    ? clockTime(r.startedAt) : `run ${shortId(r.runId)}`;
+  return [at, LABEL_ENVIRONMENTS[r.environment] || r.environment, LABEL_VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
 }
 
 /** Offers every retained run except the one on screen; enabled only while a run is shown. */

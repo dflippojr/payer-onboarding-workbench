@@ -314,6 +314,47 @@ class ResponseChecksTest {
                     assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().findFirst().orElseThrow());
         }
 
+        @ParameterizedTest(name = "suggestions {0}")
+        @CsvSource(delimiter = '|', value = {
+                "[1]|cards[0].suggestions[0] is not a JSON object",
+                "[null]|cards[0].suggestions[0] is not a JSON object",
+                "[\"Save\"]|cards[0].suggestions[0] is not a JSON object",
+                "[[]]|cards[0].suggestions[0] is not a JSON object",
+                "[{\"label\":\"Save\"},7]|cards[0].suggestions[1] is not a JSON object",
+                "[{}]|cards[0].suggestions[0].label is missing",
+                "[{\"label\":null}]|cards[0].suggestions[0].label is missing",
+                "[{\"label\":7}]|cards[0].suggestions[0].label is missing",
+                "[{\"label\":\" \"}]|cards[0].suggestions[0].label is missing",
+                "[{\"label\":\"Save\"},{\"uuid\":\"u\"}]|cards[0].suggestions[1].label is missing"})
+        void malformedSuggestionFails(String suggestions, String problem) {
+            // CDS Hooks 2.0 Suggestion: an object whose label is REQUIRED (#327).
+            var run = healthy().hookBody("{\"cards\":[{\"summary\":\"a\",\"indicator\":\"info\","
+                    + "\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\",\"suggestions\":" + suggestions + "}]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.FAIL);
+            assertEquals(problem, f.evidence().lines().findFirst().orElseThrow());
+            assertTrue(f.explanation().contains("suggestion needs a label"), f::explanation);
+        }
+
+        @Test
+        void everySuggestionIsCheckedAfterABadOne() {
+            var run = healthy().hookBody("{\"cards\":[{\"summary\":\"a\",\"indicator\":\"info\","
+                    + "\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\","
+                    + "\"suggestions\":[7,{\"actions\":[7]},{\"label\":\"Save\"}]}]}");
+            List<String> lines = assertOnly(check.evaluate(run.build()), Severity.FAIL).evidence().lines().toList();
+            assertEquals(List.of("cards[0].suggestions[0] is not a JSON object",
+                    "cards[0].suggestions[1].label is missing",
+                    "cards[0].suggestions[1].actions[0] is not a JSON object"), lines.subList(0, 3));
+            assertFalse(String.join("\n", lines).contains("suggestions[2]"), () -> String.join("\n", lines));
+        }
+
+        @Test
+        void passSummaryNamesTheSuggestionLabel() {
+            var run = healthy().hookBody("{\"cards\":[{\"summary\":\"a\",\"indicator\":\"info\","
+                    + "\"source\":{\"label\":\"P\"},\"selectionBehavior\":\"any\",\"suggestions\":[{\"label\":\"Save\"}]}]}");
+            Finding f = assertOnly(check.evaluate(run.build()), Severity.PASS);
+            assertTrue(f.explanation().contains("every suggestion had a label"), f::explanation);
+        }
+
         @Test
         void nullActionsOnASuggestionIsAbsent() {
             var run = healthy().hookBody("{\"cards\":[{\"summary\":\"a\",\"indicator\":\"info\","
