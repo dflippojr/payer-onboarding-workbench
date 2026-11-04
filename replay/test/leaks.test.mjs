@@ -245,6 +245,13 @@ test('decodes a name escape only at a backslash count an escape has at its depth
   assert.deepEqual(findTextLeaks(String.raw`{"body":"{\"\\\\u006bty\":\"RSA\",\"d\":\"x\"}"}`), []);
   assert.ok(findTextLeaks(String.raw`{"\u006bty":"RSA","d":"LEAKED"}`).length > 0);
 });
+test('scopes kty in embedded JSON after its structure is decoded', () => {
+  // The JWK closes on a brace the outer string spells as a unicode escape: the d after it is an ordinary field.
+  const ok = String.raw`{"body":"{\"jwk\":{\"kty\":\"oct\",\"k\":\"[REDACTED]\"\u007D,\"d\":\"keep\"}"}`;
+  assert.deepEqual(findTextLeaks(ok), []);
+  assert.deepEqual(findTextLeaks(JSON.stringify({ report: ok })), []);
+  assert.ok(findTextLeaks(String.raw`{"body":"{\"jwk\":{\"kty\":\"oct\"\u007D,\"d\":\"keep\",\"x\":{\"kty\":\"RSA\",\"d\":\"LEAKED\"}}"}`).length > 0);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

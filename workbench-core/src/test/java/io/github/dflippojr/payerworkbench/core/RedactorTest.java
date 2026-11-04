@@ -809,6 +809,18 @@ class RedactorTest {
     }
 
     @Test
+    void masksBothPrivateMembersThatShareAQuoteOnceTheBudgetIsSpent() {
+        // d's empty value closes on the quote that opens p: masking d must not skip p's value.
+        assertEquals("{\"d\":\"[REDACTED]\"p\":\"[REDACTED]\",\"kty\":\"RSA\"}",
+                Redactor.maskJwks("{\"d\":\"\"p\":\"PRIVP\",\"kty\":\"RSA\"}", false, 0));
+        assertEquals("{\\\"d\\\":\\\"[REDACTED]\\\"p\\\":\\\"[REDACTED]\\\",\\\"kty\\\":\\\"RSA\\\"}",
+                Redactor.maskJwks("{\\\"d\\\":\\\"\\\"p\\\":\\\"PRIVP\\\",\\\"kty\\\":\\\"RSA\\\"}", true, 0));
+        // The review's shape: 63 repeated kty members spend the budget.
+        String out = Redactor.redact("\"kty\":\"".repeat(63) + "{\"d\":\"\"p\":\"PRIVP\",\"kty\":\"RSA\"}");
+        assertFalse(out.contains("PRIVP"), out);
+    }
+
+    @Test
     void masksAPrivateMemberRightAfterAMalformedValueOnceTheBudgetIsSpent() {
         // The empty value's closing quote is also the quote that opens "d": the names are found on their own.
         assertEquals("{\"x\":\"\"d\":\"[REDACTED]\",\"kty\":\"RSA\"}",
