@@ -809,6 +809,16 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkWhoseKtyComesAfterAnUnterminatedPrivateKeyBlock() {
+        // The review's ordering: d, then a member holding an unterminated private key header, then kty. Masking the
+        // block to the end of the text must not hide kty from the JWK pass first.
+        String plain = "{\"d\":\"PRIVD\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\\nlQOY\",\"kty\":\"RSA\"}";
+        assertFalse(Redactor.redact(plain).contains("PRIVD"), Redactor.redact(plain));
+        String embedded = nested(plain.replace("PGP PRIVATE KEY BLOCK", "RSA PRIVATE KEY"));
+        assertFalse(Redactor.redact(embedded).contains("PRIVD"), Redactor.redact(embedded));
+    }
+
+    @Test
     void masksBothPrivateMembersThatShareAQuoteOnceTheBudgetIsSpent() {
         // d's empty value closes on the quote that opens p: masking d must not skip p's value.
         assertEquals("{\"d\":\"[REDACTED]\"p\":\"[REDACTED]\",\"kty\":\"RSA\"}",

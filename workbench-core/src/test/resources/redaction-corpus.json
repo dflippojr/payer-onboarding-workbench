@@ -76,6 +76,7 @@
     {"id": "jwk-embedded-unicode-escaped-colon", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"d\\\"\\u003A\\\"FAKE-u003a-jwk-d-0084\\\"}\"}", "secrets": ["FAKE-u003a-jwk-d-0084"]},
     {"id": "jwk-embedded-unicode-escaped-quotes-after-prose", "rule": "JWK_PRIVATE_MEMBER", "input": "evidence: {\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022FAKE-prose-u0022-jwk-k-0085\\u0022}\"}", "secrets": ["FAKE-prose-u0022-jwk-k-0085"]},
     {"id": "jwk-embedded-mixed-quote-escapes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"d\\\":\\\"FAKE-mixed-quote-jwk-d-0086\\u0022,\\\"p\\\":\\\"FAKE-mixed-quote-jwk-p-0087\\\"}\"}", "secrets": ["FAKE-mixed-quote-jwk-d-0086", "FAKE-mixed-quote-jwk-p-0087"]},
+    {"id": "jwk-kty-after-unterminated-private-key-block", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"d\":\"FAKE-pem-before-kty-d-0088\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\\nFAKEKEYBODY\",\"kty\":\"RSA\"}", "secrets": ["FAKE-pem-before-kty-d-0088"]},
     {"id": "pgp-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nFAKE-PGP-KEY-NOT-REAL-0071", "secrets": ["FAKE-PGP-KEY-NOT-REAL-0071"]}
   ],
   "harmless": [
