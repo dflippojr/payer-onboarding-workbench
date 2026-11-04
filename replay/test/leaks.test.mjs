@@ -387,6 +387,28 @@ test('r5: a key block starting in a JWK member, and a chain past the cap in a un
   assertFlagged(String.raw`{\u0022body\u0022:\u0022` + jwk + String.raw`\u0022}`);
   assertAccepted('[REDACTED]');
 });
+test('treats kty as a JWK member only in a JSON object, not in loose text or an array (#262)', () => {
+  // The automated review on 4927c5c: Redactor keeps each of these (RedactorTest.leavesJwkMemberNamesOutsideAJwkAlone).
+  const loose = '"kty": "RSA", "d": "dimension"';
+  assert.deepEqual(findTextLeaks(JSON.stringify({ responseBody: loose })), [], "the review's report form");
+  for (const kept of [loose, '"kty": "RSA", "d": "x"', '["kty": "RSA", "d": "x"]', '["kty": 1, "kty": 2, "d": "x"]',
+    JSON.stringify({ body: loose })]) {
+    assertAccepted(kept);
+  }
+  // A real JWK in loose text, beside loose kty text, in an array or cut off, is still judged: flagged as it came,
+  // accepted as Redactor leaves it (each masked form is Redactor's output for the leaked one), also embedded.
+  const cases = [
+    ['note "kty": "RSA", "d": "dimension" and {"kty":"RSA","d":"FAKE_LOOSE_JWK_D"} trailing',
+      'note "kty": "RSA", "d": "dimension" and {"kty":"RSA","d":"[REDACTED]"} trailing'],
+    ['"kty": "RSA", "keys": [{"kty":"oct","k":"FAKE_LOOSE_JWK_K"}], "d": "dimension"',
+      '"kty": "RSA", "keys": [{"kty":"oct","k":"[REDACTED]"}], "d": "dimension"'],
+    ['payer echoed {"kty":"RSA","n":"N1","d":"FAKE_LOOSE_JWK_D"', 'payer echoed {"kty":"RSA","n":"N1","d":"[REDACTED]"'],
+  ];
+  for (const [leaked, masked] of [...cases, ...cases.map(([l, m]) => [JSON.stringify({ body: l }), JSON.stringify({ body: m })])]) {
+    assertFlagged(leaked);
+    assertAccepted(masked);
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
