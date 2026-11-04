@@ -650,6 +650,15 @@ class RedactorTest {
             assertFalse(out.contains("PRIVK"), out);
             assertEquals(Redactor.redact(unnested(in)), unnested(out), in);
         }
+        // A value opened with \" and closed with \\u0022, before a private member or after a secret field: the
+        // members after it are read as JSON reads them.
+        for (String in : List.of(
+                "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"d\\\":\\\"PRIVD\\u0022,\\\"p\\\":\\\"PRIVP\\\"}\"}",
+                "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"password\\\":\\\"PRIVPW\\u0022,\\\"d\\\":\\\"PRIVD\\\"}\"}")) {
+            String out = Redactor.redact(in);
+            assertFalse(out.contains("PRIV"), out);
+            assertEquals(Redactor.redact(unnested(in)), unnested(out), in);
+        }
         String spelled = "{\"body\":\"\\u007B\\\"kty\\\":\\\"oct\\\"\\u002C\\u000A\\\"k\\\":\\\"PRIVK\\\"\\u007D\"}";
         assertFalse(Redactor.redact(spelled).contains("PRIVK"), Redactor.redact(spelled));
         // Every mix of escapes one to three levels deep reads back as the masked JWK, whichever way each level

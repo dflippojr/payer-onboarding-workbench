@@ -165,6 +165,12 @@ test('reads unicode-escaped embedded JSON after prose, also in a report field', 
   assert.deepEqual(findTextLeaks(`evidence: ${masked}`), []);
   assert.deepEqual(findJsonLeaks({ responseBody: `evidence: ${masked}` }), []);
 });
+test('reads JSON after prose in a parsed report string, whatever its escapes were', () => {
+  assert.ok(findJsonLeaks({ evidence: 'payer said: {"kty":"oct","k":"LEAKED"}' }).length > 0);
+  assert.ok(findTextLeaks(String.raw`{"evidence":"payer said: {\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022LEAKED\u0022}"}`).length > 0);
+  assert.deepEqual(findJsonLeaks({ evidence: 'payer said: {"kty":"oct","k":"[REDACTED]"}' }), []);
+  assert.deepEqual(findTextLeaks(String.raw`{"evidence":"payer said: {\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022[REDACTED]\u0022}"}`), []);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
