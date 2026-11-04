@@ -347,6 +347,23 @@ test('r4: a secret value with a raw line break in it is judged whole', () => {
   assertAccepted('{"kty":"oct","k":"[REDACTED]"');
   assertAccepted('{"body":"{\\"password\\":\\"[REDACTED]\\"}\n[truncated at 1 MB]');
 });
+test('reads repeated scheme words, escaped header lines and token runs in linear work', () => {
+  // The automated review on a09d112: Bearer+ repeated made the credential check read overlapping suffixes. The
+  // escaped-header and eyJ- shapes had the same overlap (4x time per doubling on a09d112).
+  const n = 200_000;
+  const cases = [
+    ['Bearer+'.repeat(n / 7), true],
+    ['"' + '\\nCookie: a'.repeat(n / 11) + '"', true],
+    ['"' + '\\nCookie: [REDACTED]'.repeat(n / 20) + '"', false],
+    ['eyJ-'.repeat(n / 4), false],
+    ['token '.repeat(n / 6) + 'DPoP PHNhbWw6QXNz', true],
+  ];
+  for (const [text, leaks] of cases) {
+    scanWork.characters = 0;
+    assert.equal(findTextLeaks(text).length > 0, leaks, text.slice(0, 40));
+    assert.ok(scanWork.characters <= 40 * text.length + 4096, `read ${scanWork.characters} of ${text.length}`);
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
