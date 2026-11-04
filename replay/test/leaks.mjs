@@ -181,12 +181,20 @@ const runEnd = (text, start) => {
   return i;
 };
 
-/** Where the first eyJ at a word start (or right after a JSON escape such as \n) in [start, end) is, or -1. */
-function jwtStart(text, start, end) {
-  for (let j = text.indexOf('eyJ', start); j >= 0 && j + 3 <= end; j = text.indexOf('eyJ', j + 1)) {
+/**
+ * Where the first eyJ at a word start (or right after a JSON escape such as \n) in the run [start, end) is, or
+ * -1. Only the run is read, and it is charged to the scan's work.
+ */
+function jwtStart(text, start, end, ctx) {
+  for (let j = start; j + 3 <= end; j++) {
+    if (text[j] !== 'e' || text[j + 1] !== 'y' || text[j + 2] !== 'J') continue;
     const before = text[j - 1];
-    if (j === 0 || !/\w/.test(before) || (text[j - 2] === '\\' && 'nrtbf'.includes(before))) return j;
+    if (j === 0 || !/\w/.test(before) || (text[j - 2] === '\\' && 'nrtbf'.includes(before))) {
+      ctx.work += j - start;
+      return j;
+    }
   }
+  ctx.work += end - start;
   return -1;
 }
 
@@ -235,7 +243,7 @@ const TEXT_CHECKS = [
       ctx.work += end - i;
       if (text[end] === '.') {
         const claims = runEnd(text, end + 1);
-        if (text[claims] === '.' && runEnd(text, claims + 1) > claims + 1 && jwtStart(text, i, end) >= 0) {
+        if (text[claims] === '.' && runEnd(text, claims + 1) > claims + 1 && jwtStart(text, i, end, ctx) >= 0) {
           ctx.leaks.push({ check: 'signed JWT', match: text.slice(i, Math.min(claims + 40, i + 80)) });
         }
       }
