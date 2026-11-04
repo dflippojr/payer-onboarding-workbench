@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.temporal.TemporalAccessor;
 import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
@@ -186,13 +187,15 @@ public final class Redactor {
      * and an inner {@code \"} three and a quote. A string cut off by the end of the text counts too,
      * and so does one cut off by the end of the outer string (an unescaped quote): embedded JSON that
      * was truncated before it was quoted. Either cut may leave up to three backslashes of an escape,
-     * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}.
+     * and a cut at the end of the text may be followed by a line break, as in {@link #JSON_FIELD}. The outer
+     * string may spell the closing quote {@code \\u0022}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
             BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
                     + BACKSLASH + "\"((?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
-                    + "|" + BACKSLASH + PLAIN + ")*+)(?:" + BACKSLASH + "\"|(?:" + BACKSLASH + "){0,3}+(?=\"|\\R|\\z))|"
+                    + "|" + BACKSLASH + "(?!u0022)" + PLAIN + ")*+)(?:" + BACKSLASH + "(?:\"|u0022)|(?:" + BACKSLASH
+                    + "){0,3}+(?=\"|\\R|\\z))|"
                     + JSON_SCALAR + ")");
 
     /** A JSON field whose value is an object or array; group 1 is the name. */
@@ -333,6 +336,13 @@ public final class Redactor {
                 Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK));
         out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
+        // JWKs first, on the text as it came: a secret field's mask can end at the next member's quote.
+        out = maskJwks(out, false);
+        if (!UNICODE_ESCAPE.matcher(out).find()) {
+            // With a unicode escape, a quote may be spelled two ways; maskNestedJwks reads that level decoded.
+            out = maskJwks(out, true);
+        }
+        out = maskNestedJwks(out);
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
         out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(decodeName(m.group(1)))
@@ -341,9 +351,6 @@ public final class Redactor {
         out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(decodeName(m.group(1)))
                 ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(decodeName(m.group(1)), m.group(3)) + "\\\""
                 : m.group()));
-        out = maskJwks(out, false);
-        out = maskJwks(out, true);
-        out = maskNestedJwks(out);
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
@@ -575,16 +582,16 @@ public final class Redactor {
 
     /** {@link #maskJwks(String, boolean)} with a budget of {@code characters} to read. */
     static String maskJwks(String text, boolean embedded, int characters) {
-        List<int[]> values = jwkValues(text, embedded, characters);
+        List<JwkValue> values = jwkValues(text, embedded, characters);
         if (values.isEmpty()) {
             return text;
         }
         String masked = embedded ? "\\\"" + MASK + "\\\"" : "\"" + MASK + "\"";
         StringBuilder out = new StringBuilder(text.length());
         int copied = 0;
-        for (int[] value : values) {
-            out.append(text, copied, value[0]).append(masked);
-            copied = value[1];
+        for (JwkValue value : values) {
+            out.append(text, copied, value.start()).append(masked);
+            copied = value.end();
         }
         return out.append(text, copied, text.length()).toString();
     }
@@ -594,7 +601,7 @@ public final class Redactor {
      * ends, in order and apart: the opening quote (or bracket) through the closing quote (or bracket), and
      * where the member's name starts (its opening quote, or in embedded JSON the backslash before it).
      */
-    private static List<int[]> jwkValues(String text, boolean embedded, int characters) {
+    private static List<JwkValue> jwkValues(String text, boolean embedded, int characters) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
         Matcher kty = (embedded ? EMBEDDED_KTY_NAME : KTY_NAME).matcher(text);
         // Where the text read by objects() so far ends: every object before it is known.
@@ -634,7 +641,7 @@ public final class Redactor {
                 }
             }
         }
-        List<int[]> values = new ArrayList<>();
+        List<JwkValue> values = new ArrayList<>();
         Matcher field = (embedded ? EMBEDDED_JSON_FIELD : JSON_FIELD).matcher(text);
         Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : JSON_FIELD_STRUCTURE).matcher(text);
         int copied = 0;
@@ -644,13 +651,17 @@ public final class Redactor {
             }
             if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
                 copied = endOfStructure(text, structure.end(), embedded);
-                values.add(new int[] {structure.end(), copied, name});
+                values.add(new JwkValue(structure.end(), copied, name));
             } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
                 copied = field.end();
-                values.add(new int[] {field.end(2), copied, name});
+                values.add(new JwkValue(field.end(2), copied, name));
             }
         }
         return values;
+    }
+
+    /** A JWK private member's value found by {@link #jwkValues}: where it starts and ends, and where its name starts. */
+    private record JwkValue(int start, int end, int name) {
     }
 
     /** The most levels of JSON nested in JSON strings that {@link #maskNestedJwks(String)} reads one by one. */
@@ -690,9 +701,9 @@ public final class Redactor {
             // One level deep with no unicode escape to decode, maskJwks has read this view already.
             if ((depth > 1 || normal != view) && json.contains("\\\"")) {
                 int budget = characters < 0 ? 4 * json.length() + 1024 : characters;
-                for (int[] value : jwkValues(json, true, budget)) {
-                    String quote = text.substring(normal.at(value[2]), normal.at(value[2] + 2));
-                    masks.add(new Mask(normal.at(value[0]), normal.at(value[1]), quote + MASK + quote));
+                for (JwkValue value : jwkValues(json, true, budget)) {
+                    String quote = text.substring(normal.at(value.name()), normal.at(value.name() + 2));
+                    masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
                 }
             }
             if (!json.contains("\\\"") && !UNICODE_ESCAPE.matcher(json).find()) {
@@ -737,6 +748,21 @@ public final class Redactor {
         /** Where character {@code i} of the view starts in the text. */
         int at(int i) {
             return origin == null ? i : origin[i];
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof View view && text.equals(view.text) && Arrays.equals(origin, view.origin);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * text.hashCode() + Arrays.hashCode(origin);
+        }
+
+        @Override
+        public String toString() {
+            return "View[text=" + text + ", origin=" + Arrays.toString(origin) + "]";
         }
     }
 

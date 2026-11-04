@@ -335,8 +335,8 @@ export function findJsonLeaks(value, path = '$') {
       if (t.startsWith('{') || t.startsWith('[')) {
         try { walk(JSON.parse(t), `${p}<json>`); return; } catch { /* not JSON as a whole */ }
       }
-      // JSON in a sentence, as findTextLeaks reads it once a unicode escape shows it may hide there.
-      if (UNICODE_ESCAPE.test(v)) jsonIn(v).forEach(json => walk(json, `${p}<json>`));
+      // JSON in a sentence (payer said: {...}), however its quotes were escaped before the string was parsed.
+      if (/[{[]/.test(v)) jsonIn(v).forEach(json => walk(json, `${p}<json>`));
       return;
     }
     if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`)); return; }
