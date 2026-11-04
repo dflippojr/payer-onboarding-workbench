@@ -591,8 +591,21 @@ class RedactorTest {
                 // which every level reads again: there are at most log2 of its length levels.
                 nested(nested("{\"kty\":1,".repeat(n / 2))),
                 nested(nested(nested("{" + "\"kty\":1,".repeat(n / 4) + "\"d\":\"y\"}"))),
-                "{\"b\":\"" + "\\".repeat(1 << 20) + "\\\"kty\\\":1\"}");
+                "{\"b\":\"" + "\\".repeat(1 << 20) + "\\\"kty\\\":1\"}",
+                // Members each quoted with a different number of backslashes after a kty (Codex security round 2),
+                // bare and as a recorded body in a report: every search is charged to its level's budget.
+                distinctBackslashCounts(1000), nested(distinctBackslashCounts(1000)));
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
+    }
+
+    /** A JWK whose members after kty are each quoted with a different number of backslashes, 1 to {@code n}. */
+    private static String distinctBackslashCounts(int n) {
+        StringBuilder text = new StringBuilder("{\"kty\":\"oct\"");
+        for (int run = 1; run <= n; run++) {
+            String quote = "\\".repeat(run) + "\"";
+            text.append(',').append(quote).append('k').append(quote).append(":\"PRIVK").append(run).append('"');
+        }
+        return text.append('}').toString();
     }
 
     @Test

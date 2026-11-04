@@ -157,8 +157,15 @@ let jwkMembersText = null;
 let jwkMembers = new Map();
 
 /**
+ * The backslash counts a JSON serializer writes before a quote, 2^d - 1 at depth d, for the 16 levels Redactor
+ * reads: membersInJwks makes at most one pass per count, so at most 17 per text.
+ */
+const SERIALIZED_RUNS = new Set(Array.from({ length: 17 }, (_, depth) => 2 ** depth - 1));
+
+/**
  * Whether the member whose name's quote is at `quote` is in an object with a kty member of its own. A member
- * the pass did not read as one (no object around it at its depth) counts as in a JWK, the stricter answer.
+ * the pass did not read as one (no object around it at its depth), or quoted with a backslash count no
+ * serializer writes, counts as in a JWK, the stricter answer.
  */
 function inObjectWithKty(text, quote) {
   if (text !== jwkMembersText) {
@@ -166,6 +173,7 @@ function inObjectWithKty(text, quote) {
     jwkMembers = new Map();
   }
   const run = backslashesBefore(text, quote);
+  if (!SERIALIZED_RUNS.has(run)) return true;
   if (!jwkMembers.has(run)) jwkMembers.set(run, membersInJwks(text, run));
   const result = jwkMembers.get(run).get(quote - run);
   return result === undefined ? true : result;
