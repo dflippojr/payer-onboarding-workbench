@@ -220,7 +220,7 @@ function readLiteral(text, start, ctx) {
     }
     if (c === '\n' || c === '\r') {
       ctx.work += i - start;
-      return { aborted: true, end: i };
+      return { aborted: true, start, end: i, terminated: false, body: text.slice(start + 1, i) };
     }
     if (c === '\\') {
       // A backslash before a line break: a value cut there, before a note appended to the cut body.
@@ -355,6 +355,12 @@ function scanJson(text, level, ctx) {
     if (c === '"' && i >= quotesFrom) {
       const literal = readLiteral(text, i, ctx);
       if (literal.aborted) {
+        // A member's value cut off at a line break (before a note appended to a cut body) is still its value.
+        if (member) {
+          member.owner.values.push({
+            name: member.name, kind: 'string', value: decodeLiteral(literal, ctx), text: literal.body, cutShort: false,
+          });
+        }
         // Every quote before the line break would open a string that runs into it too.
         member = null;
         i = literal.end;
@@ -365,6 +371,12 @@ function scanJson(text, level, ctx) {
       while (next < text.length && isSpace(text[next])) next++;
       ctx.work += next - literal.end;
       if (literal.terminated && text[next] === ':') {
+        // A value with a colon after it is still the member's value (Redactor masks it and keeps the colon).
+        if (member) {
+          member.owner.values.push({
+            name: member.name, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
+          });
+        }
         const name = decoded ?? literal.body;
         const o = owner();
         if (name === 'kty') o.kty = true;
@@ -407,6 +419,14 @@ function scanJson(text, level, ctx) {
     } else if (c === '}' || c === ']') {
       if (stack.length > 0) judge(stack.pop().owner, ctx);
       member = null;
+    } else if (!member && stack.length > 0 && stack[stack.length - 1].list && !isSpace(c) && c !== ',' && c !== ':') {
+      // A number, true, false or null in a secret-named list is no mask.
+      let end = i;
+      while (end < text.length && !isSpace(text[end]) && text[end] !== ',' && text[end] !== '}' && text[end] !== ']') end++;
+      stack[stack.length - 1].list.items.push({ scalar: text.slice(i, end) });
+      ctx.work += end - i;
+      i = Math.max(end, i + 1);
+      continue;
     } else if (member && !isSpace(c)) {
       // A scalar value runs to the next delimiter.
       let end = i;
