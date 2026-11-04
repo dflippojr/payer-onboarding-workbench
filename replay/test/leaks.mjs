@@ -59,11 +59,86 @@ const hasJwkType = text => {
   return jwkTypeFound;
 };
 
+/** How many backslashes are right before `text[i]`. */
+const backslashesBefore = (text, i) => {
+  let k = 0;
+  while (text[i - 1 - k] === '\\') k++;
+  return k;
+};
+
 /**
- * Whether a field holds a JWK's private member: Redactor masks a JWK's own ones, the scanner any in text
- * that has a kty member, as the secret fields it always masks.
+ * Whether the JSON object holding the member whose name's quote is at `quote` has a kty member of its own, as
+ * Redactor masks only a JWK's own members. It is read at that member's escape depth: with r backslashes before
+ * the member's quote (2^d - 1 at depth d), a quote with b before it delimits a string there when
+ * b % (2r + 2) == r, ends the string the JSON is embedded in when b % (r + 1) != r, and is escaped inside a
+ * string otherwise. A member with no object around it at that depth counts as in a JWK, the stricter answer.
  */
-const isJwkMember = (name, text) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text);
+function inObjectWithKty(text, quote) {
+  const run = backslashesBefore(text, quote);
+  const kind = i => {
+    const b = backslashesBefore(text, i);
+    if (b % (2 * run + 2) === run) return 'quote';
+    return b % (run + 1) === run ? 'escaped' : 'end';
+  };
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  for (let i = quote - 1 - run; i >= 0; i--) {
+    const c = text[i];
+    if (c === '"') {
+      const k = kind(i);
+      if (k === 'end') return true;
+      if (k === 'quote') inString = !inString;
+      i -= backslashesBefore(text, i);
+    } else if (inString) {
+      continue;
+    } else if (c === '}' || c === ']') {
+      depth++;
+    } else if (c === '{' || c === '[') {
+      if (depth === 0) {
+        if (c === '[') return true;
+        start = i;
+        break;
+      }
+      depth--;
+    }
+  }
+  if (start < 0) return true;
+  depth = 0;
+  inString = false;
+  let nameNext = true;
+  let name = -1;
+  for (let i = start + 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      const k = kind(i);
+      if (k === 'end') return false;
+      if (k === 'escaped') continue;
+      if (!inString) {
+        inString = true;
+        if (depth === 0 && nameNext) name = i + 1;
+      } else {
+        inString = false;
+        if (name >= 0 && decodeName(text.slice(name, i - backslashesBefore(text, i))) === 'kty') return true;
+        name = -1;
+        nameNext = false;
+      }
+    } else if (inString || c === '\\') {
+      continue;
+    } else if (c === '{' || c === '[') {
+      depth++;
+    } else if (c === '}' || c === ']') {
+      if (depth === 0) return false;
+      depth--;
+    } else if (c === ',' && depth === 0) {
+      nameNext = true;
+    }
+  }
+  return false;
+}
+
+/** Whether a field whose name's quote is at `quote` holds a JWK's own private member. */
+const isJwkMember = (name, text, quote) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text) && inObjectWithKty(text, quote);
 
 /** An RFC 9110 token, as Redactor reads an Authorization scheme. */
 const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
@@ -200,42 +275,18 @@ function valueEnd(value, depth, lineBreaks = true) {
 const UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/;
 
 /**
- * Each JSON object or array in `text` that parses, outermost first: prose before, between or after them is
- * skipped, so JSON a payer quoted in a sentence is read too.
+ * `text` with each unicode escape of its outermost JSON string decoded, as Redactor reads one level of nested
+ * JSON: an odd run of backslashes ends in an escape of its own, and a quote or backslash stays escaped.
  */
-function jsonIn(text) {
-  const found = [];
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '{' && text[i] !== '[') continue;
-    const end = closingBracket(text, i);
-    if (end < 0) continue;
-    try {
-      found.push(JSON.parse(text.slice(i, end + 1)));
-      i = end;
-    } catch { /* not JSON from here */ }
-  }
-  return found;
-}
+const decodedUnicode = text => text.replace(/(\\+)u([0-9A-Fa-f]{4})/g, (m, run, hex) => {
+  if (run.length % 2 === 0) return m;
+  const c = String.fromCharCode(parseInt(hex, 16));
+  return run.slice(1) + (c === '"' ? '\\"' : c === '\\' ? '\\\\' : c);
+});
 
-/** Where the bracket that closes the one at `start` is, skipping JSON strings, or -1. */
-function closingBracket(text, start) {
-  let depth = 0;
-  let inString = false;
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    if (inString) {
-      if (c === '\\') i++;
-      else if (c === '"') inString = false;
-    } else if (c === '"') {
-      inString = true;
-    } else if (c === '{' || c === '[') {
-      depth++;
-    } else if ((c === '}' || c === ']') && --depth === 0) {
-      return i;
-    }
-  }
-  return -1;
-}
+/** `text` with one level of JSON string escaping taken off (\\ to \, \" to "), any other escape kept. */
+const unescapedOnce = text => text.replace(/(\\+)("?)/g, (m, run, quote) =>
+  '\\'.repeat(run.length >> 1) + (run.length % 2 === 1 ? (quote ? '"' : '\\') : quote));
 
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
@@ -264,10 +315,10 @@ const TEXT_CHECKS = [
     // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
     ok: m => {
       const name = decodeName(m[1]);
-      if (!isSecretKey(name) && !isJwkMember(name, m.input)) return true;
-      if (m[2] === undefined) return false;
       // Counted in the input: an earlier match can end inside the run of backslashes before the key.
       const quote = m.index + m[0].indexOf('"');
+      if (!isSecretKey(name) && !isJwkMember(name, m.input, quote)) return true;
+      if (m[2] === undefined) return false;
       let escaped = 0;
       while (m.input[quote - 1 - escaped] === '\\') escaped++;
       const rest = m.input.slice(m.index + m[0].length - m[2].length);
@@ -282,7 +333,7 @@ const TEXT_CHECKS = [
     re: new RegExp(String.raw`\\*"${NAME}\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
     ok: m => isSecretKey(decodeName(m[1]))
       ? m[2] === '[' && (/authorization$/i.test(decodeName(m[1])) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
-      : !isJwkMember(decodeName(m[1]), m.input),
+      : !isJwkMember(decodeName(m[1]), m.input, m.index + m[0].indexOf('"')),
   },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
@@ -307,17 +358,23 @@ const TEXT_CHECKS = [
 /** Returns one {check, match} per suspected leak in `text`. */
 export function findTextLeaks(text) {
   const leaks = [];
-  for (const check of TEXT_CHECKS) {
-    for (const m of text.matchAll(check.re)) {
-      if (!check.ok || !check.ok(m)) leaks.push({ check: check.name, match: m[0].slice(0, 80) });
+  const scan = view => {
+    for (const check of TEXT_CHECKS) {
+      for (const m of view.matchAll(check.re)) {
+        if (!check.ok || !check.ok(m)) leaks.push({ check: check.name, match: m[0].slice(0, 80) });
+      }
     }
-  }
-  // The text checks find embedded JSON by its literal quotes, colons and braces. JSON whose strings spell any of
+  };
+  scan(text);
+  // The text checks find embedded JSON by its literal quotes, colons and braces. A JSON string may spell any of
   // them as a unicode escape (a backslash and u0022, u003A, u0020..., as .NET's default encoder writes a quote),
-  // as Redactor also reads it, is walked parsed too, so every level is decoded: each JSON object or array in the
-  // text, prose around it or not.
-  if (UNICODE_ESCAPE.test(text)) {
-    for (const json of jsonIn(text)) leaks.push(...findJsonLeaks(json));
+  // so text with one is also scanned level by level as Redactor reads it: decoded, then one level of escaping
+  // taken off, for as many levels as Redactor reads. No parsing, so cut-off JSON and repeated members count.
+  let view = text;
+  for (let level = 0; level < 16 && UNICODE_ESCAPE.test(view); level++) {
+    const decoded = decodedUnicode(view);
+    if (decoded !== view) scan(decoded);
+    view = unescapedOnce(decoded);
   }
   return leaks;
 }
@@ -332,11 +389,15 @@ export function findJsonLeaks(value, path = '$') {
   const walk = (v, p, inHeaders = false) => {
     if (typeof v === 'string') {
       const t = v.trim();
+      const before = leaks.length;
       if (t.startsWith('{') || t.startsWith('[')) {
-        try { walk(JSON.parse(t), `${p}<json>`); return; } catch { /* not JSON as a whole */ }
+        try { walk(JSON.parse(t), `${p}<json>`); } catch { /* not JSON as a whole */ }
       }
-      // JSON in a sentence (payer said: {...}), however its quotes were escaped before the string was parsed.
-      if (/[{[]/.test(v)) jsonIn(v).forEach(json => walk(json, `${p}<json>`));
+      // JSON in the string read as text when parsing found nothing: after prose (payer said: {...}), cut off,
+      // or repeating a member, which parsing drops.
+      if (leaks.length === before && /[{[]/.test(v)) {
+        for (const leak of findTextLeaks(v)) leaks.push({ check: leak.check, match: `${p}: ${leak.match}` });
+      }
       return;
     }
     if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`)); return; }
