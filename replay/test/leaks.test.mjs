@@ -201,6 +201,21 @@ test('scans unclosed brackets after a unicode escape in linear time', () => {
   findJsonLeaks({ body: `x ${'['.repeat(200_000)}` });
   assert.ok(performance.now() - start < 3000, `took ${Math.round(performance.now() - start)} ms`);
 });
+test('scopes kty in linear time over many members', () => {
+  const text = '{"kty":"oct",' + '"k":"[REDACTED]",'.repeat(32_000) + '"x":1}';
+  const start = performance.now();
+  assert.deepEqual(findTextLeaks(text), []);
+  assert.ok(performance.now() - start < 3000, `took ${Math.round(performance.now() - start)} ms`);
+});
+test('reports escapes still unread after the levels Redactor reads, as Redactor masks them', () => {
+  // masksEscapeChainsWithoutBlowingUp's 40-link chain: Redactor masks the string that holds it.
+  const quote = String.raw`\u005c` + 'u005c'.repeat(40) + 'u0022';
+  const jwk = `{${quote}kty${quote}:${quote}oct${quote},${quote}k${quote}:${quote}PRIVATECHAINVALUE${quote}}`;
+  const text = `{"body":"${jwk}"}`;
+  assert.ok(findTextLeaks(text).length > 0);
+  assert.ok(findJsonLeaks(JSON.parse(text)).length > 0);
+  assert.deepEqual(findTextLeaks('{"body":"[REDACTED]"}'), []);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
