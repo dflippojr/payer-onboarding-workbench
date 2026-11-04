@@ -330,19 +330,20 @@ public final class Redactor {
         if (text == null || text.isEmpty()) {
             return text;
         }
-        String out = PEM_BLOCK.matcher(text).replaceAll(m ->
-                Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK + "\n-----END " + m.group(1) + "-----"));
-        out = UNTERMINATED_PEM_KEY.matcher(out).replaceAll(m ->
-                Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK));
-        out = maskSchemeCredentials(out);
-        out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
-        // JWKs first, on the text as it came: a secret field's mask can end at the next member's quote.
-        out = maskJwks(out, false);
+        // JWKs first, on the text as it came: a secret field's mask can end at the next member's quote, and an
+        // unterminated private key block is masked to the end of the text, which may hold the JWK's kty.
+        String out = maskJwks(text, false);
         if (!UNICODE_ESCAPE.matcher(out).find()) {
             // With a unicode escape, a quote may be spelled two ways; maskNestedJwks reads that level decoded.
             out = maskJwks(out, true);
         }
         out = maskNestedJwks(out);
+        out = PEM_BLOCK.matcher(out).replaceAll(m ->
+                Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK + "\n-----END " + m.group(1) + "-----"));
+        out = UNTERMINATED_PEM_KEY.matcher(out).replaceAll(m ->
+                Matcher.quoteReplacement("-----BEGIN " + m.group(1) + "-----\n" + MASK));
+        out = maskSchemeCredentials(out);
+        out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
         out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(decodeName(m.group(1)))
