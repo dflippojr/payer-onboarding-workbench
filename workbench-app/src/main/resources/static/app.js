@@ -21,7 +21,7 @@ const STEP_HELP = {
 };
 const OVERRIDES = { baseUrlSuffix: 'Base URL suffix', igVersion: 'igVersion', clientId: 'Client id' };
 const FAULTS = {
-  'slow-response': ['Payer is slow', 'Every response is held past the latency budget (about 11 s by default).'],
+  'slow-response': ['Payer is slow', 'Hook calls are held past the latency budget (about 11 s by default); discovery and the token request stay fast.'],
   'rate-limited-429': ['Payer rate limit', 'Hook calls get 429 with Retry-After: 30; back off before retrying.'],
   'expired-token-401': ['Token rejected as expired', 'Hook calls get 401 invalid_token, "expired".'],
   'wrong-audience-reject': ['Payer expects another audience', 'The payer checks tokens against a different aud.'],
@@ -37,6 +37,8 @@ const { SEVERITIES, compareRuns, brokeAt, verdictOf, stepStatus } = globalThis.P
 const VERDICT_WORDS = { FAIL: 'Fail', PASS_WITH_WARNINGS: 'Pass with warnings', PASS: 'Pass' };
 // Run labels in Recent runs and Compare with must fit a 390 px select, so warnings get the findings chips' word there.
 const LABEL_VERDICT_WORDS = { ...VERDICT_WORDS, PASS_WITH_WARNINGS: 'Warn' };
+// Run labels write PRODUCTION as PROD, so the UTC time and verdict still fit a 390 px select beside the arrow (#326).
+const LABEL_ENVIRONMENTS = { PRODUCTION: 'PROD' };
 
 const $ = id => document.getElementById(id);
 const form = $('run-form');
@@ -90,7 +92,9 @@ async function init() {
     $('payers').replaceChildren(h('p', { class: 'muted' }, `Could not load payers: ${e.message}`));
     return;
   }
-  customEnabled = await api('api/features').then(f => !!f.customEndpoints, () => false);
+  const features = await api('api/features').catch(() => null);
+  customEnabled = !!features && !!features.customEndpoints;
+  if (features) renderPayerNotice();
   renderPayers();
   renderSamples();
   renderFaults(payers[0] ? payers[0].faults : Object.keys(FAULTS));
@@ -125,18 +129,11 @@ async function refreshHistory() {
   renderCompareOptions();
 }
 
-/** "17:03:55 · Northwind · SANDBOX · Fail": short enough for a Recent runs or Compare with option at 390 px. */
+/** "17:03:55 UTC · SANDBOX · Fail": short enough for a Recent runs or Compare with option at 390 px (#326). */
 function historyLabel(r) {
   const at = typeof r.startedAt === 'string' && !Number.isNaN(Date.parse(r.startedAt))
-    ? new Date(r.startedAt).toISOString().slice(11, 19) : `run ${shortId(r.runId)}`;
-  return [at, payerShortName(r.payerId), r.environment, LABEL_VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
-}
-
-/** "Northwind" for "Northwind Health (synthetic)", "Custom" for a custom endpoint, else the payer id. */
-function payerShortName(payerId) {
-  if (payerId === 'custom-endpoint') return 'Custom';
-  const payer = payers.find(p => p.payerId === payerId);
-  return payer ? payer.displayName.split(/\s+/)[0] : payerId;
+    ? clockTime(r.startedAt) : `run ${shortId(r.runId)}`;
+  return [at, LABEL_ENVIRONMENTS[r.environment] || r.environment, LABEL_VERDICT_WORDS[r.verdict] || r.verdict].join(' · ');
 }
 
 /** Offers every retained run except the one on screen; enabled only while a run is shown. */
@@ -288,6 +285,22 @@ function selectedPayer() {
   return payers.find(p => checked && p.payerId === checked.value);
 }
 
+/**
+ * The page's fixed text claims nothing about which payers a run can reach. Only the server's answer can
+ * say no real payer is involved: with custom endpoints on, a run can name its own.
+ */
+function renderPayerNotice() {
+  if (customEnabled) {
+    $('banner-text').replaceChildren(h('strong', {}, 'Passing here does not by itself establish interoperability.'),
+      ' The three synthetic payers run inside this app with generated credentials. A run against your own endpoint '
+      + 'uses synthetic requests, and its report includes that endpoint\'s responses with credentials redacted.');
+    return;
+  }
+  const notice = $('synthetic-notice').content.cloneNode(true);
+  $('footer-note').textContent = notice.querySelector('strong').textContent;
+  $('banner-text').replaceChildren(notice);
+}
+
 function customSelected() {
   const checked = form.querySelector('input[name="payerId"]:checked');
   return !!checked && checked.value === CUSTOM;
@@ -424,7 +437,7 @@ function showRunning(payer, request) {
   const context = [request.environment, sample && sample.title,
     faults.length > 0 && `${faults.length === 1 ? 'fault' : 'faults'} on: ${faults.join(', ')}`].filter(Boolean).join(' · ');
   $('run-meta').textContent = `${context}. ${request.faults.includes('slow-response')
-    ? 'The slow-response fault holds each response for about 11 s; the steps appear when the run finishes.'
+    ? 'The slow-response fault holds each hook call for about 11 s; discovery and the token request stay fast. The steps appear when the run finishes.'
     : 'The steps appear when the run finishes.'}`;
   $('run-meta').removeAttribute('title');
   $('run-track').hidden = false;

@@ -226,4 +226,22 @@
   "base" : "healthy-fabrikam-order-sign-hospital-bed",
   "rule" : "required element removed",
   "description" : "description removed from a card suggestion's action (CDS Hooks 2.0 Action: description REQUIRED; HL7 tools invariant cds-resp-5)"
+}, {
+  "id" : "mutant-suggestion-label-removed",
+  "file" : "mutant-suggestion-label-removed.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "required element removed",
+  "description" : "a second card with a suggestion that has no label (CDS Hooks 2.0 Suggestion: label REQUIRED)"
+}, {
+  "id" : "mutant-suggestion-not-an-object",
+  "file" : "mutant-suggestion-not-an-object.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong suggestion structure",
+  "description" : "a second card whose suggestion is the number 1 (CDS Hooks 2.0 Suggestion: an object)"
+}, {
+  "id" : "mutant-suggestion-null",
+  "file" : "mutant-suggestion-null.json",
+  "base" : "healthy-northwind-order-sign-hospital-bed",
+  "rule" : "wrong suggestion structure",
+  "description" : "a second card whose suggestion is null (CDS Hooks 2.0 Suggestion: an object)"
 } ]

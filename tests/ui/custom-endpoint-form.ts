@@ -8,6 +8,10 @@ export async function customEndpointForm(page: Page, screenshot: () => Promise<v
   await page.route('**/api/features', route => route.fulfill({ json: { customEndpoints: true } }));
   await page.reload();
   await expect(page.getByRole('radio')).toHaveCount(4);
+  // #298: with custom endpoints on, nothing on the page may say the app only talks to synthetic payers.
+  await expect(page.locator('body')).not.toContainText(/no real payer|synthetic payers only|synthetic-data disclaimer/i);
+  await expect(page.getByRole('note')).toContainText('does not by itself establish interoperability');
+  await expect(page.getByRole('note')).toContainText('your own endpoint');
   await expect(page.locator('#recent-runs')).not.toContainText('Loading');
   await openDrawer(page, 'Payer faults');
   const fault = page.getByRole('checkbox', { name: 'Discovery is down' });

@@ -111,8 +111,15 @@ public final class Redactor {
      */
     private static final Pattern PUNCTUATION = Pattern.compile("[^A-Za-z0-9]{1,7}");
 
+    /**
+     * A signed JWT. Each run of token characters is tried once, from its start, up to its first {@code eyJ} at a word
+     * start (#310): every later {@code eyJ} in that run meets the same dots, so it cannot match where the first did
+     * not, and retrying each one makes {@code eyJ-eyJ-eyJ-...} quadratic. Whatever comes before that {@code eyJ} is in
+     * group 1 and goes back unchanged.
+     */
     private static final Pattern JWT = Pattern.compile(
-            WORD_START + "(eyJ[A-Za-z0-9_-]*)\\.([A-Za-z0-9_-]*)\\.[A-Za-z0-9_-]+");
+            "(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?" + WORD_START + "eyJ)[A-Za-z0-9_-]*+)"
+                    + "\\.([A-Za-z0-9_-]*+)\\.[A-Za-z0-9_-]++");
 
     /**
      * JSON field names whose values are always masked, lower case without {@code _} and {@code -}

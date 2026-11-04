@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { cleanup } from './cleanup.mjs';
+import { cleanup, identify } from './cleanup.mjs';
 import { format, handlePath, root, runDoctor } from './doctor.mjs';
 import { drive, FEATURES } from './drive.mjs';
 
@@ -17,8 +17,12 @@ if (args.length > (flag < 0 ? 0 : args[flag].includes('=') ? 1 : 2) || (flag >= 
 
 const evidenceDir = join(root, '.verify', new Date().toISOString().replace(/[:.]/g, '-'));
 mkdirSync(evidenceDir, { recursive: true });
-const launch = { startedAt: new Date().toISOString(), feature: feature ?? 'all', ownsHandle: false, pids: {} };
-const save = () => writeFileSync(join(evidenceDir, 'launch.json'), JSON.stringify(launch, null, 2));
+const launch = { startedAt: new Date().toISOString(), feature: feature ?? 'all', ownsHandle: false, pids: {}, identities: {} };
+// Each recorded PID gets its identity (start time and command line) so cleanup can tell it from a later reuse.
+const save = () => {
+  for (const [role, pid] of Object.entries(launch.pids)) launch.identities[role] ??= identify(pid) ?? undefined;
+  writeFileSync(join(evidenceDir, 'launch.json'), JSON.stringify(launch, null, 2));
+};
 const steps = [];
 const step = (name, ok, detail) => { steps.push({ name, ok, detail }); console.log((ok ? 'PASS ' : 'FAIL ') + name + ': ' + detail); };
 save();

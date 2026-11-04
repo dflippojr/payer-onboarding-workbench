@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -771,6 +772,27 @@ class RedactorTest {
         assertEquals(Duration.ofSeconds(3), out.get("took"));
         assertEquals('x', out.get("letter"));
         assertFalse(String.valueOf(out).contains(token), String.valueOf(out));
+    }
+
+    /** #310: a payer's body can be megabytes of this, and no HTTP timeout bounds the matching. */
+    @ParameterizedTest
+    @ValueSource(strings = {"", ".", ".x", ".x."})
+    void aLongRunOfJwtStartsIsRedactedInLinearTime(String tail) {
+        String input = "eyJ-".repeat(40_000) + tail;
+
+        String out = assertTimeout(Duration.ofSeconds(1), () -> Redactor.redact(input));
+
+        assertEquals(input, out);
+    }
+
+    /** Same shape, but it is a JWT: the first start in the run wins, and what it masks is only the signature. */
+    @Test
+    void aLongRunOfJwtStartsThatEndsAsAJwtHasItsSignatureMasked() {
+        String input = "eyJ-".repeat(40_000) + ".claims.signature";
+
+        String out = assertTimeout(Duration.ofSeconds(1), () -> Redactor.redact(input));
+
+        assertEquals("eyJ-".repeat(40_000) + ".claims." + Redactor.MASK, out);
     }
 
     private static String randomToken() {

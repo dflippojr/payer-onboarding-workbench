@@ -20,17 +20,18 @@ import java.util.Map;
  * material even if a step put some in its details by mistake.
  *
  * @param title               report heading
- * @param disclaimer          the synthetic data / no interoperability notice
+ * @param disclaimer          what the run was made against and what it does not show: {@link #DISCLAIMER_TEXT}
+ *                            for a synthetic payer, {@link #CUSTOM_DISCLAIMER_TEXT} for a user-supplied endpoint
  * @param generatedAt         when the report was produced (ISO-8601)
  * @param workbenchVersion    the workbench build that produced it
  * @param runId               the run reported on
  * @param correlationId       the {@code X-Request-Id} the run sent on every payer call, for finding it in
  *                            the payer's logs (the run id)
  * @param verdict             the one-line outcome
- * @param payer               which synthetic payer
+ * @param payer               which payer: a synthetic one or the custom endpoint
  * @param environment         which of its environments
  * @param igVersion           the CRD IG version the connection expected
- * @param advertisedIgVersion the CRD IG version the mock payer serves
+ * @param advertisedIgVersion the CRD IG version the payer serves
  * @param startedAt           when the first step started (ISO-8601)
  * @param counts              findings per severity, most severe first
  * @param steps               the step timeline, in order
@@ -58,6 +59,11 @@ public record RunReport(
             + "with synthetic requests; passing it does not demonstrate interoperability with any real payer, and the "
             + "report contains no real patient, provider or payer data. Tokens, secrets, keys and signatures are "
             + "redacted.";
+
+    /** A custom endpoint's report holds what that endpoint really sent, so {@link #DISCLAIMER_TEXT} is false for it. */
+    public static final String CUSTOM_DISCLAIMER_TEXT = "This run was made against a user-supplied endpoint with "
+            + "synthetic requests; the report includes that endpoint's responses with credentials redacted. Passing "
+            + "it does not by itself establish interoperability.";
 
     /** Overall outcome: {@code PASS}, {@code PASS_WITH_WARNINGS} or {@code FAIL}. */
     public record Verdict(String status, String headline, String brokeAt) {
@@ -114,7 +120,7 @@ public record RunReport(
 
         return new RunReport(
                 "Payer onboarding report: " + (displayName == null ? run.payerId() : displayName),
-                DISCLAIMER_TEXT,
+                RunRequest.CUSTOM_PAYER_ID.equals(run.payerId()) ? CUSTOM_DISCLAIMER_TEXT : DISCLAIMER_TEXT,
                 generatedAt.toString(),
                 workbenchVersion,
                 run.runId(),

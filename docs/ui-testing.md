@@ -24,6 +24,8 @@ Deterministic reset: `node scripts/ui-instance.mjs reset` stops the owned instan
 
 ## Journeys
 
+When `ready()` in tests/ui/fixtures.ts times out, its error lists each request with no answer, failed or answered, with timings, and the host load. Read that before calling a startup timeout a flake (#306).
+
 The only primary app page is /. Ready: three payer radios, six sample options, Run onboarding enabled, history loading complete. Results/findings/history are sections of the same page; the Recent runs area also has a Compare with select that shows what changed against another retained run, client-side, using the same audited GET /api/runs/{id}; report HTML is a downloaded artifact, not a second app page. Replay is a separate exported viewer outside this pass.
 
 | ID | Actions | Observable outcome after reload | Audit expectation |

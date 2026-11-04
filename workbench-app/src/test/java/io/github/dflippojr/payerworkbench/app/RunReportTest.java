@@ -32,6 +32,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -44,6 +45,10 @@ class RunReportTest {
 
     private static final Base64.Encoder URL = Base64.getUrlEncoder().withoutPadding();
     private static final Instant T0 = Instant.parse("2026-10-01T12:00:00Z");
+
+    /** What a report may only say of a run against a synthetic payer. */
+    static final Pattern SYNTHETIC_ONLY_CLAIM = Pattern.compile(
+            "synthetic mock payer|synthetic data only|no real (patient|provider|payer)", Pattern.CASE_INSENSITIVE);
 
     private final String token = random(32);
     private final String secret = random(24);
@@ -488,6 +493,31 @@ class RunReportTest {
         return new OnboardingRun("run-x", "northwind-synthetic", Environment.SANDBOX,
                 List.of(new StepResult("resolve-connection", T0, Duration.ofMillis(1), true, "Resolved",
                         Map.of("status", "passed", "connection", connection)), hook), findings);
+    }
+
+    /** The issue's example for #298: a user-supplied endpoint is not a synthetic mock payer. */
+    @Test
+    void customEndpointReportDoesNotClaimASyntheticMockPayer() {
+        OnboardingRun run = new OnboardingRun("r1", RunRequest.CUSTOM_PAYER_ID, Environment.SANDBOX, List.of(), List.of());
+        RunReport report = RunReport.of(run, null, null, Instant.now(), "test");
+        assertFalse(report.disclaimer().contains("synthetic mock payer"), report.disclaimer());
+    }
+
+    @ParameterizedTest
+    @EnumSource(ReportRenderer.Format.class)
+    void customEndpointReportCarriesTheCustomWordingInEveryFormat(ReportRenderer.Format format) {
+        OnboardingRun run = new OnboardingRun("r1", RunRequest.CUSTOM_PAYER_ID, Environment.SANDBOX, List.of(), List.of());
+        String out = ReportRenderer.render(RunReport.of(run, null, null, T0, "test"), format);
+        assertTrue(out.contains("This run was made against a user-supplied endpoint with synthetic requests"),
+                format + ": custom wording missing");
+        assertTrue(out.contains("with credentials redacted. Passing it does not by itself establish interoperability."),
+                format + ": custom wording missing");
+        assertFalse(SYNTHETIC_ONLY_CLAIM.matcher(out).find(), format + ": " + out);
+    }
+
+    @Test
+    void theSyntheticOnlyClaimPatternMatchesTheSyntheticDisclaimer() {
+        assertTrue(SYNTHETIC_ONLY_CLAIM.matcher(RunReport.DISCLAIMER_TEXT).find());
     }
 
     private RunReport report(OnboardingRun run) {

@@ -6,7 +6,7 @@ Built on [fhir-crd-router](https://github.com/dflippojr/fhir-crd-router), which 
 
 **Status:** v1 is done. The onboarding flow (API and browser UI), the three mock payers, the diagnostic checks, the sample library, report export, the scripted demo and the replay bundle are merged, and the replay is live on [dflippojr.dev](https://dflippojr.dev/). Later work is tracked in [GitHub issues](https://github.com/dflippojr/payer-onboarding-workbench/issues).
 
-All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer.
+All data is synthetic. No real payers, patients, or PHI. A passing run against the mock payers does not establish interoperability with any real payer. The one exception is [custom endpoints](#run-against-your-own-endpoint), off by default: a run still sends synthetic requests, but its report holds that endpoint's real responses.
 
 ## Develop
 
@@ -36,10 +36,15 @@ Run the app (serves on http://localhost:8080 by default, listening on loopback o
 ./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--server.port=9090   # another port
 ```
 
-CI runs two GitHub Actions workflows on pushes and pull requests:
+CI runs five GitHub Actions workflows from `.github/workflows/`:
 
-- `.github/workflows/ci.yml` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [UI journeys](#ui-interaction-tests), the [replay export](#embed-on-a-website), the leak scanner's self-test (`replay/test/leaks.test.mjs`), the bundle check and the Node regression suites, and uploads `demo-output/` and `site-dist/` as build artifacts. Beside it, the `crd-reference` job runs the workbench against the [HL7 Da Vinci CRD reference server](#run-against-your-own-endpoint), an implementation this project didn't write, and checks each verdict against what CDS Hooks 2.0 and CRD say the server's answers mean (`scripts/reference-runs.mjs`). Its `gate-guard` job calls the shared [gate guard](https://github.com/dflippojr/.github#gate-guard), pinned by full SHA, which fails a pull request that deletes or skips tests, adds retries, or edits workflows or coverage config unless the owner applied `gate-change-approved`. Its `gate` job always reports and fails unless every other job in the file succeeded. The default-branch ruleset requires `gate` and `gate-guard`, both from GitHub Actions. The required `gate-guard` is the check run that `.github/workflows/gate-guard-target.yml` posts from `main` under `pull_request_target`, so a pull request can't rewrite its own judge (ci.yml's `gate-guard` job runs from the pull request's head and is only an early signal). It checks out no pull request code, and it counts the owner's label only when it was applied after the newest push. `npm run ci:local` runs the same steps in the same order on your machine (JDK 21 on `JAVA_HOME`, Docker running for `crd-reference`; Git Bash on Windows) and stops the UI instance even when a step fails.
-- `.github/workflows/sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). A newer push cancels an older PR run; runs on `main` are never cancelled. The organization and project keys are in the parent `pom.xml`.
+- `ci.yml` runs on pushes and pull requests and has six jobs: `build`, `crd-reference`, `hl7-validator`, `mutation`, `gate-guard` and `gate`. `build` installs fhir-crd-router, runs `./mvnw -B verify`, then the [demo tour](#demo), the [UI journeys](#ui-interaction-tests), the [replay export](#embed-on-a-website), the leak scanner's self-test (`replay/test/leaks.test.mjs`), the bundle check and the Node regression suites, and uploads `demo-output/` and `site-dist/` as build artifacts. `crd-reference` runs the workbench against the [HL7 Da Vinci CRD reference server](#run-against-your-own-endpoint), an implementation this project didn't write, and checks each verdict against what CDS Hooks 2.0 and CRD say the server's answers mean (`scripts/reference-runs.mjs`). `hl7-validator` checks `response.schema`, `response.coverage-information` and `response.coverage-location` against the pinned official HL7 FHIR Validator over the conformance corpus. `mutation` runs pitest on the `diagnostics` module and fails below the `pitest.mutation.floor` in `diagnostics/pom.xml`. `gate-guard` calls the shared [gate guard](https://github.com/dflippojr/.github#gate-guard), pinned by full SHA, which fails a pull request that deletes or skips tests, adds retries, or edits workflows or coverage config unless the owner applied `gate-change-approved`. `gate` always reports and fails unless `build`, `crd-reference`, `hl7-validator`, `mutation` and `gate-guard` all succeeded. The default-branch ruleset requires `gate` and `gate-guard`, both from GitHub Actions.
+- `gate-guard-target.yml` posts the required `gate-guard` check from `main` under `pull_request_target`, so a pull request can't rewrite its own judge (`ci.yml`'s `gate-guard` job runs from the pull request's head and is only an early signal). It checks out no pull request code, and it counts the owner's label only when it was applied after the newest push.
+- `sonar.yml` runs `verify` with JaCoCo coverage and the SonarCloud scanner, and fails when the SonarCloud quality gate fails. It runs on pushes to `main` and on pull requests from branches in this repository (forks get no secrets, so it skips them). A newer push cancels an older PR run; runs on `main` are never cancelled. The organization and project keys are in the parent `pom.xml`.
+- `publish-replay-bundle.yml` runs after each green `ci` run on a push to `main` and publishes that run's `site-dist/` as the rolling replay bundle; see [The published bundle](#the-published-bundle).
+- `review.yml` runs the automated pull request review once when a pull request opens (Dependabot PRs and forks are skipped). For a re-review after later commits, dispatch it: `gh workflow run review.yml -R dflippojr/payer-onboarding-workbench -f pr_number=<PR> -f mode=full`.
+
+[AGENTS.md](AGENTS.md) says how to run each gate job on your machine. `npm run ci:local` runs the same `run:` steps as `ci.yml`, in the same order, and stops the UI instance even when a step fails (JDK 21 on `JAVA_HOME`, Docker running for `crd-reference`; Git Bash on Windows). AGENTS.md also gives the commands to run the CRD reference runs, the HL7 validator and the mutation floor on their own.
 
 `verify` also fails when a module's JaCoCo line coverage drops below its floor, the `jacoco.line.floor` property in that module's `pom.xml`. Each floor started at the measured coverage minus 1 point. Raise a floor when coverage rises; never lower one.
 
@@ -102,7 +107,7 @@ The page follows `prefers-color-scheme`, has no horizontal scroll from 320 to 25
 | `GET /api/payers` | The synthetic payers, their stored connections (redacted), editable settings and fault ids. |
 | `GET /api/features` | What this deployment allows (`customEndpoints`). |
 | `GET /api/samples` | Sample request metadata. |
-| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). `baseUrlSuffix` can only add path segments, such as `/r4` or `/`: a suffix that doesn't start with `/` or contains `@`, `?`, `#`, a backslash, whitespace or a control character is refused with 400 and nothing is sent. `slowResponseDelayMs` must be between 0 and `request-timeout` plus 1 s (16000 by default); a negative or longer delay is refused with 400 before any run starts (audit reason `invalid_slow_response_delay`). Runs against one synthetic payer take turns, because its faults are shared: a run waits for the payer at most `request-timeout`, then is refused with 409 "another run against <payer> is in progress", and no run is started or remembered (audit reason `payer_busy`). With custom endpoints enabled, `customEndpoint` replaces `payerId` (see below). |
+| `POST /api/runs` | Runs the steps and returns an `OnboardingRun`. Body: `payerId`, `environment` (default `SANDBOX`), `sampleId`, optional `faults` (fault ids), `slowResponseDelayMs`, and `connection` edits (`baseUrlSuffix`, `igVersion`, `clientId`). `baseUrlSuffix` can only add path segments, such as `/r4` or `/`: a suffix that doesn't start with `/`, has a `.` or `..` segment (raw or percent-encoded as `%2e` in either case, such as `/../admin` or `/%2E%2E`), or contains `@`, `?`, `#`, a backslash, whitespace or a control character is refused with 400 (audit reason `invalid_connection_edit`) and nothing is sent. Dots inside a segment, as in `/a.b`, are fine. A body that can't be bound, such as `[]`, `null`, an unknown `environment` or `"faults":[null]`, is refused with a 400 problem detail that names the field (`environment must be one of ...`, `faults must not contain null`) and never quotes the submitted value (audit reason `invalid_body`). `slowResponseDelayMs` must be between 0 and `request-timeout` plus 1 s (16000 by default); a negative or longer delay is refused with 400 before any run starts (audit reason `invalid_slow_response_delay`). Runs against one synthetic payer take turns, because its faults are shared: a run waits for the payer at most `request-timeout`, then is refused with 409 "another run against <payer> is in progress", and no run is started or remembered (audit reason `payer_busy`). With custom endpoints enabled, `customEndpoint` replaces `payerId` (see below). |
 | `GET /api/runs` | Newest-saved-first summaries of retained runs: identifiers, first-step timestamp (null without steps), verdict and severity counts only. |
 | `GET /api/runs/{id}` | A recent run (the last 200 are kept in memory). |
 | `GET /api/runs/{id}/report?format=md\|html\|json` | A shareable diagnostic report of a recent run (default `html`). `400` for another format, `404` for an unknown run. |
@@ -128,7 +133,7 @@ Off by default. The workbench otherwise only talks to its own synthetic payers; 
 ./mvnw -pl workbench-app spring-boot:run -Dspring-boot.run.arguments=--workbench.custom-endpoints.enabled=true
 ```
 
-The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Connection edits (`baseUrlSuffix`, `igVersion`, `clientId`) apply to the supplied endpoint for this run only, overriding its values; blank edits keep the supplied values. The suffix uses the same path-only validation as synthetic runs and cannot add user info, a query or a fragment. Payer faults only apply to synthetic payers: the UI hides them for custom runs, and the API rejects custom requests with faults.
+The UI then offers **Your own endpoint** in the payer picker, and `POST /api/runs` accepts `customEndpoint` instead of `payerId`. The run gets the same step timeline, findings and redacted report; its payer id is `custom-endpoint`. Connection edits (`baseUrlSuffix`, `igVersion`, `clientId`) apply to the supplied endpoint for this run only, overriding its values; blank edits keep the supplied values. The suffix uses the same path-only validation as synthetic runs: it cannot add user info, a query or a fragment, or leave the base URL's path with a `.` or `..` segment. Payer faults only apply to synthetic payers: the UI hides them for custom runs, and the API rejects custom requests with faults.
 
 ```sh
 # The HL7 CRD reference server (bash scripts/crd-reference-server.sh start; CI's crd-reference job runs it):
@@ -168,7 +173,7 @@ Keys stay in memory for one run, including rejected authentication. Reports show
 
 ### Diagnostic reports
 
-`GET /api/runs/{id}/report` turns a run into a report you can attach to a ticket or send to a payer. Every format covers the same ground: the verdict (`PASS`, `PASS_WITH_WARNINGS` or `FAIL`, and the step where the flow broke), the payer, environment and CRD IG version (expected by the connection and advertised by the payer), the run's correlation id (see [Observability](#observability)), the step timeline with each HTTP exchange, findings by severity (most severe first) with explanation, redacted evidence and fix, when it was generated and by which workbench version, and the synthetic-data / no-interoperability disclaimer.
+`GET /api/runs/{id}/report` turns a run into a report you can attach to a ticket or send to a payer. Every format covers the same ground: the verdict (`PASS`, `PASS_WITH_WARNINGS` or `FAIL`, and the step where the flow broke), the payer, environment and CRD IG version (expected by the connection and advertised by the payer), the run's correlation id (see [Observability](#observability)), the step timeline with each HTTP exchange, findings by severity (most severe first) with explanation, redacted evidence and fix, when it was generated and by which workbench version, and the disclaimer. A run against a synthetic payer gets the synthetic-data / no-interoperability text. A custom-endpoint run says instead that it was made against a user-supplied endpoint with synthetic requests and that the report includes that endpoint's responses with credentials redacted, so read such a report before you share it.
 
 - `html` is one self-contained file (inline CSS, no scripts or external assets). It opens with the verdict (icon and word, the step where the flow broke, counts by severity), then the facts with times in UTC to the second, the failing call, the timeline and the findings. The full ISO time stays in each `<time datetime>` attribute. On screen it uses the workbench's tokens and follows a dark preference. Print is always light, keeps headings with the block after them, keeps small blocks (facts, steps, Fix, the curl command, the footer) whole, and lets long bodies and findings flow across pages, so no page is left half blank.
 - `md` is for pasting into an issue or a wiki.
@@ -186,7 +191,7 @@ curl -s "localhost:8080/api/runs/$RUN_ID/report?format=md" -o report.md
 
 ### What each fault and misconfiguration fails
 
-The integration tests (`OnboardingFlowTest`) hold the app to this table on all three payers.
+`OnboardingFlowTest` reads this table and runs each row, on the payer it names or on all three when it names none. A run must fail exactly the listed `checkId`s and stop at the listed step. A note in parentheses describes the `checkId` before it.
 
 | Fault or edit | Breaks at | FAIL `checkId` |
 |---|---|---|
@@ -196,19 +201,19 @@ The integration tests (`OnboardingFlowTest`) hold the app to this table on all t
 | `rate-limited-429` | hook request | `perf.rate-limit` (`Retry-After: 30`, backoff advice) |
 | `wrong-audience-reject`, Fabrikam | hook request | `auth.jwt-audience` |
 | `wrong-audience-reject`, Northwind | hook request | `auth.hook-rejected` |
-| `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`) |
+| `wrong-audience-reject`, Tailspin | authenticate | `auth.client-assertion` (expected and sent `aud`), `auth.token` |
 | `coverage-info-incomplete` (all payers, `order-sign`) | diagnostics | `response.coverage-information` |
 | `malformed-card` | parse response | `response.schema` |
 | `discovery-500` | discovery | `discovery.reachable` |
 | `prefetch-missing-400`, with sample `order-sign-missing-prefetch` | hook request | `response.schema` |
-| `untrusted-certificate` | discovery | `tls.handshake` (untrusted CA) |
-| `expired-certificate` | discovery | `tls.handshake` (expired certificate) |
-| `hostname-mismatch` | discovery | `tls.handshake` (different host) |
+| `untrusted-certificate` | discovery | `tls.handshake` (untrusted CA), `discovery.reachable` |
+| `expired-certificate` | discovery | `tls.handshake` (expired certificate), `discovery.reachable` |
+| `hostname-mismatch` | discovery | `tls.handshake` (different host), `discovery.reachable` |
 | base URL suffix `/r4` | discovery | `discovery.reachable` |
 | `igVersion` `1.0.0` | (steps pass) | `ig.version` |
 | wrong client id, Northwind | authenticate | `auth.token` |
 | wrong client id, Tailspin | authenticate | `auth.token`, `auth.client-assertion` |
-| wrong client id, Fabrikam | hook request | `response.schema` |
+| wrong client id, Fabrikam | hook request | `auth.hook-rejected` |
 | environment `PRODUCTION` (no record) | resolve connection | `connection.record` |
 
 `response.coverage-information` validates every coverage-information extension in system actions and card suggestions using the router's Da Vinci CRD 2.2.1 validator. Evidence identifies the resource, extension location, and each violation's path and message. ERROR violations produce FAIL, WARNING violations produce WARN, and conformant content produces PASS. Healthy Northwind and Tailspin pass; healthy Fabrikam warns about its legacy `identifier` name without failing. With no coverage information, the check adds no finding.
@@ -244,7 +249,8 @@ node --test scripts/audit-reader.test.mjs
 ```
 
 The reader accepts one named capture, ignores unrelated logs, and emits matching events
-as JSON lines. UTC `--since`/`--until` boundaries are inclusive, including nanoseconds.
+as JSON lines. A capture is read as UTF-8 unless it starts with a UTF-16 BOM (LE or BE), which is
+what Windows PowerShell 5.1's `>` writes. UTF-16 without a BOM is not detected. UTC `--since`/`--until` boundaries are inclusive, including nanoseconds.
 A run filter selects credential/terminal/report events; the initial request event has no
 run ID yet, so correlate it using the terminal's request ID in the unfiltered capture.
 Malformed audit lines produce a count on stderr and a nonzero exit without echoing contents.
@@ -333,8 +339,11 @@ node scripts/audit-reader.mjs /var/lib/workbench-audit --verify
   line by line at any size; a segment that exists but cannot be read fails the review with a nonzero exit, and
   only a missing segment is skipped. `--verify`
   prints one `{"segment":...,"status":...}` line per segment: `ok`, `missing`, `checksum_mismatch`,
-  `truncated`, `malformed`, `event_count_mismatch`, or `unsealed` (a segment the manifest does not
-  list yet, such as the one being written or left by a crash; not a failure). It exits nonzero on any
+  `truncated`, `malformed`, `event_count_mismatch`, `unlisted`, or `unsealed`. `unsealed` is a segment the
+  manifest does not list yet, numbered above the highest listed segment (or any segment when none is
+  listed), such as the one being written or left by a crash; not a failure. `unlisted` is a segment the
+  manifest does not list but that is numbered below the highest listed one: the manifest and the directory
+  disagree, as after a restore or an edit, and it is a problem. It exits nonzero on any
   problem and never prints event content. Checksums detect accidental corruption, truncation and
   missing files. They do **not** stop anyone with write access from changing a segment and the
   manifest together; the machine owner is trusted, and there is no signing or WORM storage.
@@ -531,7 +540,7 @@ node scripts/vendor-into-site.mjs --from-release ../personal-website/public/work
 
 - Declares the older CRD 2.0.1. Its prefetch keys are non-standard (`coverageBundle`, `deviceRequestBundle`).
 - Puts coverage information inside card suggestions instead of `systemActions`.
-- Auth is the CDS Hooks 2.0 client JWT. Fabrikam checks the signature against the client's JWKS, which it fetches from a URL you register per issuer. It also checks `iss`, that `aud` is exactly the service URL, `exp`, and `jti` replay. RS384 and ES384 are accepted.
+- Auth is the CDS Hooks 2.0 client JWT. Fabrikam checks the signature against the client's JWKS, which it fetches from a URL you register per issuer. It also checks `iss`, that `aud` is exactly the service URL, and the times: `iat` is required and at most an hour ahead of the payer's clock, `exp` minus `iat` is at most five minutes (SMART Backend Services' cap, a profile choice of this mock rather than a CDS Hooks rule), and a `jti` is rejected as a replay until its `exp` passes. RS384 and ES384 are accepted.
 
 **Tailspin Health Plan (synthetic)** exercises SMART Backend Services (`private_key_jwt`). Payer id `tailspin-synthetic`, CRD 2.2.1, standard prefetch keys, and coverage information in `systemActions` share Northwind's synthetic rules. Its `/oauth/token` endpoint accepts client credentials with the JWT bearer assertion type, verifies RS384 or ES384 against the registered client JWKS, requires `iss` = `sub` = client id and exact token endpoint `aud`, checks future `exp` at most five minutes ahead, and rejects reused `jti`. Rejections return `401 invalid_client` naming the claim. All faults apply; `wrong-audience-reject` expects `https://auth.tailspin-health.example/token` and breaks at authenticate.
 

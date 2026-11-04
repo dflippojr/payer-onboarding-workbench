@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO_URL="${CRD_ROUTER_REPO_URL:-https://github.com/dflippojr/fhir-crd-router.git}"
-COMMIT="a5f013eed94024b72ccc2bf4fd89c73b5460da12"
+COMMIT="808abc0abf0427b2a41a5e8c7a88f85430431548"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="$root/.deps/fhir-crd-router"
@@ -19,5 +19,5 @@ git -C "$dest" checkout --quiet --detach "$COMMIT"
 
 cd "$dest"
 chmod +x mvnw
-./mvnw -q install -DskipTests
+./mvnw -q install -DskipTests -DskipITs
 echo "Installed fhir-crd-router at $(git rev-parse --short HEAD)"

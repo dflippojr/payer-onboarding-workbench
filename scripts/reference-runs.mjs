@@ -74,6 +74,19 @@ const describe = report => `${report.verdict.status} at ${report.verdict.brokeAt
 const failEvidence = report => report.findings.filter(f => f.severity === 'FAIL')
   .map(f => `${f.checkId}:\n${f.evidence}`).join('\n\n');
 
+// #298: this report holds a third party's answers, so no format may call it a synthetic mock payer.
+test('every report format says the run was made against a user-supplied endpoint', async () => {
+  const { runId } = await run('disclaimer', sampleIds[0]);
+  for (const format of ['md', 'html', 'json']) {
+    const response = await fetch(`${base}/api/runs/${encodeURIComponent(runId)}/report?format=${format}`,
+      { signal: AbortSignal.timeout(120_000) });
+    assert.equal(response.status, 200, format);
+    const body = await response.text();
+    assert.match(body, /user-supplied endpoint/, format);
+    assert.doesNotMatch(body, /synthetic mock payer|synthetic data only|no real (patient|provider|payer)/i, format);
+  }
+});
+
 test('discovery lists exactly the services the reference server advertises', async () => {
   const report = await run('discovery', sampleIds[0]);
   const discovery = step(report, 'discovery');

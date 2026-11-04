@@ -66,7 +66,14 @@ final class DateShiftingRelay implements AutoCloseable {
         while (!listener.isClosed()) {
             try {
                 Socket client = listener.accept();
-                Socket server = new Socket(InetAddress.getByName("127.0.0.1"), target);
+                Socket server;
+                try {
+                    server = new Socket(InetAddress.getByName("127.0.0.1"), target);
+                } catch (IOException e) {
+                    // The target refused: close the client now, or it waits for an answer that never comes.
+                    close(client);
+                    continue;
+                }
                 sockets.add(client);
                 sockets.add(server);
                 executor.submit(() -> requests(client, server));

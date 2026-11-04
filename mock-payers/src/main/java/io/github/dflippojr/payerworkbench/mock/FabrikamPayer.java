@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
 import java.text.ParseException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +19,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Payer B, "Fabrikam Benefits (synthetic)": quirky but realistic, modeled on
@@ -33,8 +37,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>Auth is the CDS Hooks 2.0 client JWT. Each registered issuer has a JWKS
  *       URL the payer fetches (and refetches when it sees an unknown {@code kid}).
  *       It checks the signature (RS384 or ES384 only), {@code iss}, that
- *       {@code aud} is exactly the URL of the service called, {@code exp}, and
- *       that a {@code jti} is never reused. Discovery is open.</li>
+ *       {@code aud} is exactly the URL of the service called. Its times must be valid: an
+ *       {@code iat} is required and at most an hour ahead of the payer's clock, {@code exp} minus
+ *       {@code iat} is at most five minutes, and a {@code jti} is never reused while its assertion is
+ *       still valid. Discovery is open.</li>
  * </ul>
  *
  * <p>Outcomes by code: E0250 is conditional, with prior authorization and clinical
@@ -58,6 +64,18 @@ public final class FabrikamPayer extends MockPayer {
 
     private static final Set<JWSAlgorithm> ALLOWED_ALGORITHMS = Set.of(JWSAlgorithm.RS384, JWSAlgorithm.ES384);
 
+    /**
+     * The longest client assertion this mock accepts, measured as exp minus iat. SMART Backend Services
+     * caps it at five minutes; this is the mock's profile choice, not a CDS Hooks rule.
+     */
+    private static final Duration MAX_ASSERTION_LIFETIME = Duration.ofMinutes(5);
+
+    /**
+     * How far an assertion's iat may be ahead of the payer's clock. The payer's clock behind by an hour (the
+     * matrix's clock/cds-hooks-jwt-payer-behind-1h row) is the widest skew accepted; anything further is refused.
+     */
+    private static final Duration MAX_ISSUED_AHEAD = Duration.ofHours(1);
+
     private static final Map<String, CoverageDetermination> RULES = Map.of(
             "E0250", new CoverageDetermination("conditional", "auth-needed", List.of("clinical"),
                     "Prior authorization and clinical documentation required"),
@@ -72,9 +90,13 @@ public final class FabrikamPayer extends MockPayer {
             new ServiceDefinition("order-select-crd", "order-select", "Fabrikam order-select CRD",
                     "Fabrikam coverage guidance for selected orders.", riPrefetch()));
 
+    /** How often a running payer drops expired jtis, so an idle payer does not keep them. */
+    static final Duration SWEEP_INTERVAL = Duration.ofSeconds(1);
+
     private final Map<String, URI> jwksUrls;
     private final RegisteredJwks verifier;
     private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
+    private volatile ScheduledExecutorService sweeper;
 
     private FabrikamPayer(Builder builder) {
         super(builder);
@@ -89,7 +111,29 @@ public final class FabrikamPayer extends MockPayer {
     @Override
     public synchronized FabrikamPayer start(int port) throws IOException {
         super.start(port);
+        sweeper = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "fabrikam-replay-sweep");
+            thread.setDaemon(true);
+            return thread;
+        });
+        long interval = SWEEP_INTERVAL.toMillis();
+        sweeper.scheduleAtFixedRate(this::sweepExpiredJtis, interval, interval, TimeUnit.MILLISECONDS);
         return this;
+    }
+
+    @Override
+    public synchronized void stop() {
+        super.stop();
+        if (sweeper != null) {
+            sweeper.shutdownNow();
+            sweeper = null;
+        }
+    }
+
+    /** Drops every jti whose exp has passed on the payer's clock. */
+    void sweepExpiredJtis() {
+        Instant now = clock.instant();
+        usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
     }
 
     @Override
@@ -105,6 +149,11 @@ public final class FabrikamPayer extends MockPayer {
     @Override
     public List<ServiceDefinition> services() {
         return SERVICES;
+    }
+
+    /** The jtis this payer is holding against replay, for tests. */
+    int replayCacheSize() {
+        return usedJtis.size();
     }
 
     private static Map<String, String> riPrefetch() {
@@ -157,6 +206,9 @@ public final class FabrikamPayer extends MockPayer {
         if (claims.getExpirationTime() == null) {
             throw unauthorized("JWT has no exp");
         }
+        if (claims.getIssueTime() == null) {
+            throw unauthorized("JWT has no iat");
+        }
         Instant expiry = claims.getExpirationTime().toInstant();
         if (faults().isEnabled(Fault.EXPIRED_TOKEN_401)) {
             throw unauthorized("JWT expired").fault(Fault.EXPIRED_TOKEN_401);
@@ -164,12 +216,29 @@ public final class FabrikamPayer extends MockPayer {
         if (!now.isBefore(expiry)) {
             throw unauthorized("JWT expired at " + expiry);
         }
+        // Checked before the jti is recorded, so a refused assertion never occupies the replay cache.
+        Duration lifetime = Duration.between(claims.getIssueTime().toInstant(), expiry);
+        if (lifetime.isNegative() || lifetime.isZero() || lifetime.compareTo(MAX_ASSERTION_LIFETIME) > 0) {
+            throw unauthorized("JWT lifetime (exp minus iat) must be positive and at most 5 minutes, got "
+                    + lifetime.toSeconds() + " seconds");
+        }
+        // Without this bound a future iat keeps the five-minute lifetime but moves the whole window far ahead
+        // of the payer's clock, and its jti would stay cached for as long as that. The matrix's one-hour-behind
+        // payer clock needs an iat an hour ahead, so that is the largest lead accepted.
+        Duration ahead = Duration.between(now, claims.getIssueTime().toInstant());
+        if (ahead.compareTo(MAX_ISSUED_AHEAD) > 0) {
+            throw unauthorized("JWT iat is ahead of the payer's clock by more than 1 hour, got "
+                    + ahead.toSeconds() + " seconds");
+        }
 
         String jti = claims.getJWTID();
         if (jti == null || jti.isBlank()) {
             throw unauthorized("JWT has no jti");
         }
-        usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
+        // Each entry is kept until its exp: at most five minutes after iat, and iat is at most an hour ahead of
+        // now, so an entry lives at most about 65 minutes past the current time. The sweeper removes expired
+        // entries even when no request arrives; this sweep keeps the map tidy on every authenticated request too.
+        sweepExpiredJtis();
         if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
             throw unauthorized("jti '" + jti + "' was already used (replay)");
         }

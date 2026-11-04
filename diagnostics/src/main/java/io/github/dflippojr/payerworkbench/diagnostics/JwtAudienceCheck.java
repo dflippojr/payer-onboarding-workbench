@@ -1,5 +1,6 @@
 package io.github.dflippojr.payerworkbench.diagnostics;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.dflippojr.payerworkbench.core.DiagnosticCheck;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HookResponse;
@@ -34,6 +35,7 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
 
     private static final Pattern CITES_AUDIENCE = Pattern.compile("\\baud\\b|audience");
     private static final Pattern URL = Pattern.compile("https?://[^\\s'\"<>,\\[\\]]+");
+    private static final List<String> ERROR_FIELDS = List.of("error", "error_description");
 
     @Override
     public String id() {
@@ -127,7 +129,7 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
 
     /** The first URL in the payer's error that is not the URL the request went to. */
     private static Optional<String> urlNamedByPayer(HttpExchange exchange, String target) {
-        Matcher m = URL.matcher(exchange.responseBody() == null ? "" : exchange.responseBody());
+        Matcher m = URL.matcher(errorText(exchange));
         while (m.find()) {
             if (!m.group().equals(target)) {
                 return Optional.of(m.group());
@@ -137,9 +139,34 @@ public final class JwtAudienceCheck implements DiagnosticCheck {
     }
 
     private static boolean citesAudience(HttpExchange exchange) {
-        String said = Support.lower(exchange.responseBody()) + "\n"
-                + Support.lower(Support.header(exchange.responseHeaders(), "WWW-Authenticate").orElse(""));
-        return CITES_AUDIENCE.matcher(said).find();
+        return CITES_AUDIENCE.matcher(Support.lower(errorText(exchange))).find();
+    }
+
+    /**
+     * What the payer gave as its reason: the {@code error} and {@code error_description} strings of a JSON body
+     * (the whole body when it is not JSON), then the same auth-params of {@code WWW-Authenticate}. Claims the
+     * payer echoes back, such as the token's own {@code aud}, are not its reason and stay out.
+     */
+    private static String errorText(HttpExchange exchange) {
+        List<String> said = new ArrayList<>();
+        String body = exchange.responseBody() == null ? "" : exchange.responseBody();
+        Optional<JsonNode> json = Support.parseJson(body);
+        if (json.isPresent()) {
+            for (String name : ERROR_FIELDS) {
+                JsonNode value = json.get().path(name);
+                if (value.isTextual()) {
+                    said.add(value.asText());
+                }
+            }
+        } else {
+            said.add(body);
+        }
+        List<AuthChallenge> challenges = AuthChallenge.parse(
+                Support.header(exchange.responseHeaders(), "WWW-Authenticate").orElse(""));
+        for (String name : ERROR_FIELDS) {
+            AuthChallenge.param(challenges, name).ifPresent(said::add);
+        }
+        return String.join("\n", said);
     }
 
     /** Plain-language description of how {@code aud} differs from {@code target}. */
