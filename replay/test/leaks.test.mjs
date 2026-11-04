@@ -304,6 +304,18 @@ test('r3: one long backslash run is scanned in linear work', () => {
   }
   assertFlagged(JSON.stringify({ k: 'LEAKED', padding: '\\'.repeat(16384) + 'x', kty: 'oct' }));
 });
+test('judges a value cut at a line break, a list of numbers, and a value a colon follows', () => {
+  // A value cut off at a line break before a truncation note: Redactor masks it through to the end.
+  assertFlagged('{"kty":"oct","k":"LEAKED\n[truncated at 1 MB]');
+  assertAccepted('{"kty":"oct","k":"[REDACTED]"');
+  // A number in a secret-named list is not a mask: Redactor masks the list whole.
+  assertFlagged('payer said: {"client_secret":[12345678]}');
+  assertFlagged('{"client_secret":["[REDACTED]",true]}');
+  assertAccepted('payer said: {"client_secret":"[REDACTED]"}');
+  // A value with a colon after it is still the member's value; Redactor masks it and keeps the colon.
+  assertFlagged('{"kty":"oct","k":"LEAKED":0}');
+  assertAccepted('{"kty":"oct","k":"[REDACTED]":0}');
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
