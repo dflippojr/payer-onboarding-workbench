@@ -844,6 +844,26 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkMemberThatAStrayQuoteInAPrivateKeyBlockHides() {
+        // Codex security round 6: the stray quote inside the block closes "note" early, so the JWK read of the text as
+        // it came never sees d as a member; masking the block takes the quote away, and 6304ec0 (PEM first) masked d.
+        String pem = "{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\"-----END PRIVATE KEY-----\",\"d\":\"FAKE_PRIVATE_KEY_293\"}";
+        String pgp = pem.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
+        // What 6304ec0 made of the two raw inputs.
+        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----\",\"d\":\"[REDACTED]\"}",
+                Redactor.redact(pem));
+        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
+                + "-----END PGP PRIVATE KEY BLOCK-----\",\"d\":\"[REDACTED]\"}", Redactor.redact(pgp));
+        for (String raw : List.of(pem, pgp)) {
+            for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingQuotes(raw),
+                    nestedEscapingBackslashes(raw), nestedEscapingEverything(raw))) {
+                String out = Redactor.redact(in);
+                assertFalse(out.contains("FAKE_PRIVATE_KEY_293"), () -> in + "\n became " + out);
+            }
+        }
+    }
+
+    @Test
     void masksManyPrivateKeyBlocksInLinearTime() {
         // The automated review on ac1759e: 16,000 terminated private key blocks (about 900 KB) took 14 s there, each
         // search for an unterminated header reading on to the end of the text. 64,000 (about 4 MB) take well under
