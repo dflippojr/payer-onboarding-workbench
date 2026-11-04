@@ -301,8 +301,12 @@ streaming it, so it never stops the application from starting.
   unreadable manifest is **rejected**: the application logs the constant warning
   `Audit journal unavailable; durable audit trail is not being written`, counts it in
   `workbench.audit.write.failures`, sets the gauge `workbench.audit.journal.protected` to `0`
-  and keeps running with log-only audit. It never silently counts as a protected journal. Review
-  access is the OS owner's file access; there is no web page, endpoint or role.
+  and keeps running with log-only audit. It never silently counts as a protected journal. The
+  checkout check resolves symlinks and junctions to their real path, but it does not expand a Windows
+  `subst` drive or a mapped drive, so a journal directory reached through one can sit inside a checkout
+  without being rejected. The machine owner is trusted to point `workbench.audit.journal-dir` somewhere
+  sensible: the guard refuses what it can resolve, and anything it cannot resolve is the machine owner's
+  responsibility. Review access is the OS owner's file access; there is no web page, endpoint or role.
 - **Files.** `audit-000001.jsonl`, `audit-000002.jsonl`, ... plus `manifest.json`, a versioned list
   of closed segments (ID, bytes, event count, first/last UTC time, SHA-256). The open segment is
   not in the manifest until it is closed by size or by the next start. Nothing in the application
