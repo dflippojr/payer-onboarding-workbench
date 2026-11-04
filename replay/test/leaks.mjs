@@ -413,8 +413,10 @@ function readNested(decoded, level, ctx) {
  * strings for the rest of the text.
  */
 function scanJson(text, level, ctx) {
-  const newOwner = () => ({ kty: false, values: [] });
-  const top = newOwner();
+  // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
+  // Redactor.
+  const newOwner = object => ({ object, kty: false, values: [] });
+  const top = newOwner(false);
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
   const stack = [];
   // The member whose name and colon were just read, waiting for its value.
@@ -464,7 +466,7 @@ function scanJson(text, level, ctx) {
         }
         const name = decoded ?? literal.body;
         const o = owner();
-        if (name === 'kty') o.kty = true;
+        if (name === 'kty' && o.object) o.kty = true;
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
@@ -493,7 +495,7 @@ function scanJson(text, level, ctx) {
       continue;
     }
     if (c === '{' || c === '[') {
-      const container = { owner: newOwner(), list: null };
+      const container = { owner: newOwner(c === '{'), list: null };
       if (member) {
         const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
         member.owner.values.push(value);
