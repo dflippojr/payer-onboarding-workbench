@@ -196,6 +196,9 @@ function valueEnd(value, depth, lineBreaks = true) {
   return value.length;
 }
 
+/** A quote or backslash spelled as a unicode escape: a backslash, then u0022 or u005C (either case). */
+const UNICODE_QUOTE_OR_BACKSLASH = /\\u00(?:22|5[cC])/;
+
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -270,6 +273,12 @@ export function findTextLeaks(text) {
     for (const m of text.matchAll(check.re)) {
       if (!check.ok || !check.ok(m)) leaks.push({ check: check.name, match: m[0].slice(0, 80) });
     }
+  }
+  // The text checks find embedded JSON by its backslash-quote quotes. JSON whose strings spell a quote or a
+  // backslash as a unicode escape (u0022, u005C after the backslash, as .NET's default encoder writes a quote),
+  // as Redactor also reads it, is walked parsed too, so every level is decoded.
+  if (UNICODE_QUOTE_OR_BACKSLASH.test(text)) {
+    try { leaks.push(...findJsonLeaks(JSON.parse(text))); } catch { /* not JSON */ }
   }
   return leaks;
 }

@@ -150,6 +150,9 @@ public final class Redactor {
     /** A {@code \\u} escape in a name matched with {@link #NAME_CHAR} or {@link #EMBEDDED_NAME_CHAR}. */
     private static final Pattern NAME_ESCAPE = Pattern.compile(BACKSLASH + "++u([0-9A-Fa-f]{4})");
 
+    /** A unicode escape of a quote or a backslash, from its backslash: {@code u0022} or {@code u005C}, either case. */
+    private static final Pattern UNICODE_QUOTE_OR_BACKSLASH = Pattern.compile(BACKSLASH + "u00(?:22|5[Cc])");
+
     /** The {@code kty} member name, each letter also as a {@code \\u} escape; it starts at the opening quote. */
     private static final Pattern KTY_NAME = Pattern.compile("\"" + spelled("kty", false) + "\"");
 
@@ -667,25 +670,31 @@ public final class Redactor {
      * {@code 4m + 1024} for a view of length {@code m} if it is negative.
      */
     static String maskNestedJwks(String text, int characters) {
-        // No quote with three backslashes before it: nothing is nested two levels deep.
-        if (!text.contains("\\\\\\\"")) {
+        // No quote with three backslashes before it and no escaped quote or backslash spelled as a unicode
+        // escape: every JWK is plain or one level deep, where maskJwks found it.
+        if (!text.contains("\\\\\\\"") && !UNICODE_QUOTE_OR_BACKSLASH.matcher(text).find()) {
             return text;
         }
         // Each mask: where it starts and ends in the text, and its depth.
         List<int[]> masks = new ArrayList<>();
         String view = text;
         int[] origin = null;
-        for (int depth = 2; ; depth++) {
+        for (int depth = 1; ; depth++) {
             int[][] next = new int[1][];
-            view = unescaped(view, origin, next);
-            origin = next[0];
-            if (!view.contains("\\\"")) {
+            String normal = normalized(view, origin, next);
+            int[] normalOrigin = next[0];
+            // One level deep with no unicode escape to normalize, maskJwks has read this view already.
+            if ((depth > 1 || !normal.equals(view)) && normal.contains("\\\"")) {
+                int budget = characters < 0 ? 4 * normal.length() + 1024 : characters;
+                for (int[] value : jwkValues(normal, true, budget)) {
+                    masks.add(new int[] {at(normalOrigin, value[0]), at(normalOrigin, value[1]), depth});
+                }
+            }
+            if (!normal.contains("\\\"") && !UNICODE_QUOTE_OR_BACKSLASH.matcher(normal).find()) {
                 break;
             }
-            int budget = characters < 0 ? 4 * view.length() + 1024 : characters;
-            for (int[] value : jwkValues(view, true, budget)) {
-                masks.add(new int[] {origin[value[0]], origin[value[1]], depth});
-            }
+            view = unescaped(normal, normalOrigin, next);
+            origin = next[0];
         }
         if (masks.isEmpty()) {
             return text;
@@ -705,6 +714,59 @@ public final class Redactor {
             copied = end;
         }
         return out.append(text, copied, text.length()).toString();
+    }
+
+    /** Where character {@code i} of a view starts in the text: {@code origin[i]}, or {@code i} if it is {@code null}. */
+    private static int at(int[] origin, int i) {
+        return origin == null ? i : origin[i];
+    }
+
+    /**
+     * {@code view} with each escaped quote or backslash that its outermost string spells as a unicode escape
+     * ({@code \\u0022}, {@code \\u005C}, as .NET's default encoder writes a quote) written as {@code \"}
+     * or {@code \\} instead, so JSON embedded in it reads as {@link #maskJwks} reads it. {@code origin}
+     * and {@code next[0]} work as in {@link #unescaped}; with nothing to rewrite, {@code view} itself is
+     * returned and {@code next[0]} is {@code origin}.
+     */
+    private static String normalized(String view, int[] origin, int[][] next) {
+        Matcher escape = UNICODE_QUOTE_OR_BACKSLASH.matcher(view);
+        next[0] = origin;
+        if (!escape.find()) {
+            return view;
+        }
+        StringBuilder out = new StringBuilder(view.length());
+        int[] to = new int[view.length() + 1];
+        int i = 0;
+        while (i < view.length()) {
+            if (view.charAt(i) != '\\') {
+                to[out.length()] = at(origin, i);
+                out.append(view.charAt(i++));
+                continue;
+            }
+            int run = i;
+            while (run < view.length() && view.charAt(run) == '\\') {
+                run++;
+            }
+            // Only an odd run ends in an escape of its own: an even one is escaped backslashes before a u.
+            boolean unicode = (run - i) % 2 == 1 && escape.region(run - 1, view.length()).lookingAt();
+            int copy = unicode ? run - 1 : run;
+            for (int k = i; k < copy; k++) {
+                to[out.length()] = at(origin, k);
+                out.append('\\');
+            }
+            if (unicode) {
+                char c = escape.group().charAt(escape.group().length() - 1) == '2' ? '"' : '\\';
+                to[out.length()] = at(origin, run - 1);
+                out.append('\\');
+                to[out.length()] = at(origin, run - 1);
+                out.append(c);
+                run = escape.end();
+            }
+            i = run;
+        }
+        to[out.length()] = at(origin, view.length());
+        next[0] = to;
+        return out.toString();
     }
 
     /**
@@ -740,7 +802,7 @@ public final class Redactor {
             }
             i = run;
         }
-        to[out.length()] = origin == null ? view.length() : origin[view.length()];
+        to[out.length()] = at(origin, view.length());
         next[0] = to;
         return out.toString();
     }
