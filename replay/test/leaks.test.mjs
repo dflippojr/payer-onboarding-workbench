@@ -137,7 +137,7 @@ test('accepts what Redactor leaves for a JWK nested two and three levels deep, a
     assert.ok(findTextLeaks(nest(nest(nest(jwk)))).length > 0, nest(nest(nest(jwk))));
   }
 });
-test('reads quotes and backslashes escaped as \\u0022 and \\u005c in embedded JSON, as Redactor does', () => {
+test('reads embedded JSON spelled with unicode escapes (\\u0022, \\u005c, \\u0020, \\u003a), as Redactor does', () => {
   for (const text of [
     String.raw`{"body":"{\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\"[REDACTED]\"}"}`,
     String.raw`{"body":"{\u0022body\u0022:\u0022{\\u0022kty\\u0022:\\u0022RSA\\u0022,\\u0022d\\u0022:\\\"[REDACTED]\\\"}\u0022}"}`,
@@ -149,6 +149,8 @@ test('reads quotes and backslashes escaped as \\u0022 and \\u005c in embedded JS
   for (const text of [
     String.raw`{"body":"{\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022LEAKED\u0022}"}`,
     String.raw`{"body":"{\"kty\":\"oct\",\u0022k\u0022:\u0022LEAKED\u0022}"}`,
+    String.raw`{"body":"{\"kty\":\"oct\",\"k\":\u0020\"LEAKED\"}"}`,
+    String.raw`{"body":"{\"kty\":\"RSA\",\"d\"\u003A\"LEAKED\"}"}`,
     String.raw`{"body":"{\u0022body\u0022:\u0022{\\u0022kty\\u0022:\\u0022RSA\\u0022,\\u0022d\\u0022:\\u0022LEAKED\\u0022}\u0022}"}`,
   ]) {
     assert.ok(findTextLeaks(text).length > 0, text);

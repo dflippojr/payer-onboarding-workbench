@@ -72,6 +72,8 @@
     {"id": "jwk-nested-three-levels", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"body\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"kty\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"RSA\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"n\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKEN\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"d\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKE-nested3-jwk-d-0079\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"qi\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKE-nested3-jwk-qi-0080\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}", "secrets": ["FAKE-nested3-jwk-d-0079", "FAKE-nested3-jwk-qi-0080"]},
     {"id": "jwk-embedded-unicode-escaped-quotes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022FAKE-u0022-jwk-k-0081\\u0022}\"}", "secrets": ["FAKE-u0022-jwk-k-0081"]},
     {"id": "jwk-nested-unicode-escaped-quotes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\u0022body\\u0022:\\u0022{\\\\u0022kty\\\\u0022:\\\\u0022RSA\\\\u0022,\\\\u0022d\\\\u0022:\\\\u0022FAKE-u0022-nested-jwk-d-0082\\\\u0022}\\u0022}\"}", "secrets": ["FAKE-u0022-nested-jwk-d-0082"]},
+    {"id": "jwk-embedded-unicode-escaped-space", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\u0020\\\"FAKE-u0020-jwk-k-0083\\\"}\"}", "secrets": ["FAKE-u0020-jwk-k-0083"]},
+    {"id": "jwk-embedded-unicode-escaped-colon", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"d\\\"\\u003A\\\"FAKE-u003a-jwk-d-0084\\\"}\"}", "secrets": ["FAKE-u003a-jwk-d-0084"]},
     {"id": "pgp-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nFAKE-PGP-KEY-NOT-REAL-0071", "secrets": ["FAKE-PGP-KEY-NOT-REAL-0071"]}
   ],
   "harmless": [

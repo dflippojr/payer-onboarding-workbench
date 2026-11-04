@@ -633,17 +633,30 @@ class RedactorTest {
     }
 
     @Test
-    void masksJwksWhoseEmbeddedQuotesAreUnicodeEscapes() {
+    void masksJwksWhoseEmbeddedJsonIsSpelledWithUnicodeEscapes() {
         // The review's shape: a serializer that escapes a quote in a string as \\u0022 (as .NET's default encoder
         // does), also in either hex case and mixed with \".
         assertEquals("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\\"[REDACTED]\\\"}\"}",
                 Redactor.redact("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
         assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\\"[REDACTED]\\\"}\"}",
                 Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
+        // Any character of the embedded JSON may be a unicode escape: the space after a colon, the colon itself
+        // (the review's shapes), a brace, a comma, a line break.
+        for (String in : List.of(
+                "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\u0020\\\"PRIVK\\\"}\"}",
+                "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\"\\u003A\\\"PRIVK\\\"}\"}",
+                "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\"\\u003a\\u0020\\\"PRIVK\\\"}\"}")) {
+            String out = Redactor.redact(in);
+            assertFalse(out.contains("PRIVK"), out);
+            assertEquals("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}", unnested(out), in);
+        }
+        String spelled = "{\"body\":\"\\u007B\\\"kty\\\":\\\"oct\\\"\\u002C\\u000A\\\"k\\\":\\\"PRIVK\\\"\\u007D\"}";
+        assertFalse(Redactor.redact(spelled).contains("PRIVK"), Redactor.redact(spelled));
         // Every mix of escapes one to three levels deep reads back as the masked JWK, whichever way each level
-        // escapes its quotes (\" or \\u0022) and backslashes (\\\\ or \\u005c).
+        // escapes its quotes (\" or \\u0022) and backslashes (\\\\ or \\u005c), or spells every character as
+        // a unicode escape.
         List<UnaryOperator<String>> levels = List.of(RedactorTest::nested, RedactorTest::nestedEscapingQuotes,
-                RedactorTest::nestedEscapingBackslashes);
+                RedactorTest::nestedEscapingBackslashes, RedactorTest::nestedEscapingEverything);
         for (String jwk : List.of(
                 "{\"kty\":\"RSA\",\"n\":\"N1\",\"d\":\"PRIVD\",\"oth\":[{\"r\":\"PRIVR\"}],\"qi\":\"PRIVQI\"}",
                 "{\"keys\":[{\"k\":\"PRIVK\",\"kty\":\"oct\"}]}",
@@ -672,6 +685,13 @@ class RedactorTest {
     /** {@link #nested}, with each backslash in the string escaped as {@code \\u005C}. */
     private static String nestedEscapingBackslashes(String text) {
         return "{\"body\":\"" + text.replace("\\", "\\u005C").replace("\"", "\\\"") + "\"}";
+    }
+
+    /** {@link #nested}, with every character in the string written as a unicode escape. */
+    private static String nestedEscapingEverything(String text) {
+        StringBuilder out = new StringBuilder("{\"body\":\"");
+        text.chars().forEach(c -> out.append(String.format("\\u%04x", c)));
+        return out.append("\"}").toString();
     }
 
     /** The JSON text innermost in {@code text}: the {@code body} string, read as JSON, until it is not JSON with one. */
