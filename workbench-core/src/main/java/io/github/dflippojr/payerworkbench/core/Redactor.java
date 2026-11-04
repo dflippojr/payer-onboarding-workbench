@@ -150,8 +150,8 @@ public final class Redactor {
     /** A {@code \\u} escape in a name matched with {@link #NAME_CHAR} or {@link #EMBEDDED_NAME_CHAR}. */
     private static final Pattern NAME_ESCAPE = Pattern.compile(BACKSLASH + "++u([0-9A-Fa-f]{4})");
 
-    /** A unicode escape of a quote or a backslash, from its backslash: {@code u0022} or {@code u005C}, either case. */
-    private static final Pattern UNICODE_QUOTE_OR_BACKSLASH = Pattern.compile(BACKSLASH + "u00(?:22|5[Cc])");
+    /** A unicode escape, from its backslash: {@code u} and four hex digits, either case. */
+    private static final Pattern UNICODE_ESCAPE = Pattern.compile(BACKSLASH + "u([0-9A-Fa-f]{4})");
 
     /** The {@code kty} member name, each letter also as a {@code \\u} escape; it starts at the opening quote. */
     private static final Pattern KTY_NAME = Pattern.compile("\"" + spelled("kty", false) + "\"");
@@ -670,9 +670,9 @@ public final class Redactor {
      * {@code 4m + 1024} for a view of length {@code m} if it is negative.
      */
     static String maskNestedJwks(String text, int characters) {
-        // No quote with three backslashes before it and no escaped quote or backslash spelled as a unicode
-        // escape: every JWK is plain or one level deep, where maskJwks found it.
-        if (!text.contains("\\\\\\\"") && !UNICODE_QUOTE_OR_BACKSLASH.matcher(text).find()) {
+        // No quote with three backslashes before it and no unicode escape: every JWK is plain or one level
+        // deep, where maskJwks found it.
+        if (!text.contains("\\\\\\\"") && !UNICODE_ESCAPE.matcher(text).find()) {
             return text;
         }
         // Each mask: where it starts and ends in the text, and its depth.
@@ -690,7 +690,7 @@ public final class Redactor {
                     masks.add(new int[] {at(normalOrigin, value[0]), at(normalOrigin, value[1]), depth});
                 }
             }
-            if (!normal.contains("\\\"") && !UNICODE_QUOTE_OR_BACKSLASH.matcher(normal).find()) {
+            if (!normal.contains("\\\"") && !UNICODE_ESCAPE.matcher(normal).find()) {
                 break;
             }
             view = unescaped(normal, normalOrigin, next);
@@ -722,14 +722,15 @@ public final class Redactor {
     }
 
     /**
-     * {@code view} with each escaped quote or backslash that its outermost string spells as a unicode escape
-     * ({@code \\u0022}, {@code \\u005C}, as .NET's default encoder writes a quote) written as {@code \"}
-     * or {@code \\} instead, so JSON embedded in it reads as {@link #maskJwks} reads it. {@code origin}
+     * {@code view} with each unicode escape of its outermost string decoded, so JSON embedded in it reads
+     * as {@link #maskJwks} reads it, however the string spells it: a quote or backslash ({@code \\u0022},
+     * {@code \\u005C}, as .NET's default encoder writes a quote) becomes {@code \"} or {@code \\}, any
+     * other character (a colon, a brace, a space) itself. {@code origin}
      * and {@code next[0]} work as in {@link #unescaped}; with nothing to rewrite, {@code view} itself is
      * returned and {@code next[0]} is {@code origin}.
      */
     private static String normalized(String view, int[] origin, int[][] next) {
-        Matcher escape = UNICODE_QUOTE_OR_BACKSLASH.matcher(view);
+        Matcher escape = UNICODE_ESCAPE.matcher(view);
         next[0] = origin;
         if (!escape.find()) {
             return view;
@@ -755,9 +756,11 @@ public final class Redactor {
                 out.append('\\');
             }
             if (unicode) {
-                char c = escape.group().charAt(escape.group().length() - 1) == '2' ? '"' : '\\';
-                to[out.length()] = at(origin, run - 1);
-                out.append('\\');
+                char c = (char) Integer.parseInt(escape.group(1), 16);
+                if (c == '"' || c == '\\') {
+                    to[out.length()] = at(origin, run - 1);
+                    out.append('\\');
+                }
                 to[out.length()] = at(origin, run - 1);
                 out.append(c);
                 run = escape.end();
