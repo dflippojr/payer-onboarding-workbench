@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { findJsonLeaks, findTextLeaks, jwkScopeWork } from './leaks.mjs';
+import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
 
 const MASK = '[REDACTED]';
@@ -225,14 +225,14 @@ test('scopes kty in a bounded number of passes, however many backslash counts th
   }
   const body = `{"kty":"oct",${fields.join(',')}}`;
   for (const text of [body, JSON.stringify({ responseBody: body })]) {
-    jwkScopeWork.characters = 0;
+    scanWork.characters = 0;
     findTextLeaks(text);
-    assert.ok(jwkScopeWork.characters <= 17 * text.length,
-      `read ${jwkScopeWork.characters} characters of a ${text.length}-character text`);
+    assert.ok(scanWork.characters <= 17 * text.length,
+      `read ${scanWork.characters} characters of a ${text.length}-character text`);
   }
-  jwkScopeWork.characters = 0;
+  scanWork.characters = 0;
   findJsonLeaks({ responseBody: body });
-  assert.ok(jwkScopeWork.characters <= 17 * body.length, `read ${jwkScopeWork.characters}`);
+  assert.ok(scanWork.characters <= 17 * body.length, `read ${scanWork.characters}`);
   // A member at a count no serializer writes counts as a JWK member: its value must be the mask.
   assert.ok(findTextLeaks('{"kty":"oct",\\\\"k\\\\":"LEAKED"}').length > 0);
 });
@@ -277,12 +277,17 @@ test('r1: a JWK nested two levels deep, and a short punctuation credential', () 
   assertAccepted('Bearer [REDACTED]');
 });
 test('r3: a JWK nested 17 levels deep behind an unrelated unicode escape', () => {
-  const prefix = String.raw`payer said A: `;
+  const prefix = String.raw`payer said \u0041: `;
   assertFlagged(prefix + nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 17));
   // Redactor masks whole the string that holds JSON nested past the levels it reads.
-  assertAccepted(prefix + nestedIn('{"body":"[REDACTED]"}', 16));
-  // 16 levels are read: a masked JWK there passes, an unmasked one does not.
-  assertAccepted(prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 16));
+  assertAccepted(prefix + nestedIn('{"body":"[REDACTED]"}', 15));
+  assertAccepted(prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 15));
+  // 16 levels down is the last level read: a masked JWK there passes and an unmasked one does not. The report
+  // that holds such a body adds a level, so there it is past the cap and fails closed.
+  const masked16 = prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 16);
+  assert.deepEqual(findTextLeaks(masked16), []);
+  assert.deepEqual(findJsonLeaks({ responseBody: masked16 }), []);
+  assert.deepEqual(findTextLeaks(reportForm(masked16)).map(l => l.check), ['JSON nested past 17 levels']);
   assertFlagged(prefix + nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 16));
 });
 test('r3: a stray quote in prose does not hide the JSON after it', () => {
@@ -293,9 +298,9 @@ test('r3: a stray quote in prose does not hide the JSON after it', () => {
 test('r3: one long backslash run is scanned in linear work', () => {
   const body = JSON.stringify({ k: '[REDACTED]', padding: '\\'.repeat(16384) + 'x', kty: 'oct' });
   for (const text of [body, reportForm(body)]) {
-    jwkScopeWork.characters = 0;
+    scanWork.characters = 0;
     assert.deepEqual(findTextLeaks(text), []);
-    assert.ok(jwkScopeWork.characters <= 40 * text.length + 4096, `read ${jwkScopeWork.characters} of ${text.length}`);
+    assert.ok(scanWork.characters <= 40 * text.length + 4096, `read ${scanWork.characters} of ${text.length}`);
   }
   assertFlagged(JSON.stringify({ k: 'LEAKED', padding: '\\'.repeat(16384) + 'x', kty: 'oct' }));
 });

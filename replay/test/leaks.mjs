@@ -27,173 +27,17 @@ const isSecretKey = name => isSecretField(name) || SENSITIVE_HEADERS.has(name.to
 /** The private members of a JWK, which Redactor masks in a JSON object with a kty member (#262). */
 const JWK_PRIVATE_MEMBERS = new Set(['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']);
 
-/** Whitespace in JSON, also escaped (\n, \t) where the JSON is embedded in a JSON string. */
-const JSON_SPACE = String.raw`(?:\s|\\+[nrt])*`;
+/** A JWK private member's name, also with a stray backslash or quote in it (malformed JSON). */
+const isPrivateName = name => JWK_PRIVATE_MEMBERS.has(name) || JWK_PRIVATE_MEMBERS.has(name.replace(/["\\]/g, ''));
 
 /**
- * A JSON member name as Redactor reads one: letters, _ and -, each character also as a \u escape
- * ("kt\u0079" is kty), its backslash escaped again at any depth. decodeName gives the name compared.
+ * The most levels of JSON in JSON strings the scanner reads: the top level and 16 below it, as Redactor reads.
+ * JSON nested deeper is a leak (Redactor masks whole the string that holds it).
  */
-const NAME = String.raw`((?:[A-Za-z_-]|\\+u[0-9A-Fa-f]{4}){1,64})`;
+const MAX_LEVELS = 17;
 
-/** The name a NAME match spells, each \u escape decoded at the depth of the name's quote. */
-const decodeName = (name, run = 0) => name.replace(/(\\+)u([0-9A-Fa-f]{4})/g, (escape, backslashes, hex) => {
-  // At a name whose quote has r backslashes before it (2^d - 1 at depth d), an escape that some level reads
-  // has 1, 2, 4 ... up to 2^d backslashes; any other count holds an escaped backslash, so it is not one.
-  const b = backslashes.length;
-  return (b & (b - 1)) === 0 && b <= run + 1 ? String.fromCharCode(parseInt(hex, 16)) : escape;
-});
-
-/** `name` as a regex for a JSON member name: each letter as it is or as its \u escape, in either hex case. */
-const spelled = name => [...name].map(c => {
-  const hex = [...c.charCodeAt(0).toString(16).padStart(4, '0')].map(h => /[a-f]/.test(h) ? `[${h}${h.toUpperCase()}]` : h);
-  return String.raw`(?:${c}|\\+u${hex.join('')})`;
-}).join('');
-
-/** A kty member, also spelled with escapes, also in JSON embedded in a JSON string at any depth. */
-const JWK_TYPE = new RegExp(String.raw`\\*"${spelled('kty')}\\*"${JSON_SPACE}:`);
-
-/** Whether text has a kty member, searched once per text rather than once per member. */
-let jwkTypeText = null;
-let jwkTypeFound = false;
-const hasJwkType = text => {
-  if (text !== jwkTypeText) {
-    jwkTypeText = text;
-    jwkTypeFound = JWK_TYPE.test(text);
-  }
-  return jwkTypeFound;
-};
-
-/** How many backslashes are right before `text[i]`. */
-const backslashesBefore = (text, i) => {
-  let k = 0;
-  while (text[i - 1 - k] === '\\') k++;
-  return k;
-};
-
-/**
- * For each member name read at escape depth `run` (r backslashes before its quote, 2^d - 1 at depth d), whether
- * the JSON object holding it has a kty member of its own, as Redactor masks only a JWK's own members: a map
- * from the index of the name's opening quote. One pass over the text: a quote with b backslashes before it
- * delimits a string at that depth when b % (2r + 2) == r, ends the string the JSON is embedded in (and every
- * object open at that depth) when b % (r + 1) != r, and is escaped inside a string otherwise.
- */
-function membersInJwks(text, run) {
-  jwkScopeWork.characters += text.length;
-  const kind = b => {
-    if (b % (2 * run + 2) === run) return 'quote';
-    return b % (run + 1) === run ? 'escaped' : 'end';
-  };
-  const result = new Map();
-  // The open objects and arrays, innermost last: an object as {kty, names}, an array as null.
-  const open = [];
-  const close = () => {
-    const object = open.pop();
-    if (object) object.names.forEach(name => result.set(name, object.kty));
-  };
-  let inString = false;
-  let nameNext = false;
-  let name = -1;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === '\\') {
-      let j = i;
-      while (text[j] === '\\') j++;
-      if (text[j] !== '"') {
-        i = j - 1;
-        continue;
-      }
-      const k = kind(j - i);
-      i = j;
-      if (k === 'escaped') continue;
-      if (k === 'end') {
-        while (open.length > 0) close();
-        inString = false;
-        nameNext = false;
-        name = -1;
-        continue;
-      }
-    } else if (c !== '"') {
-      if (inString) continue;
-      if (c === '{') {
-        open.push({ kty: false, names: [] });
-        nameNext = true;
-      } else if (c === '[') {
-        open.push(null);
-        nameNext = false;
-      } else if ((c === '}' || c === ']') && open.length > 0) {
-        close();
-        nameNext = false;
-      } else if (c === ',') {
-        nameNext = open.length > 0 && open[open.length - 1] !== null;
-      }
-      continue;
-    } else if (kind(0) !== 'quote') {
-      // A bare quote at depth 1 or deeper ends the embedded JSON.
-      while (open.length > 0) close();
-      inString = false;
-      nameNext = false;
-      name = -1;
-      continue;
-    }
-    // A string delimiter at this depth: i is its quote, run backslashes before it.
-    if (!inString) {
-      inString = true;
-      if (nameNext && open.length > 0) {
-        name = i - run;
-        open[open.length - 1].names.push(name);
-      }
-      nameNext = false;
-    } else {
-      inString = false;
-      if (name >= 0 && decodeName(text.slice(name + run + 1, i - run), run) === 'kty') open[open.length - 1].kty = true;
-      name = -1;
-    }
-  }
-  while (open.length > 0) close();
-  return result;
-}
-
-/** How many characters membersInJwks has read, so tests can bound the scoping work without a clock. */
-export const jwkScopeWork = { characters: 0 };
-
-/** membersInJwks for the text last asked about, one map per escape depth. */
-let jwkMembersText = null;
-let jwkMembers = new Map();
-
-/**
- * The backslash counts a JSON serializer writes before a quote, 2^d - 1 at depth d, for the 16 levels Redactor
- * reads: membersInJwks makes at most one pass per count, so at most 17 per text.
- */
-const SERIALIZED_RUNS = new Set(Array.from({ length: 17 }, (_, depth) => 2 ** depth - 1));
-
-/**
- * Whether the member whose name's quote is at `quote` is in an object with a kty member of its own. A member
- * the pass did not read as one (no object around it at its depth), or quoted with a backslash count no
- * serializer writes, counts as in a JWK, the stricter answer.
- */
-function inObjectWithKty(text, quote) {
-  if (text !== jwkMembersText) {
-    jwkMembersText = text;
-    jwkMembers = new Map();
-  }
-  const run = backslashesBefore(text, quote);
-  if (!SERIALIZED_RUNS.has(run)) return true;
-  if (!jwkMembers.has(run)) jwkMembers.set(run, membersInJwks(text, run));
-  const result = jwkMembers.get(run).get(quote - run);
-  return result === undefined ? true : result;
-}
-
-/** Whether a field whose name's quote is at `quote` holds a JWK's own private member. */
-const isJwkMember = (name, text, quote) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text)
-  && backslashesBefore(text, quote) <= jwkDepthLimit && inObjectWithKty(text, quote);
-
-/**
- * The most backslashes before a member's quote at which findTextLeaks judges it a JWK member in the text it is
- * scanning: in text with unicode escapes, the raw text only at depth 0 (embedded structure may be spelled with
- * escapes there, \u007D for a brace), the rest in the decoded views.
- */
-let jwkDepthLimit = Infinity;
+/** How many characters the JSON scan has read, so tests can bound its work without a clock. */
+export const scanWork = { characters: 0 };
 
 /** An RFC 9110 token, as Redactor reads an Authorization scheme. */
 const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
@@ -231,13 +75,6 @@ const isAuthProse = m => {
   const word = /^token$/i.test(m[1]) ? (m[2] + m[3]).replace(/:$/, '') : m[2] + m[3];
   return /^[A-Za-z]{1,15}[.)]*$/.test(word) && !(/^basic$/i.test(m[1]) && isUserPass(word.replace(/[.)]+$/, '')));
 };
-
-/**
- * A masked JSON string whose closing quote has more of the value right after it ("[REDACTED]"ssTAIL,
- * "[REDACTED]"-tail): only whitespace, a comma or close bracket, or the quote or backslash of an enclosing
- * string may follow the value.
- */
-const maskCutShort = m => /^\\*"[^\s,}\]\\"]/.test(m.input.slice(m.index + m[0].length));
 
 /**
  * A masked form value is [REDACTED], optionally followed by the start of a JSON escape (\n, \") where
@@ -278,14 +115,12 @@ const isAuthLineProse = (name, v) => {
 };
 
 /**
- * A list of masked values, as redactTree leaves a header-named list, or an empty list (redactHeaders
- * keeps one for a header with no values). An authorization list item may have any token as a scheme in
- * front of the mask (SCRAM-SHA-256 [REDACTED]); Redactor masks any other header's values whole, so
- * their items are bare masks (#292).
+ * An item Redactor leaves in a secret-named list: redactTree masks a header-named list item by item, an
+ * authorization item keeping any token as a scheme in front of the mask (SCRAM-SHA-256 [REDACTED]); any
+ * other item is a bare mask (#292).
  */
-const maskedList = item => new RegExp(String.raw`^\s*(?:\]|\\*"${item}\\*"\s*(?:,\s*\\*"${item}\\*"\s*)*\])`);
-const MASKED_AUTHORIZATION_LIST = maskedList(String.raw`(?:${SCHEME} )?\[REDACTED\]`);
-const MASKED_LIST = maskedList(String.raw`\[REDACTED\]`);
+const isMaskedItem = (name, item) => typeof item === 'string'
+  && (item === MASK || (/authorization$/i.test(name) && new RegExp(`^${SCHEME} \\[REDACTED\\]$`).test(item)));
 
 /**
  * How many backslashes escaped the line break before a header line at `index`, as Redactor counts
@@ -326,23 +161,6 @@ function valueEnd(value, depth, lineBreaks = true) {
   return value.length;
 }
 
-/** A unicode escape: a backslash, then u and four hex digits. */
-const UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/;
-
-/**
- * `text` with each unicode escape of its outermost JSON string decoded, as Redactor reads one level of nested
- * JSON: an odd run of backslashes ends in an escape of its own, and a quote or backslash stays escaped.
- */
-const decodedUnicode = text => text.replace(/(\\+)u([0-9A-Fa-f]{4})/g, (m, run, hex) => {
-  if (run.length % 2 === 0) return m;
-  const c = String.fromCharCode(parseInt(hex, 16));
-  return run.slice(1) + (c === '"' ? '\\"' : c === '\\' ? '\\\\' : c);
-});
-
-/** `text` with one level of JSON string escaping taken off (\\ to \, \" to "), any other escape kept. */
-const unescapedOnce = text => text.replace(/(\\+)("?)/g, (m, run, quote) =>
-  '\\'.repeat(run.length >> 1) + (run.length % 2 === 1 ? (quote ? '"' : '\\') : quote));
-
 /** Regex checks over raw text. `ok(match)` returning true means the hit is a masked or harmless value. */
 const TEXT_CHECKS = [
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
@@ -362,37 +180,6 @@ const TEXT_CHECKS = [
   { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   { name: 'signed JWT', re: new RegExp(String.raw`${WORD_START}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`, 'g') },
-  // JSON secrets, also inside JSON that is itself embedded in a JSON string (\"key\": \"value\").
-  {
-    name: 'JSON secret field',
-    re: new RegExp(String.raw`\\*"${NAME}\\*"${JSON_SPACE}:${JSON_SPACE}(?:\\*"((?:[^"\\]|\\[^"])*)|(${JSON_SCALAR}))`, 'g'),
-    // The value's closing quote is escaped like the key's opening one (k backslashes, so depth k + 1); the
-    // capture alone can stop early at an escaped quote or keep the backslashes of the closing one.
-    ok: m => {
-      // Counted in the input: an earlier match can end inside the run of backslashes before the key.
-      const quote = m.index + m[0].indexOf('"');
-      const escaped = backslashesBefore(m.input, quote);
-      const name = decodeName(m[1], escaped);
-      if (!isSecretKey(name) && !isJwkMember(name, m.input, quote)) return true;
-      if (m[2] === undefined) return false;
-      const rest = m.input.slice(m.index + m[0].length - m[2].length);
-      return isMaskedValue(name, rest.slice(0, valueEnd(rest, escaped + 1, false))) && !maskCutShort(m);
-    },
-  },
-  // Redactor masks a secret field's object or array value (a private JWK) as a string. A list of
-  // masked values is a secret-named list redactTree masked item by item (X-Api-Key: ["[REDACTED]"]);
-  // it masks a JWK private member's list whole, so no list of masks is left there.
-  {
-    name: 'JSON secret structure',
-    re: new RegExp(String.raw`\\*"${NAME}\\*"${JSON_SPACE}:${JSON_SPACE}([{[])`, 'g'),
-    ok: m => {
-      const quote = m.index + m[0].indexOf('"');
-      const name = decodeName(m[1], backslashesBefore(m.input, quote));
-      return isSecretKey(name)
-        ? m[2] === '[' && (/authorization$/i.test(name) ? MASKED_AUTHORIZATION_LIST : MASKED_LIST).test(m.input.slice(m.index + m[0].length))
-        : !isJwkMember(name, m.input, quote);
-    },
-  },
   // The value runs to the next &, whitespace or quote, past any backslash.
   { name: 'form secret', re: new RegExp(String.raw`${WORD_START}(${FORM_SECRET_KEYS})=([^&\s"]*)`, 'gi'), ok: m => isMaskedFormValue(m[2]) },
   // A sensitive header line (Cookie: sid=...) where a line starts, also after an escaped line break in a
@@ -413,66 +200,289 @@ const TEXT_CHECKS = [
   },
 ];
 
-/** Returns one {check, match} per suspected leak in `text`. */
-export function findTextLeaks(text) {
-  const leaks = [];
-  // A decoded view (embedded) adds only the JSON it newly shows: one level down, nested in a string there, so
-  // one backslash before its quotes. Quotes it shows bare were read already, and unescaping can make an escaped
-  // backslash look like an escape there; deeper ones are read in the next view, once their structure is decoded.
-  const scan = (view, embedded) => {
+/** A JSON string's raw control characters escaped, so JSON.parse reads a string a serializer would have escaped. */
+const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
+/**
+ * The JSON string literal whose opening quote is at `start`: where it ends (its closing quote, or the end of
+ * the text or of a line, for a string cut off there, as Redactor writes a truncated body) and its content. A
+ * backslash always takes the next character with it, so no run of backslashes is counted. A raw line break
+ * inside it means the quote opens no JSON string: then only where that line break is ({aborted, end}).
+ */
+function readLiteral(text, start, ctx) {
+  let i = start + 1;
+  let terminated = false;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"') {
+      terminated = true;
+      break;
+    }
+    if (c === '\n' || c === '\r') {
+      ctx.work += i - start;
+      return { aborted: true, end: i };
+    }
+    if (c === '\\') {
+      // A backslash before a line break: a value cut there, before a note appended to the cut body.
+      if (text[i + 1] === '\n' || text[i + 1] === '\r') {
+        i++;
+        break;
+      }
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+  const end = Math.min(i, text.length);
+  ctx.work += end - start + 1;
+  return { start, end, terminated, body: text.slice(start + 1, end) };
+}
+
+/**
+ * A literal's content decoded with JSON.parse, or null if it does not decode. A string cut off by the end of
+ * the text may end in half an escape, which is dropped first, as Redactor leaves such a cut.
+ */
+function decodeLiteral(literal, ctx) {
+  let body = literal.body;
+  if (!literal.terminated) {
+    let backslashes = 0;
+    while (backslashes < body.length && body[body.length - 1 - backslashes] === '\\') backslashes++;
+    if (backslashes % 2 === 1) body = body.slice(0, -1);
+    const partial = body.lastIndexOf('\\u');
+    if (partial >= 0 && partial > body.length - 6 && !/^[0-9A-Fa-f]{4}/.test(body.slice(partial + 2))) {
+      body = body.slice(0, partial);
+    }
+  }
+  ctx.work += body.length;
+  try {
+    return JSON.parse(`"${escapeControls(body)}"`);
+  } catch {
+    return null;
+  }
+}
+
+/** Records a leak the scan found, or a reason it could not read on (failing closed). */
+const failClosed = (ctx, check, text) => ctx.leaks.push({ check, match: text.slice(0, 80) });
+
+/**
+ * Judges the members a JSON object (or array, or the text around any) held, once it closes or the text ends:
+ * a secret-named field's value must be what Redactor leaves for it, and in an object with its own kty member,
+ * so must a private member's. Each member is judged, a repeated one too.
+ */
+function judge(owner, ctx) {
+  for (const value of owner.values) {
+    if (isSecretKey(value.name)) {
+      const masked = value.kind === 'string' ? value.value !== null && isMaskedValue(value.name, value.value) && !value.cutShort
+        : value.kind === 'scalar' ? value.value === 'null'
+          : value.kind === 'array' && !value.nested && value.items.every(item => isMaskedItem(value.name, item));
+      if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
+    } else if (owner.kty && isPrivateName(value.name)) {
+      const masked = value.kind === 'string' ? (value.value === MASK || value.value === '') && !value.cutShort
+        : value.kind === 'scalar' && value.value === 'null';
+      if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
+    }
+  }
+}
+
+/** Whether a character can follow a JSON string: what Redactor leaves after a mask, or a stray quote's sign. */
+const endsValue = c => c === undefined || c === ',' || c === '}' || c === ']' || c === ':' || c === '\\' || c === '"'
+  || c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+/** Whether a character is JSON whitespace. */
+const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+/**
+ * Reads a decoded string as the JSON it may hold, `level` levels down. A string with a quote is read as JSON. A
+ * string that still holds escapes is also read as the content of one more string, decoded once more, as Redactor
+ * reads JSON escaped twice over; a chain of such escapes (u005c after u005c) therefore reaches the level cap.
+ * Past the cap, a string with anything left to read is a leak (Redactor masks it whole).
+ */
+function readNested(decoded, level, ctx) {
+  const quoted = decoded.includes('"');
+  let unescaped = null;
+  if (decoded.includes('\\')) {
+    ctx.work += decoded.length;
+    try {
+      unescaped = JSON.parse(`"${escapeControls(decoded)}"`);
+    } catch { /* not the content of a string: a backslash of its own */ }
+  }
+  const deeper = unescaped !== null && unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'));
+  if (!quoted && !deeper) return;
+  if (level >= MAX_LEVELS) {
+    failClosed(ctx, 'JSON nested past 17 levels', decoded);
+    return;
+  }
+  if (quoted) scanJson(decoded, level, ctx);
+  if (deeper) readNested(unescaped, level + 1, ctx);
+}
+
+/**
+ * Reads `text` as JSON at nesting `level` (0 for the text itself, n for JSON in a string n levels down) in one
+ * pass, tolerating prose and cut-off JSON around it, and judges every member it finds. Each string literal is
+ * decoded with JSON.parse, so every spelling of its escapes is read as JSON reads it; a decoded string that may
+ * hold JSON (it has a quote) is read the same way one level down. A stray quote (one whose string is followed by
+ * something no string is) is read again from the character after it, so it cannot shift which quotes open
+ * strings for the rest of the text.
+ */
+function scanJson(text, level, ctx) {
+  const newOwner = () => ({ kty: false, values: [] });
+  const top = newOwner();
+  // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
+  const stack = [];
+  // The member whose name and colon were just read, waiting for its value.
+  let member = null;
+  const owner = () => (stack.length > 0 ? stack[stack.length - 1].owner : top);
+  const nested = (decoded, literal) => {
+    if (decoded === null) {
+      // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
+      if (literal.body.includes('\\"') || literal.body.includes('{')) failClosed(ctx, 'undecodable JSON string', literal.body);
+      return;
+    }
+    readNested(decoded, level + 1, ctx);
+  };
+  let i = 0;
+  // Quotes before this index were read as escaped ones inside a string a stray quote opened: a string opened at
+  // any of them would end where that one did, so they open none when its span is read again.
+  let quotesFrom = 0;
+  while (i < text.length) {
+    ctx.work++;
+    if (ctx.work > ctx.budget) {
+      if (!ctx.spent) failClosed(ctx, 'scan budget spent', text);
+      ctx.spent = true;
+      return;
+    }
+    const c = text[i];
+    if (c === '"' && i >= quotesFrom) {
+      const literal = readLiteral(text, i, ctx);
+      if (literal.aborted) {
+        // Every quote before the line break would open a string that runs into it too.
+        member = null;
+        i = literal.end;
+        continue;
+      }
+      const decoded = decodeLiteral(literal, ctx);
+      let next = literal.end + 1;
+      while (next < text.length && isSpace(text[next])) next++;
+      ctx.work += next - literal.end;
+      if (literal.terminated && text[next] === ':') {
+        const name = decoded ?? literal.body;
+        const o = owner();
+        if (name === 'kty') o.kty = true;
+        member = { name, owner: o };
+        i = next + 1;
+        continue;
+      }
+      const stray = literal.terminated && !endsValue(text[next]);
+      if (member) {
+        member.owner.values.push({
+          name: member.name, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
+          cutShort: literal.terminated && !endsValue(text[literal.end + 1]),
+        });
+        member = null;
+      } else if (stack.length > 0 && stack[stack.length - 1].list) {
+        stack[stack.length - 1].list.items.push(decoded);
+      }
+      nested(decoded, literal);
+      // Outside any JSON, or after something no string is followed by, the quote may be a stray one: read its
+      // span again for structure. A string cut off by the end of the text leaves nothing after it to resync.
+      if ((stray || stack.length === 0) && literal.terminated) {
+        quotesFrom = literal.end;
+        i = literal.start + 1;
+      } else {
+        i = literal.end + 1;
+      }
+      continue;
+    }
+    if (c === '{' || c === '[') {
+      const container = { owner: newOwner(), list: null };
+      if (member) {
+        const value = { name: member.name, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
+        member.owner.values.push(value);
+        if (c === '[') container.list = value;
+        member = null;
+      } else if (stack.length > 0 && stack[stack.length - 1].list) {
+        stack[stack.length - 1].list.nested = true;
+      }
+      stack.push(container);
+    } else if (c === '}' || c === ']') {
+      if (stack.length > 0) judge(stack.pop().owner, ctx);
+      member = null;
+    } else if (member && !isSpace(c)) {
+      // A scalar value runs to the next delimiter.
+      let end = i;
+      while (end < text.length && !isSpace(text[end]) && text[end] !== ',' && text[end] !== '}' && text[end] !== ']') end++;
+      if (end > i) member.owner.values.push({ name: member.name, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
+      member = null;
+      ctx.work += end - i;
+      i = Math.max(end, i + 1);
+      continue;
+    }
+    i++;
+  }
+  while (stack.length > 0) judge(stack.pop().owner, ctx);
+  judge(top, ctx);
+}
+
+/**
+ * The leaks in `text` read as JSON nested `level` levels down: the regex checks over the text itself, then
+ * the JSON scan, which shares one budget linear in the text's length.
+ */
+function textLeaks(text, level) {
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false };
+  if (level === 0) {
     for (const check of TEXT_CHECKS) {
-      if (embedded && !check.name.startsWith('JSON secret')) continue;
-      for (const m of view.matchAll(check.re)) {
-        if (embedded && backslashesBefore(view, m.index + m[0].indexOf('"')) !== 1) continue;
-        if (!check.ok || !check.ok(m)) leaks.push({ check: check.name, match: m[0].slice(0, 80) });
+      for (const m of text.matchAll(check.re)) {
+        if (!check.ok || !check.ok(m)) ctx.leaks.push({ check: check.name, match: m[0].slice(0, 80) });
       }
     }
-  };
-  const escaped = UNICODE_ESCAPE.test(text);
-  jwkDepthLimit = escaped ? 0 : Infinity;
-  try {
-    scan(text, false);
-  } finally {
-    jwkDepthLimit = Infinity;
   }
-  if (!escaped) return leaks;
-  // The text checks find embedded JSON by its literal quotes, colons and braces. A JSON string may spell any of
-  // them as a unicode escape (a backslash and u0022, u003A, u0020..., as .NET's default encoder writes a quote),
-  // so text with one is also scanned level by level as Redactor reads it: decoded, then one level of escaping
-  // taken off, for as many levels as Redactor reads. No parsing, so cut-off JSON and repeated members count.
-  let view = text;
-  for (let level = 0; level < 16 && (UNICODE_ESCAPE.test(view) || view.includes('\\"')); level++) {
-    const decoded = decodedUnicode(view);
-    scan(decoded, true);
-    view = unescapedOnce(decoded);
+  scanJson(text, level, ctx);
+  // Text with escapes may be the content of a JSON string: text copied from inside one ({\"kty\":...}) has
+  // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too.
+  if (text.includes('\\')) {
+    ctx.work += text.length;
+    let decoded = null;
+    try {
+      decoded = JSON.parse(`"${escapeControls(text)}"`);
+    } catch { /* bare quotes in it: not a string's content */ }
+    if (decoded !== null && decoded !== text) readNested(decoded, level + 1, ctx);
   }
-  // Redactor masks whole each string that still holds escapes after the levels it reads, so any left is a leak.
-  if (UNICODE_ESCAPE.test(view)) leaks.push({ check: 'escapes nested past 16 levels', match: view.slice(0, 80) });
-  return leaks;
+  scanWork.characters += ctx.work;
+  return ctx.leaks;
+}
+
+/** Returns one {check, match} per suspected leak in `text`. */
+export function findTextLeaks(text) {
+  return textLeaks(text, 0);
 }
 
 /**
  * Walks parsed JSON for secret-named fields and sensitive headers whose values are not
  * masked. String values that are themselves JSON (recorded request/response bodies)
- * are walked too. A header list under a *headers map is left to the sensitive-header check.
+ * are walked too, up to the levels the text scan reads. A header list under a *headers map
+ * is left to the sensitive-header check.
  */
 export function findJsonLeaks(value, path = '$') {
   const leaks = [];
-  const walk = (v, p, inHeaders = false) => {
+  const walk = (v, p, inHeaders, level) => {
     if (typeof v === 'string') {
       const t = v.trim();
       const before = leaks.length;
       if (t.startsWith('{') || t.startsWith('[')) {
-        try { walk(JSON.parse(t), `${p}<json>`); } catch { /* not JSON as a whole */ }
+        if (level + 1 >= MAX_LEVELS) {
+          leaks.push({ check: 'JSON nested past 17 levels', match: `${p}` });
+          return;
+        }
+        try { walk(JSON.parse(t), `${p}<json>`, false, level + 1); } catch { /* not JSON as a whole */ }
       }
       // JSON in the string read as text when parsing found nothing: after prose (payer said: {...}), cut off,
       // or repeating a member, which parsing drops.
       if (leaks.length === before && /[{[]/.test(v)) {
-        for (const leak of findTextLeaks(v)) leaks.push({ check: leak.check, match: `${p}: ${leak.match}` });
+        for (const leak of textLeaks(v, level)) leaks.push({ check: leak.check, match: `${p}: ${leak.match}` });
       }
       return;
     }
-    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`)); return; }
+    if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`, false, level)); return; }
     if (!v || typeof v !== 'object') return;
     for (const [k, x] of Object.entries(v)) {
       const key = k.toLowerCase();
@@ -499,9 +509,9 @@ export function findJsonLeaks(value, path = '$') {
           }
         }
       }
-      walk(x, `${p}.${k}`, /headers$/i.test(k));
+      walk(x, `${p}.${k}`, /headers$/i.test(k), level);
     }
   };
-  walk(value, path);
+  walk(value, path, false, 0);
   return leaks;
 }
