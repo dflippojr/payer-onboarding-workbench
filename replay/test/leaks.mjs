@@ -185,7 +185,15 @@ function inObjectWithKty(text, quote) {
 }
 
 /** Whether a field whose name's quote is at `quote` holds a JWK's own private member. */
-const isJwkMember = (name, text, quote) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text) && inObjectWithKty(text, quote);
+const isJwkMember = (name, text, quote) => JWK_PRIVATE_MEMBERS.has(name) && hasJwkType(text)
+  && backslashesBefore(text, quote) <= jwkDepthLimit && inObjectWithKty(text, quote);
+
+/**
+ * The most backslashes before a member's quote at which findTextLeaks judges it a JWK member in the text it is
+ * scanning: in text with unicode escapes, the raw text only at depth 0 (embedded structure may be spelled with
+ * escapes there, \u007D for a brace), the rest in the decoded views.
+ */
+let jwkDepthLimit = Infinity;
 
 /** An RFC 9110 token, as Redactor reads an Authorization scheme. */
 const SCHEME = "[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*";
@@ -408,27 +416,34 @@ const TEXT_CHECKS = [
 /** Returns one {check, match} per suspected leak in `text`. */
 export function findTextLeaks(text) {
   const leaks = [];
-  // A decoded view (embedded) adds only the JSON it newly shows, nested in a string there: its quotes are
-  // escaped. Quotes it shows bare were read already, and unescaping can make an escaped backslash look like an
-  // escape there.
+  // A decoded view (embedded) adds only the JSON it newly shows: one level down, nested in a string there, so
+  // one backslash before its quotes. Quotes it shows bare were read already, and unescaping can make an escaped
+  // backslash look like an escape there; deeper ones are read in the next view, once their structure is decoded.
   const scan = (view, embedded) => {
     for (const check of TEXT_CHECKS) {
       if (embedded && !check.name.startsWith('JSON secret')) continue;
       for (const m of view.matchAll(check.re)) {
-        if (embedded && backslashesBefore(view, m.index + m[0].indexOf('"')) === 0) continue;
+        if (embedded && backslashesBefore(view, m.index + m[0].indexOf('"')) !== 1) continue;
         if (!check.ok || !check.ok(m)) leaks.push({ check: check.name, match: m[0].slice(0, 80) });
       }
     }
   };
-  scan(text, false);
+  const escaped = UNICODE_ESCAPE.test(text);
+  jwkDepthLimit = escaped ? 0 : Infinity;
+  try {
+    scan(text, false);
+  } finally {
+    jwkDepthLimit = Infinity;
+  }
+  if (!escaped) return leaks;
   // The text checks find embedded JSON by its literal quotes, colons and braces. A JSON string may spell any of
   // them as a unicode escape (a backslash and u0022, u003A, u0020..., as .NET's default encoder writes a quote),
   // so text with one is also scanned level by level as Redactor reads it: decoded, then one level of escaping
   // taken off, for as many levels as Redactor reads. No parsing, so cut-off JSON and repeated members count.
   let view = text;
-  for (let level = 0; level < 16 && UNICODE_ESCAPE.test(view); level++) {
+  for (let level = 0; level < 16 && (UNICODE_ESCAPE.test(view) || view.includes('\\"')); level++) {
     const decoded = decodedUnicode(view);
-    if (decoded !== view) scan(decoded, true);
+    scan(decoded, true);
     view = unescapedOnce(decoded);
   }
   // Redactor masks whole each string that still holds escapes after the levels it reads, so any left is a leak.

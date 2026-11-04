@@ -645,14 +645,20 @@ public final class Redactor {
         Matcher field = (embedded ? EMBEDDED_JSON_FIELD : JSON_FIELD).matcher(text);
         Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : JSON_FIELD_STRUCTURE).matcher(text);
         int copied = 0;
+        // The length of a quote: an embedded one has a backslash before it.
+        int quote = embedded ? 2 : 1;
         for (int name : names) {
-            if (name < copied) {
+            // A name inside a value already masked goes with it, except one that opens on the quote that closed
+            // that value (malformed: {"d":""p":...}), whose own value still comes after it.
+            if (name < copied - quote) {
                 continue;
             }
-            if (structure.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
+            if (structure.region(name, text.length()).lookingAt() && structure.end() >= copied
+                    && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
                 copied = endOfStructure(text, structure.end(), embedded);
                 values.add(new JwkValue(structure.end(), copied, name));
-            } else if (field.region(name, text.length()).lookingAt() && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
+            } else if (field.region(name, text.length()).lookingAt() && field.end(2) >= copied
+                    && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
                 copied = field.end();
                 values.add(new JwkValue(field.end(2), copied, name));
             }
