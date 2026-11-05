@@ -327,13 +327,21 @@ public final class Redactor {
      * {@code text} is {@code null}.
      */
     public static String redact(String text) {
+        return redact(text, null);
+    }
+
+    /**
+     * {@link #redact(String)}, adding to {@code reads}, unless it is {@code null}, each read JWK discovery makes:
+     * at which escape level, and how much of that level's budget was left before and after it.
+     */
+    static String redact(String text, List<DiscoveryRead> reads) {
         if (text == null || text.isEmpty()) {
             return text;
         }
         // The JWKs' private members and the PEM and PGP blocks are found in the text as it came, and masked
         // together: masking either first would hide the other (an unterminated block masked to the end of the
         // text may hold the JWK's kty; a JWK member's mask may hold the block's header).
-        List<Mask> masks = jwkMasks(text);
+        List<Mask> masks = jwkMasks(text, new Discovery(text.length(), reads));
         List<Mask> pem = pemMasks(text);
         masks.addAll(pem);
         String out = applyMasks(text, masks);
@@ -341,7 +349,7 @@ public final class Redactor {
         // "-----BEGIN PRIVATE KEY-----"-----END PRIVATE KEY-----","d":...}): with the blocks masked, the JWKs are
         // found once more, with the same budgets and fallbacks. This only adds masks.
         if (!pem.isEmpty()) {
-            out = applyMasks(out, jwkMasks(out));
+            out = applyMasks(out, jwkMasks(out, new Discovery(out.length(), reads)));
         }
         out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
@@ -580,7 +588,7 @@ public final class Redactor {
      * budget; {@link #redact(String)} gives {@code 4n + 1024}. {@code embedded}: JSON embedded in a JSON string.
      */
     static String maskJwks(String text, boolean embedded, int characters) {
-        List<JwkValue> values = jwkValues(text, embedded, characters);
+        List<JwkValue> values = jwkValues(text, embedded, new int[] {characters});
         if (values.isEmpty()) {
             return text;
         }
@@ -597,9 +605,10 @@ public final class Redactor {
     /**
      * Where the value of each JWK private member that {@link #maskJwks(String, boolean, int)} masks starts and
      * ends, in order and apart: the opening quote (or bracket) through the closing quote (or bracket), and
-     * where the member's name starts (its opening quote, or in embedded JSON the backslash before it).
+     * where the member's name starts (its opening quote, or in embedded JSON the backslash before it). The
+     * searches spend {@code budget[0]}, one character a step, and leave in it what is left (below 0 once spent).
      */
-    private static List<JwkValue> jwkValues(String text, boolean embedded, int characters) {
+    private static List<JwkValue> jwkValues(String text, boolean embedded, int[] budget) {
         Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
         Matcher kty = (embedded ? EMBEDDED_KTY_NAME : KTY_NAME).matcher(text);
         // Where the text read by objects() so far ends: every object before it is known.
@@ -609,8 +618,6 @@ public final class Redactor {
         // The last kty found not to be in an object, and how its search ended.
         int outside = -1;
         int outsideResult = NOT_IN_BRACKETS;
-        // What is left to read: startOfObject() and objects() spend it, one character a step.
-        int[] budget = {characters};
         while (type.find()) {
             int member = type.start();
             if (member < readEnd || !opensName(text, member, embedded, budget)) {
@@ -685,11 +692,14 @@ public final class Redactor {
      * of length {@code m} if it is negative, as {@link #redact(String)} reads.
      */
     static String maskNestedJwks(String text, int characters) {
-        return applyMasks(text, nestedJwkMasks(text, characters));
+        return applyMasks(text, nestedJwkMasks(text, characters, null));
     }
 
-    /** What {@link #maskNestedJwks(String, int)} masks, as masks on the text. */
-    private static List<Mask> nestedJwkMasks(String text, int characters) {
+    /**
+     * What {@link #maskNestedJwks(String, int)} masks, as masks on the text. With a {@code discovery}, each round
+     * spends that level's budget there instead of {@code characters}.
+     */
+    private static List<Mask> nestedJwkMasks(String text, int characters, Discovery discovery) {
         List<Mask> masks = new ArrayList<>();
         // No quote with three backslashes before it and no unicode escape: every JWK is plain or one level
         // deep, where maskJwks finds it.
@@ -702,8 +712,10 @@ public final class Redactor {
             String json = normal.text();
             // One level deep with no unicode escape to decode, maskJwks has read this view already.
             if ((depth > 1 || normal != view) && json.contains("\\\"")) {
-                int budget = characters < 0 ? 4 * json.length() + 1024 : characters;
-                for (JwkValue value : jwkValues(json, true, budget)) {
+                List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, true,
+                        discovery.nested(depth, json.length()))
+                        : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
+                for (JwkValue value : values) {
                     String quote = text.substring(normal.at(value.name()), normal.at(value.name() + 2));
                     masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
                 }
@@ -753,19 +765,63 @@ public final class Redactor {
      * Every JWK private member's value in the text, as masks on it: in plain JSON, in JSON embedded in a JSON
      * string, and nested deeper ({@link #maskNestedJwks(String, int)}).
      */
-    private static List<Mask> jwkMasks(String text) {
+    private static List<Mask> jwkMasks(String text, Discovery discovery) {
         List<Mask> masks = new ArrayList<>();
-        for (JwkValue value : jwkValues(text, false, 4 * text.length() + 1024)) {
+        for (JwkValue value : discovery.read("plain", text, false, discovery.plain)) {
             masks.add(new Mask(value.start(), value.end(), "\"" + MASK + "\""));
         }
         // With a unicode escape, a quote may be spelled two ways; nestedJwkMasks reads that level decoded.
         if (!UNICODE_ESCAPE.matcher(text).find()) {
-            for (JwkValue value : jwkValues(text, true, 4 * text.length() + 1024)) {
+            for (JwkValue value : discovery.read("embedded", text, true, discovery.embedded)) {
                 masks.add(new Mask(value.start(), value.end(), "\\\"" + MASK + "\\\""));
             }
         }
-        masks.addAll(nestedJwkMasks(text, -1));
+        masks.addAll(nestedJwkMasks(text, -1, discovery));
         return masks;
+    }
+
+    /** A read JWK discovery made at an escape level: how much of that level's budget was left before and after it. */
+    record DiscoveryRead(String level, int before, int after) {
+    }
+
+    /**
+     * What JWK discovery has left to read at each escape level: {@code 4n + 1024} characters for the plain and
+     * the embedded JSON of a text of length {@code n}, and {@code 4m + 1024} for each nested level, whose view of
+     * the text has length {@code m}, when it is first read.
+     */
+    private static final class Discovery {
+
+        private final int[] plain;
+        private final int[] embedded;
+        private final List<int[]> nested = new ArrayList<>();
+        private final List<DiscoveryRead> reads;
+
+        Discovery(int length, List<DiscoveryRead> reads) {
+            plain = new int[] {4 * length + 1024};
+            embedded = new int[] {4 * length + 1024};
+            this.reads = reads;
+        }
+
+        /** The budget of nested level {@code depth}, whose view has length {@code length}. */
+        int[] nested(int depth, int length) {
+            while (nested.size() < depth) {
+                nested.add(null);
+            }
+            if (nested.get(depth - 1) == null) {
+                nested.set(depth - 1, new int[] {4 * length + 1024});
+            }
+            return nested.get(depth - 1);
+        }
+
+        /** {@link #jwkValues} at {@code level}, spending {@code budget}, recorded in the reads. */
+        List<JwkValue> read(String level, String text, boolean embedded, int[] budget) {
+            int before = budget[0];
+            List<JwkValue> values = jwkValues(text, embedded, budget);
+            if (reads != null) {
+                reads.add(new DiscoveryRead(level, before, budget[0]));
+            }
+            return values;
+        }
     }
 
     /**
