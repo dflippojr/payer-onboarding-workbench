@@ -1013,6 +1013,24 @@ class RedactorTest {
     }
 
     @Test
+    void masksTheTwiceEscapedCopiedFormAfterAStrayQuoteAndARawLineBreak() {
+        // #342: a stray quote and a raw line break (LF, CRLF or CR, with or without a backslash before it) ahead of the
+        // copied form do not stop the JWK search from spending its budget in the twice-decoded view. The leak scanner's
+        // #342 test uses this output as its masked form.
+        String loose = "\"kty\":\"".repeat(63);
+        String quote = "\\u0022";
+        for (String before : List.of("he said \"\n", "he said \"\r\n", "he said \"\r", "\"\n", "he said \"\\\n",
+                "he said \"\\\r\n")) {
+            for (String after : List.of("", " note: \"ok\"")) {
+                assertEquals(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
+                        + "[REDACTED]" + escapedEverything(quote) + after,
+                        Redactor.redact(before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))
+                                + after));
+            }
+        }
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwks() {
         // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
         // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.

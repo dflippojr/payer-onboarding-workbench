@@ -474,6 +474,21 @@ test('r9: flags the twice-escaped copied form after a stray quote whose string J
     assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
   }
 });
+test('flags the twice-escaped copied form after a stray quote and a raw line break (#342)', () => {
+  // #293 round-9 follow-up: the stray quote's string ran through the raw line break to the end of the text and read as
+  // JSON, so the loose decode left it to the JSON scan, which ends a string that is no member's value at a raw line break
+  // and does not decode the bare text after it. The 63 kty names a level down were never counted. Redactor masks d; each
+  // masked form is its output (RedactorTest.masksTheTwiceEscapedCopiedFormAfterAStrayQuoteAndARawLineBreak).
+  const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const loose = '"kty":"'.repeat(63);
+  const quote = '\\u0022';
+  for (const before of ['he said "\n', 'he said "\r\n', 'he said "\r', '"\n', 'he said "\\\n', 'he said "\\\r\n']) {
+    for (const after of ['', ' note: "ok"']) {
+      assertFlagged(before + escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_342"')) + after);
+      assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
+    }
+  }
+});
 test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
   // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
   // hundred characters of its 4n + 1024 and keeps "d" as it is (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks),
