@@ -84,14 +84,17 @@ const sourceOffsets = (body, ctx) => {
  * the name's (scanJson maps a name found in a decoded string back to where its characters start in the text), so
  * m' <= min(p, m). The bound f(m) = (k - 4)m + 2 * sum(min(p, m)) is linear between the positions, so its most over
  * 0 <= m <= n is at one of them or at n; with k < 2 it is below 0. Each level is judged on its own, as each view has its
- * own budget, and a name found at several levels is not counted twice in one. The read after the key blocks are masked
+ * own budget, and a name found at several levels is not counted twice in one. Nor is a name the scanner reads twice at one
+ * level (in a string scanJson decodes and in the loose decode around it, #342): it starts at one position in the text,
+ * one character of that level's view, so positions are counted once each. The read after the key blocks are masked
  * spends the rest of the same budget, at most 4m + 1024 for the shortened text, and needs a PEM header in the text,
  * which the PEM block check flags.
  */
 const mayExhaustJwkSearch = (n, positions) => {
-  const k = positions.length;
+  const distinct = [...new Set(positions)];
+  const k = distinct.length;
   if (k < 2) return false;
-  const p = positions.map(x => Math.min(x, n)).sort((a, b) => a - b);
+  const p = distinct.map(x => Math.min(x, n)).sort((a, b) => a - b);
   // The sum of the positions below the i-th: those are min(p, m) for m = p[i]; the rest are m.
   let below = 0;
   for (let i = 0; i <= k; i++) {

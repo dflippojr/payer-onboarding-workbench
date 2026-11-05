@@ -510,6 +510,11 @@ test('r8: accepts a loose private member next to JWKs whose search cannot spend 
   assertAccepted(nestedIn(text, 1));
   // A private member of either JWK left unmasked is still flagged.
   assertFlagged(text.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_293"'));
+  // #342: after a member value with a raw line break, the loose decode also reads the escaped copy that scanJson reads
+  // as a string; each kty name is still counted once (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks).
+  const escapedCopy = `{"note":"line one\nline two","body":"${text.replace(/"/g, '\\u0022')}"}`;
+  assertAccepted(escapedCopy);
+  assertFlagged(escapedCopy.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
 });
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
