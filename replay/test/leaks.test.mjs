@@ -522,6 +522,17 @@ test('flags a copied JWK with mixed quote escapes after a stray quote and a raw 
     }
   }
 });
+test('accepts a loose kty in a copied value with mixed quote escapes after a stray quote and a raw line break (#342)', () => {
+  // Automated review on c4ffeef: the value quoted with \" holds a loose kty and d quoted with \u0022. Reading the
+  // stray quote's string whole decodes both at once, {"body":""kty":"RSA","d":"dimension""}, where the kty name opens on
+  // the quote that closed "": no JWK, as Redactor leaves the text
+  // (RedactorTest.keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak).
+  const u = '\\u0022';
+  const b = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    assertAccepted(`he said "${lb}{${b}body${b}:${b}${u}kty${u}:${u}RSA${u},${u}d${u}:${u}dimension${u}${b}}`);
+  }
+});
 test('flags a copied secret field with mixed quote escapes after a stray quote and a raw line break (#342)', () => {
   // The same split as for the mixed-escape JWK: the member's name or the object around it in the part scanJson does
   // not read, its value in the literal it does. Each masked form is Redactor's output

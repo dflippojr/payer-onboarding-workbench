@@ -1095,6 +1095,18 @@ class RedactorTest {
     }
 
     @Test
+    void keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // #342 (automated review on c4ffeef): the leak scanner must accept this as it is.
+        String u = "\\u0022";
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + u + "kty" + u + ":" + u + "RSA" + u + "," + u + "d" + u
+                    + ":" + u + "dimension" + u + b + "}";
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
     void masksACopiedSecretFieldWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
