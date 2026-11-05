@@ -468,7 +468,7 @@ const unreadSpans = (leftOut, read, n, ctx) => {
       spans.push([i, end]);
       i = end;
     }
-    if (spans.length > parts) spans.push([from + 1, contentEnd]);
+    if (spans.length > parts) spans.push([from + 1, contentEnd, true]);
   }
   ctx.work += n;
   return spans;
@@ -476,10 +476,11 @@ const unreadSpans = (leftOut, read, n, ctx) => {
 
 /**
  * Reads the spans of `text` that decodeString left out and scanJson did not decode (`unread`), each as the content of
- * one more string, one level down: decoded whole if JSON reads it as one, else its unicode escapes.
+ * one more string, one level down: decoded whole if JSON reads it as one, else its unicode escapes. A string's whole
+ * content (`whole`) is read as such (scanJson).
  */
 function readUnread(text, unread, level, ctx, toRoot) {
-  for (const [from, to] of unread) {
+  for (const [from, to, whole = false] of unread) {
     const span = text.slice(from, to);
     if (!span.includes('\\')) continue;
     ctx.work += span.length;
@@ -504,7 +505,7 @@ function readUnread(text, unread, level, ctx, toRoot) {
       decoded = parts.join('');
       at = j => (j < offsets.length ? offsets[j] : span.length);
     }
-    if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)));
+    if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), whole);
   }
 }
 
@@ -618,8 +619,8 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
  * and scanJson reads the literal inside it, and a level down both may decode to the same view, so without this the
  * views would double at each level of such strings (#342).
  */
-function readNested(decoded, level, ctx, toRoot) {
-  const span = `${level}:${toRoot(0)}:${toRoot(decoded.length)}`;
+function readNested(decoded, level, ctx, toRoot, whole = false) {
+  const span = `${level}:${toRoot(0)}:${toRoot(decoded.length)}:${whole}`;
   const views = ctx.read.get(span) ?? [];
   ctx.work += views.length * decoded.length;
   if (views.includes(decoded)) return;
@@ -631,7 +632,7 @@ function readNested(decoded, level, ctx, toRoot) {
     failClosed(ctx, 'JSON nested past 17 levels', decoded);
     return;
   }
-  const read = quoted ? scanJson(decoded, level, ctx, toRoot) : [];
+  const read = quoted ? scanJson(decoded, level, ctx, toRoot, whole) : [];
   if (!decoded.includes('\\')) return;
   ctx.work += decoded.length;
   const { decoded: unescaped, at: inDecoded, unread } = decodeString(decoded, ctx, read);
@@ -654,7 +655,7 @@ function readNested(decoded, level, ctx, toRoot) {
  * something no string is) is read again from the character after it, so it cannot shift which quotes open
  * strings for the rest of the text.
  */
-function scanJson(text, level, ctx, toRoot = j => j) {
+function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
   ctx.kty[level] ??= [];
   for (const m of text.matchAll(KTY_SPELLING)) ctx.kty[level].push(toRoot(m.index));
   ctx.work += text.length;
@@ -683,6 +684,8 @@ function scanJson(text, level, ctx, toRoot = j => j) {
   // Quotes before this index were read as escaped ones inside a string a stray quote opened: a string opened at
   // any of them would end where that one did, so they open none when its span is read again.
   let quotesFrom = 0;
+  // The quote that closed the last such string, which the read again opens a string at.
+  let resyncAt = -1;
   while (i < text.length) {
     ctx.work++;
     if (ctx.work > ctx.budget) {
@@ -718,7 +721,11 @@ function scanJson(text, level, ctx, toRoot = j => j) {
         // it whole ({"client_secret":["x":"..."]}).
         if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
-        if (name === 'kty' && o.object) o.kty = true;
+        // In a string's whole content (readUnread), a kty name opened by the quote that closed the string before it
+        // ({"body":""kty":...}) makes no JWK: escapes of two levels decoded at once may pair quotes that way, and
+        // Redactor, reading back from the name, finds that object's open bracket inside a string (automated review
+        // on c4ffeef). Elsewhere it does, as on main.
+        if (name === 'kty' && o.object && !(whole && literal.start === resyncAt)) o.kty = true;
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
@@ -740,6 +747,7 @@ function scanJson(text, level, ctx, toRoot = j => j) {
       // span again for structure. A string cut off by the end of the text leaves nothing after it to resync.
       if ((stray || stack.length === 0) && literal.terminated) {
         quotesFrom = literal.end;
+        resyncAt = literal.end;
         i = literal.start + 1;
       } else {
         i = literal.end + 1;
