@@ -424,6 +424,24 @@ test('flags member syntax inside a secret-named array (#262)', () => {
   // Member syntax in an array that is no secret's stays as Redactor keeps it.
   assertAccepted('{"note":["x":"y"]}');
 });
+test('r7: flags a private member Redactor masks once finding the JWKs spends its budget (#262)', () => {
+  // Codex round 7, finding 1: repeated kty syntax makes Redactor's JWK search spend its 4n + 1024 budget, and then it
+  // masks every private member name, in an object or not. Each masked form is Redactor's output for the leaked one
+  // (RedactorTest.masksEveryPrivateMemberOnceFindingTheJwksSpendsItsBudget).
+  const d = '"d":"FAKE_PRIVATE_KEY_293"';
+  const masked = '"d":"[REDACTED]"';
+  const loose = '"kty":"'.repeat(63);
+  const spelled = '"\\u006bty":"'.repeat(63);
+  const cases = [
+    [loose + d, loose + masked],
+    [`[${loose}${d}]`, `[${loose}${masked}]`],
+    [spelled + d, spelled + masked],
+  ];
+  for (const [leaked, kept] of [...cases, ...cases.map(([l, m]) => [nestedIn(l, 1), nestedIn(m, 1)])]) {
+    assertFlagged(leaked);
+    assertAccepted(kept);
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

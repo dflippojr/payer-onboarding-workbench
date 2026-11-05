@@ -864,6 +864,25 @@ class RedactorTest {
     }
 
     @Test
+    void masksEveryPrivateMemberOnceFindingTheJwksSpendsItsBudget() {
+        // Codex round 7, finding 1: repeated kty syntax spends the JWK search's 4n + 1024 budget, so every private member
+        // name is masked, in an object or not. The leak scanner's r7 test uses these outputs as its masked forms.
+        String d = "\"d\":\"FAKE_PRIVATE_KEY_293\"";
+        String masked = "\"d\":\"[REDACTED]\"";
+        String loose = "\"kty\":\"".repeat(63);
+        String spelled = "\"\\u006bty\":\"".repeat(63);
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put(loose + d, loose + masked);
+        cases.put("[" + loose + d + "]", "[" + loose + masked + "]");
+        cases.put(spelled + d, spelled + masked);
+        new LinkedHashMap<>(cases).forEach((leaked, kept) -> cases.put(nested(leaked), nested(kept)));
+        cases.forEach((leaked, kept) -> assertEquals(kept, Redactor.redact(leaked)));
+        // Ten repetitions do not spend it: d is in no object, and is kept.
+        String few = "\"kty\":\"".repeat(10) + d;
+        assertEquals(few, Redactor.redact(few));
+    }
+
+    @Test
     void readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft() {
         // Codex round 7, finding 2: the JWK read after the key blocks are masked spends what the read of the text as it
         // came left at each escape level, 4n + 1024 in all for a text of length n, and masks every private member name
