@@ -2,7 +2,7 @@
 // workbench-core's RedactorPropertyTest (random tokens after Bearer, Token or DPoP, Basic user:pass,
 // colon-split bearers, numeric secrets, PEM and PGP private keys; raw or URL-encoded; in headers, bodies and query strings, with
 // or without the text quoted inside a JSON string, also by a serializer that escapes / as \/ or + as
-// \u002B).
+// \u002B; after a space, tab or line break, also one written as a JSON escape (#212)).
 // Everything is generated; nothing secret-shaped is committed.
 
 /** Characters of an RFC 6750 b64token, without the = padding. */
@@ -25,6 +25,15 @@ const CREDENTIAL_HEADERS = ['X-Api-Key', 'api-key', 'apikey', 'x-auth-token', 'x
 const AUTHORIZATION_HEADERS = ['Authorization', 'authorization', 'Proxy-Authorization'];
 /** Schemes a token-shaped secret follows: Token and DPoP are masked as Bearer is (#262). */
 const BEARER_SCHEMES = ['Bearer', 'bearer', 'BEARER', 'Token', 'token', 'DPoP', 'dpop'];
+/**
+ * What may stand between a scheme and its credential: a space, a tab or a line break, as it is or as a JSON escape
+ * already in the text ({"echo":"Bearer\t<token>"}), which a JSON wrap escapes again; such a wrap writes a real tab or
+ * line break as an escape (#212). After Token and DPoP only a space or tab separates, so build() uses a space
+ * there in place of a line break. As in RedactorPropertyTest.
+ */
+const SEPARATORS = [' ', ' ', ' ', '\t', '\n', '\r\n',
+  '\\t', '\\n', '\\r', '\\u0020', '\\u0009', '\\u000A', '\\u000d', ' \\t'];
+const SPACE_OR_TAB = new Set([' ', '\t', '\\t', '\\u0020', '\\u0009', ' \\t']);
 const PEM_LABELS = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'ENCRYPTED PRIVATE KEY', 'OPENSSH PRIVATE KEY', 'PGP PRIVATE KEY BLOCK'];
 const USER_CHARS = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(c => c !== ':').join('');
 const PASS_CHARS = `${Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join('')}éüß€`;
@@ -107,7 +116,7 @@ export function generateCases(seed, count) {
     // variant picks a key, header name, scheme spelling or body ending; cut, where a mask stops short.
     return {
       secret: s, slot, encoding, variant: r.int(0, 59), before: r.pick(BEFORE), after: r.pick(AFTER),
-      wrap: r.pick(WRAPS), carrier: r.pick(['BODY', 'HEADER']), cut: r.int(0, 1e6),
+      wrap: r.pick(WRAPS), carrier: r.pick(['BODY', 'HEADER']), cut: r.int(0, 1e6), separator: r.pick(SEPARATORS),
     };
   });
 }
@@ -125,18 +134,20 @@ export function placed(c) {
 export function build(c, value) {
   const pick = list => list[c.variant % list.length];
   const scheme = pick(c.secret.shape === 'BASIC_USER_PASS' ? ['Basic', 'basic', 'BASIC'] : BEARER_SCHEMES);
+  const separator = /^(?:token|dpop)$/i.test(scheme) && !SPACE_OR_TAB.has(c.separator) ? ' ' : c.separator;
+  const credential = `${scheme}${separator}${value}`;
   const keys = list => (c.secret.shape === 'PEM' ? ['private_key'] : list);
   if (c.slot === 'AUTHORIZATION_HEADER') {
-    return { text: null, record: { requestHeaders: { [pick(AUTHORIZATION_HEADERS)]: [`${scheme} ${value}`] } } };
+    return { text: null, record: { requestHeaders: { [pick(AUTHORIZATION_HEADERS)]: [credential] } } };
   }
   if (c.slot === 'CREDENTIAL_HEADER') {
     return { text: null, record: { requestHeaders: { [pick(CREDENTIAL_HEADERS)]: [value] } } };
   }
   let text;
   switch (c.slot) {
-    case 'AUTH_TEXT': text = `${c.before}${scheme} ${value}${c.after}`; break;
+    case 'AUTH_TEXT': text = `${c.before}${credential}${c.after}`; break;
     case 'HEADERS_ECHO':
-      text = `{"headers":{"Host":"payer.example.test","Authorization":${JSON.stringify(`${scheme} ${value}`)}}}`;
+      text = `{"headers":{"Host":"payer.example.test","Authorization":${JSON.stringify(credential)}}}`;
       break;
     case 'JSON_FIELD': {
       const name = pick(c.secret.shape === 'PEM' ? PEM_KEYS : JSON_FIELDS);

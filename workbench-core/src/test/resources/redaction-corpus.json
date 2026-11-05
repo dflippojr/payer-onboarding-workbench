@@ -78,6 +78,19 @@
     {"id": "jwk-embedded-mixed-quote-escapes", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"d\\\":\\\"FAKE-mixed-quote-jwk-d-0086\\u0022,\\\"p\\\":\\\"FAKE-mixed-quote-jwk-p-0087\\\"}\"}", "secrets": ["FAKE-mixed-quote-jwk-d-0086", "FAKE-mixed-quote-jwk-p-0087"]},
     {"id": "jwk-kty-after-unterminated-private-key-block", "rule": "JWK_PRIVATE_MEMBER", "input": "{\"d\":\"FAKE-pem-before-kty-d-0088\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\\nFAKEKEYBODY\",\"kty\":\"RSA\"}", "secrets": ["FAKE-pem-before-kty-d-0088"]},
     {"id": "pgp-unterminated", "rule": "UNTERMINATED_PEM_KEY", "input": "pasted:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nFAKE-PGP-KEY-NOT-REAL-0071", "secrets": ["FAKE-PGP-KEY-NOT-REAL-0071"]}
+,
+    {"id": "bearer-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\tFAKE-esc-tab-0089\"}", "secrets": ["FAKE-esc-tab-0089"]},
+    {"id": "bearer-escaped-newline", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"rejected Bearer\\nFAKE-esc-lf-0090\"}", "secrets": ["FAKE-esc-lf-0090"]},
+    {"id": "bearer-escaped-carriage-return", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\r\\nFAKE-esc-crlf-0091\"}", "secrets": ["FAKE-esc-crlf-0091"]},
+    {"id": "bearer-unicode-escaped-space", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\u0020FAKE-u0020-0092\"}", "secrets": ["FAKE-u0020-0092"]},
+    {"id": "bearer-unicode-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\u0009FAKE-u0009-0093\"}", "secrets": ["FAKE-u0009-0093"]},
+    {"id": "bearer-unicode-escaped-line-feed", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\u000AFAKE-u000a-0094\"}", "secrets": ["FAKE-u000a-0094"]},
+    {"id": "bearer-unicode-escaped-carriage-return", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\u000dFAKE-u000d-0095\"}", "secrets": ["FAKE-u000d-0095"]},
+    {"id": "bearer-escaped-tab-in-json-string", "rule": "AUTH_SCHEME", "input": "{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\tFAKE-esc-esc-tab-0096\\\"}\"}", "secrets": ["FAKE-esc-esc-tab-0096"]},
+    {"id": "basic-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Basic\\tRkFLRTpFU0NUQUIw0097\"}", "secrets": ["RkFLRTpFU0NUQUIw0097"]},
+    {"id": "authorization-line-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Authorization: Bearer\\tFAKE-auth-esc-tab-0098\"}", "secrets": ["FAKE-auth-esc-tab-0098"]},
+    {"id": "token-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"payer echoed Token\\tFAKEtokenEscTab0099\"}", "secrets": ["FAKEtokenEscTab0099"]},
+    {"id": "dpop-unicode-escaped-space", "rule": "AUTH_SCHEME", "input": "{\"error_description\":\"rejected DPoP\\u0020FAKE-dpop-u0020-0100\"}", "secrets": ["FAKE-dpop-u0020-0100"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
@@ -108,6 +121,11 @@
     {"id": "token-url-then-arrow", "rule": "PROSE_WORD", "input": "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms"},
     {"id": "prose-bearer-plus-encoded", "rule": "PROSE_WORD", "input": "q=missing+bearer+token"},
     {"id": "pgp-private-key-block-in-prose", "rule": "UNTERMINATED_PEM_KEY", "input": "paste the PGP PRIVATE KEY BLOCK into the vault, not here"}
+,
+    {"id": "prose-bearer-escaped-newline", "rule": "PROSE_WORD", "input": "{\"m\":\"Missing bearer\\ntoken\"}"},
+    {"id": "prose-basic-escaped-newline", "rule": "PROSE_WORD", "input": "{\"m\":\"Basic\\nplan\"}"},
+    {"id": "token-dpop-escaped-line-break", "rule": "AUTH_SCHEME", "input": "{\"m\":\"issue a token\\n2 times per hour; DPoP\\u000Aproof-v2 required\"}"},
+    {"id": "challenge-after-escaped-separator", "rule": "AUTH_SCHEME", "input": "{\"h\":\"Bearer\\trealm=\\\"synthetic\\\", error=\\\"invalid_token\\\"\",\"b\":\"Basic\\u0020realm=\\\"synthetic-payer\\\"\"}"}
   ],
   "headers": [
     {"name": "Authorization", "value": "Bearer FAKE-header-bearer-0022", "secrets": ["FAKE-header-bearer-0022"]},

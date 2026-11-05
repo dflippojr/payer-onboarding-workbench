@@ -460,6 +460,52 @@ class RedactorTest {
     }
 
     @Test
+    void masksACredentialAfterAJsonEscapedSeparator() {
+        // A serializer writes a tab or line break after the scheme as an escape, which is still the separator, as an
+        // escaped token character is still that character (#212); also escaped again, and several in a row.
+        for (String separator : List.of("\\t", "\\n", "\\r", "\\u0020", "\\u0009", "\\u000A", "\\u000D", "\\u000a",
+                "\\u000d", "\\\\t", "\\\\n", "\\\\r", "\\\\u0020", "\\\\u0009", "\\r\\n", " \\t", "\\t ", "\\n\\u0020")) {
+            assertEquals("{\"echo\":\"Bearer [REDACTED]\"}",
+                    Redactor.redact("{\"echo\":\"Bearer" + separator + "SecretTokenValue99\"}"), separator);
+            assertEquals("{\"echo\":\"Basic [REDACTED]\"}",
+                    Redactor.redact("{\"echo\":\"Basic" + separator + "c3ludGhjbGllbnQ6U3ludGg\"}"), separator);
+            assertEquals("{\"echo\":\"Authorization: Bearer [REDACTED]\"}",
+                    Redactor.redact("{\"echo\":\"Authorization: Bearer" + separator + "SecretTokenValue99\"}"), separator);
+            assertEquals("{\"echo\":\"rejected bearer [REDACTED], twice\"}",
+                    Redactor.redact("{\"echo\":\"rejected bearer" + separator + "Ab12\\/SecretRemainder99, twice\"}"), separator);
+        }
+        // In JSON quoted inside a JSON string.
+        assertEquals("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}",
+                Redactor.redact("{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\tSecretTokenValue99\\\"}\"}"));
+        // After Token and DPoP, only an escaped space or tab, as only a real space or tab is.
+        for (String separator : List.of("\\t", "\\u0020", "\\u0009", "\\\\t", "\\\\u0020", " \\t")) {
+            assertEquals("{\"echo\":\"Token [REDACTED]\"}",
+                    Redactor.redact("{\"echo\":\"Token" + separator + "9944b09199c62bcf9418\"}"), separator);
+            assertEquals("{\"echo\":\"rejected DPoP [REDACTED]\"}",
+                    Redactor.redact("{\"echo\":\"rejected DPoP" + separator + "PHNhbWw6QXNzZXJ0aW9u\"}"), separator);
+        }
+        for (String separator : List.of("\\n", "\\r", "\\u000A", "\\u000D", "\\r\\n", "\\\\n")) {
+            String text = "{\"m\":\"issue a token" + separator + "2 times per hour; DPoP" + separator + "proof-v2 required\"}";
+            assertEquals(text, Redactor.redact(text), separator);
+        }
+    }
+
+    @Test
+    void keepsProseAndChallengeParametersAfterAJsonEscapedSeparator() {
+        for (String text : List.of("{\"m\":\"Missing bearer\\ntoken\"}", "{\"m\":\"Basic\\nplan\"}",
+                "{\"m\":\"Missing bearer\\u0020token.\"}", "{\"m\":\"Basic\\tauthentication is required\"}",
+                "{\"m\":\"Missing bearer\\\\ntoken\"}",
+                // The challenge parameters a 401 names after the scheme are not a credential.
+                "{\"h\":\"Bearer\\trealm=\\\"synthetic\\\", error=\\\"invalid_token\\\"\"}",
+                "{\"h\":\"Bearer\\nerror=\\\"invalid_token\\\", error_description=\\\"Expired\\\"\"}",
+                "{\"h\":\"Bearer\\u0020error_description=\\\"Expired\\\"\"}",
+                "{\"h\":\"Basic\\u0020realm=\\\"synthetic-payer\\\"\"}",
+                "{\"h\":\"Bearer\\r\\nscope=\\\"system/*.read\\\"\"}")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
+    @Test
     void masksThePrivateMembersOfAJwk() {
         assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\",\"p\":\"[REDACTED]\"}",
                 Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVATEDVALUE\",\"p\":\"PRIMEP\"}"));
