@@ -451,6 +451,17 @@ test('r7: flags a private member Redactor masks once finding the JWKs spends its
     assertAccepted(kept);
   }
 });
+test('r9: flags the twice-escaped copied form when quoted prose follows it (#262)', () => {
+  // Codex narrow check at 3c47acc, finding 2: the bare quotes of the prose after the copied r7 form made the whole-text
+  // decode fail, so the 63 kty names a level down were never counted. Redactor reads that view and masks d; the masked
+  // form is its output (RedactorTest.masksTheTwiceEscapedCopiedFormWithQuotedProseAfterIt).
+  const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const loose = '"kty":"'.repeat(63);
+  const quote = '\\u0022';
+  const prose = ' note: "ok"';
+  assertFlagged(escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_293"')) + prose);
+  assertAccepted(escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + prose);
+});
 test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
   // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
   // hundred characters of its 4n + 1024 and keeps "d" as it is (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks),

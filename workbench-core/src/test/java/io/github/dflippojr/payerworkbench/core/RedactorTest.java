@@ -899,6 +899,18 @@ class RedactorTest {
     }
 
     @Test
+    void masksTheTwiceEscapedCopiedFormWithQuotedProseAfterIt() {
+        // Codex narrow check at 3c47acc, finding 2: quoted prose after the copied form does not stop the JWK search from
+        // spending its budget in the twice-decoded view. The leak scanner's r9 test uses this output as its masked form.
+        String loose = "\"kty\":\"".repeat(63);
+        String quote = "\\u0022";
+        String prose = " note: \"ok\"";
+        assertEquals(escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
+                + escapedEverything(quote) + prose,
+                Redactor.redact(escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + prose));
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwks() {
         // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
         // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.
