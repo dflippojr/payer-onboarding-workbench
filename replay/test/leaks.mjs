@@ -354,9 +354,10 @@ const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.cha
  * The text `body` holds read as a string's content, as JSON.parse reads it. When it is not one, as when quoted prose
  * follows text copied from inside a string twice over (Codex narrow check at 3c47acc), it is the unicode escapes
  * outside its quoted strings decoded, as Redactor's normalized view decodes them, so the names its JWK search reads
- * there are counted. The quoted strings are left out, as scanJson reads them where they are, and an escape that is not
- * a unicode one is kept. With no such escape to decode, `body` itself is returned: there is no other view. Returns the
- * decoded text and a function from an index in it to where that character starts in `body`.
+ * there are counted. The quoted strings JSON reads are left out, as scanJson reads them where they are; one it cannot
+ * read (a stray quote before an escape JSON has not, such as \') is decoded as the text around it is. An escape that
+ * is not a unicode one is kept. With no such escape to decode, `body` itself is returned: there is no other view.
+ * Returns the decoded text and a function from an index in it to where that character starts in `body`.
  */
 const decodeString = (body, ctx) => {
   try {
@@ -365,38 +366,53 @@ const decodeString = (body, ctx) => {
   ctx.work += body.length;
   const parts = [];
   const offsets = [];
-  let inString = false;
   let decodedAny = false;
+  // Decodes the unicode escapes of body from `from` to `to`, keeping any other escape whole.
+  const decodeSpan = (from, to) => {
+    for (let i = from; i < to;) {
+      offsets.push(i);
+      const hex = body[i] === '\\' && body[i + 1] === 'u' && i + 6 <= to ? body.slice(i + 2, i + 6) : '';
+      if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+        parts.push(String.fromCharCode(Number.parseInt(hex, 16)));
+        decodedAny = true;
+        i += 6;
+      } else if (body[i] === '\\' && i + 1 < to) {
+        // Any other escape, an escaped backslash among them, is kept whole: the u after one starts no escape.
+        parts.push(body[i], body[i + 1]);
+        offsets.push(i + 1);
+        i += 2;
+      } else {
+        parts.push(body[i++]);
+      }
+    }
+  };
+  let from = 0;
   for (let i = 0; i < body.length;) {
-    const c = body[i];
-    if (inString) {
-      // A backslash takes the next character with it: an escaped quote does not end the string.
-      if (c === '\\') i++;
-      else if (c === '"') inString = false;
-      i++;
-      continue;
-    }
-    if (c === '"') {
-      inString = true;
-      i++;
-      continue;
-    }
-    offsets.push(i);
-    const hex = c === '\\' && body[i + 1] === 'u' ? body.slice(i + 2, i + 6) : '';
-    if (/^[0-9a-fA-F]{4}$/.test(hex)) {
-      parts.push(String.fromCharCode(Number.parseInt(hex, 16)));
-      decodedAny = true;
-      i += 6;
-    } else if (c === '\\' && i + 1 < body.length) {
-      // Any other escape, an escaped backslash among them, is kept whole: the u after one starts no escape.
-      parts.push(c, body[i + 1]);
-      offsets.push(i + 1);
+    if (body[i] === '\\') {
       i += 2;
-    } else {
-      parts.push(c);
-      i++;
+      continue;
     }
+    if (body[i] !== '"') {
+      i++;
+      continue;
+    }
+    decodeSpan(from, i);
+    // A quoted string, to its closing quote or the end of the text; a backslash takes the next character with it.
+    let end = i + 1;
+    while (end < body.length && body[end] !== '"') end += body[end] === '\\' ? 2 : 1;
+    const content = body.slice(i + 1, Math.min(end, body.length));
+    ctx.work += content.length;
+    try {
+      JSON.parse(`"${escapeControls(content)}"`);
+      // scanJson decodes a string JSON reads, where it is.
+    } catch {
+      // A string JSON cannot read (a stray quote before an escape JSON has not) is decoded as the text around it is.
+      decodeSpan(i + 1, Math.min(end, body.length));
+    }
+    i = end + 1;
+    from = Math.min(i, body.length);
   }
+  decodeSpan(from, body.length);
   if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx) };
   return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length) };
 };
