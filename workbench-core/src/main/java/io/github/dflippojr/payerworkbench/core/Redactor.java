@@ -348,8 +348,8 @@ public final class Redactor {
         String out = applyMasks(text, masks);
         // A stray quote in a masked block may have hidden a JWK member from that read ({"kty":"RSA","note":
         // "-----BEGIN PRIVATE KEY-----"-----END PRIVATE KEY-----","d":...}): with the blocks masked, the JWKs are
-        // found once more, spending what that read left of each level's budget, with the same fallback once it is
-        // spent. This only adds masks.
+        // found once more, spending what that read left of each level's budget, but never more than a first read of
+        // the shortened text would get, with the same fallback once it is spent. This only adds masks.
         if (!pem.isEmpty()) {
             discovery.readAgain();
             out = applyMasks(out, jwkMasks(out, discovery));
@@ -824,10 +824,17 @@ public final class Redactor {
             again = true;
         }
 
-        /** {@link #jwkValues} at {@code level}, spending {@code budget}, recorded in the reads. */
+        /**
+         * {@link #jwkValues} at {@code level}, spending {@code budget}, recorded in the reads. A read gets no more
+         * than {@code 4m + 1024} for a {@code text} of length {@code m}, however much the level has left: a second
+         * read, of a text masking its key blocks has shortened, gets no more than a first read of that text would.
+         */
         List<JwkValue> read(String level, String text, boolean embedded, int[] budget) {
             int before = budget[0];
-            List<JwkValue> values = jwkValues(text, embedded, budget);
+            int allowance = Math.min(before, 4 * text.length() + 1024);
+            int[] left = {allowance};
+            List<JwkValue> values = jwkValues(text, embedded, left);
+            budget[0] = left[0] < 0 ? left[0] : before - (allowance - left[0]);
             if (reads != null) {
                 reads.add(new DiscoveryRead(level, before, budget[0]));
             }
