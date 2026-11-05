@@ -522,6 +522,21 @@ test('flags a copied JWK with mixed quote escapes after a stray quote and a raw 
     }
   }
 });
+test('flags a copied secret field with mixed quote escapes after a stray quote and a raw line break (#342)', () => {
+  // The same split as for the mixed-escape JWK: the member's name or the object around it in the part scanJson does
+  // not read, its value in the literal it does. Each masked form is Redactor's output
+  // (RedactorTest.masksACopiedSecretFieldWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak).
+  const u = '\\u0022';
+  const b = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    for (const name of ['password', 'client_secret', 'access_token', 'authorization']) {
+      assertFlagged(`he said "${lb}{${u}a${u}:1,${b}${name}${b}:${b}FAKE_SECRET_342${b}}`);
+      assertAccepted(`he said "${lb}{${u}a${u}:1,${b}${name}${b}:${b}${MASK}${b}}`);
+      assertFlagged(`he said "${lb}{${b}${name}${b}:${b}FAKE_SECRET_342${u}}`);
+      assertAccepted(`he said "${lb}{${b}${name}${b}:${b}${MASK}${b}}`);
+    }
+  }
+});
 test('flags the twice-escaped copied form after a stray quote that opens no member, past a line break or not (#342)', () => {
   // Automated review on 26ffdc3, finding 1: after "<line break>","body": the loose decode one level down paired the
   // quotes otherwise than scanJson, which read the copied form as a scalar, so neither decoded it. Without the line

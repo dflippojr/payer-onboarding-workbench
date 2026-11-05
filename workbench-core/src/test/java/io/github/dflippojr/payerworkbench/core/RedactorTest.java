@@ -1095,6 +1095,22 @@ class RedactorTest {
     }
 
     @Test
+    void masksACopiedSecretFieldWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String u = "\\u0022";
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String name : List.of("password", "client_secret", "access_token", "authorization")) {
+                String before = "he said \"" + lb;
+                assertEquals(before + "{" + u + "a" + u + ":1," + b + name + b + ":" + b + "[REDACTED]" + b + "}",
+                        Redactor.redact(before + "{" + u + "a" + u + ":1," + b + name + b + ":" + b + "FAKE_SECRET_342" + b + "}"));
+                assertEquals(before + "{" + b + name + b + ":" + b + "[REDACTED]" + b + "}",
+                        Redactor.redact(before + "{" + b + name + b + ":" + b + "FAKE_SECRET_342" + u + "}"));
+            }
+        }
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwks() {
         // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
         // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.
