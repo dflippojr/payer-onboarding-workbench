@@ -864,6 +864,45 @@ class RedactorTest {
     }
 
     @Test
+    void readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft() {
+        // Codex round 7, finding 2: the JWK read after the key blocks are masked spends what the read of the text as it
+        // came left at each escape level, 4n + 1024 in all for a text of length n, and masks every private member name
+        // once that is spent. Each case below has a block, so the JWKs are read a second time.
+        String block = "-----BEGIN PRIVATE KEY-----\"-----END PRIVATE KEY-----";
+        String jwk = "{\"kty\":\"RSA\",\"note\":\"" + block + "\",\"d\":\"FAKE_PRIVATE_KEY_293\"}";
+        // 20 repetitions spend about 1,330 of the 1,836 characters the first plain read has, and as much again on the
+        // second: with a fresh budget that read is never spent, and the loose p (in no object) is kept.
+        String spentOnTheSecondRead = "\"kty\":\"".repeat(20) + block + "\"p\":\"FAKE_PRIVATE_KEY_293\"";
+        // 63 repetitions spend all of it on the first read, before any block is masked.
+        String spentOnTheFirstRead = "\"kty\":\"".repeat(63) + block + "\"d\":\"FAKE_PRIVATE_KEY_293\"";
+        for (String raw : List.of(jwk, spentOnTheSecondRead, spentOnTheFirstRead)) {
+            for (String text : List.of(raw, nested(raw), nested(nested(raw)))) {
+                List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+                String out = Redactor.redact(text, reads);
+                assertFalse(out.contains("FAKE_PRIVATE_KEY_293"), () -> text + "\n became " + out);
+                int allowance = 4 * text.length() + 1024;
+                Map<String, Integer> left = new LinkedHashMap<>();
+                for (Redactor.DiscoveryRead read : reads) {
+                    Integer before = left.get(read.level());
+                    if (before == null && read.level().startsWith("nested")) {
+                        // A nested level's view is no longer than the text.
+                        assertTrue(read.before() <= allowance, () -> read + " in " + reads);
+                    } else if (before == null) {
+                        assertEquals(allowance, read.before(), () -> read + " in " + reads);
+                    } else {
+                        assertEquals(before, read.before(), () -> "a fresh budget for a second read: " + reads);
+                    }
+                    left.put(read.level(), read.after());
+                }
+                assertEquals(2, reads.stream().filter(read -> read.level().equals("plain")).count(), reads::toString);
+            }
+        }
+        List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+        Redactor.redact(spentOnTheFirstRead, reads);
+        assertTrue(reads.stream().filter(read -> read.level().equals("plain")).allMatch(read -> read.after() < 0), reads::toString);
+    }
+
+    @Test
     void masksManyPrivateKeyBlocksInLinearTime() {
         // The automated review on ac1759e: 16,000 terminated private key blocks (about 900 KB) took 14 s there, each
         // search for an unterminated header reading on to the end of the text. 64,000 (about 4 MB) take well under
