@@ -87,12 +87,13 @@ public final class Redactor {
             "\\\\++(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))";
 
     /**
-     * A JSON escape of a space, tab, line feed or carriage return, also escaped again: {@code \t}, {@code \n},
-     * {@code \r} or a {@code \}{@code uXXXX} escape ({@code 0020}, {@code 0009}, {@code 000A}, {@code 000D}). After a
-     * scheme it is the whitespace it stands for, as {@link #ESCAPED_TOKEN_CHAR} is the character it stands for, so a
-     * serializer that writes {@code Bearer<tab><token>} as {@code Bearer\t<token>} does not hide the token (#212).
+     * A JSON escape of any whitespace {@code \s} matches (space, tab, line feed, vertical tab, form feed, carriage
+     * return), also escaped again: {@code \t}, {@code \n}, {@code \f}, {@code \r} or a {@code \}{@code uXXXX} escape
+     * ({@code 0020}, {@code 0009} to {@code 000D}, either case). After a scheme it is the whitespace it stands for, as
+     * {@link #ESCAPED_TOKEN_CHAR} is the character it stands for, so a serializer that writes
+     * {@code Bearer<tab><token>} as {@code Bearer\t<token>} does not hide the token (#212).
      */
-    private static final String ESCAPED_WHITESPACE = "\\\\++(?:[nrt]|u00(?:20|09|0A|0D))";
+    private static final String ESCAPED_WHITESPACE = "\\\\++(?:[nrtf]|u00(?:20|0[9A-D]))";
 
     /** {@link #ESCAPED_WHITESPACE} of a space or tab only. */
     private static final String ESCAPED_SPACE_OR_TAB = "\\\\++(?:t|u00(?:20|09))";

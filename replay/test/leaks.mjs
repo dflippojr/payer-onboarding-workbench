@@ -166,11 +166,11 @@ const WORD_START = String.raw`(?:\b|(?<=\\[nrtbf]))`;
 const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))`;
 
 /**
- * A JSON escape of a space, tab, line feed or carriage return, also escaped again: \t, \n, \r, or the six-character
- * escape of one (u0020, u0009, u000A, u000D). After a scheme it is the whitespace it stands for, as in Redactor (#212).
- * Used with the i flag.
+ * A JSON escape of a space, tab, line feed, vertical tab, form feed or carriage return (the whitespace Java's \s takes),
+ * also escaped again: \t, \n, \f, \r, or the six-character escape of one (u0020, u0009 to u000D). After a scheme it
+ * is the whitespace it stands for, as in Redactor (#212). Used with the i flag.
  */
-const ESCAPED_WHITESPACE = String.raw`\\+(?:[nrt]|u00(?:20|09|0A|0D))`;
+const ESCAPED_WHITESPACE = String.raw`\\+(?:[nrtf]|u00(?:20|0[9A-D]))`;
 
 /** ESCAPED_WHITESPACE of a space or tab only: all that separates Token or DPoP from a credential. */
 const ESCAPED_SPACE_OR_TAB = String.raw`\\+(?:t|u00(?:20|09))`;
