@@ -977,12 +977,20 @@ class RedactorTest {
                 + "-----END PRIVATE KEY-----", Redactor.redact(key));
         assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
                 + "-----END PGP PRIVATE KEY BLOCK-----", Redactor.redact(pgp));
+        // Embedded forms that keep the value and the block's header literal, so the second read runs at an escaped
+        // level; each was masked on 027fe1e and kept on 3c47acc.
+        List<org.junit.jupiter.api.function.Executable> embedded = new java.util.ArrayList<>();
         for (String raw : List.of(key, pgp)) {
-            for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingEverything(raw))) {
-                String out = Redactor.redact(in);
-                assertFalse(out.contains("FAKE_PRIVATE_KEY_293"), () -> in.substring(0, 80) + "\n became " + out);
+            for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingQuotes(raw),
+                    nestedEscapingBackslashes(raw), nestedEscapingQuotes(nested(raw)))) {
+                assertTrue(in.contains("FAKE_PRIVATE_KEY_293"));
+                embedded.add(() -> {
+                    String out = Redactor.redact(in);
+                    assertFalse(out.contains("FAKE_PRIVATE_KEY_293"), () -> in.substring(0, 80) + "\n became " + out.substring(0, 80));
+                });
             }
         }
+        org.junit.jupiter.api.Assertions.assertAll(embedded);
     }
 
     @Test
