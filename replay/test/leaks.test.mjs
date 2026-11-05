@@ -526,12 +526,41 @@ test('accepts a loose kty in a copied value with mixed quote escapes after a str
   // Automated review on c4ffeef: the value quoted with \" holds a loose kty and d quoted with \u0022. Reading the
   // stray quote's string whole decodes both at once, {"body":""kty":"RSA","d":"dimension""}, where the kty name opens on
   // the quote that closed "": no JWK, as Redactor leaves the text
-  // (RedactorTest.keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak).
+  // (RedactorTest.keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak). Automated
+  // review on 39dd7ff: so do members before the kty ({"body":""a":0,"kty":...}): an odd number of quotes lies between
+  // the object's open bracket and the name.
   const u = '\\u0022';
   const b = '\\"';
+  const before = ['', `${u}a${u}:0,`, `${u}a${u}:0,${u}b${u}:${u}x${u},`, `${u}a${u}:{${u}x${u}:1},`, `${u}a${u}:[1,${u}y${u}],`];
   for (const lb of ['\n', '\r\n']) {
-    assertAccepted(`he said "${lb}{${b}body${b}:${b}${u}kty${u}:${u}RSA${u},${u}d${u}:${u}dimension${u}${b}}`);
+    for (const members of before) {
+      assertAccepted(`he said "${lb}{${b}body${b}:${b}${members}${u}kty${u}:${u}RSA${u},${u}d${u}:${u}dimension${u}${b}}`);
+    }
   }
+});
+test('flags a copied JWK with mixed quote escapes after an escaped quote in a value, past a raw line break (#342)', () => {
+  // Reading the stray quote's string whole, a kty name makes a JWK only with an even number of quotes between its
+  // object's open bracket and its own; a quote a backslash escapes ("a\"b") is not one of them. Each masked form is
+  // Redactor's output (RedactorTest.masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue).
+  const u = '\\u0022';
+  const b = '\\"';
+  const escapedQuote = '\\\\\\"';
+  const forms = [
+    k => `{${u}note${u}:${u}a${escapedQuote}b${u},${b}kty${b}:${b}oct${b},${b}k${b}:${b}${k}${b}}`,
+    k => `{${b}note${b}:${b}a${escapedQuote}b${b},${u}kty${u}:${u}oct${u},${b}k${b}:${b}${k}${b}}`,
+  ];
+  for (const lb of ['\n', '\r\n']) {
+    for (const form of forms) {
+      assertFlagged(`he said "${lb}${form('FAKE_JWK_K_342')}`);
+      assertAccepted(`he said "${lb}${form(MASK)}`);
+    }
+  }
+});
+test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
+  // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
+  // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.
+  assertFlagged('{"body":""kty":"RSA","d":"FAKE_PRIVATE_KEY_342"}');
+  assertFlagged('{"body":""a":0,"kty":"RSA","d":"FAKE_PRIVATE_KEY_342"}');
 });
 test('flags a copied secret field with mixed quote escapes after a stray quote and a raw line break (#342)', () => {
   // The same split as for the mixed-escape JWK: the member's name or the object around it in the part scanJson does

@@ -1096,13 +1096,36 @@ class RedactorTest {
 
     @Test
     void keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
-        // #342 (automated review on c4ffeef): the leak scanner must accept this as it is.
+        // #342 (automated review on c4ffeef and 39dd7ff): the leak scanner must accept each as it is.
         String u = "\\u0022";
         String b = "\\\"";
+        List<String> before = List.of("", u + "a" + u + ":0,", u + "a" + u + ":0," + u + "b" + u + ":" + u + "x" + u + ",",
+                u + "a" + u + ":{" + u + "x" + u + ":1},", u + "a" + u + ":[1," + u + "y" + u + "],");
         for (String lb : List.of("\n", "\r\n")) {
-            String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + u + "kty" + u + ":" + u + "RSA" + u + "," + u + "d" + u
-                    + ":" + u + "dimension" + u + b + "}";
-            assertEquals(text, Redactor.redact(text));
+            for (String members : before) {
+                String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + members + u + "kty" + u + ":" + u + "RSA" + u
+                        + "," + u + "d" + u + ":" + u + "dimension" + u + b + "}";
+                assertEquals(text, Redactor.redact(text));
+            }
+        }
+    }
+
+    @Test
+    void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String u = "\\u0022";
+        String b = "\\\"";
+        String escapedQuote = "\\\\\\\"";
+        List<java.util.function.Function<String, String>> forms = List.of(
+                k -> "{" + u + "note" + u + ":" + u + "a" + escapedQuote + "b" + u + "," + b + "kty" + b + ":" + b + "oct" + b + ","
+                        + b + "k" + b + ":" + b + k + b + "}",
+                k -> "{" + b + "note" + b + ":" + b + "a" + escapedQuote + "b" + b + "," + u + "kty" + u + ":" + u + "oct" + u + ","
+                        + b + "k" + b + ":" + b + k + b + "}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var form : forms) {
+                String before = "he said \"" + lb;
+                assertEquals(before + form.apply("[REDACTED]"), Redactor.redact(before + form.apply("FAKE_JWK_K_342")));
+            }
         }
     }
 
