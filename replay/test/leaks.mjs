@@ -85,7 +85,8 @@ const sourceOffsets = (body, ctx) => {
  * m' <= min(p, m). The bound f(m) = (k - 4)m + 2 * sum(min(p, m)) is linear between the positions, so its most over
  * 0 <= m <= n is at one of them or at n; with k < 2 it is below 0. Each level is judged on its own, as each view has its
  * own budget, and a name found at several levels is not counted twice in one. The read after the key blocks are masked
- * spends the rest of the same budget, and needs a PEM header in the text, which the PEM block check flags.
+ * spends the rest of the same budget, at most 4m + 1024 for the shortened text, and needs a PEM header in the text,
+ * which the PEM block check flags.
  */
 const mayExhaustJwkSearch = (n, positions) => {
   const k = positions.length;

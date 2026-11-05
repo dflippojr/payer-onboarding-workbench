@@ -791,8 +791,8 @@ public final class Redactor {
      * What JWK discovery has left to read at each escape level: {@code 4n + 1024} characters for the plain and
      * the embedded JSON of a text of length {@code n}, and {@code 4m + 1024} for each nested level, whose view of
      * the text has length {@code m}, when it is first read. Reading the text again ({@link #readAgain}) spends what
-     * is left; a nested level the first read never reached has nothing left, so its private member names are all
-     * masked.
+     * is left, but no more than {@code 4m + 1024} for the text it reads then, of length {@code m}; a nested level the
+     * first read never reached has nothing left, so its private member names are all masked.
      */
     private static final class Discovery {
 
