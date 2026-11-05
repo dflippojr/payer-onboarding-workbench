@@ -1068,6 +1068,24 @@ class RedactorTest {
     }
 
     @Test
+    void masksACopiedJwkWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // #342 (automated review on 925a782): kty quoted with \u0022 and k with \" (or the other way round). The leak
+        // scanner's test of the same name uses this output as its masked form.
+        String u = "\\u0022";
+        String b = "\\\"";
+        List<java.util.function.Function<String, String>> forms = List.of(
+                v -> "{" + u + "kty" + u + ":" + u + "oct" + u + "," + b + "k" + b + ":" + b + v + b + "}",
+                v -> "{" + b + "kty" + b + ":" + b + "oct" + b + "," + u + "k" + u + ":" + u + v + u + "}",
+                v -> "{" + u + "kty" + u + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + v + b + "}",
+                v -> "{" + b + "kty" + b + ":" + u + "oct" + u + "," + b + "k" + b + ":" + b + v + b + "}");
+        for (String before : List.of("he said \"\n", "he said \"\r\n", "\"\n", "\"\r\n")) {
+            for (var form : forms) {
+                assertEquals(before + form.apply("[REDACTED]"), Redactor.redact(before + form.apply("FAKE_JWK_K_342")));
+            }
+        }
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwks() {
         // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
         // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.

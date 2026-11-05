@@ -499,6 +499,26 @@ test('flags an escaped JWK after a stray quote and a raw line break (#342)', () 
     assertAccepted(before + escaped('{"kty":"oct","k":') + escaped('"') + MASK + escaped('"}'));
   }
 });
+test('flags a copied JWK with mixed quote escapes after a stray quote and a raw line break (#342)', () => {
+  // Automated review on 925a782: kty quoted with \u0022 and k with \" (or the other way round). scanJson reads the
+  // \" literals and the loose decode reads the rest apart from them, so neither view held kty and k in one object. Each
+  // masked form is Redactor's output (RedactorTest.masksACopiedJwkWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak).
+  const u = '\\u0022';
+  const b = '\\"';
+  const jwk = (kty, k, value) => `{${kty}kty${kty}:${kty}oct${kty},${k}k${k}:${k}${value}${k}}`;
+  const forms = [
+    value => jwk(u, b, value),
+    value => jwk(b, u, value),
+    value => `{${u}kty${u}:${b}oct${b},${b}k${b}:${b}${value}${b}}`,
+    value => `{${b}kty${b}:${u}oct${u},${b}k${b}:${b}${value}${b}}`,
+  ];
+  for (const before of ['he said "\n', 'he said "\r\n', '"\n', '"\r\n']) {
+    for (const form of forms) {
+      assertFlagged(before + form('FAKE_JWK_K_342'));
+      assertAccepted(before + form(MASK));
+    }
+  }
+});
 test('flags the twice-escaped copied form after a stray quote that opens no member, past a line break or not (#342)', () => {
   // Automated review on 26ffdc3, finding 1: after "<line break>","body": the loose decode one level down paired the
   // quotes otherwise than scanJson, which read the copied form as a scalar, so neither decoded it. Without the line
