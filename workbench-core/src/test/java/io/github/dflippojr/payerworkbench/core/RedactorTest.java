@@ -953,6 +953,27 @@ class RedactorTest {
     }
 
     @Test
+    void masksALoosePrivateMemberAfterALongKeyBlockAs027fe1eDid() {
+        // Codex narrow check at 3c47acc, finding 1: the first read keeps the loose d (63 kty names spend about 13,700
+        // of its 43,100 characters), then masking the 10,000-character block leaves a 531-character text. 027fe1e read
+        // that with 4 x 531 + 1024 = 3,148, spent it and masked d; the second read must get no more than that.
+        String key = "\"kty\":\"".repeat(63) + "\"d\":\"FAKE_PRIVATE_KEY_293\"" + "-----BEGIN PRIVATE KEY-----"
+                + "X".repeat(10_000) + "-----END PRIVATE KEY-----";
+        String pgp = key.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
+        // What 027fe1e made of the two raw inputs.
+        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n"
+                + "-----END PRIVATE KEY-----", Redactor.redact(key));
+        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
+                + "-----END PGP PRIVATE KEY BLOCK-----", Redactor.redact(pgp));
+        for (String raw : List.of(key, pgp)) {
+            for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingEverything(raw))) {
+                String out = Redactor.redact(in);
+                assertFalse(out.contains("FAKE_PRIVATE_KEY_293"), () -> in.substring(0, 80) + "\n became " + out);
+            }
+        }
+    }
+
+    @Test
     void masksManyPrivateKeyBlocksInLinearTime() {
         // The automated review on ac1759e: 16,000 terminated private key blocks (about 900 KB) took 14 s there, each
         // search for an unterminated header reading on to the end of the text. 64,000 (about 4 MB) take well under
