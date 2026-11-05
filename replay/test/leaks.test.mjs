@@ -489,6 +489,16 @@ test('flags the twice-escaped copied form after a stray quote and a raw line bre
     }
   }
 });
+test('flags an escaped JWK after a stray quote and a raw line break (#342)', () => {
+  // The same gap without the budget: the escapes after the line break were never decoded, so a single JWK copied with
+  // every character escaped hid its private member. Each masked form is Redactor's output
+  // (RedactorTest.masksAnEscapedJwkAfterAStrayQuoteAndARawLineBreak).
+  const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  for (const before of ['he said "\n', 'he said "\r\n']) {
+    assertFlagged(before + escaped('{"kty":"oct","k":"FAKE_JWK_K_342"}'));
+    assertAccepted(before + escaped('{"kty":"oct","k":') + escaped('"') + MASK + escaped('"}'));
+  }
+});
 test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
   // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
   // hundred characters of its 4n + 1024 and keeps "d" as it is (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks),

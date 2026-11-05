@@ -1031,6 +1031,16 @@ class RedactorTest {
     }
 
     @Test
+    void masksAnEscapedJwkAfterAStrayQuoteAndARawLineBreak() {
+        // #342: the leak scanner's escaped-JWK test uses this output as its masked form.
+        for (String before : List.of("he said \"\n", "he said \"\r\n")) {
+            assertEquals(before + escapedEverything("{\"kty\":\"oct\",\"k\":") + escapedEverything("\"") + "[REDACTED]"
+                    + escapedEverything("\"}"),
+                    Redactor.redact(before + escapedEverything("{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\"}")));
+        }
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwks() {
         // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
         // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.

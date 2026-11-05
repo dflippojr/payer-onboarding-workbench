@@ -416,8 +416,17 @@ const decodeString = (body, ctx) => {
     }
     decodeSpan(from, i);
     // A quoted string, to its closing quote or the end of the text; a backslash takes the next character with it.
+    // A raw line break, bare or after a backslash, stops it at `broken` (#342).
     let end = i + 1;
-    while (end < body.length && body[end] !== '"') end += body[end] === '\\' ? 2 : 1;
+    let broken = -1;
+    while (end < body.length && body[end] !== '"') {
+      const lineBreakAt = body[end] === '\\' ? end + 1 : end;
+      if (body[lineBreakAt] === '\n' || body[lineBreakAt] === '\r') {
+        broken = end;
+        break;
+      }
+      end += body[end] === '\\' ? 2 : 1;
+    }
     const content = body.slice(i + 1, Math.min(end, body.length));
     ctx.work += content.length;
     try {
@@ -426,6 +435,13 @@ const decodeString = (body, ctx) => {
     } catch {
       // A string JSON cannot read (a stray quote before an escape JSON has not) is decoded as the text around it is.
       decodeSpan(i + 1, Math.min(end, body.length));
+    }
+    if (broken >= 0) {
+      // scanJson (readLiteral) ends a string that is no member's value at a raw line break and reads the text after it
+      // as bare text, but reads a member's value through it. From here on either reading may hold, and each quote
+      // after the line break swaps them, so every character is bare text in one: all of it is decoded.
+      from = broken;
+      break;
     }
     i = end + 1;
     from = Math.min(i, body.length);
