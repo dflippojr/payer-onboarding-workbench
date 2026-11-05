@@ -625,8 +625,8 @@ function readNested(decoded, level, ctx, toRoot) {
     }
     readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)));
   }
-  if (unread.length > 0 && level >= MAX_LEVELS) failClosed(ctx, 'JSON nested past 17 levels', decoded);
-  else readUnread(decoded, unread, level + 1, ctx, toRoot);
+  // Only a string with a quote has strings to leave unread, and one at the level cap has failed closed above.
+  readUnread(decoded, unread, level + 1, ctx, toRoot);
 }
 
 /**
