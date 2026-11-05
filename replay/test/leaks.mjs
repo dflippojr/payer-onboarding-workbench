@@ -350,6 +350,57 @@ const TEXT_CHECKS = [
 const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 /**
+ * The text `body` holds read as a string's content, as JSON.parse reads it. When it is not one, as when quoted prose
+ * follows text copied from inside a string twice over (Codex narrow check at 3c47acc), it is the unicode escapes
+ * outside its quoted strings decoded, as Redactor's normalized view decodes them, so the names its JWK search reads
+ * there are counted. The quoted strings are left out, as scanJson reads them where they are, and an escape that is not
+ * a unicode one is kept. With no such escape to decode, `body` itself is returned: there is no other view. Returns the
+ * decoded text and a function from an index in it to where that character starts in `body`.
+ */
+const decodeString = (body, ctx) => {
+  try {
+    return { decoded: JSON.parse(`"${escapeControls(body)}"`), at: sourceOffsets(body, ctx) };
+  } catch { /* not the content of a string: its unicode escapes outside strings are decoded below */ }
+  ctx.work += body.length;
+  const parts = [];
+  const offsets = [];
+  let inString = false;
+  let decodedAny = false;
+  for (let i = 0; i < body.length;) {
+    const c = body[i];
+    if (inString) {
+      // A backslash takes the next character with it: an escaped quote does not end the string.
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      i++;
+      continue;
+    }
+    offsets.push(i);
+    const hex = c === '\\' && body[i + 1] === 'u' ? body.slice(i + 2, i + 6) : '';
+    if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+      parts.push(String.fromCharCode(Number.parseInt(hex, 16)));
+      decodedAny = true;
+      i += 6;
+    } else if (c === '\\' && i + 1 < body.length) {
+      // Any other escape, an escaped backslash among them, is kept whole: the u after one starts no escape.
+      parts.push(c, body[i + 1]);
+      offsets.push(i + 1);
+      i += 2;
+    } else {
+      parts.push(c);
+      i++;
+    }
+  }
+  if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx) };
+  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length) };
+};
+
+/**
  * The JSON string literal whose opening quote is at `start`: where it ends (its closing quote, or the end of
  * the text or of a line, for a string cut off there, as Redactor writes a truncated body) and its content. A
  * backslash always takes the next character with it, so no run of backslashes is counted. A raw line break
@@ -451,18 +502,18 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
 
 /**
  * Reads a decoded string as the JSON it may hold, `level` levels down. A string with a quote is read as JSON. A
- * string that still holds escapes is also read as the content of one more string, decoded once more, as Redactor
+ * string that still holds escapes is also read as the content of one more string, decoded once more (decodeString,
+ * loosely when prose quotes around it make it no string's content), as Redactor
  * reads JSON escaped twice over; a chain of such escapes (u005c after u005c) therefore reaches the level cap.
  * Past the cap, a string with anything left to read is a leak (Redactor masks it whole).
  */
 function readNested(decoded, level, ctx, toRoot) {
   const quoted = decoded.includes('"');
   let unescaped = null;
+  let inDecoded = null;
   if (decoded.includes('\\')) {
     ctx.work += decoded.length;
-    try {
-      unescaped = JSON.parse(`"${escapeControls(decoded)}"`);
-    } catch { /* not the content of a string: a backslash of its own */ }
+    ({ decoded: unescaped, at: inDecoded } = decodeString(decoded, ctx));
   }
   const deeper = unescaped !== null && unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'));
   if (!quoted && !deeper) return;
@@ -471,10 +522,7 @@ function readNested(decoded, level, ctx, toRoot) {
     return;
   }
   if (quoted) scanJson(decoded, level, ctx, toRoot);
-  if (deeper) {
-    const inDecoded = sourceOffsets(decoded, ctx);
-    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)));
-  }
+  if (deeper) readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)));
 }
 
 /**
@@ -632,14 +680,12 @@ function textLeaks(text, level) {
   }
   scanJson(text, level, ctx);
   // Text with escapes may be the content of a JSON string: text copied from inside one ({\"kty\":...}) has
-  // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too.
+  // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too, loosely
+  // when quoted prose around it makes it no string's content (decodeString).
   if (text.includes('\\')) {
     ctx.work += text.length;
-    let decoded = null;
-    try {
-      decoded = JSON.parse(`"${escapeControls(text)}"`);
-    } catch { /* bare quotes in it: not a string's content */ }
-    if (decoded !== null && decoded !== text) readNested(decoded, level + 1, ctx, sourceOffsets(text, ctx));
+    const { decoded, at } = decodeString(text, ctx);
+    if (decoded !== text) readNested(decoded, level + 1, ctx, at);
   }
   if (ctx.kty.some(positions => mayExhaustJwkSearch(text.length, positions))) {
     for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
