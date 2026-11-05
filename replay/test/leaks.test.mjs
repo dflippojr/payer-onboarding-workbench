@@ -499,6 +499,35 @@ test('flags an escaped JWK after a stray quote and a raw line break (#342)', () 
     assertAccepted(before + escaped('{"kty":"oct","k":') + escaped('"') + MASK + escaped('"}'));
   }
 });
+test('flags the twice-escaped copied form after a stray quote that opens no member, past a line break or not (#342)', () => {
+  // Automated review on 26ffdc3, finding 1: after "<line break>","body": the loose decode one level down paired the
+  // quotes otherwise than scanJson, which read the copied form as a scalar, so neither decoded it. Without the line
+  // break the scanner missed it on main too. Each masked form is Redactor's output
+  // (RedactorTest.masksTheTwiceEscapedCopiedFormAfterAStrayQuoteThatOpensNoMember).
+  const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const loose = '"kty":"'.repeat(63);
+  const quote = '\\u0022';
+  for (const before of ['"\n","body":', '"\r\n","body":', 'x","body":']) {
+    assertFlagged(before + escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_342"')));
+    assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote));
+  }
+});
+test('reads a string that runs through a raw line break as one string, not as JSON around it (#342)', () => {
+  // Automated review on 26ffdc3, finding 2: decoding all the text after a raw line break in a member's value merged the
+  // next member's string into the JSON around it, and its escaped quotes made a JWK out of a loose kty. Redactor leaves
+  // the text as it is (RedactorTest.keepsALooseKtyInAStringAfterAValueWithARawLineBreak).
+  const loose = '"kty":"RSA","d":"dimension"'.replace(/"/g, '\\u0022');
+  assertAccepted(`{"note":"a\nb","body":"${loose}"}`);
+  assertFlagged(`{"note":"a\nb","body":"${'{"kty":"RSA","d":"FAKE_PRIVATE_KEY_342"}'.replace(/"/g, '\\u0022')}"}`);
+});
+test('still flags a copied JWK before a stray quote and a unicode escape (#342)', () => {
+  // Reading the loose decode from scanJson's literals alone lost it: scanJson opens a literal at the copied \" and
+  // runs it to the bare quote. The decode keeps its own view of the text and adds only what scanJson left unread. The
+  // masked form is Redactor's output (RedactorTest.masksACopiedJwkBeforeAStrayQuoteAndAUnicodeEscape).
+  const copied = k => `{\\"kty\\":\\"oct\\",\\"k\\":\\"${k}\\"}`;
+  assertFlagged(copied('FAKE_JWK_K_342') + ' "x" \\u0041');
+  assertAccepted(copied(MASK) + ' "x" \\u0041');
+});
 test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
   // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
   // hundred characters of its 4n + 1024 and keeps "d" as it is (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks),
@@ -510,8 +539,9 @@ test('r8: accepts a loose private member next to JWKs whose search cannot spend 
   assertAccepted(nestedIn(text, 1));
   // A private member of either JWK left unmasked is still flagged.
   assertFlagged(text.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_293"'));
-  // #342: after a member value with a raw line break, the loose decode also reads the escaped copy that scanJson reads
-  // as a string; each kty name is still counted once (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks).
+  // #342 (automated review on 6958f74): after a member value with a raw line break, the escaped copy in the next
+  // member is read once, as the string it is, so its two kty names are not counted twice
+  // (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks).
   const escapedCopy = `{"note":"line one\nline two","body":"${text.replace(/"/g, '\\u0022')}"}`;
   assertAccepted(escapedCopy);
   assertFlagged(escapedCopy.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));

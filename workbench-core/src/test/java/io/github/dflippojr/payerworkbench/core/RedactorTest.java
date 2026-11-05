@@ -1031,6 +1031,33 @@ class RedactorTest {
     }
 
     @Test
+    void masksTheTwiceEscapedCopiedFormAfterAStrayQuoteThatOpensNoMember() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String loose = "\"kty\":\"".repeat(63);
+        String quote = "\\u0022";
+        for (String before : List.of("\"\n\",\"body\":", "\"\r\n\",\"body\":", "x\",\"body\":")) {
+            assertEquals(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
+                    + "[REDACTED]" + escapedEverything(quote),
+                    Redactor.redact(before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))));
+        }
+    }
+
+    @Test
+    void keepsALooseKtyInAStringAfterAValueWithARawLineBreak() {
+        // #342: the leak scanner must accept this as it is.
+        String text = "{\"note\":\"a\nb\",\"body\":\"" + "\"kty\":\"RSA\",\"d\":\"dimension\"".replace("\"", "\\u0022") + "\"}";
+        assertEquals(text, Redactor.redact(text));
+    }
+
+    @Test
+    void masksACopiedJwkBeforeAStrayQuoteAndAUnicodeEscape() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String after = " \"x\" \\u0041";
+        assertEquals("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}" + after,
+                Redactor.redact("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"FAKE_JWK_K_342\\\"}" + after));
+    }
+
+    @Test
     void masksAnEscapedJwkAfterAStrayQuoteAndARawLineBreak() {
         // #342: the leak scanner's escaped-JWK test uses this output as its masked form.
         for (String before : List.of("he said \"\n", "he said \"\r\n")) {
