@@ -50,18 +50,52 @@ const ktyCount = text => {
 };
 
 /**
- * Whether Redactor's JWK search may spend its budget on a text of length `n` with `kty` kty names at one level: then
- * it masks every private member name, in an object or not, so the scanner flags each one left unmasked (Codex round 7).
- * In a view of the text of length m <= n (the text, or the text with escape levels taken off), each kty name it finds
- * costs it at most 3m characters: the backslashes before the name and the read back to its object, at most m each, and
- * that object read forward, at most m. Its budget there is 4m + 1024, so it is spent only when 3km > 4m + 1024 for the
- * k names in that view, that is k >= 2 and m(3k - 4) > 1024, so n(3k - 4) > 1024. A view with d escape levels taken off
- * is read in the texts the scanner reads d levels down (d + 1 in a report), where KTY_SPELLING finds each of its k names
- * (a letter as itself stays so at every level below): k <= kty, the most found at any one level. Counting per level
- * does not count a name again at each level it is read at. The read after the key blocks are masked spends the rest
- * of the same budget, and needs a PEM header in the text, which the PEM block check flags.
+ * Where each character JSON.parse decodes from the string content `body` starts in `body`: a \\u escape takes 6
+ * characters, any other escape 2, any other character 1. Returns a function from an index in the decoded string to
+ * that offset (the end of `body` past its last character), building the map, charged to the scan's work, on first use.
  */
-const mayExhaustJwkSearch = (n, kty) => kty >= 2 && n * (3 * kty - 4) > 1024;
+const sourceOffsets = (body, ctx) => {
+  let offsets = null;
+  return j => {
+    if (offsets === null) {
+      offsets = [];
+      for (let i = 0; i < body.length; i += body[i] !== '\\' ? 1 : body[i + 1] === 'u' ? 6 : 2) offsets.push(i);
+      ctx.work += body.length;
+    }
+    return j < offsets.length ? offsets[j] : body.length;
+  };
+};
+
+/**
+ * Whether Redactor's JWK search may spend its budget on a text of length `n` when the kty names the scanner finds at
+ * one level start at `positions` in that text: then it masks every private member name, in an object or not, so the
+ * scanner flags each one left unmasked (Codex round 7).
+ *
+ * The search reads a view of the text of length m <= n: the text, or the text with escape levels taken off, which only
+ * takes characters out, so a character's position m' in the view is at most its position in the text. Each kty name it
+ * finds at m' costs it at most 2m' + m characters: the backslashes before the name and the read back to its object, at
+ * most m' each, and that object read forward, at most m. Its budget there is 4m + 1024, so for the k names in the view
+ * it is spent only when (k - 4)m + 2 * sum(m') > 1024. KTY_SPELLING finds each of them, in the texts the scanner reads d
+ * levels down for a view with d escape levels taken off (d + 1 in a report), at a position p in the text at or after
+ * the name's (scanJson maps a name found in a decoded string back to where its characters start in the text), so
+ * m' <= min(p, m). The bound f(m) = (k - 4)m + 2 * sum(min(p, m)) is linear between the positions, so its most over
+ * 0 <= m <= n is at one of them or at n; with k < 2 it is below 0. Each level is judged on its own, as each view has its
+ * own budget, and a name found at several levels is not counted twice in one. The read after the key blocks are masked
+ * spends the rest of the same budget, and needs a PEM header in the text, which the PEM block check flags.
+ */
+const mayExhaustJwkSearch = (n, positions) => {
+  const k = positions.length;
+  if (k < 2) return false;
+  const p = positions.map(x => Math.min(x, n)).sort((a, b) => a - b);
+  // The sum of the positions below the i-th: those are min(p, m) for m = p[i]; the rest are m.
+  let below = 0;
+  for (let i = 0; i <= k; i++) {
+    const m = i < k ? p[i] : n;
+    if ((k - 4) * m + 2 * (below + (k - i) * m) > 1024) return true;
+    if (i < k) below += p[i];
+  }
+  return false;
+};
 
 /**
  * The most levels of JSON in JSON strings the scanner reads: the top level and 16 below it, as Redactor reads.
@@ -417,7 +451,7 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
  * reads JSON escaped twice over; a chain of such escapes (u005c after u005c) therefore reaches the level cap.
  * Past the cap, a string with anything left to read is a leak (Redactor masks it whole).
  */
-function readNested(decoded, level, ctx) {
+function readNested(decoded, level, ctx, toRoot) {
   const quoted = decoded.includes('"');
   let unescaped = null;
   if (decoded.includes('\\')) {
@@ -432,8 +466,11 @@ function readNested(decoded, level, ctx) {
     failClosed(ctx, 'JSON nested past 17 levels', decoded);
     return;
   }
-  if (quoted) scanJson(decoded, level, ctx);
-  if (deeper) readNested(unescaped, level + 1, ctx);
+  if (quoted) scanJson(decoded, level, ctx, toRoot);
+  if (deeper) {
+    const inDecoded = sourceOffsets(decoded, ctx);
+    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)));
+  }
 }
 
 /**
@@ -444,8 +481,9 @@ function readNested(decoded, level, ctx) {
  * something no string is) is read again from the character after it, so it cannot shift which quotes open
  * strings for the rest of the text.
  */
-function scanJson(text, level, ctx) {
-  ctx.kty[level] = (ctx.kty[level] ?? 0) + ktyCount(text);
+function scanJson(text, level, ctx, toRoot = j => j) {
+  ctx.kty[level] ??= [];
+  for (const m of text.matchAll(KTY_SPELLING)) ctx.kty[level].push(toRoot(m.index));
   ctx.work += text.length;
   // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
   // Redactor, unless its JWK search may spend its budget (textLeaks).
@@ -462,7 +500,8 @@ function scanJson(text, level, ctx) {
       if (literal.body.includes('\\"') || literal.body.includes('{')) failClosed(ctx, 'undecodable JSON string', literal.body);
       return;
     }
-    readNested(decoded, level + 1, ctx);
+    const inBody = sourceOffsets(literal.body, ctx);
+    readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)));
   };
   let i = 0;
   // Quotes before this index were read as escaped ones inside a string a stray quote opened: a string opened at
@@ -574,7 +613,7 @@ function scanJson(text, level, ctx) {
  * the JSON scan, which shares one budget linear in the text's length.
  */
 function textLeaks(text, level) {
-  // kty: how many kty names the texts read at each level hold (scanJson).
+  // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
   const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [] };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
@@ -596,9 +635,9 @@ function textLeaks(text, level) {
     try {
       decoded = JSON.parse(`"${escapeControls(text)}"`);
     } catch { /* bare quotes in it: not a string's content */ }
-    if (decoded !== null && decoded !== text) readNested(decoded, level + 1, ctx);
+    if (decoded !== null && decoded !== text) readNested(decoded, level + 1, ctx, sourceOffsets(text, ctx));
   }
-  if (mayExhaustJwkSearch(text.length, Math.max(0, ...ctx.kty.filter(Number.isFinite)))) {
+  if (ctx.kty.some(positions => mayExhaustJwkSearch(text.length, positions))) {
     for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
   }
   scanWork.characters += ctx.work;
