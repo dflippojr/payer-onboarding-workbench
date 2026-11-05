@@ -71,13 +71,15 @@ class RedactorPropertyTest {
     /** Schemes a token-shaped secret follows: Token and DPoP are masked as Bearer is (#262). */
     private static final List<String> BEARER_SCHEMES = List.of("Bearer", "bearer", "BEARER", "Token", "token", "DPoP", "dpop");
     /**
-     * What may stand between a scheme and its credential: a space, a tab or a line break, as it is or as a JSON
+     * What may stand between a scheme and its credential: a space, a tab, a line break, a form feed or a vertical tab
+     * (all of Java's {@code \s}), as it is or as a JSON
      * escape already in the text ({@code {"echo":"Bearer\t<token>"}}), which a JSON {@link Wrap} escapes again;
      * such a wrap writes a real tab or line break as an escape (#212). After {@code Token} and {@code DPoP} only a
      * space or tab separates, so {@link Case#separator()} uses a space there in place of a line break.
      */
     private static final List<String> SEPARATORS = List.of(" ", " ", " ", "\t", "\n", "\r\n",
-            "\\t", "\\n", "\\r", "\\u0020", "\\u0009", "\\u000A", "\\u000d", " \\t");
+            "\\t", "\\n", "\\r", "\\u0020", "\\u0009", "\\u000A", "\\u000d", " \\t",
+            "\f", "\u000B", "\\f", "\\u000C", "\\u000b");
     private static final Set<String> SPACE_OR_TAB = Set.of(" ", "\t", "\\t", "\\u0020", "\\u0009", " \\t");
     private static final List<String> PEM_LABELS = List.of(
             "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY",

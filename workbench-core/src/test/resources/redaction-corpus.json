@@ -90,7 +90,12 @@
     {"id": "basic-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Basic\\tRkFLRTpFU0NUQUIw0097\"}", "secrets": ["RkFLRTpFU0NUQUIw0097"]},
     {"id": "authorization-line-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Authorization: Bearer\\tFAKE-auth-esc-tab-0098\"}", "secrets": ["FAKE-auth-esc-tab-0098"]},
     {"id": "token-escaped-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"payer echoed Token\\tFAKEtokenEscTab0099\"}", "secrets": ["FAKEtokenEscTab0099"]},
-    {"id": "dpop-unicode-escaped-space", "rule": "AUTH_SCHEME", "input": "{\"error_description\":\"rejected DPoP\\u0020FAKE-dpop-u0020-0100\"}", "secrets": ["FAKE-dpop-u0020-0100"]}
+    {"id": "dpop-unicode-escaped-space", "rule": "AUTH_SCHEME", "input": "{\"error_description\":\"rejected DPoP\\u0020FAKE-dpop-u0020-0100\"}", "secrets": ["FAKE-dpop-u0020-0100"]},
+    {"id": "bearer-escaped-form-feed", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\fFAKE-esc-ff-0101\"}", "secrets": ["FAKE-esc-ff-0101"]},
+    {"id": "basic-unicode-escaped-form-feed", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Basic\\u000CRkFLRTpFU0NGRjAx0102\"}", "secrets": ["RkFLRTpFU0NGRjAx0102"]},
+    {"id": "bearer-unicode-escaped-vertical-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\u000bFAKE-u000b-0103\"}", "secrets": ["FAKE-u000b-0103"]},
+    {"id": "bearer-tab-then-form-feed", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\t\\fFAKE-tab-ff-0104\"}", "secrets": ["FAKE-tab-ff-0104"]},
+    {"id": "bearer-escaped-form-feed-in-json-string", "rule": "AUTH_SCHEME", "input": "{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\fFAKE-esc-esc-ff-0105\\\"}\"}", "secrets": ["FAKE-esc-esc-ff-0105"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
@@ -125,7 +130,9 @@
     {"id": "prose-bearer-escaped-newline", "rule": "PROSE_WORD", "input": "{\"m\":\"Missing bearer\\ntoken\"}"},
     {"id": "prose-basic-escaped-newline", "rule": "PROSE_WORD", "input": "{\"m\":\"Basic\\nplan\"}"},
     {"id": "token-dpop-escaped-line-break", "rule": "AUTH_SCHEME", "input": "{\"m\":\"issue a token\\n2 times per hour; DPoP\\u000Aproof-v2 required\"}"},
-    {"id": "challenge-after-escaped-separator", "rule": "AUTH_SCHEME", "input": "{\"h\":\"Bearer\\trealm=\\\"synthetic\\\", error=\\\"invalid_token\\\"\",\"b\":\"Basic\\u0020realm=\\\"synthetic-payer\\\"\"}"}
+    {"id": "challenge-after-escaped-separator", "rule": "AUTH_SCHEME", "input": "{\"h\":\"Bearer\\trealm=\\\"synthetic\\\", error=\\\"invalid_token\\\"\",\"b\":\"Basic\\u0020realm=\\\"synthetic-payer\\\"\"}"},
+    {"id": "prose-bearer-escaped-form-feed", "rule": "PROSE_WORD", "input": "{\"m\":\"Missing bearer\\ftoken\"}"},
+    {"id": "token-dpop-escaped-form-feed", "rule": "AUTH_SCHEME", "input": "{\"m\":\"issue a token\\f2 times per hour; DPoP\\u000Cproof-v2 required\"}"}
   ],
   "headers": [
     {"name": "Authorization", "value": "Bearer FAKE-header-bearer-0022", "secrets": ["FAKE-header-bearer-0022"]},

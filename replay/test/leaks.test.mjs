@@ -648,6 +648,36 @@ test('flags a credential after a JSON-escaped separator (#212)', () => {
     assertFlagged(`{"echo":"Bearer${separator}[REDACTED]:SecretRemainder99"}`);
   }
 });
+// A real form feed or vertical tab separates Bearer or Basic from a credential (\s), so its JSON escape does too
+// (#212, Codex round 1).
+const ESCAPED_FF_VT = ['\\f', '\\u000C', '\\u000c', '\\u000B', '\\u000b', '\\\\f', '\\\\u000C',
+  '\\t\\f', '\\f\\n', ' \\f', '\\u000b\\u0020'];
+test('flags a credential after a JSON-escaped form feed or vertical tab (#212)', () => {
+  for (const separator of ESCAPED_FF_VT) {
+    for (const text of [
+      `{"echo":"Bearer${separator}SecretTokenValue99"}`,
+      `{"echo":"Basic${separator}c3ludGhjbGllbnQ6U3ludGg"}`,
+      `{"echo":"Authorization: Bearer${separator}SecretTokenValue99"}`,
+      `{"echo":"rejected bearer${separator}Ab12\\/SecretRemainder99, twice"}`,
+      `{"echo":"rejected bearer${separator}Ab12\\u002BSecretRemainder99, twice"}`,
+    ]) {
+      assert.ok(credentialFlagged(text), `not flagged: ${text}`);
+      assertFlagged(text);
+    }
+    assertFlagged(`{"echo":"Bearer${separator}[REDACTED]\\/SecretRemainder99"}`);
+  }
+  assertFlagged('{"debug":"{\\"e\\":\\"Bearer\\\\fSecretTokenValue99\\"}"}');
+  assert.ok(credentialFlagged(reportForm('{"echo":"Bearer\\fSecretTokenValue99"}')));
+});
+test('accepts prose after a JSON-escaped form feed or vertical tab, and after Token or DPoP (#212)', () => {
+  for (const text of ['{"m":"Missing bearer\\ftoken"}', '{"m":"Basic\\u000Cplan"}',
+    '{"h":"Bearer\\frealm=\\"synthetic\\", error=\\"invalid_token\\""}']) {
+    assertAccepted(text);
+  }
+  for (const separator of ['\\f', '\\u000C', '\\u000b']) {
+    assertAccepted(`{"m":"issue a token${separator}2 times per hour; DPoP${separator}proof-v2 required"}`);
+  }
+});
 test('accepts what Redactor leaves for a credential after a JSON-escaped separator, and prose there (#212)', () => {
   for (const text of [
     '{"echo":"Bearer [REDACTED]"}', '{"echo":"Authorization: Bearer [REDACTED]"}',

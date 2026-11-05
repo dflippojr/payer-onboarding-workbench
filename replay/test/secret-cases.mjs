@@ -26,13 +26,15 @@ const AUTHORIZATION_HEADERS = ['Authorization', 'authorization', 'Proxy-Authoriz
 /** Schemes a token-shaped secret follows: Token and DPoP are masked as Bearer is (#262). */
 const BEARER_SCHEMES = ['Bearer', 'bearer', 'BEARER', 'Token', 'token', 'DPoP', 'dpop'];
 /**
- * What may stand between a scheme and its credential: a space, a tab or a line break, as it is or as a JSON escape
+ * What may stand between a scheme and its credential: a space, a tab, a line break, a form feed or a vertical tab
+ * (all of Java's \s), as it is or as a JSON escape
  * already in the text ({"echo":"Bearer\t<token>"}), which a JSON wrap escapes again; such a wrap writes a real tab or
  * line break as an escape (#212). After Token and DPoP only a space or tab separates, so build() uses a space
  * there in place of a line break. As in RedactorPropertyTest.
  */
 const SEPARATORS = [' ', ' ', ' ', '\t', '\n', '\r\n',
-  '\\t', '\\n', '\\r', '\\u0020', '\\u0009', '\\u000A', '\\u000d', ' \\t'];
+  '\\t', '\\n', '\\r', '\\u0020', '\\u0009', '\\u000A', '\\u000d', ' \\t',
+  '\f', '\u000B', '\\f', '\\u000C', '\\u000b'];
 const SPACE_OR_TAB = new Set([' ', '\t', '\\t', '\\u0020', '\\u0009', ' \\t']);
 const PEM_LABELS = ['PRIVATE KEY', 'RSA PRIVATE KEY', 'EC PRIVATE KEY', 'ENCRYPTED PRIVATE KEY', 'OPENSSH PRIVATE KEY', 'PGP PRIVATE KEY BLOCK'];
 const USER_CHARS = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)).filter(c => c !== ':').join('');
