@@ -451,6 +451,18 @@ test('r7: flags a private member Redactor masks once finding the JWKs spends its
     assertAccepted(kept);
   }
 });
+test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
+  // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
+  // hundred characters of its 4n + 1024 and keeps "d" as it is (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks),
+  // so the scanner must accept it too: two kty names near the start of the text cannot spend the budget.
+  const jwk = kid => `{"kty":"RSA","kid":"${kid}","use":"sig","alg":"RS256","n":"${'0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA'.repeat(4)}",`
+    + '"e":"AQAB","d":"[REDACTED]","p":"[REDACTED]","q":"[REDACTED]","dp":"[REDACTED]","dq":"[REDACTED]","qi":"[REDACTED]"}';
+  const text = `{"keys":[${jwk('a')},${jwk('b')}],"d":"dimension"}`;
+  assertAccepted(text);
+  assertAccepted(nestedIn(text, 1));
+  // A private member of either JWK left unmasked is still flagged.
+  assertFlagged(text.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_293"'));
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

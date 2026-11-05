@@ -899,6 +899,21 @@ class RedactorTest {
     }
 
     @Test
+    void keepsALoosePrivateMemberNextToMaskedJwks() {
+        // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
+        // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.
+        String jwk = "{\"kty\":\"RSA\",\"kid\":\"%s\",\"use\":\"sig\",\"alg\":\"RS256\",\"n\":\""
+                + "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA".repeat(4) + "\",\"e\":\"AQAB\",\"d\":\"[REDACTED]\","
+                + "\"p\":\"[REDACTED]\",\"q\":\"[REDACTED]\",\"dp\":\"[REDACTED]\",\"dq\":\"[REDACTED]\",\"qi\":\"[REDACTED]\"}";
+        String text = "{\"keys\":[" + jwk.formatted("a") + "," + jwk.formatted("b") + "],\"d\":\"dimension\"}";
+        List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+        for (String form : List.of(text, nested(text))) {
+            assertEquals(form, Redactor.redact(form, reads));
+        }
+        assertTrue(reads.stream().allMatch(read -> read.after() >= 0), reads::toString);
+    }
+
+    @Test
     void readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft() {
         // Codex round 7, finding 2: the JWK read after the key blocks are masked spends what the read of the text as it
         // came left at each escape level, 4n + 1024 in all for a text of length n, and masks every private member name
