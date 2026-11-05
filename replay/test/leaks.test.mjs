@@ -444,7 +444,9 @@ test('r7: flags a private member Redactor masks once finding the JWKs spends its
   const once = [body(escaped(loose + d)), body(escaped(loose + '"d":') + quote + MASK + quote)];
   const twice = [body(escaped(once[0])),
     body(escaped(`{"body":"${escaped(loose + '"d":')}`) + escaped(quote) + MASK + escaped(quote) + escaped('"}'))];
-  for (const [leaked, kept] of [...cases, ...cases.map(([l, m]) => [nestedIn(l, 1), nestedIn(m, 1)]), once, twice]) {
+  // Text copied from inside such strings, with no bracket or quote left bare.
+  const copied = [escaped(escaped(loose + d)), escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote)];
+  for (const [leaked, kept] of [...cases, ...cases.map(([l, m]) => [nestedIn(l, 1), nestedIn(m, 1)]), once, twice, copied]) {
     assertFlagged(leaked);
     assertAccepted(kept);
   }

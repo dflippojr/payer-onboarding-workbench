@@ -889,6 +889,9 @@ class RedactorTest {
         cases.put(once, "{\"body\":\"" + escapedEverything(loose + "\"d\":") + quote + "[REDACTED]" + quote + "\"}");
         cases.put(nestedEscapingEverything(once), "{\"body\":\"" + escapedEverything("{\"body\":\"" + escapedEverything(loose + "\"d\":"))
                 + escapedEverything(quote) + "[REDACTED]" + escapedEverything(quote) + escapedEverything("\"}") + "\"}");
+        // The same text copied from inside such strings, with no bracket or quote left bare.
+        cases.put(escapedEverything(escapedEverything(loose + d)), escapedEverything(escapedEverything(loose + "\"d\":"))
+                + escapedEverything(quote) + "[REDACTED]" + escapedEverything(quote));
         cases.forEach((leaked, kept) -> assertEquals(kept, Redactor.redact(leaked)));
         // Ten repetitions do not spend it: d is in no object, and is kept.
         String few = "\"kty\":\"".repeat(10) + d;
