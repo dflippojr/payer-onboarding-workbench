@@ -36,6 +36,34 @@ const isPrivateName = (name, malformed) => JWK_PRIVATE_MEMBERS.has(name)
   || (malformed && JWK_PRIVATE_MEMBERS.has(name.replace(/["\\]/g, '')));
 
 /**
+ * A kty name, each letter as itself or as a \\u escape, after any backslashes or \\u005c escapes (one escape level
+ * each). Quotes are not required, so it finds every kty name Redactor reads, and more. An escape whose own characters
+ * are escapes (\\u005c\\u0075\\u0030\\u0030\\u0036\\u0062, escaped twice over) is found a level down, decoded once.
+ */
+const KTY_SPELLING = /(?:k|u006[bB])(?:\\|u005[cC])*(?:t|u0074)(?:\\|u005[cC])*(?:y|u0079)/g;
+
+/** How many kty names {@link KTY_SPELLING} finds in `text`. */
+const ktyCount = text => {
+  let count = 0;
+  for (const _ of text.matchAll(KTY_SPELLING)) count++;
+  return count;
+};
+
+/**
+ * Whether Redactor's JWK search may spend its budget on a text of length `n` with `kty` kty names at one level: then
+ * it masks every private member name, in an object or not, so the scanner flags each one left unmasked (Codex round 7).
+ * In a view of the text of length m <= n (the text, or the text with escape levels taken off), each kty name it finds
+ * costs it at most 3m characters: the backslashes before the name and the read back to its object, at most m each, and
+ * that object read forward, at most m. Its budget there is 4m + 1024, so it is spent only when 3km > 4m + 1024 for the
+ * k names in that view, that is k >= 2 and m(3k - 4) > 1024, so n(3k - 4) > 1024. A view with d escape levels taken off
+ * is read in the texts the scanner reads d levels down (d + 1 in a report), where KTY_SPELLING finds each of its k names
+ * (a letter as itself stays so at every level below): k <= kty, the most found at any one level. Counting per level
+ * does not count a name again at each level it is read at. The read after the key blocks are masked spends the rest
+ * of the same budget, and needs a PEM header in the text, which the PEM block check flags.
+ */
+const mayExhaustJwkSearch = (n, kty) => kty >= 2 && n * (3 * kty - 4) > 1024;
+
+/**
  * The most levels of JSON in JSON strings the scanner reads: the top level and 16 below it, as Redactor reads.
  * JSON nested deeper is a leak (Redactor masks whole the string that holds it).
  */
@@ -349,7 +377,8 @@ const failClosed = (ctx, check, text) => ctx.leaks.push({ check, match: text.sli
 /**
  * Judges the members a JSON object (or array, or the text around any) held, once it closes or the text ends:
  * a secret-named field's value must be what Redactor leaves for it, and in an object with its own kty member,
- * so must a private member's. Each member is judged, a repeated one too.
+ * so must a private member's. Each member is judged, a repeated one too. An unmasked private member in no such
+ * object is kept for textLeaks, which flags it if Redactor's JWK search may spend its budget on the text.
  */
 function judge(owner, ctx) {
   for (const value of owner.values) {
@@ -358,10 +387,13 @@ function judge(owner, ctx) {
         : value.kind === 'scalar' ? value.value === 'null'
           : value.kind === 'array' && !value.nested && value.items.every(item => isMaskedItem(value.name, item));
       if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
-    } else if (owner.kty && isPrivateName(value.name, value.malformed)) {
+    } else if (isPrivateName(value.name, value.malformed)) {
       const masked = value.kind === 'string' ? (value.value === MASK || value.value === '') && !value.cutShort
         : value.kind === 'scalar' && value.value === 'null';
-      if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
+      const check = value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field';
+      if (masked) continue;
+      if (owner.kty) failClosed(ctx, check, value.text);
+      else ctx.unowned.push({ check, text: value.text });
     }
   }
 }
@@ -413,8 +445,10 @@ function readNested(decoded, level, ctx) {
  * strings for the rest of the text.
  */
 function scanJson(text, level, ctx) {
+  ctx.kty[level] = (ctx.kty[level] ?? 0) + ktyCount(text);
+  ctx.work += text.length;
   // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
-  // Redactor.
+  // Redactor, unless its JWK search may spend its budget (textLeaks).
   const newOwner = object => ({ object, kty: false, values: [] });
   const top = newOwner(false);
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
@@ -540,7 +574,8 @@ function scanJson(text, level, ctx) {
  * the JSON scan, which shares one budget linear in the text's length.
  */
 function textLeaks(text, level) {
-  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false };
+  // kty: how many kty names the texts read at each level hold (scanJson).
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [] };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {
@@ -562,6 +597,9 @@ function textLeaks(text, level) {
       decoded = JSON.parse(`"${escapeControls(text)}"`);
     } catch { /* bare quotes in it: not a string's content */ }
     if (decoded !== null && decoded !== text) readNested(decoded, level + 1, ctx);
+  }
+  if (mayExhaustJwkSearch(text.length, Math.max(0, ...ctx.kty.filter(Number.isFinite)))) {
+    for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
   }
   scanWork.characters += ctx.work;
   return ctx.leaks;
@@ -592,8 +630,9 @@ export function findJsonLeaks(value, path = '$') {
         try { walk(JSON.parse(t), `${p}<json>`, false, level + 1); } catch { /* not JSON as a whole */ }
       }
       // JSON in the string read as text when parsing found nothing: after prose (payer said: {...}), cut off,
-      // or repeating a member, which parsing drops.
-      if (leaks.length === before && /[{[]/.test(v)) {
+      // or repeating a member, which parsing drops; also loose members after kty names, which Redactor may mask
+      // all of (mayExhaustJwkSearch), spelled in the string or in escapes it holds.
+      if (leaks.length === before && (/[{[\\]/.test(v) || ktyCount(v) > 0)) {
         for (const leak of textLeaks(v, level)) leaks.push({ check: leak.check, match: `${p}: ${leak.match}` });
       }
       return;
