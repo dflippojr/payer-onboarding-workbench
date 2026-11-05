@@ -754,6 +754,13 @@ class RedactorTest {
         return out.append("\"}").toString();
     }
 
+    /** Every character of {@code text} written as a unicode escape. */
+    private static String escapedEverything(String text) {
+        StringBuilder out = new StringBuilder();
+        text.chars().forEach(c -> out.append(String.format("\\u%04x", c)));
+        return out.toString();
+    }
+
     /** The JSON text innermost in {@code text}: the {@code body} string, read as JSON, until it is not JSON with one. */
     private static String unnested(String text) {
         String json = text;
@@ -876,6 +883,12 @@ class RedactorTest {
         cases.put("[" + loose + d + "]", "[" + loose + masked + "]");
         cases.put(spelled + d, spelled + masked);
         new LinkedHashMap<>(cases).forEach((leaked, kept) -> cases.put(nested(leaked), nested(kept)));
+        // Every character escaped as a unicode escape, once and twice over; the mask is quoted as the name is.
+        String quote = "\\u0022";
+        String once = nestedEscapingEverything(loose + d);
+        cases.put(once, "{\"body\":\"" + escapedEverything(loose + "\"d\":") + quote + "[REDACTED]" + quote + "\"}");
+        cases.put(nestedEscapingEverything(once), "{\"body\":\"" + escapedEverything("{\"body\":\"" + escapedEverything(loose + "\"d\":"))
+                + escapedEverything(quote) + "[REDACTED]" + escapedEverything(quote) + escapedEverything("\"}") + "\"}");
         cases.forEach((leaked, kept) -> assertEquals(kept, Redactor.redact(leaked)));
         // Ten repetitions do not spend it: d is in no object, and is kept.
         String few = "\"kty\":\"".repeat(10) + d;

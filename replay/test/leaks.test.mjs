@@ -437,7 +437,14 @@ test('r7: flags a private member Redactor masks once finding the JWKs spends its
     [`[${loose}${d}]`, `[${loose}${masked}]`],
     [spelled + d, spelled + masked],
   ];
-  for (const [leaked, kept] of [...cases, ...cases.map(([l, m]) => [nestedIn(l, 1), nestedIn(m, 1)])]) {
+  // Every character escaped as \u, once and twice over: kty is read one and two levels down.
+  const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const body = text => `{"body":"${text}"}`;
+  const quote = '\\u0022';
+  const once = [body(escaped(loose + d)), body(escaped(loose + '"d":') + quote + MASK + quote)];
+  const twice = [body(escaped(once[0])),
+    body(escaped(`{"body":"${escaped(loose + '"d":')}`) + escaped(quote) + MASK + escaped(quote) + escaped('"}'))];
+  for (const [leaked, kept] of [...cases, ...cases.map(([l, m]) => [nestedIn(l, 1), nestedIn(m, 1)]), once, twice]) {
     assertFlagged(leaked);
     assertAccepted(kept);
   }
