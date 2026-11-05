@@ -491,6 +491,22 @@ class RedactorTest {
     }
 
     @Test
+    void readsJsonEscapedSeparatorsInLinearTime() {
+        // About 1 MB each: long runs of escapes and backslashes after a scheme, once and repeated.
+        List<String> texts = List.of(
+                "Bearer" + "\\t".repeat(500_000) + "\"",
+                "Bearer" + "\\u0020".repeat(170_000) + "\"",
+                "Token" + " \\t".repeat(330_000) + "\\n",
+                "Bearer" + "\\".repeat(1_000_000) + "x",
+                ("Bearer" + "\\".repeat(1_000) + "x").repeat(1_000),
+                ("Basic\\n" + "\\".repeat(1_000) + "t").repeat(1_000),
+                "Bearer\\t".repeat(125_000),
+                "DPoP\\u0009".repeat(100_000));
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
+        assertEquals("Bearer [REDACTED]", Redactor.redact("Bearer" + "\\t".repeat(100_000) + "SecretTokenValue99"));
+    }
+
+    @Test
     void keepsProseAndChallengeParametersAfterAJsonEscapedSeparator() {
         for (String text : List.of("{\"m\":\"Missing bearer\\ntoken\"}", "{\"m\":\"Basic\\nplan\"}",
                 "{\"m\":\"Missing bearer\\u0020token.\"}", "{\"m\":\"Basic\\tauthentication is required\"}",

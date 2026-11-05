@@ -35,8 +35,8 @@ import tools.jackson.databind.json.JsonMapper;
  * values full of JSON escapes), raw or URL-encoded, places them where a payer echoes credentials
  * (headers, bodies, query strings, bodies cut off at any position in a JSON value), with or without
  * the whole text quoted inside a JSON string (also by a serializer that escapes {@code /} or
- * {@code +}), and
- * asserts that no piece of the secret survives: through {@link Redactor} itself, and through every
+ * {@code +}), after a space, tab or line break between the scheme and the credential, real or written as a JSON
+ * escape (#212), and asserts that no piece of the secret survives: through {@link Redactor} itself, and through every
  * text field of the run model, {@link StepResult} and {@link Finding} (#211).
  * {@code replay/test/leaks.test.mjs} runs the same generator against the leak scanner. Everything
  * is generated; nothing secret-shaped is committed.
