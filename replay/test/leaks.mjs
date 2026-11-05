@@ -59,7 +59,11 @@ const sourceOffsets = (body, ctx) => {
   return j => {
     if (offsets === null) {
       offsets = [];
-      for (let i = 0; i < body.length; i += body[i] !== '\\' ? 1 : body[i + 1] === 'u' ? 6 : 2) offsets.push(i);
+      for (let i = 0; i < body.length;) {
+        offsets.push(i);
+        if (body[i] === '\\') i += body[i + 1] === 'u' ? 6 : 2;
+        else i++;
+      }
       ctx.work += body.length;
     }
     return j < offsets.length ? offsets[j] : body.length;
