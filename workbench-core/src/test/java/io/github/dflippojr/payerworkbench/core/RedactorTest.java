@@ -908,6 +908,13 @@ class RedactorTest {
         assertEquals(escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
                 + escapedEverything(quote) + prose,
                 Redactor.redact(escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + prose));
+        // After a stray quote whose string has an escape JSON has not, with and without the prose: the scanner's r9 tests.
+        String stray = "he said \"don\\'t ";
+        for (String after : List.of("", prose)) {
+            assertEquals(stray + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
+                    + escapedEverything(quote) + after,
+                    Redactor.redact(stray + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + after));
+        }
     }
 
     @Test

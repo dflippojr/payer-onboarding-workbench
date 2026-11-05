@@ -462,6 +462,18 @@ test('r9: flags the twice-escaped copied form when quoted prose follows it (#262
   assertFlagged(escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_293"')) + prose);
   assertAccepted(escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + prose);
 });
+test('r9: flags the twice-escaped copied form after a stray quote whose string JSON cannot read (#262)', () => {
+  // The stray quote opens a string to the end of the text, and its \' escape makes JSON.parse reject it, so neither the
+  // string nor the text around it was decoded. Redactor still reads the view below and masks d; the masked form is its
+  // output (RedactorTest.masksTheTwiceEscapedCopiedFormWithQuotedProseAfterIt).
+  const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const loose = '"kty":"'.repeat(63);
+  const quote = '\\u0022';
+  for (const [before, after] of [["he said \"don\\'t ", ''], ["he said \"don\\'t ", ' note: "ok"']]) {
+    assertFlagged(before + escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_293"')) + after);
+    assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
+  }
+});
 test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
   // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
   // hundred characters of its 4n + 1024 and keeps "d" as it is (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks),
