@@ -620,14 +620,19 @@ test('reads a JWK copied after a stray quote and a raw line break, nested 8 deep
   // Each such string is read whole as well as from its first copied \" on, and a level down both read the same view:
   // read twice at every level, the views doubled per level and spent the scan budget, flagging the masked form.
   // Redactor keeps it and masks k (RedactorTest.masksAJwkCopiedAfterAStrayQuoteAndARawLineBreakNestedEightDeep).
+  // A view read normally is not read whole again either: that adds about a third to the work (40n against 32n).
   const jwk = k => `{"kty":"oct","k":"${k}","pad":"${'x'.repeat(100)}"}`;
   for (const lb of ['\n', '\r\n']) {
     const nest = text => {
       for (let i = 0; i < 8; i++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}`;
       return text;
     };
-    assertAccepted(nest(jwk(MASK)));
+    const masked = nest(jwk(MASK));
+    assertAccepted(masked);
     assertFlagged(nest(jwk('FAKE_JWK_K_342')));
+    scanWork.characters = 0;
+    findTextLeaks(masked);
+    assert.ok(scanWork.characters <= 36 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
   }
 });
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {

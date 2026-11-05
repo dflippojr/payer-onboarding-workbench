@@ -620,11 +620,12 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
  * views would double at each level of such strings (#342).
  */
 function readNested(decoded, level, ctx, toRoot, whole = false) {
-  const span = `${level}:${toRoot(0)}:${toRoot(decoded.length)}:${whole}`;
+  const span = `${level}:${toRoot(0)}:${toRoot(decoded.length)}`;
   const views = ctx.read.get(span) ?? [];
   ctx.work += views.length * decoded.length;
-  if (views.includes(decoded)) return;
-  views.push(decoded);
+  // A view read whole finds no more than the same view read otherwise (scanJson), so either covers a whole read.
+  if (views.some(view => view.decoded === decoded && (whole || !view.whole))) return;
+  views.push({ decoded, whole });
   ctx.read.set(span, views);
   const quoted = decoded.includes('"');
   // scanJson reads the string first, so decodeString knows which strings it decoded.
