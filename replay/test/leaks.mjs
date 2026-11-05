@@ -165,14 +165,31 @@ const WORD_START = String.raw`(?:\b|(?<=\\[nrtbf]))`;
  */
 const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))`;
 
+/**
+ * A JSON escape of a space, tab, line feed, vertical tab, form feed or carriage return (the whitespace Java's \s takes),
+ * also escaped again: \t, \n, \f, \r, or the six-character escape of one (u0020, u0009 to u000D). After a scheme it
+ * is the whitespace it stands for, as in Redactor (#212). Used with the i flag.
+ */
+const ESCAPED_WHITESPACE = String.raw`\\+(?:[nrtf]|u00(?:20|0[9A-D]))`;
+
+/** ESCAPED_WHITESPACE of a space or tab only: all that separates Token or DPoP from a credential. */
+const ESCAPED_SPACE_OR_TAB = String.raw`\\+(?:t|u00(?:20|09))`;
+
+/**
+ * What separates a scheme from its credential, as in Redactor: spaces and tabs, also written as JSON escapes; after
+ * Bearer and Basic any whitespace, also escaped; after Bearer a URL-encoded space (Bearer%20, Bearer+).
+ */
+const AUTH_SEPARATOR = String.raw`(?:(?:[ \t]|${ESCAPED_SPACE_OR_TAB})+|(?<=Bearer|Basic)(?:\s|${ESCAPED_WHITESPACE})+|(?<=Bearer)(?:%20|\+))`;
+
 /** A JSON value Redactor masks for a secret field: a string, or a number, true or false. */
 const JSON_SCALAR = String.raw`-?\d[\d.eE+-]*|true\b|false\b`;
 
 /**
  * A scheme, its credential and anything after it to a separator, as in Redactor's AUTH_SCHEME. After
- * Bearer the space may be URL-encoded (Bearer%20, Bearer+); after Token and DPoP it may not be a line break.
+ * Bearer the space may be URL-encoded (Bearer%20, Bearer+); after Token and DPoP it may not be a line break. Any
+ * of them may be a JSON escape (AUTH_SEPARATOR).
  */
-const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
+const AUTH_SCHEME = String.raw`(Bearer|Basic|Token|DPoP)${AUTH_SEPARATOR}(?!(?:realm|error|error_description|scope)\s*=\s*[^\s,])((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})*)`;
 
 /** Where a scheme starts, as in Redactor: also right after a URL escape (%3A%20Bearer%20). */
 const AUTH_START = String.raw`(?:${WORD_START}|(?<=%[0-9A-F]{2})(?=Bearer))`;
@@ -279,7 +296,8 @@ const TEXT_CHECKS = [
   { name: 'PEM block', re: /-----BEGIN [A-Z0-9 ]*-----/g },
   // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
   // backslash, as in Redactor; a JSON escape of a token character (\/, \u002B) is that character, not a
-  // backslash, also escaped again (\\/) in a recorded body (#211).
+  // backslash, also escaped again (\\/) in a recorded body (#211), and a JSON escape of whitespace after the
+  // scheme (\t, \n) is a separator (#212).
   // As in Redactor, a credential is consumed and the search goes on after it, and a match kept as prose is
   // read again from after its scheme, so it does not hide a scheme right after it (token DPoP <credential>).
   {
@@ -300,7 +318,7 @@ const TEXT_CHECKS = [
   },
   // Redactor masks the credential through to that end, so anything right after the mask is the rest
   // of it (Bearer [REDACTED]:SECRETPART, Bearer [REDACTED]\/PART, Bearer [REDACTED]\u002BPART).
-  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)(?:[ \t]+|(?<=Bearer|Basic)\s+|(?<=Bearer)(?:%20|\+))\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
+  { name: 'Bearer/Basic credential cut short', re: new RegExp(String.raw`${AUTH_START}(?:Bearer|Basic|Token|DPoP)${AUTH_SEPARATOR}\[REDACTED\](?:[^\s"',;\\]|${ESCAPED_TOKEN_CHAR})`, 'gi') },
   // Redactor keeps a JWT's header and claims and masks the signature.
   // Each run of token characters is read once: it is a JWT's header from its first eyJ at a word start when two
   // dots follow it with a signature after the second (eyJ-eyJ-... is not retried at each eyJ, as in #310).

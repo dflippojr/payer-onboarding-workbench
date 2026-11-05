@@ -35,8 +35,8 @@ import tools.jackson.databind.json.JsonMapper;
  * values full of JSON escapes), raw or URL-encoded, places them where a payer echoes credentials
  * (headers, bodies, query strings, bodies cut off at any position in a JSON value), with or without
  * the whole text quoted inside a JSON string (also by a serializer that escapes {@code /} or
- * {@code +}), and
- * asserts that no piece of the secret survives: through {@link Redactor} itself, and through every
+ * {@code +}), after a space, tab or line break between the scheme and the credential, real or written as a JSON
+ * escape (#212), and asserts that no piece of the secret survives: through {@link Redactor} itself, and through every
  * text field of the run model, {@link StepResult} and {@link Finding} (#211).
  * {@code replay/test/leaks.test.mjs} runs the same generator against the leak scanner. Everything
  * is generated; nothing secret-shaped is committed.
@@ -70,6 +70,17 @@ class RedactorPropertyTest {
     private static final List<String> AUTHORIZATION_HEADERS = List.of("Authorization", "authorization", "Proxy-Authorization");
     /** Schemes a token-shaped secret follows: Token and DPoP are masked as Bearer is (#262). */
     private static final List<String> BEARER_SCHEMES = List.of("Bearer", "bearer", "BEARER", "Token", "token", "DPoP", "dpop");
+    /**
+     * What may stand between a scheme and its credential: a space, a tab, a line break, a form feed or a vertical tab
+     * (all of Java's {@code \s}), as it is or as a JSON
+     * escape already in the text ({@code {"echo":"Bearer\t<token>"}}), which a JSON {@link Wrap} escapes again;
+     * such a wrap writes a real tab or line break as an escape (#212). After {@code Token} and {@code DPoP} only a
+     * space or tab separates, so {@link Case#separator()} uses a space there in place of a line break.
+     */
+    private static final List<String> SEPARATORS = List.of(" ", " ", " ", "\t", "\n", "\r\n",
+            "\\t", "\\n", "\\r", "\\u0020", "\\u0009", "\\u000A", "\\u000d", " \\t",
+            "\f", "\u000B", "\\f", "\\u000C", "\\u000b");
+    private static final Set<String> SPACE_OR_TAB = Set.of(" ", "\t", "\\t", "\\u0020", "\\u0009", " \\t");
     private static final List<String> PEM_LABELS = List.of(
             "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "OPENSSH PRIVATE KEY",
             "PGP PRIVATE KEY BLOCK");
@@ -119,7 +130,7 @@ class RedactorPropertyTest {
     }
 
     record Case(Secret secret, Slot slot, Encoding encoding, int variant, String before, String after,
-                Wrap wrap, Carrier carrier, int cut) {
+                Wrap wrap, Carrier carrier, int cut, String generatedSeparator) {
 
         String placed() {
             return encoding == Encoding.URL ? URLEncoder.encode(secret.value(), StandardCharsets.UTF_8) : secret.value();
@@ -133,14 +144,25 @@ class RedactorPropertyTest {
             return pick(secret.shape() == Shape.BASIC_USER_PASS ? List.of("Basic", "basic", "BASIC") : BEARER_SCHEMES);
         }
 
+        /** The generated separator, or a space after {@code Token} or {@code DPoP} in place of a line break. */
+        String separator() {
+            boolean spaceOrTabOnly = scheme().equalsIgnoreCase("Token") || scheme().equalsIgnoreCase("DPoP");
+            return spaceOrTabOnly && !SPACE_OR_TAB.contains(generatedSeparator) ? " " : generatedSeparator;
+        }
+
+        /** The scheme, the separator and the secret as placed. */
+        String credential() {
+            return scheme() + separator() + placed();
+        }
+
         String text() {
             if (slot == Slot.JSON_FIELD && variant % 3 == 2) {
                 return cutJsonField();
             }
             String text = switch (slot) {
-                case AUTH_TEXT -> before + scheme() + " " + placed() + after;
+                case AUTH_TEXT -> before + credential() + after;
                 case HEADERS_ECHO -> "{\"headers\":{\"Host\":\"payer.example.test\",\"Authorization\":"
-                        + JSON.writeValueAsString(scheme() + " " + placed()) + "}}";
+                        + JSON.writeValueAsString(credential()) + "}}";
                 case JSON_FIELD -> jsonField();
                 case FORM_BODY -> "grant_type=client_credentials&" + pick(keys(FORM_KEYS)) + "=" + placed()
                         + (variant % 2 == 0 ? "&scope=system%2F*.read" : "");
@@ -228,7 +250,7 @@ class RedactorPropertyTest {
 
         String redacted() {
             return switch (slot) {
-                case AUTHORIZATION_HEADER -> redactHeader(pick(AUTHORIZATION_HEADERS), scheme() + " " + placed());
+                case AUTHORIZATION_HEADER -> redactHeader(pick(AUTHORIZATION_HEADERS), credential());
                 case CREDENTIAL_HEADER -> redactHeader(pick(CREDENTIAL_HEADERS), placed());
                 default -> carrier == Carrier.BODY ? Redactor.redact(text()) : redactHeader("X-Debug-Echo", text());
             };
@@ -314,7 +336,7 @@ class RedactorPropertyTest {
             details.put("keyed", Map.of(text, "value"));
         } else {
             text = "ok";
-            String value = c.slot() == Slot.AUTHORIZATION_HEADER ? c.scheme() + " " + c.placed() : c.placed();
+            String value = c.slot() == Slot.AUTHORIZATION_HEADER ? c.credential() : c.placed();
             String name = c.pick(c.slot() == Slot.AUTHORIZATION_HEADER ? AUTHORIZATION_HEADERS : CREDENTIAL_HEADERS);
             details.put("exchanges", List.of(Map.of("requestHeaders", Map.of(name, List.of(value)))));
         }
@@ -354,7 +376,7 @@ class RedactorPropertyTest {
 
     @Provide
     Arbitrary<Case> cases() {
-        return secrets().flatMap(secret -> Combinators.combine(
+        return secrets().flatMap(secret -> Arbitraries.of(SEPARATORS).flatMap(separator -> Combinators.combine(
                         Arbitraries.of(slotsFor(secret.shape())),
                         Arbitraries.of(Encoding.values()),
                         Arbitraries.integers().between(0, 59),
@@ -367,7 +389,7 @@ class RedactorPropertyTest {
                         // Outside a secret-named key, a PEM block is found by its armor, which URL encoding
                         // removes; URL encoding would remove the escapes of an escaped value.
                         slot == Slot.PEM_TEXT || secret.shape() == Shape.ESCAPED ? Encoding.RAW : encoding,
-                        variant, before, after, wrap, carrier, cut)));
+                        variant, before, after, wrap, carrier, cut, separator))));
     }
 
     private static List<Slot> slotsFor(Shape shape) {

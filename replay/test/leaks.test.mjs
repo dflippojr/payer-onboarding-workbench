@@ -616,13 +616,96 @@ test('accepts a scheme in front of a masked authorization header list item', () 
   assert.deepEqual(findTextLeaks(JSON.stringify(record)), []);
 });
 
+// A JSON escape of whitespace after the scheme is the separator, as Redactor reads it (#212).
+const ESCAPED_SEPARATORS = ['\\t', '\\n', '\\r', '\\u0020', '\\u0009', '\\u000A', '\\u000D', '\\u000a', '\\u000d',
+  '\\\\t', '\\\\n', '\\\\r', '\\\\u0020', '\\\\u0009', '\\r\\n', ' \\t', '\\t ', '\\n\\u0020'];
+const credentialFlagged = text => findTextLeaks(text).some(l => l.check === 'Bearer/Basic credential');
+test('flags a credential after a JSON-escaped separator (#212)', () => {
+  for (const separator of ESCAPED_SEPARATORS) {
+    for (const text of [
+      `{"echo":"Bearer${separator}SecretTokenValue99"}`,
+      `{"echo":"Basic${separator}c3ludGhjbGllbnQ6U3ludGg"}`,
+      `{"echo":"Authorization: Bearer${separator}SecretTokenValue99"}`,
+      `{"echo":"rejected bearer${separator}Ab12\\/SecretRemainder99, twice"}`,
+    ]) {
+      assert.ok(credentialFlagged(text), `not flagged: ${text}`);
+      assertFlagged(text);
+    }
+  }
+  // In JSON quoted inside a JSON string, and in the report that holds a recorded body.
+  assertFlagged('{"debug":"{\\"e\\":\\"Bearer\\\\tSecretTokenValue99\\"}"}');
+  assert.ok(credentialFlagged(reportForm('{"echo":"Bearer\\tSecretTokenValue99"}')));
+  // After Token and DPoP, an escaped space or tab.
+  for (const separator of ['\\t', '\\u0020', '\\u0009', '\\\\t', '\\\\u0020', ' \\t']) {
+    for (const text of [`{"echo":"Token${separator}9944b09199c62bcf9418"}`, `{"echo":"rejected DPoP${separator}PHNhbWw6QXNzZXJ0aW9u"}`]) {
+      assert.ok(credentialFlagged(text), `not flagged: ${text}`);
+      assertFlagged(text);
+    }
+  }
+  // The rest of a credential after a mask that follows an escaped separator.
+  for (const separator of ['\\t', '\\n', '\\u0020', '\\\\t']) {
+    assertFlagged(`{"echo":"Bearer${separator}[REDACTED]\\/SecretRemainder99"}`);
+    assertFlagged(`{"echo":"Bearer${separator}[REDACTED]:SecretRemainder99"}`);
+  }
+});
+// A real form feed or vertical tab separates Bearer or Basic from a credential (\s), so its JSON escape does too
+// (#212, Codex round 1).
+const ESCAPED_FF_VT = ['\\f', '\\u000C', '\\u000c', '\\u000B', '\\u000b', '\\\\f', '\\\\u000C',
+  '\\t\\f', '\\f\\n', ' \\f', '\\u000b\\u0020'];
+test('flags a credential after a JSON-escaped form feed or vertical tab (#212)', () => {
+  for (const separator of ESCAPED_FF_VT) {
+    for (const text of [
+      `{"echo":"Bearer${separator}SecretTokenValue99"}`,
+      `{"echo":"Basic${separator}c3ludGhjbGllbnQ6U3ludGg"}`,
+      `{"echo":"Authorization: Bearer${separator}SecretTokenValue99"}`,
+      `{"echo":"rejected bearer${separator}Ab12\\/SecretRemainder99, twice"}`,
+      `{"echo":"rejected bearer${separator}Ab12\\u002BSecretRemainder99, twice"}`,
+    ]) {
+      assert.ok(credentialFlagged(text), `not flagged: ${text}`);
+      assertFlagged(text);
+    }
+    assertFlagged(`{"echo":"Bearer${separator}[REDACTED]\\/SecretRemainder99"}`);
+  }
+  assertFlagged('{"debug":"{\\"e\\":\\"Bearer\\\\fSecretTokenValue99\\"}"}');
+  assert.ok(credentialFlagged(reportForm('{"echo":"Bearer\\fSecretTokenValue99"}')));
+});
+test('accepts prose after a JSON-escaped form feed or vertical tab, and after Token or DPoP (#212)', () => {
+  for (const text of ['{"m":"Missing bearer\\ftoken"}', '{"m":"Basic\\u000Cplan"}',
+    '{"h":"Bearer\\frealm=\\"synthetic\\", error=\\"invalid_token\\""}']) {
+    assertAccepted(text);
+  }
+  for (const separator of ['\\f', '\\u000C', '\\u000b']) {
+    assertAccepted(`{"m":"issue a token${separator}2 times per hour; DPoP${separator}proof-v2 required"}`);
+  }
+});
+test('accepts what Redactor leaves for a credential after a JSON-escaped separator, and prose there (#212)', () => {
+  for (const text of [
+    '{"echo":"Bearer [REDACTED]"}', '{"echo":"Authorization: Bearer [REDACTED]"}',
+    '{"echo":"rejected bearer [REDACTED], twice"}', '{"echo":"Token [REDACTED]"}',
+    '{"debug":"{\\"e\\":\\"Bearer [REDACTED]\\"}"}',
+    '{"m":"Missing bearer\\ntoken"}', '{"m":"Basic\\nplan"}', '{"m":"Missing bearer\\u0020token."}',
+    '{"m":"Basic\\tauthentication is required"}', '{"m":"Missing bearer\\\\ntoken"}',
+    '{"h":"Bearer\\trealm=\\"synthetic\\", error=\\"invalid_token\\""}',
+    '{"h":"Bearer\\nerror=\\"invalid_token\\", error_description=\\"Expired\\""}',
+    '{"h":"Bearer\\u0020error_description=\\"Expired\\""}',
+    '{"h":"Basic\\u0020realm=\\"synthetic-payer\\""}',
+    '{"h":"Bearer\\r\\nscope=\\"system/*.read\\""}',
+  ]) {
+    assertAccepted(text);
+  }
+  // After Token and DPoP an escaped line break is not a separator, as a real one is not.
+  for (const separator of ['\\n', '\\r', '\\u000A', '\\u000D', '\\r\\n', '\\\\n']) {
+    assertAccepted(`{"m":"issue a token${separator}2 times per hour; DPoP${separator}proof-v2 required"}`);
+  }
+});
+
 // Class-level check (#160): generated secrets of every shape, placed in headers, bodies and query
 // strings (see secret-cases.mjs), must be flagged both unmasked and where a mask stops short of
 // their end. RedactorPropertyTest runs the same generator against Redactor. A failure names its
 // seed; LEAKS_SEED=<seed> reproduces it.
 const SEED = Number(process.env.LEAKS_SEED ?? Math.floor(Math.random() * 2 ** 32));
 const CASES = generateCases(SEED, 3000);
-const describeCase = c => `seed ${SEED}: ${c.slot} ${c.secret.shape} ${c.encoding}${c.wrap === 'NONE' ? '' : ` in ${c.wrap}`} (${c.carrier})`;
+const describeCase = c => `seed ${SEED}: ${c.slot} ${c.secret.shape} ${c.encoding}${c.wrap === 'NONE' ? '' : ` in ${c.wrap}`} (${c.carrier}) after ${JSON.stringify(c.separator)}`;
 
 /** Flagged in the slot's own text, as in a report, and in the recorded exchange, as in the bundle. */
 const flagged = ({ text, record }) => (text === null || findTextLeaks(text).length > 0)

@@ -87,12 +87,26 @@ public final class Redactor {
             "\\\\++(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))";
 
     /**
+     * A JSON escape of any whitespace {@code \s} matches (space, tab, line feed, vertical tab, form feed, carriage
+     * return), also escaped again: {@code \t}, {@code \n}, {@code \f}, {@code \r} or a {@code \}{@code uXXXX} escape
+     * ({@code 0020}, {@code 0009} to {@code 000D}, either case). After a scheme it is the whitespace it stands for, as
+     * {@link #ESCAPED_TOKEN_CHAR} is the character it stands for, so a serializer that writes
+     * {@code Bearer<tab><token>} as {@code Bearer\t<token>} does not hide the token (#212).
+     */
+    private static final String ESCAPED_WHITESPACE = "\\\\++(?:[nrtf]|u00(?:20|0[9A-D]))";
+
+    /** {@link #ESCAPED_WHITESPACE} of a space or tab only. */
+    private static final String ESCAPED_SPACE_OR_TAB = "\\\\++(?:t|u00(?:20|09))";
+
+    /**
      * A scheme (group 1), its token68 part (group 2, which may be URL-encoded) and anything else up to
      * the next whitespace, quote, comma, semicolon or backslash (group 3), so a {@code token:suffix} is
      * masked whole. After {@code Bearer} the space may be URL-encoded too ({@code Bearer%20},
      * {@code Bearer+}), also right after another escape ({@code %3A%20Bearer%20}). After {@code Token}
      * and {@code DPoP}, ordinary words, only spaces and tabs are: a word on the next line
-     * ({@code a bearer token}, then a JWT) is not their credential. Both parts read a
+     * ({@code a bearer token}, then a JWT) is not their credential. The whitespace may be written as a JSON
+     * escape ({@link #ESCAPED_WHITESPACE}, after {@code Token} and {@code DPoP} {@link #ESCAPED_SPACE_OR_TAB}),
+     * read in place, not decoded first. Both parts read a
      * JSON escape of a token character ({@link #ESCAPED_TOKEN_CHAR}) as the character it stands for,
      * so a token quoted by a serializer that escapes some of its characters
      * ({@code tok\/en}, {@code tok}{@code \}{@code u002Ben}) is masked whole too. Case-insensitive, so
@@ -100,7 +114,8 @@ public final class Redactor {
      */
     private static final Pattern AUTH_SCHEME = Pattern.compile(
             "(?i)(?:" + WORD_START + "|(?<=%[0-9A-F]{2})(?=Bearer))(Bearer|Basic|Token|DPoP)"
-                    + "(?:[ \\t]++|(?<=Bearer|Basic)\\s+|(?<=Bearer)(?:%20|\\+))(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
+                    + "(?:(?:[ \\t]|" + ESCAPED_SPACE_OR_TAB + ")++|(?<=Bearer|Basic)(?:\\s|" + ESCAPED_WHITESPACE + ")++"
+                    + "|(?<=Bearer)(?:%20|\\+))(?!(?:realm|error|error_description|scope)\\s*=\\s*[^\\s,])"
                     + "((?:[A-Za-z0-9\\-._~+/%]++|" + ESCAPED_TOKEN_CHAR + ")++=*)"
                     + "((?:[^\\s\"',;\\\\]++|" + ESCAPED_TOKEN_CHAR + ")*+)");
 
