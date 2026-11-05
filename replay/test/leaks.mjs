@@ -662,8 +662,26 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
   ctx.work += text.length;
   // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
   // Redactor, unless its JWK search may spend its budget (textLeaks).
-  const newOwner = object => ({ object, kty: false, values: [] });
+  const newOwner = (object, start = -1) => ({ object, start, kty: false, values: [] });
   const top = newOwner(false);
+  // In a string's whole content (readUnread), how many quotes no backslash escapes come before each index, built on
+  // first use: a kty name with an odd number of them between its object's open bracket and its own opening quote
+  // makes no JWK. Escapes of two levels decoded at once may pair quotes that way ({"body":""a":0,"kty":...}), and
+  // Redactor, reading back from the name, finds that open bracket inside a string (automated review on c4ffeef and
+  // 39dd7ff). Elsewhere a kty name in an object makes a JWK, as on main.
+  let quotes = null;
+  const evenQuotes = (from, to) => {
+    if (quotes === null) {
+      quotes = new Int32Array(text.length + 1);
+      let backslashes = 0;
+      for (let j = 0; j < text.length; j++) {
+        quotes[j + 1] = quotes[j] + (text[j] === '"' && backslashes % 2 === 0 ? 1 : 0);
+        backslashes = text[j] === '\\' ? backslashes + 1 : 0;
+      }
+      ctx.work += text.length;
+    }
+    return (quotes[to] - quotes[from]) % 2 === 0;
+  };
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
   const stack = [];
   // The member whose name and colon were just read, waiting for its value.
@@ -685,8 +703,6 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
   // Quotes before this index were read as escaped ones inside a string a stray quote opened: a string opened at
   // any of them would end where that one did, so they open none when its span is read again.
   let quotesFrom = 0;
-  // The quote that closed the last such string, which the read again opens a string at.
-  let resyncAt = -1;
   while (i < text.length) {
     ctx.work++;
     if (ctx.work > ctx.budget) {
@@ -722,11 +738,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
         // it whole ({"client_secret":["x":"..."]}).
         if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
-        // In a string's whole content (readUnread), a kty name opened by the quote that closed the string before it
-        // ({"body":""kty":...}) makes no JWK: escapes of two levels decoded at once may pair quotes that way, and
-        // Redactor, reading back from the name, finds that object's open bracket inside a string (automated review
-        // on c4ffeef). Elsewhere it does, as on main.
-        if (name === 'kty' && o.object && !(whole && literal.start === resyncAt)) o.kty = true;
+        if (name === 'kty' && o.object && (!whole || evenQuotes(o.start + 1, literal.start))) o.kty = true;
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
@@ -748,7 +760,6 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
       // span again for structure. A string cut off by the end of the text leaves nothing after it to resync.
       if ((stray || stack.length === 0) && literal.terminated) {
         quotesFrom = literal.end;
-        resyncAt = literal.end;
         i = literal.start + 1;
       } else {
         i = literal.end + 1;
@@ -756,7 +767,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
       continue;
     }
     if (c === '{' || c === '[') {
-      const container = { owner: newOwner(c === '{'), list: null };
+      const container = { owner: newOwner(c === '{', i), list: null };
       if (member) {
         const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
         member.owner.values.push(value);
