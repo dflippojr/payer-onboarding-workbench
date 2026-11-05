@@ -341,15 +341,18 @@ public final class Redactor {
         // The JWKs' private members and the PEM and PGP blocks are found in the text as it came, and masked
         // together: masking either first would hide the other (an unterminated block masked to the end of the
         // text may hold the JWK's kty; a JWK member's mask may hold the block's header).
-        List<Mask> masks = jwkMasks(text, new Discovery(text.length(), reads));
+        Discovery discovery = new Discovery(text.length(), reads);
+        List<Mask> masks = jwkMasks(text, discovery);
         List<Mask> pem = pemMasks(text);
         masks.addAll(pem);
         String out = applyMasks(text, masks);
         // A stray quote in a masked block may have hidden a JWK member from that read ({"kty":"RSA","note":
         // "-----BEGIN PRIVATE KEY-----"-----END PRIVATE KEY-----","d":...}): with the blocks masked, the JWKs are
-        // found once more, with the same budgets and fallbacks. This only adds masks.
+        // found once more, spending what that read left of each level's budget, with the same fallback once it is
+        // spent. This only adds masks.
         if (!pem.isEmpty()) {
-            out = applyMasks(out, jwkMasks(out, new Discovery(out.length(), reads)));
+            discovery.readAgain();
+            out = applyMasks(out, jwkMasks(out, discovery));
         }
         out = maskSchemeCredentials(out);
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
@@ -787,7 +790,9 @@ public final class Redactor {
     /**
      * What JWK discovery has left to read at each escape level: {@code 4n + 1024} characters for the plain and
      * the embedded JSON of a text of length {@code n}, and {@code 4m + 1024} for each nested level, whose view of
-     * the text has length {@code m}, when it is first read.
+     * the text has length {@code m}, when it is first read. Reading the text again ({@link #readAgain}) spends what
+     * is left; a nested level the first read never reached has nothing left, so its private member names are all
+     * masked.
      */
     private static final class Discovery {
 
@@ -795,6 +800,7 @@ public final class Redactor {
         private final int[] embedded;
         private final List<int[]> nested = new ArrayList<>();
         private final List<DiscoveryRead> reads;
+        private boolean again;
 
         Discovery(int length, List<DiscoveryRead> reads) {
             plain = new int[] {4 * length + 1024};
@@ -808,9 +814,14 @@ public final class Redactor {
                 nested.add(null);
             }
             if (nested.get(depth - 1) == null) {
-                nested.set(depth - 1, new int[] {4 * length + 1024});
+                nested.set(depth - 1, new int[] {again ? 0 : 4 * length + 1024});
             }
             return nested.get(depth - 1);
+        }
+
+        /** From now on the text is read again, so a nested level not read yet gets no budget of its own. */
+        void readAgain() {
+            again = true;
         }
 
         /** {@link #jwkValues} at {@code level}, spending {@code budget}, recorded in the reads. */
