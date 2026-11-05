@@ -513,9 +513,12 @@ test('flags a copied JWK with mixed quote escapes after a stray quote and a raw 
     value => `{${b}kty${b}:${u}oct${u},${b}k${b}:${b}${value}${b}}`,
   ];
   for (const before of ['he said "\n', 'he said "\r\n', '"\n', '"\r\n']) {
-    for (const form of forms) {
-      assertFlagged(before + form('FAKE_JWK_K_342'));
-      assertAccepted(before + form(MASK));
+    // The stray quote's string runs to the end of the text, or to a closing quote after the copy.
+    for (const after of ['', '"', '" and "x"']) {
+      for (const form of forms) {
+        assertFlagged(before + form('FAKE_JWK_K_342') + after);
+        assertAccepted(before + form(MASK) + after);
+      }
     }
   }
 });
@@ -565,6 +568,41 @@ test('r8: accepts a loose private member next to JWKs whose search cannot spend 
   const escapedCopy = `{"note":"line one\nline two","body":"${text.replace(/"/g, '\\u0022')}"}`;
   assertAccepted(escapedCopy);
   assertFlagged(escapedCopy.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
+});
+test('accepts masked JWKs copied after a stray quote and a raw line break, read whole and in parts (#342)', () => {
+  // The whole string after the stray quote is read as well as scanJson's literal from the first copied \" on, so each
+  // kty name is read twice one level down; counted twice, two masked JWKs looked like enough to spend Redactor's JWK
+  // search budget, and the loose "d" was flagged. Redactor keeps each form as it is and masks an unmasked d
+  // (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwksCopiedAfterAStrayQuoteAndARawLineBreak).
+  const jwk = kid => `{"kty":"RSA","kid":"${kid}","use":"sig","alg":"RS256","n":"${'0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA'.repeat(4)}",`
+    + '"e":"AQAB","d":"[REDACTED]","p":"[REDACTED]","q":"[REDACTED]","dp":"[REDACTED]","dq":"[REDACTED]","qi":"[REDACTED]"}';
+  const u = t => t.replace(/"/g, '\\u0022');
+  const b = t => t.replace(/"/g, '\\"');
+  for (const lb of ['\n', '\r\n']) {
+    for (const copied of [
+      b(`{"keys":[${jwk('a')},${jwk('b')}],"d":"dimension"}`),
+      u(`{"keys":[${jwk('a')},`) + b(`${jwk('b')}],"d":"dimension"}`),
+      b(`{"keys":[${jwk('a')},`) + u(`${jwk('b')}],"d":"dimension"}`),
+    ]) {
+      const text = `he said "${lb}${copied}`;
+      assertAccepted(text);
+      assertFlagged(text.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
+    }
+  }
+});
+test('reads a JWK copied after a stray quote and a raw line break, nested 8 deep, within the scan budget (#342)', () => {
+  // Each such string is read whole as well as from its first copied \" on, and a level down both read the same view:
+  // read twice at every level, the views doubled per level and spent the scan budget, flagging the masked form.
+  // Redactor keeps it and masks k (RedactorTest.masksAJwkCopiedAfterAStrayQuoteAndARawLineBreakNestedEightDeep).
+  const jwk = k => `{"kty":"oct","k":"${k}","pad":"${'x'.repeat(100)}"}`;
+  for (const lb of ['\n', '\r\n']) {
+    const nest = text => {
+      for (let i = 0; i < 8; i++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}`;
+      return text;
+    };
+    assertAccepted(nest(jwk(MASK)));
+    assertFlagged(nest(jwk('FAKE_JWK_K_342')));
+  }
 });
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [

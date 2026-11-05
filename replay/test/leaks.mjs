@@ -84,14 +84,17 @@ const sourceOffsets = (body, ctx) => {
  * the name's (scanJson maps a name found in a decoded string back to where its characters start in the text), so
  * m' <= min(p, m). The bound f(m) = (k - 4)m + 2 * sum(min(p, m)) is linear between the positions, so its most over
  * 0 <= m <= n is at one of them or at n; with k < 2 it is below 0. Each level is judged on its own, as each view has its
- * own budget, and a name found at several levels is not counted twice in one. The read after the key blocks are masked
- * spends the rest of the same budget, at most 4m + 1024 for the shortened text, and needs a PEM header in the text,
- * which the PEM block check flags.
+ * own budget, and a name found at several levels is not counted twice in one. Nor is a name the scanner reads twice at
+ * one level (in a literal scanJson decodes and in the whole string readUnread reads around it, #342): it starts at one
+ * position in the text, one character of that level's view, so positions are counted once each. The read after the key
+ * blocks are masked spends the rest of the same budget, at most 4m + 1024 for the shortened text, and needs a PEM
+ * header in the text, which the PEM block check flags.
  */
 const mayExhaustJwkSearch = (n, positions) => {
-  const k = positions.length;
+  const distinct = [...new Set(positions)];
+  const k = distinct.length;
   if (k < 2) return false;
-  const p = positions.map(x => Math.min(x, n)).sort((a, b) => a - b);
+  const p = distinct.map(x => Math.min(x, n)).sort((a, b) => a - b);
   // The sum of the positions below the i-th: those are min(p, m) for m = p[i]; the rest are m.
   let below = 0;
   for (let i = 0; i <= k; i++) {
@@ -377,7 +380,7 @@ const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.cha
  * is not a unicode one is kept. With no such escape to decode, `body` itself is returned: there is no other view.
  * Returns the decoded text, a function from an index in it to where that character starts in `body`, and `unread`:
  * the spans [from, to) of the strings it left out that no literal scanJson decoded in `body` (`read`) holds, which
- * nothing else decodes (readUnread).
+ * nothing else decodes, and the content of each such string as a whole (readUnread).
  */
 const decodeString = (body, ctx, read = []) => {
   try {
@@ -426,7 +429,7 @@ const decodeString = (body, ctx, read = []) => {
     try {
       JSON.parse(`"${escapeControls(content)}"`);
       // scanJson decodes a string JSON reads, where it is: unless it read the string otherwise (unread).
-      leftOut.push([i, Math.min(end + 1, body.length)]);
+      leftOut.push([i, Math.min(end + 1, body.length), Math.min(end, body.length)]);
     } catch {
       // A string JSON cannot read (a stray quote before an escape JSON has not) is decoded as the text around it is.
       decodeSpan(i + 1, Math.min(end, body.length));
@@ -441,16 +444,20 @@ const decodeString = (body, ctx, read = []) => {
 };
 
 /**
- * The parts of the spans `leftOut` that none of the spans `read` holds, in a text of length `n`: where decodeString
- * left out a string that scanJson read otherwise. scanJson ends a string that is no member's value at a raw line
- * break, and reads the text after it as bare text, which it does not decode (#342).
+ * The parts of the strings `leftOut` ([from, to) with their quotes, and where the content ends) that none of the spans
+ * `read` holds, in a text of length `n`: where decodeString left out a string that scanJson read otherwise. scanJson
+ * ends a string that is no member's value at a raw line break, and reads the text after it as bare text, which it does
+ * not decode (#342). Such a string's content is returned whole too: scanJson may have read part of it as a literal of
+ * its own (from a copied \" on), so neither the literal nor the parts around it hold an object that spans both, as a
+ * JWK whose kty is quoted with \u0022 and whose k with \" (automated review on 925a782).
  */
 const unreadSpans = (leftOut, read, n, ctx) => {
   if (leftOut.length === 0) return [];
   const inRead = new Uint8Array(n);
   for (const [from, to] of read) inRead.fill(1, from, to);
   const spans = [];
-  for (const [from, to] of leftOut) {
+  for (const [from, to, contentEnd] of leftOut) {
+    const parts = spans.length;
     for (let i = from; i < to;) {
       if (inRead[i]) {
         i++;
@@ -461,6 +468,7 @@ const unreadSpans = (leftOut, read, n, ctx) => {
       spans.push([i, end]);
       i = end;
     }
+    if (spans.length > parts) spans.push([from + 1, contentEnd]);
   }
   ctx.work += n;
   return spans;
@@ -605,9 +613,18 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
  * string that still holds escapes is also read as the content of one more string, decoded once more (decodeString,
  * loosely when prose quotes around it make it no string's content), as Redactor
  * reads JSON escaped twice over; a chain of such escapes (u005c after u005c) therefore reaches the level cap.
- * Past the cap, a string with anything left to read is a leak (Redactor masks it whole).
+ * Past the cap, a string with anything left to read is a leak (Redactor masks it whole). A view read before (the same
+ * text at the same level, from the same span of the scanned text) is not read again: readUnread reads a string whole
+ * and scanJson reads the literal inside it, and a level down both may decode to the same view, so without this the
+ * views would double at each level of such strings (#342).
  */
 function readNested(decoded, level, ctx, toRoot) {
+  const span = `${level}:${toRoot(0)}:${toRoot(decoded.length)}`;
+  const views = ctx.read.get(span) ?? [];
+  ctx.work += views.length * decoded.length;
+  if (views.includes(decoded)) return;
+  views.push(decoded);
+  ctx.read.set(span, views);
   const quoted = decoded.includes('"');
   // scanJson reads the string first, so decodeString knows which strings it decoded.
   if (quoted && level >= MAX_LEVELS) {
@@ -774,7 +791,8 @@ function scanJson(text, level, ctx, toRoot = j => j) {
  */
 function textLeaks(text, level) {
   // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
-  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [] };
+  // read: the views readNested has read, by level and span in the text.
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map() };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {
