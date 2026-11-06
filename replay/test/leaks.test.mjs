@@ -686,6 +686,21 @@ test('reads a private member value through its line breaks, and only ASCII white
     }
   }
 });
+test('flags a JWK copied after two stray quotes and raw line breaks, and ends a value at a backslash before a line break (#342)', () => {
+  // Automated review on 5173e8e, finding 1: the two stray quotes pair in the loose decode, so the copy after the second
+  // line break was in no string left out, and no view decoded it; main misses it too, and Redactor masks k. Finding 2:
+  // Redactor ends a value at a backslash before a line break (its escape takes any character but a line break), so a
+  // mask followed by one is a mask, and the scanner flagged it
+  // (RedactorTest.masksAJwkCopiedAfterTwoStrayQuotesAndEndsAValueAtABackslashBeforeALineBreak).
+  const copy = k => JSON.stringify(`{"kty":"oct","k":"${k}"}`).slice(1, -1);
+  for (const lb of ['\n', '\r\n']) {
+    for (const before of [`he said "${lb}he said "${lb}`, `he said "${lb}x"${lb}more${lb}`, `"${lb}"${lb}`]) {
+      assertFlagged(before + copy('FAKE_JWK_K_342'));
+      assertAccepted(before + copy(MASK));
+    }
+    assertAccepted(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"[REDACTED]\\${lb}TAIL"}`).slice(1, -1)}`);
+  }
+});
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
   // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
   // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.

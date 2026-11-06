@@ -1239,6 +1239,20 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkCopiedAfterTwoStrayQuotesAndEndsAValueAtABackslashBeforeALineBreak() {
+        // #342 (automated review on 5173e8e): the leak scanner's test of the same form uses these outputs.
+        String jwk = "{\"kty\":\"oct\",\"k\":\"%s\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String before : List.of("he said \"" + lb + "he said \"" + lb, "he said \"" + lb + "x\"" + lb + "more" + lb, "\"" + lb + "\"" + lb)) {
+                assertEquals(before + escapedForJson(jwk.formatted("[REDACTED]")),
+                        Redactor.redact(before + escapedForJson(jwk.formatted("FAKE_JWK_K_342"))));
+            }
+            String cut = "he said \"" + lb + escapedForJson("{\"kty\":\"oct\",\"k\":\"[REDACTED]\\" + lb + "TAIL\"}");
+            assertEquals(cut, Redactor.redact(cut));
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
