@@ -797,7 +797,10 @@ function unmaskedPrivateFields(text, ctx, toRoot) {
   for (let at = text.indexOf('"'); at >= 0; at = text.indexOf('"', at + 1)) {
     PRIVATE_FIELD.lastIndex = at;
     const m = PRIVATE_FIELD.exec(text);
-    if (m === null || !JWK_PRIVATE_MEMBERS.has(decodedName(m[1])) || backslashesBefore(text, at) % 2 === 1) continue;
+    // A backslash before the name's opening quote does not stop it: Redactor matches an escaped copy's field from the
+    // last backslash before its quote, so a quote escaped one level more than the copy's others still opens a member,
+    // and whether it is one of a JWK is jwkLeaks' to decide (automated review on 32194d8).
+    if (m === null || !JWK_PRIVATE_MEMBERS.has(decodedName(m[1]))) continue;
     const v = PRIVATE_FIELD.lastIndex;
     if (escapedFormFeed(text, at, v, ctx, toRoot)) continue;
     if (text[v] === '{' || text[v] === '[') {
