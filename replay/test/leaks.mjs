@@ -732,6 +732,10 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
   };
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
   const stack = [];
+  // Whether the next literal is the first since an object's open bracket or a comma in it: in a string's whole content,
+  // only that one can be a kty member's name, as Redactor reads member names ({"x":0 "kty":...} has no kty member,
+  // automated review on 0ab5aeb). Any other text may come between, as in Redactor.
+  let nameNext = false;
   // The member whose name and colon were just read, waiting for its value.
   let member = null;
   const owner = () => (stack.length > 0 ? stack[stack.length - 1].owner : top);
@@ -759,7 +763,10 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
       return read;
     }
     const c = text[i];
+    if (c === ',') nameNext = stack.length > 0 && stack[stack.length - 1].owner.object;
     if (c === '"' && i >= quotesFrom) {
+      const first = nameNext;
+      nameNext = false;
       const literal = readLiteral(text, i, ctx, member !== null);
       if (literal.aborted) {
         // A string (no member's value: that reads through line breaks) cut off at a line break: JSON in it is
@@ -786,7 +793,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
         // it whole ({"client_secret":["x":"..."]}).
         if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
-        if (name === 'kty' && o.object && (!whole || evenQuotes(o.start + 1, literal.start))) o.kty = true;
+        if (name === 'kty' && o.object && (!whole || (first && evenQuotes(o.start + 1, literal.start)))) o.kty = true;
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
@@ -815,6 +822,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
       continue;
     }
     if (c === '{' || c === '[') {
+      nameNext = c === '{';
       const container = { owner: newOwner(c === '{', i), list: null };
       if (member) {
         const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
@@ -828,6 +836,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
     } else if (c === '}' || c === ']') {
       if (stack.length > 0) judge(stack.pop().owner, ctx);
       member = null;
+      nameNext = false;
     } else if (!member && stack.length > 0 && stack[stack.length - 1].list && !isSpace(c) && c !== ',' && c !== ':') {
       // A number, true, false or null in a secret-named list is no mask.
       let end = i;
