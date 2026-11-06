@@ -539,21 +539,17 @@ const WHOLE = 2;
 const MALFORMED_UNICODE = /(?<!\\)((?:\\\\)*)\\u(?![0-9A-Fa-f]{4})/g;
 
 /**
- * `body` without half an escape at its end: an odd run of backslashes, or a last \u within six characters of the end
- * without four hex digits after it, from there to the end, as decodeLiteral cuts a string the end of the text cut off
- * (so both decode the same copy, and a view of it is read once: automated review on c5a0b7f). Every other malformed
- * \u (\uZ, \u00G) loses its backslash, so JSON reads the copy and the text around it is kept (automated review on
- * 92f3ad6: a copy that ended in \uZ was not read, and its member not judged).
+ * `body` without half an escape at its end, as Redactor leaves a cut: an odd run of backslashes, then a \u with fewer
+ * than four hex digits (and nothing after them). Every malformed \u left (\uZ, \u00G) loses its backslash, so JSON
+ * reads the copy and keeps the text after the escape, which may be the end of a secret value (automated reviews on
+ * 92f3ad6 and 058e89a). decodeLiteral repairs a cut literal the same way, so both read one copy (automated review on
+ * c5a0b7f: when they differed, each level of a nest was read twice).
  */
 const withoutPartialEscape = body => {
   let out = body;
-  const partial = out.lastIndexOf('\\u');
-  if (partial >= 0 && partial > out.length - 6 && !/^[0-9A-Fa-f]{4}/.test(out.slice(partial + 2))
-      && backslashesBefore(out, partial) % 2 === 0) {
-    out = out.slice(0, partial);
-  } else if (backslashesBefore(out, out.length) % 2 === 1) {
-    out = out.slice(0, -1);
-  }
+  if (backslashesBefore(out, out.length) % 2 === 1) out = out.slice(0, -1);
+  const partial = /\\u[0-9A-Fa-f]{0,3}$/.exec(out);
+  if (partial !== null && backslashesBefore(out, partial.index) % 2 === 0) out = out.slice(0, partial.index);
   return out.includes('\\u') ? out.replace(MALFORMED_UNICODE, '$1u') : out;
 };
 
@@ -668,19 +664,21 @@ function readLiteral(text, start, ctx, value = false) {
 
 /**
  * A literal's content decoded with JSON.parse, or null if it does not decode. A string cut off by the end of
- * the text may end in half an escape, which is dropped first, as Redactor leaves such a cut.
+ * the text may end in half an escape, which is dropped first, as Redactor leaves such a cut. A malformed last \u
+ * within six characters of the end (\uZ, \u00G) loses only its backslash, as the loose decode repairs the same
+ * string: so both read one copy (automated review on c5a0b7f), and the text after it, which may end a secret value,
+ * is kept (automated review on 058e89a). Any other malformed escape leaves the literal undecodable, which fails closed.
  */
 function decodeLiteral(literal, ctx) {
   let body = literal.body;
   // With no backslash (readLiteral saw none) and no quote, JSON.parse would return the content as it is.
   if (!literal.escaped) return body;
   if (!literal.terminated) {
-    let backslashes = 0;
-    while (backslashes < body.length && body[body.length - 1 - backslashes] === '\\') backslashes++;
-    if (backslashes % 2 === 1) body = body.slice(0, -1);
+    if (backslashesBefore(body, body.length) % 2 === 1) body = body.slice(0, -1);
     const partial = body.lastIndexOf('\\u');
-    if (partial >= 0 && partial > body.length - 6 && !/^[0-9A-Fa-f]{4}/.test(body.slice(partial + 2))) {
-      body = body.slice(0, partial);
+    if (partial >= 0 && partial > body.length - 6 && backslashesBefore(body, partial) % 2 === 0
+        && !/^[0-9A-Fa-f]{4}/.test(body.slice(partial + 2))) {
+      body = /^[0-9A-Fa-f]{0,3}$/.test(body.slice(partial + 2)) ? body.slice(0, partial) : body.slice(0, partial) + body.slice(partial + 1);
     }
   }
   ctx.work += body.length;
