@@ -750,6 +750,21 @@ test('reads a masked JWK after a long pad, copied after a stray quote and closed
     assert.ok(scanWork.characters <= 38 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
   }
 });
+test('fails closed on a masked JWK after a long pad, copied and closed at each level, 5 deep (#342, accepted)', () => {
+  // Owner decision (card 2026-11-06, #342): with the reads #342 adds, harmless masked JWKs nested 4 or more levels deep
+  // with pads in the thousands may fail closed with "scan budget spent" where main accepts, and the budget stays at
+  // 40n + 4096. This pins that case from the automated review on ff1a8a5 (234,073 against 225,416): it must fail closed,
+  // never pass silently, and its leaked form must be flagged too. Should it start to pass, the accepted region shrank.
+  const nest = (k, lb) => {
+    let text = JSON.stringify({ kty: 'oct', k, pad: 'x'.repeat(5000) });
+    for (let i = 0; i < 5; i++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}"`;
+    return text;
+  };
+  for (const lb of ['\n', '\r\n']) {
+    assert.deepEqual(findTextLeaks(nest(MASK, lb)).map(leak => leak.check), ['scan budget spent']);
+    assert.ok(findTextLeaks(nest('FAKE_JWK_K_342', lb)).length > 0);
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
