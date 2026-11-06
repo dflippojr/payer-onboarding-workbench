@@ -664,6 +664,26 @@ test('reads a JWK copied after a stray quote and a raw line break, nested 8 deep
     assert.ok(scanWork.characters <= 36 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
   }
 });
+test('reads a masked JWK with a long pad copied after a stray quote and a raw line break, nested 3 deep, within the scan budget (#342)', () => {
+  // Codex security round 1 at 0ab5aeb: with a long pad the repeated reads of the pad at each level spent the
+  // 40n + 4096 scan budget, and the masked form failed closed with "scan budget spent", an over-flag outside #341.
+  // At 0ab5aeb the shortest pad whose text failed at depth 3 was 1,172 characters with LF and 1,195 with CRLF (its
+  // report form, one level deeper, failed with shorter pads).
+  // Redactor keeps the masked form and masks k (RedactorTest.masksAJwkWithALongPadCopiedAfterAStrayQuoteNestedThreeDeep).
+  const jwk = (k, pad) => `{"kty":"oct","k":"${k}","pad":"${'x'.repeat(pad)}"}`;
+  for (const [lb, threshold] of [['\n', 1172], ['\r\n', 1195]]) {
+    const nest = text => {
+      for (let i = 0; i < 3; i++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}`;
+      return text;
+    };
+    for (const pad of [threshold - 1, threshold, 2000]) {
+      assertAccepted(nest(jwk(MASK, pad)));
+      const leaked = nest(jwk('FAKE_JWK_K_342', pad));
+      assertFlagged(leaked);
+      assert.ok(findTextLeaks(leaked).some(leak => leak.check === 'JSON secret field'), `k not judged: pad ${pad}`);
+    }
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
