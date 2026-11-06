@@ -1281,6 +1281,30 @@ class RedactorTest {
     }
 
     @Test
+    void readsPastALineBreakSpelledAsAUnicodeEscapeInAValueAndMasksACopyAfterAPairedStrayString() {
+        // #342 (automated review on 4175db6): the leak scanner's test of the same form relies on these outputs.
+        String u = "\\u0022";
+        String b = "\\\"";
+        java.util.function.BiFunction<String, String, String> jwk =
+                (q, k) -> "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + k + q + "}";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String q : List.of(u, b)) {
+                String masked = "he said \"" + lb + jwk.apply(q, "[REDACTED]");
+                for (String brk : List.of("\\u000a", "\\u000d", "\\u0085", "\\u2028", "\\u2029")) {
+                    for (String k : List.of("\\u005c" + brk + "TAIL", "[REDACTED]\\u005c" + brk + "TAIL", "[REDACTED]\\\\" + brk + "TAIL")) {
+                        assertEquals(masked, Redactor.redact("he said \"" + lb + jwk.apply(q, k)));
+                    }
+                }
+                String kept = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
+                assertEquals(kept, Redactor.redact(kept));
+            }
+            for (String before : List.of("\"" + lb + "\",\"body\":", "\"" + lb + "\",\"b\":1,\"body\":", "x\"" + lb + "\",\"body\":")) {
+                assertEquals(before + jwk.apply(b, "[REDACTED]"), Redactor.redact(before + jwk.apply(b, "FAKE_JWK_K_342")));
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

@@ -722,6 +722,31 @@ test('flags a copied value after a backslash and a raw Unicode line break, and r
     }
   }
 });
+test('reads past a line break spelled as a \\u escape in a value, and flags a copy after a stray string paired with the next quote (#342)', () => {
+  // Automated review on 4175db6, finding 1: Redactor ends a value at a backslash before a line break only where the text
+  // spells that line break as an \n or \r escape; spelled as a \u escape (\\u000a, \\\u0085) it reads on and masks
+  // the whole value, and the scanner cut the value there and accepted it. A \ before an \n escape Redactor ends at,
+  // so that mask stays accepted. Finding 2: after "<line break>","body": the loose decode paired the stray quote with the
+  // next one, so a copy whose quotes are all \" was in no string, and nothing decoded it; main misses it too
+  // (RedactorTest.readsPastALineBreakSpelledAsAUnicodeEscapeInAValueAndMasksACopyAfterAPairedStrayString).
+  const u = '\\u0022';
+  const b = '\\"';
+  const jwk = (q, k) => `{${q}kty${q}:${q}oct${q},${q}k${q}:${q}${k}${q}}`;
+  for (const lb of ['\n', '\r\n']) {
+    for (const q of [u, b]) {
+      for (const brk of ['\\u000a', '\\u000d', '\\u0085', '\\u2028', '\\u2029']) {
+        assertFlagged(`he said "${lb}${jwk(q, `\\u005c${brk}TAIL`)}`);
+        assertFlagged(`he said "${lb}${jwk(q, `${MASK}\\u005c${brk}TAIL`)}`);
+        assertFlagged(`he said "${lb}${jwk(q, `${MASK}\\\\${brk}TAIL`)}`);
+      }
+      assertAccepted(`he said "${lb}${jwk(q, `${MASK}\\u005c\\nTAIL`)}`);
+    }
+    for (const before of [`"${lb}","body":`, `"${lb}","b":1,"body":`, `x"${lb}","body":`]) {
+      assertFlagged(before + jwk(b, 'FAKE_JWK_K_342'));
+      assertAccepted(before + jwk(b, MASK));
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
