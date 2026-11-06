@@ -633,10 +633,11 @@ test('accepts a private member that opens no member in an escaped copy after a s
   const form = (mid, d) => `{"kty":"RSA","x":${mid}"d":"${d}"}`;
   for (const lb of ['\n', '\r\n']) {
     for (const encode of encodings) {
-      for (const mid of ['0 ', '"a" ', '{"y":1} ', '[1] ']) {
+      // Automated review on 223512b: nor after a value that leaves an odd number of quotes before the name.
+      for (const mid of ['0 ', '"a" ', '{"y":1} ', '[1] ', '""a":0,', '"b"c",']) {
         assertAccepted(`he said "${lb}${encode(form(mid, 'dimension'))}`);
       }
-      for (const mid of ['0,', '0, y ', '[1],']) {
+      for (const mid of ['0,', '0, y ', '[1],', '"b"c"",']) {
         assertFlagged(`he said "${lb}${encode(form(mid, 'FAKE_PRIVATE_KEY_342'))}`);
         assertAccepted(`he said "${lb}${encode(form(mid, MASK))}`);
       }

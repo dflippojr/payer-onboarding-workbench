@@ -1176,18 +1176,18 @@ class RedactorTest {
 
     @Test
     void keepsAPrivateMemberThatOpensNoMemberInAnEscapedCopyAfterAStrayQuote() {
-        // #342 (automated review on fa4fd1d): the leak scanner's test of the same form uses these outputs.
+        // #342 (automated reviews on fa4fd1d and 223512b): the leak scanner's test of the same form uses these outputs.
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"),
                 text -> text.replace("\"", "\\\\u0022"),
                 text -> escapedForJson(escapedForJson(text)));
         for (String lb : List.of("\n", "\r\n")) {
             for (var encode : encodings) {
-                for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ")) {
+                for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ", "\"\"a\":0,", "\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"dimension\"}");
                     assertEquals(text, Redactor.redact(text));
                 }
-                for (String mid : List.of("0,", "0, y ", "[1],")) {
+                for (String mid : List.of("0,", "0, y ", "[1],", "\"b\"c\"\",")) {
                     String form = "{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"%s\"}";
                     assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
                             Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
