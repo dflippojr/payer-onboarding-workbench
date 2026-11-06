@@ -666,6 +666,26 @@ test('reads JWKs in an escaped copy after a stray quote and a raw line break as 
     }
   }
 });
+test('reads a private member value through its line breaks, and only ASCII whitespace around a colon, as Redactor does (#342)', () => {
+  // Automated review on 7050fef: jwkLeaks stopped a value at a line break, so a k that starts with one read as empty
+  // and passed, though Redactor reads it to its closing quote and masks it. And JavaScript's \\s took a no-break space
+  // around a colon, which Java's does not, so Redactor keeps such a k and the scanner flagged it
+  // (RedactorTest.readsAPrivateMemberValueThroughItsLineBreaksAndOnlyAsciiWhitespaceAroundAColon).
+  const encodings = [text => text.replaceAll('"', '\\u0022'), text => text.replaceAll('"', '\\\\u0022')];
+  for (const lb of ['\n', '\r\n']) {
+    for (const encode of encodings) {
+      for (const value of ['\\nTAIL', '\\r\\nTAIL', '\\n']) {
+        assertFlagged(`he said "${lb}${encode(`{"kty":"oct","k":"${value}"}`)}`);
+      }
+      assertAccepted(`he said "${lb}${encode('{"kty":"oct","k":"[REDACTED]"}')}`);
+      for (const space of ['\u00a0', '\u2003', '\u3000']) {
+        for (const form of [`{"kty"${space}:"oct","k":"dimension"}`, `{"kty":"oct","k"${space}:"dimension"}`, `{"kty":"oct","k":${space}"dimension"}`]) {
+          assertAccepted(`he said "${lb}${encode(form)}`);
+        }
+      }
+    }
+  }
+});
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
   // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
   // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.

@@ -1217,6 +1217,28 @@ class RedactorTest {
     }
 
     @Test
+    void readsAPrivateMemberValueThroughItsLineBreaksAndOnlyAsciiWhitespaceAroundAColon() {
+        // #342 (automated review on 7050fef): the leak scanner's test of the same form uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"), text -> text.replace("\"", "\\\\u0022"));
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String value : List.of("\\nTAIL", "\\r\\nTAIL", "\\n")) {
+                    String text = "he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"" + value + "\"}");
+                    assertEquals("he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}"), Redactor.redact(text));
+                }
+                for (String space : List.of("\u00a0", "\u2003", "\u3000")) {
+                    for (String form : List.of("{\"kty\"" + space + ":\"oct\",\"k\":\"dimension\"}",
+                            "{\"kty\":\"oct\",\"k\"" + space + ":\"dimension\"}", "{\"kty\":\"oct\",\"k\":" + space + "\"dimension\"}")) {
+                        String text = "he said \"" + lb + encode.apply(form);
+                        assertEquals(text, Redactor.redact(text));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
