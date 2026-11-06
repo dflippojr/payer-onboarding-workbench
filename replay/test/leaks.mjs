@@ -508,9 +508,19 @@ const unreadSpans = (leftOut, read) => {
 };
 
 /**
+ * How a view was reached, each finding no more than the one before it. MAIN: a view main reads, read as main reads it.
+ * UNREAD: a view only readUnread reaches (#342), or one below such a view: only the first string after an object's open
+ * bracket or a comma in it can name its kty member, as Redactor reads member names (automated reviews on 0ab5aeb and
+ * 380cf7c). WHOLE: a string's whole content readUnread reads, where kty also needs an even number of quotes before it.
+ */
+const MAIN = 0;
+const UNREAD = 1;
+const WHOLE = 2;
+
+/**
  * Reads the spans of `text` that decodeString left out and scanJson did not decode (`unread`), each as the content of
  * one more string, one level down: decoded whole if JSON reads it as one, else its unicode escapes. A string's whole
- * content (`whole`) is read as such (scanJson).
+ * content is read as such (WHOLE); every other span, as a view main does not read (UNREAD).
  */
 function readUnread(text, unread, level, ctx, toRoot) {
   for (const [from, to, whole = false, content] of unread) {
@@ -522,7 +532,7 @@ function readUnread(text, unread, level, ctx, toRoot) {
       // decodeString decoded a string's whole content already.
       decoded = content;
       at = sourceOffsets(span, ctx, decoded.length);
-      if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), true);
+      if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), WHOLE);
       continue;
     }
     ctx.work += span.length;
@@ -545,7 +555,7 @@ function readUnread(text, unread, level, ctx, toRoot) {
       decoded = parts.join('');
       at = j => (j < offsets.length ? offsets[j] : span.length);
     }
-    if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), whole);
+    if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), UNREAD);
   }
 }
 
@@ -667,22 +677,25 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
  * the scanned text up to it again for each view (Codex security round 1 at 0ab5aeb). A string with no quote and no
  * escape holds nothing to read, so it is neither compared nor kept.
  */
-function readNested(decoded, level, ctx, toRoot, whole = false) {
+function readNested(decoded, level, ctx, toRoot, mode = MAIN) {
   const quoted = decoded.includes('"');
   if (!quoted && !decoded.includes('\\')) return;
   const span = `${level}:${toRoot(0)}:${decoded.length}`;
   const views = ctx.read.get(span) ?? [];
   ctx.work += views.length * decoded.length;
-  // A view read whole finds no more than the same view read otherwise (scanJson), so either covers a whole read.
-  if (views.some(view => view.decoded === decoded && (whole || !view.whole))) return;
-  views.push({ decoded, whole });
+  // A view read in a mode finds no more than the same view read in a mode before it (MAIN, UNREAD, WHOLE), so such a
+  // read covers it.
+  if (views.some(view => view.decoded === decoded && view.mode <= mode)) return;
+  views.push({ decoded, mode });
   ctx.read.set(span, views);
   // scanJson reads the string first, so decodeString knows which strings it decoded.
   if (quoted && level >= MAX_LEVELS) {
     failClosed(ctx, 'JSON nested past 17 levels', decoded);
     return;
   }
-  const read = quoted ? scanJson(decoded, level, ctx, toRoot, whole) : [];
+  const read = quoted ? scanJson(decoded, level, ctx, toRoot, mode) : [];
+  // What a view main does not read holds is not read by main either.
+  const below = mode === MAIN ? MAIN : UNREAD;
   if (!decoded.includes('\\')) return;
   const { decoded: unescaped, at: inDecoded, unread } = decodeString(decoded, ctx, read);
   if (unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'))) {
@@ -690,7 +703,7 @@ function readNested(decoded, level, ctx, toRoot, whole = false) {
       failClosed(ctx, 'JSON nested past 17 levels', decoded);
       return;
     }
-    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)));
+    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below);
   }
   // Only a string with a quote has strings to leave unread, and one at the level cap has failed closed above.
   readUnread(decoded, unread, level + 1, ctx, toRoot);
@@ -704,7 +717,7 @@ function readNested(decoded, level, ctx, toRoot, whole = false) {
  * something no string is) is read again from the character after it, so it cannot shift which quotes open
  * strings for the rest of the text.
  */
-function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
+function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   ctx.kty[level] ??= [];
   for (const m of text.matchAll(KTY_SPELLING)) ctx.kty[level].push(toRoot(m.index));
   ctx.work += text.length;
@@ -732,9 +745,9 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
   };
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
   const stack = [];
-  // Whether the next literal is the first since an object's open bracket or a comma in it: in a string's whole content,
-  // only that one can be a kty member's name, as Redactor reads member names ({"x":0 "kty":...} has no kty member,
-  // automated review on 0ab5aeb). Any other text may come between, as in Redactor.
+  // Whether the next literal is the first since an object's open bracket or a comma in it: in a view main does not read
+  // (UNREAD, WHOLE), only that one can be a kty member's name, as Redactor reads member names ({"x":0 "kty":...} has no
+  // kty member, automated reviews on 0ab5aeb and 380cf7c). Any other text may come between, as in Redactor.
   let nameNext = false;
   // The member whose name and colon were just read, waiting for its value.
   let member = null;
@@ -749,7 +762,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
     }
     read.push([literal.start, literal.terminated ? literal.end + 1 : literal.end]);
     const inBody = sourceOffsets(literal.body, ctx, literal.terminated ? decoded.length : Infinity);
-    readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)));
+    readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)), mode === MAIN ? MAIN : UNREAD);
   };
   let i = 0;
   // Quotes before this index were read as escaped ones inside a string a stray quote opened: a string opened at
@@ -793,7 +806,9 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
         // it whole ({"client_secret":["x":"..."]}).
         if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
-        if (name === 'kty' && o.object && (!whole || (first && evenQuotes(o.start + 1, literal.start)))) o.kty = true;
+        if (name === 'kty' && o.object && (mode === MAIN || (first && (mode === UNREAD || evenQuotes(o.start + 1, literal.start))))) {
+          o.kty = true;
+        }
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);

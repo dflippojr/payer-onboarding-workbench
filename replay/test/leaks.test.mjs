@@ -581,6 +581,8 @@ test('accepts a kty that opens no member in an escaped copy after a stray quote 
     text => text.replaceAll('"', '\\u0022'),
     text => text.replaceAll('"', '\\\\u0022'),
     text => JSON.stringify(JSON.stringify(text).slice(1, -1)).slice(1, -1),
+    // The JWK as a string value in the copy: a literal read in such a view is no view main reads either.
+    text => `{\\u0022body\\u0022:\\u0022${text.replaceAll('"', '\\\\u0022')}\\u0022}`,
   ];
   const form = (mid, d) => `{"x":${mid}"kty":"RSA","d":"${d}"}`;
   for (const lb of ['\n', '\r\n']) {

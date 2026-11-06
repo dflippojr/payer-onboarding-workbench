@@ -1135,7 +1135,8 @@ class RedactorTest {
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"),
                 text -> text.replace("\"", "\\\\u0022"),
-                text -> escapedForJson(escapedForJson(text)));
+                text -> escapedForJson(escapedForJson(text)),
+                text -> "{\\u0022body\\u0022:\\u0022" + text.replace("\"", "\\\\u0022") + "\\u0022}");
         for (String lb : List.of("\n", "\r\n")) {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ")) {
