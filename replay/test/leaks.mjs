@@ -646,9 +646,10 @@ function judge(owner, ctx) {
         : value.kind === 'scalar' && value.value === 'null';
       const check = value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field';
       if (masked) continue;
-      // In a view main does not read, only the first string after its object's open bracket or a comma names a member of
-      // that JWK, as Redactor reads its members ({"kty":"RSA","x":0 "d":...}, automated review on fa4fd1d). Any other
-      // is judged as a private member in no JWK: flagged if Redactor's search may spend its budget.
+      // In a view main does not read, only the first string after its object's open bracket or a comma, with an even
+      // number of quotes before it from that bracket, names a member of that JWK, as Redactor reads its members
+      // ({"kty":"RSA","x":0 "d":...} and {"kty":"RSA","x":""a":0,"d":...}, automated reviews on fa4fd1d and 223512b).
+      // Any other is judged as a private member in no JWK: flagged if Redactor's search may spend its budget.
       if (owner.kty && value.named) failClosed(ctx, check, value.text);
       else ctx.unowned.push({ check, text: value.text });
     }
@@ -836,7 +837,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         if (name === 'kty' && o.object && (mode === MAIN || (first && evenQuotes(o.start + 1, literal.start)))) {
           o.kty = true;
         }
-        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', named: mode === MAIN || first };
+        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', named: mode === MAIN || (first && evenQuotes(o.start + 1, literal.start)) };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
         i = next + 1;
