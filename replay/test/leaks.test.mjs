@@ -644,6 +644,28 @@ test('accepts a private member that opens no member in an escaped copy after a s
     }
   }
 });
+test('reads JWKs in an escaped copy after a stray quote and a raw line break as Redactor finds them (#342)', () => {
+  // Automated review on 65e1e7f, finding 1: reading back from kty, Redactor takes the open bracket inside "{" as the
+  // object's, so the members after kty are a JWK's and d is masked; the scanner's quote-count check missed it. Finding 2:
+  // after "d"::, Redactor masks nothing, but the scanner judged the second colon as d's value. In views main does not
+  // read, jwkLeaks now finds JWKs and their members as Redactor's search does
+  // (RedactorTest.readsJwksInAnEscapedCopyAfterAStrayQuoteAsItsSearchFindsThem).
+  const encodings = [
+    text => text.replaceAll('"', '\\u0022'),
+    text => text.replaceAll('"', '\\\\u0022'),
+    text => JSON.stringify(JSON.stringify(text).slice(1, -1)).slice(1, -1),
+  ];
+  for (const lb of ['\n', '\r\n']) {
+    for (const encode of encodings) {
+      for (const before of ['"{":""a":0,', '"[":""a":0,"b":{', '"a":"{",']) {
+        const form = d => `he said "${lb}${encode(`{${before}"kty":"RSA","d":"${d}"}`)}`;
+        assertFlagged(form('FAKE_PRIVATE_KEY_342'));
+        assertAccepted(form(MASK));
+      }
+      assertAccepted(`he said "${lb}${encode('{"kty":"RSA","d"::"dimension"}')}`);
+    }
+  }
+});
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
   // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
   // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.
