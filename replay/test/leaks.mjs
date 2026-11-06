@@ -52,20 +52,25 @@ const ktyCount = text => {
 /**
  * Where each character JSON.parse decodes from the string content `body` starts in `body`: a \\u escape takes 6
  * characters, any other escape 2, any other character 1. Returns a function from an index in the decoded string to
- * that offset (the end of `body` past its last character), building the map, charged to the scan's work, on first use.
+ * that offset (the end of `body` past its last character), building the map only as far as the indexes asked for,
+ * charged to the scan's work. Index 0 needs no map, nor, given the decoded string's `length`, an index past its end: a
+ * view's start and end are asked for once per view, and building the whole map for its end cost a pass over the view at
+ * every level of a long string read from several places (Codex security round 1 at 0ab5aeb).
  */
-const sourceOffsets = (body, ctx) => {
-  let offsets = null;
+const sourceOffsets = (body, ctx, length = Infinity) => {
+  const offsets = [];
+  let i = 0;
   return j => {
-    if (offsets === null) {
-      offsets = [];
-      for (let i = 0; i < body.length;) {
-        offsets.push(i);
-        if (body[i] === '\\') i += body[i + 1] === 'u' ? 6 : 2;
-        else i++;
-      }
-      ctx.work += body.length;
+    if (j === 0) return 0;
+    if (j >= length) return body.length;
+    // The map is built only as far as the characters asked for.
+    const from = i;
+    while (offsets.length <= j && i < body.length) {
+      offsets.push(i);
+      if (body[i] === '\\') i += body[i + 1] === 'u' ? 6 : 2;
+      else i++;
     }
+    ctx.work += i - from;
     return j < offsets.length ? offsets[j] : body.length;
   };
 };
@@ -372,6 +377,23 @@ const TEXT_CHECKS = [
 const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 /**
+ * Where the first quote no backslash escapes is in `text`, or -1: JSON.parse reads no string's content past it. Charges
+ * the characters read to the scan's work.
+ */
+const firstBareQuote = (text, ctx) => {
+  let backslashes = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"' && backslashes % 2 === 0) {
+      ctx.work += i + 1;
+      return i;
+    }
+    backslashes = text[i] === '\\' ? backslashes + 1 : 0;
+  }
+  ctx.work += text.length;
+  return -1;
+};
+
+/**
  * The text `body` holds read as a string's content, as JSON.parse reads it. When it is not one, as when quoted prose
  * follows text copied from inside a string twice over (Codex narrow check at 3c47acc), it is the unicode escapes
  * outside its quoted strings decoded, as Redactor's normalized view decodes them, so the names its JWK search reads
@@ -380,12 +402,18 @@ const escapeControls = body => body.replace(/[\u0000-\u001f]/g, c => `\\u${c.cha
  * is not a unicode one is kept. With no such escape to decode, `body` itself is returned: there is no other view.
  * Returns the decoded text, a function from an index in it to where that character starts in `body`, and `unread`:
  * the spans [from, to) of the strings it left out that no literal scanJson decoded in `body` (`read`) holds, which
- * nothing else decodes, and the content of each such string as a whole (readUnread).
+ * nothing else decodes, and the content of each such string as a whole, with that content decoded (readUnread). A
+ * quote no backslash escapes means JSON.parse cannot read `body`, so the scan reads only up to it to know.
  */
 const decodeString = (body, ctx, read = []) => {
-  try {
-    return { decoded: JSON.parse(`"${escapeControls(body)}"`), at: sourceOffsets(body, ctx), unread: [] };
-  } catch { /* not the content of a string: its unicode escapes outside strings are decoded below */ }
+  const quote = firstBareQuote(body, ctx);
+  if (quote < 0) {
+    ctx.work += body.length;
+    try {
+      const decoded = JSON.parse(`"${escapeControls(body)}"`);
+      return { decoded, at: sourceOffsets(body, ctx, decoded.length), unread: [] };
+    } catch { /* not the content of a string: its unicode escapes outside strings are decoded below */ }
+  }
   ctx.work += body.length;
   const parts = [];
   const offsets = [];
@@ -427,9 +455,9 @@ const decodeString = (body, ctx, read = []) => {
     const content = body.slice(i + 1, Math.min(end, body.length));
     ctx.work += content.length;
     try {
-      JSON.parse(`"${escapeControls(content)}"`);
+      const decodedContent = JSON.parse(`"${escapeControls(content)}"`);
       // scanJson decodes a string JSON reads, where it is: unless it read the string otherwise (unread).
-      leftOut.push([i, Math.min(end + 1, body.length), Math.min(end, body.length)]);
+      leftOut.push([i, Math.min(end + 1, body.length), Math.min(end, body.length), decodedContent]);
     } catch {
       // A string JSON cannot read (a stray quote before an escape JSON has not) is decoded as the text around it is.
       decodeSpan(i + 1, Math.min(end, body.length));
@@ -438,8 +466,9 @@ const decodeString = (body, ctx, read = []) => {
     from = Math.min(i, body.length);
   }
   decodeSpan(from, body.length);
-  const unread = unreadSpans(leftOut, read, body.length, ctx);
-  if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx), unread };
+  ctx.work += read.length + leftOut.length;
+  const unread = unreadSpans(leftOut, read);
+  if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread };
   return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread };
 };
 
@@ -449,28 +478,32 @@ const decodeString = (body, ctx, read = []) => {
  * ends a string that is no member's value at a raw line break, and reads the text after it as bare text, which it does
  * not decode (#342). Such a string's content is returned whole too: scanJson may have read part of it as a literal of
  * its own (from a copied \" on), so neither the literal nor the parts around it hold an object that spans both, as a
- * JWK whose kty is quoted with \u0022 and whose k with \" (automated review on 925a782).
+ * JWK whose kty is quoted with \u0022 and whose k with \" (automated review on 925a782). A whole content carries the
+ * decoded text decodeString parsed it to, so it is not parsed twice. The spans read are merged in order rather than
+ * marked character by character, so the work is in the number of spans, not the length of the text.
  */
-const unreadSpans = (leftOut, read, n, ctx) => {
+const unreadSpans = (leftOut, read) => {
   if (leftOut.length === 0) return [];
-  const inRead = new Uint8Array(n);
-  for (const [from, to] of read) inRead.fill(1, from, to);
-  const spans = [];
-  for (const [from, to, contentEnd] of leftOut) {
-    const parts = spans.length;
-    for (let i = from; i < to;) {
-      if (inRead[i]) {
-        i++;
-        continue;
-      }
-      let end = i;
-      while (end < to && !inRead[end]) end++;
-      spans.push([i, end]);
-      i = end;
-    }
-    if (spans.length > parts) spans.push([from + 1, contentEnd, true]);
+  // The spans read, merged in order. leftOut is in order and its strings do not overlap.
+  const merged = [];
+  for (const [from, to] of [...read].sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1];
+    if (last && from <= last[1]) last[1] = Math.max(last[1], to);
+    else if (from < to) merged.push([from, to]);
   }
-  ctx.work += n;
+  const spans = [];
+  let r = 0;
+  for (const [from, to, contentEnd, content] of leftOut) {
+    const parts = spans.length;
+    while (r < merged.length && merged[r][1] <= from) r++;
+    let i = from;
+    for (let k = r; k < merged.length && merged[k][0] < to; k++) {
+      if (merged[k][0] > i) spans.push([i, merged[k][0]]);
+      i = Math.max(i, merged[k][1]);
+    }
+    if (i < to) spans.push([i, to]);
+    if (spans.length > parts) spans.push([from + 1, contentEnd, true, content]);
+  }
   return spans;
 };
 
@@ -480,15 +513,22 @@ const unreadSpans = (leftOut, read, n, ctx) => {
  * content (`whole`) is read as such (scanJson).
  */
 function readUnread(text, unread, level, ctx, toRoot) {
-  for (const [from, to, whole = false] of unread) {
+  for (const [from, to, whole = false, content] of unread) {
     const span = text.slice(from, to);
     if (!span.includes('\\')) continue;
-    ctx.work += span.length;
     let decoded;
     let at;
+    if (whole) {
+      // decodeString decoded a string's whole content already.
+      decoded = content;
+      at = sourceOffsets(span, ctx, decoded.length);
+      if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), true);
+      continue;
+    }
+    ctx.work += span.length;
     try {
       decoded = JSON.parse(`"${escapeControls(span)}"`);
-      at = sourceOffsets(span, ctx);
+      at = sourceOffsets(span, ctx, decoded.length);
     } catch {
       const parts = [];
       const offsets = [];
@@ -520,6 +560,7 @@ function readUnread(text, unread, level, ctx, toRoot) {
 function readLiteral(text, start, ctx, value = false) {
   let i = start + 1;
   let terminated = false;
+  let escaped = false;
   while (i < text.length) {
     const c = text[i];
     if (c === '"') {
@@ -528,9 +569,10 @@ function readLiteral(text, start, ctx, value = false) {
     }
     if ((c === '\n' || c === '\r') && !value) {
       ctx.work += i - start;
-      return { aborted: true, start, end: i, terminated: false, body: text.slice(start + 1, i) };
+      return { aborted: true, start, end: i, terminated: false, escaped, body: text.slice(start + 1, i) };
     }
     if (c === '\\') {
+      escaped = true;
       // A backslash before a line break: a value cut there, before a note appended to the cut body.
       if (!value && (text[i + 1] === '\n' || text[i + 1] === '\r')) {
         i++;
@@ -543,7 +585,7 @@ function readLiteral(text, start, ctx, value = false) {
   }
   const end = Math.min(i, text.length);
   ctx.work += end - start + 1;
-  return { start, end, terminated, body: text.slice(start + 1, end) };
+  return { start, end, terminated, escaped, body: text.slice(start + 1, end) };
 }
 
 /**
@@ -552,6 +594,8 @@ function readLiteral(text, start, ctx, value = false) {
  */
 function decodeLiteral(literal, ctx) {
   let body = literal.body;
+  // With no backslash (readLiteral saw none) and no quote, JSON.parse would return the content as it is.
+  if (!literal.escaped) return body;
   if (!literal.terminated) {
     let backslashes = 0;
     while (backslashes < body.length && body[body.length - 1 - backslashes] === '\\') backslashes++;
@@ -615,19 +659,24 @@ const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
  * loosely when prose quotes around it make it no string's content), as Redactor
  * reads JSON escaped twice over; a chain of such escapes (u005c after u005c) therefore reaches the level cap.
  * Past the cap, a string with anything left to read is a leak (Redactor masks it whole). A view read before (the same
- * text at the same level, from the same span of the scanned text) is not read again: readUnread reads a string whole
+ * text at the same level, from the same place in the scanned text) is not read again: readUnread reads a string whole
  * and scanJson reads the literal inside it, and a level down both may decode to the same view, so without this the
- * views would double at each level of such strings (#342).
+ * views would double at each level of such strings (#342). The views are told apart by level, where they start in the
+ * scanned text and their length, then compared: views of the same text from the same place hold the same names, and
+ * a name read twice at one level counts once (mayExhaustJwkSearch). Where a view ends is not mapped back, as that read
+ * the scanned text up to it again for each view (Codex security round 1 at 0ab5aeb). A string with no quote and no
+ * escape holds nothing to read, so it is neither compared nor kept.
  */
 function readNested(decoded, level, ctx, toRoot, whole = false) {
-  const span = `${level}:${toRoot(0)}:${toRoot(decoded.length)}`;
+  const quoted = decoded.includes('"');
+  if (!quoted && !decoded.includes('\\')) return;
+  const span = `${level}:${toRoot(0)}:${decoded.length}`;
   const views = ctx.read.get(span) ?? [];
   ctx.work += views.length * decoded.length;
   // A view read whole finds no more than the same view read otherwise (scanJson), so either covers a whole read.
   if (views.some(view => view.decoded === decoded && (whole || !view.whole))) return;
   views.push({ decoded, whole });
   ctx.read.set(span, views);
-  const quoted = decoded.includes('"');
   // scanJson reads the string first, so decodeString knows which strings it decoded.
   if (quoted && level >= MAX_LEVELS) {
     failClosed(ctx, 'JSON nested past 17 levels', decoded);
@@ -635,7 +684,6 @@ function readNested(decoded, level, ctx, toRoot, whole = false) {
   }
   const read = quoted ? scanJson(decoded, level, ctx, toRoot, whole) : [];
   if (!decoded.includes('\\')) return;
-  ctx.work += decoded.length;
   const { decoded: unescaped, at: inDecoded, unread } = decodeString(decoded, ctx, read);
   if (unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'))) {
     if (level >= MAX_LEVELS) {
@@ -696,7 +744,7 @@ function scanJson(text, level, ctx, toRoot = j => j, whole = false) {
       return;
     }
     read.push([literal.start, literal.terminated ? literal.end + 1 : literal.end]);
-    const inBody = sourceOffsets(literal.body, ctx);
+    const inBody = sourceOffsets(literal.body, ctx, literal.terminated ? decoded.length : Infinity);
     readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)));
   };
   let i = 0;
@@ -829,7 +877,6 @@ function textLeaks(text, level) {
   // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too, loosely
   // when quoted prose around it makes it no string's content (decodeString).
   if (text.includes('\\')) {
-    ctx.work += text.length;
     const { decoded, at, unread } = decodeString(text, ctx, read);
     if (decoded !== text) readNested(decoded, level + 1, ctx, at);
     readUnread(text, unread, level + 1, ctx, j => j);

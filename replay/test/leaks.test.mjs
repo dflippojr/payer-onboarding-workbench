@@ -682,6 +682,11 @@ test('reads a masked JWK with a long pad copied after a stray quote and a raw li
       assertFlagged(leaked);
       assert.ok(findTextLeaks(leaked).some(leak => leak.check === 'JSON secret field'), `k not judged: pad ${pad}`);
     }
+    // Each view of the pad is read a bounded number of times: 52n at 0ab5aeb, 36n on main.
+    const masked = nest(jwk(MASK, 2000));
+    scanWork.characters = 0;
+    findTextLeaks(masked);
+    assert.ok(scanWork.characters <= 35 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
   }
 });
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
