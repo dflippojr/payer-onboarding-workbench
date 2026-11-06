@@ -468,6 +468,22 @@ const decodeString = (body, ctx, read = []) => {
   decodeSpan(from, body.length);
   ctx.work += read.length + leftOut.length;
   const unread = unreadSpans(leftOut, read);
+  // After a string scanJson opened at a quote no backslash escapes and cut off at a raw line break, the text from that
+  // line break to the next such quote, where no string left out holds it: there the quotes paired as decodeString pairs
+  // them may leave a copy after the line break in no string at all, as after two stray quotes and line breaks, and
+  // nothing else decodes it (automated review on 5173e8e). Each such span ends at a quote, so they do not overlap.
+  for (const [from, to] of read) {
+    if ((body[to] !== '\n' && body[to] !== '\r') || body[from] !== '"' || backslashesBefore(body, from) % 2 === 1) continue;
+    let start = to;
+    while (body[start] === '\n' || body[start] === '\r') start++;
+    if (leftOut.some(([f, t]) => start > f && start < t)) continue;
+    let end = start;
+    for (let backslashes = 0; end < body.length && !(body[end] === '"' && backslashes % 2 === 0); end++) {
+      backslashes = body[end] === '\\' ? backslashes + 1 : 0;
+    }
+    ctx.work += end - start;
+    if (body.slice(start, end).includes('\\')) unread.push([start, end]);
+  }
   if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread };
   return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread };
 };
@@ -739,11 +755,11 @@ const backslashesBefore = (text, i) => {
 /**
  * The private member fields in `text` whose value Redactor would have masked and did not: from a name's opening quote
  * (one no backslash escapes), the name and colon, then an object or array, a number, true or false, or a string that is
- * neither the mask nor empty: to its closing quote through any line break, or to the end of the text where it was cut
- * (with any half escape there dropped), as Redactor reads a field (automated review on 7050fef: a value that starts with
+ * neither the mask nor empty: to its closing quote through any line break, or to the end of the text or a backslash
+ * before a line break no raw line break in the scanned text spells, where it was cut, as Redactor reads a field (automated review on 7050fef: a value that starts with
  * a line break read as empty). Each comes as [where its name starts, text to report, check].
  */
-function unmaskedPrivateFields(text, ctx) {
+function unmaskedPrivateFields(text, ctx, toRoot) {
   const fields = [];
   ctx.work += text.length;
   for (let at = text.indexOf('"'); at >= 0; at = text.indexOf('"', at + 1)) {
@@ -754,10 +770,21 @@ function unmaskedPrivateFields(text, ctx) {
     if (text[v] === '{' || text[v] === '[') {
       fields.push([at, text.slice(at, v + 40), 'JSON secret structure']);
     } else if (text[v] === '"') {
+      // Redactor's escape takes any character but a line break, so a backslash before one, or at the end, ends the value
+      // (automated review on 5173e8e). A line break that is a raw one in the scanned text was one Redactor read past an
+      // escaped backslash, not an escape it ended at: then the value goes on, so this fails safe.
       let end = v + 1;
-      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
-      let content = text.slice(v + 1, Math.min(end, text.length));
-      if (text[end] !== '"' && content.endsWith('\\')) content = content.slice(0, -1);
+      while (end < text.length && text[end] !== '"') {
+        if (text[end] !== '\\') {
+          end++;
+        } else if (end + 1 >= text.length
+            || ('\n\r\u0085\u2028\u2029'.includes(text[end + 1]) && !'\n\r'.includes(ctx.text[toRoot(end + 1)]))) {
+          break;
+        } else {
+          end += 2;
+        }
+      }
+      const content = text.slice(v + 1, Math.min(end, text.length));
       let value;
       try {
         value = JSON.parse(`"${escapeControls(content)}"`);
@@ -788,8 +815,8 @@ const OUT_OF_TIME = -3;
  * bracket or after a comma in it. An object one of whose names is kty is a JWK, and all its names are its members. It
  * runs only when the view has an unmasked private member field, so it costs a pass over the view otherwise.
  */
-function jwkLeaks(text, ctx) {
-  const fields = unmaskedPrivateFields(text, ctx);
+function jwkLeaks(text, ctx, toRoot) {
+  const fields = unmaskedPrivateFields(text, ctx, toRoot);
   if (fields.length === 0) return;
   let budget = 4 * text.length + 1024;
   const spentAt = budget;
@@ -1052,7 +1079,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   }
   while (stack.length > 0) judge(stack.pop().owner, ctx);
   judge(top, ctx);
-  if (mode !== MAIN) jwkLeaks(text, ctx);
+  if (mode !== MAIN) jwkLeaks(text, ctx, toRoot);
   ctx.kty[level] ??= [];
   for (const m of text.matchAll(KTY_SPELLING)) {
     if (m.index >= stopAt) break;
@@ -1069,7 +1096,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
 function textLeaks(text, level) {
   // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
   // read: the views readNested has read, by level and span in the text.
-  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map() };
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {
