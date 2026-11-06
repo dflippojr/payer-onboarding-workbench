@@ -686,7 +686,8 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN) {
   // A view read in a mode finds no more than the same view read in a mode before it (MAIN, UNREAD, WHOLE), so such a
   // read covers it.
   if (views.some(view => view.decoded === decoded && view.mode <= mode)) return;
-  views.push({ decoded, mode });
+  const view = { decoded, mode, read: null };
+  views.push(view);
   ctx.read.set(span, views);
   // scanJson reads the string first, so decodeString knows which strings it decoded.
   if (quoted && level >= MAX_LEVELS) {
@@ -694,6 +695,7 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN) {
     return;
   }
   const read = quoted ? scanJson(decoded, level, ctx, toRoot, mode) : [];
+  view.read = read;
   // What a view main does not read holds is not read by main either.
   const below = mode === MAIN ? MAIN : UNREAD;
   if (!decoded.includes('\\')) return;
@@ -718,9 +720,8 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN) {
  * strings for the rest of the text.
  */
 function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
-  ctx.kty[level] ??= [];
-  for (const m of text.matchAll(KTY_SPELLING)) ctx.kty[level].push(toRoot(m.index));
-  ctx.work += text.length;
+  // Where the scan stops: the end of the text, or where the rest of it is a view already scanned (coveredFrom).
+  let stopAt = text.length;
   // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
   // Redactor, unless its JWK search may spend its budget (textLeaks).
   const newOwner = (object, start = -1) => ({ object, start, kty: false, values: [] });
@@ -754,6 +755,20 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   const owner = () => (stack.length > 0 ? stack[stack.length - 1].owner : top);
   // The literals decoded here, each [start, end) with its quotes (decodeString's `read`).
   const read = [];
+  // In a view main does not read, the literals of the rest of the text from `at` on, if that rest is a view already
+  // scanned at this level from the same place, in a mode that finds as much (MAIN, or this view's mode), else null.
+  // Scanning resumes there as that view's scan began: no open object or array, no member waiting for its value, no
+  // quote held back, and no name expected, so the rest would read the same literals and find no more. Its kty names
+  // start at the same places, already counted. A string read whole after a stray quote and a raw line break is mostly
+  // such a view (Codex security round 1 and the automated review on feb555e: a long pad spent the budget).
+  const coveredFrom = at => {
+    const views = ctx.read.get(`${level}:${toRoot(at)}:${text.length - at}`);
+    if (!views) return null;
+    ctx.work += text.length - at;
+    const rest = text.slice(at);
+    const view = views.find(v => v.read !== null && v.mode <= mode && v.decoded === rest);
+    return view ? view.read : null;
+  };
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
@@ -788,6 +803,12 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         // Every quote before the line break would open a string that runs into it too.
         member = null;
         i = literal.end;
+        const covered = mode !== MAIN && stack.length === 0 && i >= quotesFrom ? coveredFrom(i) : null;
+        if (covered) {
+          for (const [from, to] of covered) read.push([from + i, to + i]);
+          stopAt = i;
+          break;
+        }
         continue;
       }
       const decoded = decodeLiteral(literal, ctx);
@@ -874,6 +895,12 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   }
   while (stack.length > 0) judge(stack.pop().owner, ctx);
   judge(top, ctx);
+  ctx.kty[level] ??= [];
+  for (const m of text.matchAll(KTY_SPELLING)) {
+    if (m.index >= stopAt) break;
+    ctx.kty[level].push({ toRoot, index: m.index });
+  }
+  ctx.work += stopAt;
   return read;
 }
 
@@ -905,7 +932,11 @@ function textLeaks(text, level) {
     if (decoded !== text) readNested(decoded, level + 1, ctx, at);
     readUnread(text, unread, level + 1, ctx, j => j);
   }
-  if (ctx.kty.some(positions => mayExhaustJwkSearch(text.length, positions))) {
+  // Where each kty name starts in the text is mapped back only at a level with two or more of them: with fewer,
+  // mayExhaustJwkSearch is false whatever the positions. Mapping a name after a long value walked that value again at
+  // every level it was read at (automated review on feb555e).
+  const positions = names => (names.length < 2 ? [] : names.map(name => name.toRoot(name.index)));
+  if (ctx.kty.some(names => mayExhaustJwkSearch(text.length, positions(names)))) {
     for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
   }
   scanWork.characters += ctx.work;
