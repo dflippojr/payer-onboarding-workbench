@@ -73,6 +73,8 @@ final class AuditJournal implements AuditSink, AutoCloseable {
     static final long MAX_SEGMENT_BYTES = 1L << 30;
     /** Longest line {@link #seal} parses; a longer one is kept and hashed but not counted as an event. */
     private static final int MAX_LINE_BYTES = 16 * 1024 * 1024;
+    /** How many times a segment closed after a failed write is sealed before it is listed without a checksum. */
+    static final int SEAL_ATTEMPTS = 2;
     /** Largest manifest read at start; a bigger one is unreadable, never loaded whole. */
     static final int MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 
@@ -83,6 +85,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         }
     }
 
+    /** {@code sha256} is null for a segment that could not be sealed. */
     private record Segment(String id, long bytes, long events, String firstAt, String lastAt, String sha256) { }
 
     private final Path dir;
@@ -348,7 +351,7 @@ final class AuditJournal implements AuditSink, AutoCloseable {
                 for (JsonNode s : root.path("segments")) {
                     Segment segment = new Segment(s.path("id").asText(), s.path("bytes").asLong(),
                             s.path("events").asLong(), s.path("firstAt").asText(null),
-                            s.path("lastAt").asText(null), s.path("sha256").asText());
+                            s.path("lastAt").asText(null), digest(s.path("sha256")));
                     if (!SEGMENT_FILE.matcher(segment.id() + ".jsonl").matches()) {
                         throw new IOException();
                     }
@@ -381,6 +384,11 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         if (sealed || !Files.exists(manifest)) {
             writeManifest();
         }
+    }
+
+    /** A listed checksum; a JSON null (a segment that could not be sealed) stays absent, not the text "null". */
+    private static String digest(JsonNode sha256) {
+        return sha256.isNull() ? null : sha256.asText();
     }
 
     /** Reads a small file whole; one over {@code max} bytes is refused after reading at most one byte more. */
@@ -453,11 +461,19 @@ final class AuditJournal implements AuditSink, AutoCloseable {
         activeBytes = 0;
     }
 
+    /**
+     * Tries {@link #SEAL_ATTEMPTS} times. A segment that still cannot be sealed is listed with no checksum, written
+     * as a JSON null; journals from before #323 hold the string {@code "unsealed"} there, which is kept as read.
+     */
     private Segment sealQuietly(String id) {
-        try {
-            return seal(id);
-        } catch (IOException e) {
-            return new Segment(id, 0, 0, null, null, "unsealed");
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return seal(id);
+            } catch (IOException e) {
+                if (attempt >= SEAL_ATTEMPTS) {
+                    return new Segment(id, 0, 0, null, null, null);
+                }
+            }
         }
     }
 
