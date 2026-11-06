@@ -646,7 +646,10 @@ function judge(owner, ctx) {
         : value.kind === 'scalar' && value.value === 'null';
       const check = value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field';
       if (masked) continue;
-      if (owner.kty) failClosed(ctx, check, value.text);
+      // In a view main does not read, only the first string after its object's open bracket or a comma names a member of
+      // that JWK, as Redactor reads its members ({"kty":"RSA","x":0 "d":...}, automated review on fa4fd1d). Any other
+      // is judged as a private member in no JWK: flagged if Redactor's search may spend its budget.
+      if (owner.kty && value.named) failClosed(ctx, check, value.text);
       else ctx.unowned.push({ check, text: value.text });
     }
   }
@@ -822,7 +825,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         // A value with a colon after it is still the member's value (Redactor masks it and keeps the colon).
         if (member) {
           member.owner.values.push({
-            name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
+            name: member.name, malformed: member.malformed, named: member.named, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
           });
         }
         const name = decoded ?? literal.body;
@@ -833,7 +836,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         if (name === 'kty' && o.object && (mode === MAIN || (first && evenQuotes(o.start + 1, literal.start)))) {
           o.kty = true;
         }
-        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
+        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', named: mode === MAIN || first };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
         i = next + 1;
@@ -842,7 +845,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       const stray = literal.terminated && !endsValue(text[next]);
       if (member) {
         member.owner.values.push({
-          name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
+          name: member.name, malformed: member.malformed, named: member.named, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
           cutShort: literal.terminated && !endsValue(text[literal.end + 1]),
         });
         member = null;
@@ -864,7 +867,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       nameNext = c === '{';
       const container = { owner: newOwner(c === '{', i), list: null };
       if (member) {
-        const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
+        const value = { name: member.name, malformed: member.malformed, named: member.named, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
         member.owner.values.push(value);
         if (c === '[') container.list = value;
         member = null;
@@ -888,7 +891,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       // A scalar value runs to the next delimiter.
       let end = i;
       while (end < text.length && !endsScalar(text[end])) end++;
-      if (end > i) member.owner.values.push({ name: member.name, malformed: member.malformed, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
+      if (end > i) member.owner.values.push({ name: member.name, malformed: member.malformed, named: member.named, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
       member = null;
       ctx.work += end - i;
       i = Math.max(end, i + 1);
