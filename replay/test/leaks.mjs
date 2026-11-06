@@ -509,9 +509,11 @@ const unreadSpans = (leftOut, read) => {
 
 /**
  * How a view was reached, each finding no more than the one before it. MAIN: a view main reads, read as main reads it.
- * UNREAD: a view only readUnread reaches (#342), or one below such a view: only the first string after an object's open
- * bracket or a comma in it can name its kty member, as Redactor reads member names (automated reviews on 0ab5aeb and
- * 380cf7c). WHOLE: a string's whole content readUnread reads, where kty also needs an even number of quotes before it.
+ * UNREAD: a view only readUnread reaches (#342), or one below such a view: a kty name makes a JWK only as the first
+ * string after its object's open bracket or a comma in it, and with an even number of quotes between that bracket and
+ * the name, as Redactor reads member names and reads back from a name to its object (automated reviews on 0ab5aeb,
+ * 380cf7c and 9a3e247). WHOLE: a string's whole content readUnread reads, judged the same way; it differs only in which
+ * views it covers (readNested).
  */
 const MAIN = 0;
 const UNREAD = 1;
@@ -726,11 +728,12 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   // Redactor, unless its JWK search may spend its budget (textLeaks).
   const newOwner = (object, start = -1) => ({ object, start, kty: false, values: [] });
   const top = newOwner(false);
-  // In a string's whole content (readUnread), how many quotes no backslash escapes come before each index, built on
+  // In a view main does not read (UNREAD, WHOLE), how many quotes no backslash escapes come before each index, built on
   // first use: a kty name with an odd number of them between its object's open bracket and its own opening quote
-  // makes no JWK. Escapes of two levels decoded at once may pair quotes that way ({"body":""a":0,"kty":...}), and
-  // Redactor, reading back from the name, finds that open bracket inside a string (automated review on c4ffeef and
-  // 39dd7ff). Elsewhere a kty name in an object makes a JWK, as on main.
+  // makes no JWK. Escapes of two levels decoded at once, or malformed escaped text, may pair quotes that way
+  // ({"body":""a":0,"kty":...}), and Redactor, reading back from the name, finds that open bracket inside a string
+  // (automated reviews on c4ffeef, 39dd7ff and 9a3e247). In a view main reads, a kty name in an object makes a JWK, as on
+  // main.
   let quotes = null;
   const evenQuotes = (from, to) => {
     if (quotes === null) {
@@ -827,7 +830,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         // it whole ({"client_secret":["x":"..."]}).
         if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
-        if (name === 'kty' && o.object && (mode === MAIN || (first && (mode === UNREAD || evenQuotes(o.start + 1, literal.start))))) {
+        if (name === 'kty' && o.object && (mode === MAIN || (first && evenQuotes(o.start + 1, literal.start)))) {
           o.kty = true;
         }
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
