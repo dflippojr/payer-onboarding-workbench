@@ -539,35 +539,45 @@ const WHOLE = 2;
 const MALFORMED_UNICODE = /(?<!\\)((?:\\\\)*)\\u(?![0-9A-Fa-f]{4})/g;
 
 /**
- * `body` without half an escape at its end (an odd run of backslashes, or a \u with fewer than four hex digits), and
- * with every other malformed \u (\uZ, \u00G) without its backslash, so JSON reads the copy and the text around the
- * escape is kept (automated review on 92f3ad6: a copy that ended in \uZ was not read, and its member not judged).
+ * `body` without half an escape at its end: an odd run of backslashes, or a last \u within six characters of the end
+ * without four hex digits after it, from there to the end, as decodeLiteral cuts a string the end of the text cut off
+ * (so both decode the same copy, and a view of it is read once: automated review on c5a0b7f). Every other malformed
+ * \u (\uZ, \u00G) loses its backslash, so JSON reads the copy and the text around it is kept (automated review on
+ * 92f3ad6: a copy that ended in \uZ was not read, and its member not judged).
  */
 const withoutPartialEscape = body => {
   let out = body;
-  const partial = /\\u[0-9A-Fa-f]{0,3}$/.exec(out);
-  if (partial !== null && backslashesBefore(out, partial.index) % 2 === 0) out = out.slice(0, partial.index);
-  else if (backslashesBefore(out, out.length) % 2 === 1) out = out.slice(0, -1);
+  const partial = out.lastIndexOf('\\u');
+  if (partial >= 0 && partial > out.length - 6 && !/^[0-9A-Fa-f]{4}/.test(out.slice(partial + 2))
+      && backslashesBefore(out, partial) % 2 === 0) {
+    out = out.slice(0, partial);
+  } else if (backslashesBefore(out, out.length) % 2 === 1) {
+    out = out.slice(0, -1);
+  }
   return out.includes('\\u') ? out.replace(MALFORMED_UNICODE, '$1u') : out;
 };
 
 /**
  * sourceOffsets for the text JSON read in place of `span`, withoutPartialEscape(span): where each decoded character
- * starts in `span` itself. The repair only removes characters, so a walk of both texts maps each kept one back; without
- * it every index past a repaired escape pointed one character off in the scanned text, and the check of a \f escape
- * read the wrong character (automated review on a7d0f8f).
+ * starts in `span` itself. A repair that only cut the end keeps every index; one that removed a backslash before it
+ * shifts those after it, so a walk of both texts maps each kept character back, built on the first look-up only
+ * (automated review on a7d0f8f: every index past a repaired escape pointed one character off, and the check of a \f
+ * escape read the wrong character; on c5a0b7f: building it for every view spent the scan budget).
  */
 const repairedOffsets = (span, ctx, length) => {
   const repaired = withoutPartialEscape(span);
-  if (repaired === span) return sourceOffsets(span, ctx, length);
-  ctx.work += span.length;
-  const kept = new Int32Array(repaired.length + 1);
-  for (let i = 0, j = 0; i < span.length && j < repaired.length; i++) {
-    if (span[i] === repaired[j]) kept[j++] = i;
-  }
-  kept[repaired.length] = span.length;
+  if (repaired === span || span.startsWith(repaired)) return sourceOffsets(repaired, ctx, length);
   const at = sourceOffsets(repaired, ctx, length);
+  let kept = null;
   return j => {
+    if (kept === null) {
+      ctx.work += span.length;
+      kept = new Int32Array(repaired.length + 1);
+      for (let i = 0, k = 0; i < span.length && k < repaired.length; i++) {
+        if (span[i] === repaired[k]) kept[k++] = i;
+      }
+      kept[repaired.length] = span.length;
+    }
     const r = at(j);
     return r < repaired.length ? kept[r] : span.length;
   };
