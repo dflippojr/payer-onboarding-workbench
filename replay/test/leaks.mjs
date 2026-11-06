@@ -535,11 +535,20 @@ const MAIN = 0;
 const UNREAD = 1;
 const WHOLE = 2;
 
-/** `body` without half an escape at its end: an odd run of backslashes, or a \u with fewer than four hex digits. */
+/** A \u escape without four hex digits after it, with an even run of backslashes before it (kept, as group 1). */
+const MALFORMED_UNICODE = /(?<!\\)((?:\\\\)*)\\u(?![0-9A-Fa-f]{4})/g;
+
+/**
+ * `body` without half an escape at its end (an odd run of backslashes, or a \u with fewer than four hex digits), and
+ * with every other malformed \u (\uZ, \u00G) without its backslash, so JSON reads the copy and the text around the
+ * escape is kept (automated review on 92f3ad6: a copy that ended in \uZ was not read, and its member not judged).
+ */
 const withoutPartialEscape = body => {
-  const partial = /\\u[0-9A-Fa-f]{0,3}$/.exec(body);
-  if (partial !== null && backslashesBefore(body, partial.index) % 2 === 0) return body.slice(0, partial.index);
-  return backslashesBefore(body, body.length) % 2 === 1 ? body.slice(0, -1) : body;
+  let out = body;
+  const partial = /\\u[0-9A-Fa-f]{0,3}$/.exec(out);
+  if (partial !== null && backslashesBefore(out, partial.index) % 2 === 0) out = out.slice(0, partial.index);
+  else if (backslashesBefore(out, out.length) % 2 === 1) out = out.slice(0, -1);
+  return out.includes('\\u') ? out.replace(MALFORMED_UNICODE, '$1u') : out;
 };
 
 /**
