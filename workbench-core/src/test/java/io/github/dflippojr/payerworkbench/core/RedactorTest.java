@@ -1153,6 +1153,28 @@ class RedactorTest {
     }
 
     @Test
+    void keepsAKtyAfterAnOddNumberOfQuotesInAnEscapedCopyAfterAStrayQuote() {
+        // #342 (automated review on 9a3e247): the leak scanner's test of the same form uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"),
+                text -> text.replace("\"", "\\\\u0022"),
+                text -> escapedForJson(escapedForJson(text)));
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String before : List.of("\"\"a\":0,", "\"a\":\"b\"c\",")) {
+                    String text = "he said \"" + lb + encode.apply("{" + before + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
+                    assertEquals(text, Redactor.redact(text));
+                }
+                for (String before : List.of("\"a\":0,", "")) {
+                    String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
+                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                }
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

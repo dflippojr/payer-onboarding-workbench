@@ -597,6 +597,29 @@ test('accepts a kty that opens no member in an escaped copy after a stray quote 
     }
   }
 });
+test('accepts a kty after an odd number of quotes in an escaped copy after a stray quote and a raw line break (#342)', () => {
+  // Automated review on 9a3e247: with every quote escaped, the text after the line break is read as an unread span,
+  // where a kty name made a JWK whatever the quotes before it ({""a":0,"kty":...}). Redactor, reading back from the
+  // name, finds the object's open bracket inside a string and leaves these as they are
+  // (RedactorTest.keepsAKtyAfterAnOddNumberOfQuotesInAnEscapedCopyAfterAStrayQuote); with an even number it masks d.
+  const encodings = [
+    text => text.replaceAll('"', '\\u0022'),
+    text => text.replaceAll('"', '\\\\u0022'),
+    text => JSON.stringify(JSON.stringify(text).slice(1, -1)).slice(1, -1),
+  ];
+  const form = (before, d) => `{${before}"kty":"RSA","d":"${d}"}`;
+  for (const lb of ['\n', '\r\n']) {
+    for (const encode of encodings) {
+      for (const before of ['""a":0,', '"a":"b"c",']) {
+        assertAccepted(`he said "${lb}${encode(form(before, 'dimension'))}`);
+      }
+      for (const before of ['"a":0,', '']) {
+        assertFlagged(`he said "${lb}${encode(form(before, 'FAKE_PRIVATE_KEY_342'))}`);
+        assertAccepted(`he said "${lb}${encode(form(before, MASK))}`);
+      }
+    }
+  }
+});
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
   // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
   // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.
