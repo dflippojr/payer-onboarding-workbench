@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { captureText, options, review } from './audit-reader.mjs';
+import { captureText, options, review, verify } from './audit-reader.mjs';
 
 const event = (runId = 'run-one', action = 'run.completed', occurredAt = '2026-10-08T12:00:00Z') =>
   ({ schemaVersion: 1, eventId: 'synthetic-event', runId, action, occurredAt });
@@ -152,6 +152,41 @@ test('a segment whose seal failed is reported alone; the others still verify and
     appendFileSync(join(dir, 'audit-000001.jsonl'), 'x');
     assert.match(cli(dir, '--verify').stdout, /"segment":"audit-000001","status":"checksum_mismatch"/);
   } finally { rmSync(dir, { recursive: true }); }
+});
+
+// Since #323 the writer lists a segment it could not seal with a JSON null sha256; "unsealed" is the legacy marker.
+test('a segment listed with a null digest is reported exactly like the legacy unsealed marker', () => {
+  const runs = {};
+  for (const sha256 of [null, 'unsealed']) {
+    const dir = makeJournal();
+    try {
+      const name = 'audit-000003.jsonl';
+      writeFileSync(join(dir, name), JSON.stringify({ ...event('run-c', 'run.requested', '2026-10-08T12:00:03Z'), eventId: 'id-2-run-c' }) + '\n');
+      const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+      manifest.segments.push({ id: 'audit-000003', file: name, bytes: 0, events: 0, firstAt: null, lastAt: null, sha256 });
+      writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+      const verified = cli(dir, '--verify');
+      const read = cli(dir);
+      runs[sha256] = { verify: [verified.status, verified.stdout, verified.stderr], read: [read.status, read.stdout, read.stderr] };
+    } finally { rmSync(dir, { recursive: true }); }
+  }
+  assert.deepEqual(runs.null, runs.unsealed);
+  assert.equal(runs.null.verify[0], 1);
+  assert.match(runs.null.verify[1], /"segment":"audit-000003","status":"seal_failed"/);
+  assert.equal(runs.null.read[0], 0, runs.null.read[2]);
+});
+
+test('verify still rejects a manifest whose digest is the string "null" or missing', async () => {
+  for (const edit of [s => { s.sha256 = 'null'; }, s => { delete s.sha256; }]) {
+    const dir = makeJournal();
+    try {
+      const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8'));
+      edit(manifest.segments[0]);
+      writeFileSync(join(dir, 'manifest.json'), JSON.stringify(manifest));
+      await assert.rejects(verify(dir, () => {}), /Invalid manifest/);
+      assert.equal(cli(dir, '--verify').status, 1);
+    } finally { rmSync(dir, { recursive: true }); }
+  }
 });
 
 test('verify rejects a manifest that names other files and a non-directory', () => {
