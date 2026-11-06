@@ -508,12 +508,13 @@ const unreadSpans = (leftOut, read) => {
 };
 
 /**
- * How a view was reached, each finding no more than the one before it. MAIN: a view main reads, read as main reads it.
- * UNREAD: a view only readUnread reaches (#342), or one below such a view: a kty name makes a JWK only as the first
- * string after its object's open bracket or a comma in it, and with an even number of quotes between that bracket and
- * the name, as Redactor reads member names and reads back from a name to its object (automated reviews on 0ab5aeb,
- * 380cf7c and 9a3e247). WHOLE: a string's whole content readUnread reads, judged the same way; it differs only in which
- * views it covers (readNested).
+ * How a view was reached. MAIN: a view main reads, read as main reads it: a kty member in an object scanJson parses
+ * makes it a JWK. UNREAD: a view only readUnread reaches (#342), or one below such a view, and WHOLE: a string's whole
+ * content readUnread reads. In both, which objects are JWKs and which members are theirs is decided as Redactor's JWK
+ * search decides it (jwkLeaks): such views hold text main never read, often malformed by the decoding that reached it,
+ * where scanJson's own pairing of quotes and members differed from Redactor's both ways (automated reviews on c4ffeef,
+ * 39dd7ff, 0ab5aeb, 380cf7c, 9a3e247, fa4fd1d, 223512b and 65e1e7f). WHOLE differs from UNREAD only in which views
+ * cover which (readNested): a view read in a mode before covers it.
  */
 const MAIN = 0;
 const UNREAD = 1;
@@ -646,11 +647,7 @@ function judge(owner, ctx) {
         : value.kind === 'scalar' && value.value === 'null';
       const check = value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field';
       if (masked) continue;
-      // In a view main does not read, only the first string after its object's open bracket or a comma, with an even
-      // number of quotes before it from that bracket, names a member of that JWK, as Redactor reads its members
-      // ({"kty":"RSA","x":0 "d":...} and {"kty":"RSA","x":""a":0,"d":...}, automated reviews on fa4fd1d and 223512b).
-      // Any other is judged as a private member in no JWK: flagged if Redactor's search may spend its budget.
-      if (owner.kty && value.named) failClosed(ctx, check, value.text);
+      if (owner.kty) failClosed(ctx, check, value.text);
       else ctx.unowned.push({ check, text: value.text });
     }
   }
@@ -717,6 +714,184 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN) {
   readUnread(decoded, unread, level + 1, ctx, toRoot);
 }
 
+/** A JWK private member's name and colon, each letter also as a \u escape, as Redactor matches a field's name. */
+const PRIVATE_FIELD = /"((?:[A-Za-z_-]|\\u[0-9A-Fa-f]{4}){1,64})"\s*:\s*/y;
+
+/** A kty name and colon, as Redactor finds a JWK's type member. */
+const KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"\s*:/g;
+
+/** A kty name at a member's name, as Redactor checks each name of an object it read. */
+const KTY_AT = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"/y;
+
+/** A name with its \u escapes decoded. */
+const decodedName = name => name.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+
+/** How many backslashes come right before index `i`. */
+const backslashesBefore = (text, i) => {
+  let run = 0;
+  while (i - 1 - run >= 0 && text[i - 1 - run] === '\\') run++;
+  return run;
+};
+
+/**
+ * The private member fields in `text` whose value Redactor would have masked and did not: from a name's opening quote
+ * (one no backslash escapes), the name and colon, then an object or array, a number, true or false, or a string that is
+ * neither the mask nor empty (to its closing quote, or cut by a line break or the end of the text, as Redactor reads a
+ * field). Each comes as [where its name starts, text to report, check].
+ */
+function unmaskedPrivateFields(text, ctx) {
+  const fields = [];
+  ctx.work += text.length;
+  for (let at = text.indexOf('"'); at >= 0; at = text.indexOf('"', at + 1)) {
+    PRIVATE_FIELD.lastIndex = at;
+    const m = PRIVATE_FIELD.exec(text);
+    if (m === null || !JWK_PRIVATE_MEMBERS.has(decodedName(m[1])) || backslashesBefore(text, at) % 2 === 1) continue;
+    const v = PRIVATE_FIELD.lastIndex;
+    if (text[v] === '{' || text[v] === '[') {
+      fields.push([at, text.slice(at, v + 40), 'JSON secret structure']);
+    } else if (text[v] === '"') {
+      let end = v + 1;
+      while (end < text.length && text[end] !== '"' && text[end] !== '\n' && text[end] !== '\r') end += text[end] === '\\' ? 2 : 1;
+      let content = text.slice(v + 1, Math.min(end, text.length));
+      if (text[end] !== '"' && content.endsWith('\\')) content = content.slice(0, -1);
+      let value;
+      try {
+        value = JSON.parse(`"${escapeControls(content)}"`);
+      } catch {
+        value = content;
+      }
+      ctx.work += content.length;
+      if (value !== MASK && value !== '') fields.push([at, text.slice(at, end + 1), 'JSON secret field']);
+    } else if (/^(?:-?\d|true\b|false\b)/.test(text.slice(v, v + 6))) {
+      fields.push([at, text.slice(at, v + 40), 'JSON secret field']);
+    }
+  }
+  return fields;
+}
+
+/** startOfObject's results that are no object's start, as in Redactor. */
+const NOT_IN_BRACKETS = -1;
+const IN_ARRAY = -2;
+const OUT_OF_TIME = -3;
+
+/**
+ * The leaks in a view main does not read: each private member field unmasked in a JWK as Redactor's JWK search finds
+ * JWKs, or every unmasked private member field once that search would spend its budget of 4m + 1024 for a view of
+ * length m, as Redactor then masks every private member name. The search, written apart from Redactor's code: from each
+ * kty name (and colon) whose quote no backslash escapes, it reads back to the open bracket of the object holding it,
+ * turning in and out of strings at each quote no backslash escapes and skipping bracket pairs matched before; it then
+ * reads that object forward, and every object in it, taking as an object's member names the first string after its open
+ * bracket or after a comma in it. An object one of whose names is kty is a JWK, and all its names are its members. It
+ * runs only when the view has an unmasked private member field, so it costs a pass over the view otherwise.
+ */
+function jwkLeaks(text, ctx) {
+  const fields = unmaskedPrivateFields(text, ctx);
+  if (fields.length === 0) return;
+  let budget = 4 * text.length + 1024;
+  const spentAt = budget;
+  const matching = new Map();
+  const startOfObject = member => {
+    const closes = [];
+    let inString = false;
+    for (let i = member - 1; i >= 0; i--) {
+      if (--budget < 0) return OUT_OF_TIME;
+      const c = text[i];
+      if (c === '"') {
+        const run = backslashesBefore(text, i);
+        budget -= run;
+        if (budget < 0) return OUT_OF_TIME;
+        if (run % 2 === 0) inString = !inString;
+        i -= run;
+      } else if (!inString && (c === '}' || c === ']') && matching.has(i)) {
+        i = matching.get(i);
+      } else if (!inString && (c === '}' || c === ']')) {
+        closes.push(i);
+      } else if (!inString && (c === '{' || c === '[')) {
+        if (closes.length === 0) return c === '{' ? i : IN_ARRAY;
+        matching.set(closes.pop(), i);
+      }
+    }
+    return NOT_IN_BRACKETS;
+  };
+  const objects = (start, found) => {
+    const open = [];
+    let inString = false;
+    let escaped = false;
+    let nameNext = false;
+    let i = start;
+    while (i < text.length) {
+      if (--budget < 0) return OUT_OF_TIME;
+      const at = i;
+      const c = text[i++];
+      if (inString) {
+        inString = escaped || c !== '"';
+        escaped = !escaped && c === '\\';
+      } else if (c === '"') {
+        inString = true;
+        if (nameNext) open[open.length - 1].names.push(at);
+        nameNext = false;
+      } else if (c === '{' && at > start && matching.has(at)) {
+        i = matching.get(at) + 1;
+        nameNext = false;
+      } else if (c === '{') {
+        const object = { start: at, names: [] };
+        found.push(object);
+        open.push(object);
+        nameNext = true;
+      } else if (c === '[') {
+        open.push(null);
+        nameNext = false;
+      } else if (c === ',') {
+        nameNext = open[open.length - 1] !== null;
+      } else if (c === '}' || c === ']') {
+        const object = open.pop();
+        if (object) {
+          matching.set(at, object.start);
+          matching.set(object.start, at);
+        }
+        nameNext = false;
+        if (open.length === 0) break;
+      }
+    }
+    return i;
+  };
+  const names = new Set();
+  let readEnd = 0;
+  let spent = false;
+  for (const m of text.matchAll(KTY_TYPE)) {
+    const member = m.index;
+    if (member < readEnd) continue;
+    const run = backslashesBefore(text, member);
+    budget -= run;
+    if (run % 2 !== 0) continue;
+    const start = startOfObject(member);
+    if (start === OUT_OF_TIME) {
+      spent = true;
+      break;
+    }
+    if (start < 0) continue;
+    const found = [];
+    const end = objects(start, found);
+    if (end === OUT_OF_TIME) {
+      spent = true;
+      break;
+    }
+    readEnd = end;
+    for (const object of found) {
+      if (object.names.some(name => {
+        KTY_AT.lastIndex = name;
+        return KTY_AT.test(text);
+      })) {
+        for (const name of object.names) names.add(name);
+      }
+    }
+  }
+  ctx.work += spentAt - Math.max(budget, 0);
+  for (const [at, report, check] of fields) {
+    if (spent || names.has(at)) failClosed(ctx, check, report);
+  }
+}
+
 /**
  * Reads `text` as JSON at nesting `level` (0 for the text itself, n for JSON in a string n levels down) in one
  * pass, tolerating prose and cut-off JSON around it, and judges every member it finds. Each string literal is
@@ -732,31 +907,8 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   // Redactor, unless its JWK search may spend its budget (textLeaks).
   const newOwner = (object, start = -1) => ({ object, start, kty: false, values: [] });
   const top = newOwner(false);
-  // In a view main does not read (UNREAD, WHOLE), how many quotes no backslash escapes come before each index, built on
-  // first use: a kty name with an odd number of them between its object's open bracket and its own opening quote
-  // makes no JWK. Escapes of two levels decoded at once, or malformed escaped text, may pair quotes that way
-  // ({"body":""a":0,"kty":...}), and Redactor, reading back from the name, finds that open bracket inside a string
-  // (automated reviews on c4ffeef, 39dd7ff and 9a3e247). In a view main reads, a kty name in an object makes a JWK, as on
-  // main.
-  let quotes = null;
-  const evenQuotes = (from, to) => {
-    if (quotes === null) {
-      quotes = new Int32Array(text.length + 1);
-      let backslashes = 0;
-      for (let j = 0; j < text.length; j++) {
-        quotes[j + 1] = quotes[j] + (text[j] === '"' && backslashes % 2 === 0 ? 1 : 0);
-        backslashes = text[j] === '\\' ? backslashes + 1 : 0;
-      }
-      ctx.work += text.length;
-    }
-    return (quotes[to] - quotes[from]) % 2 === 0;
-  };
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
   const stack = [];
-  // Whether the next literal is the first since an object's open bracket or a comma in it: in a view main does not read
-  // (UNREAD, WHOLE), only that one can be a kty member's name, as Redactor reads member names ({"x":0 "kty":...} has no
-  // kty member, automated reviews on 0ab5aeb and 380cf7c). Any other text may come between, as in Redactor.
-  let nameNext = false;
   // The member whose name and colon were just read, waiting for its value.
   let member = null;
   const owner = () => (stack.length > 0 ? stack[stack.length - 1].owner : top);
@@ -798,10 +950,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       return read;
     }
     const c = text[i];
-    if (c === ',') nameNext = stack.length > 0 && stack[stack.length - 1].owner.object;
     if (c === '"' && i >= quotesFrom) {
-      const first = nameNext;
-      nameNext = false;
       const literal = readLiteral(text, i, ctx, member !== null);
       if (literal.aborted) {
         // A string (no member's value: that reads through line breaks) cut off at a line break: JSON in it is
@@ -826,7 +975,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         // A value with a colon after it is still the member's value (Redactor masks it and keeps the colon).
         if (member) {
           member.owner.values.push({
-            name: member.name, malformed: member.malformed, named: member.named, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
+            name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
           });
         }
         const name = decoded ?? literal.body;
@@ -834,10 +983,9 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
         // it whole ({"client_secret":["x":"..."]}).
         if (stack.length > 0 && stack[stack.length - 1].list) stack[stack.length - 1].list.nested = true;
         const o = owner();
-        if (name === 'kty' && o.object && (mode === MAIN || (first && evenQuotes(o.start + 1, literal.start)))) {
-          o.kty = true;
-        }
-        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', named: mode === MAIN || (first && evenQuotes(o.start + 1, literal.start)) };
+        // In a view main does not read, jwkLeaks decides the JWKs.
+        if (name === 'kty' && o.object && mode === MAIN) o.kty = true;
+        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
         i = next + 1;
@@ -846,7 +994,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       const stray = literal.terminated && !endsValue(text[next]);
       if (member) {
         member.owner.values.push({
-          name: member.name, malformed: member.malformed, named: member.named, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
+          name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
           cutShort: literal.terminated && !endsValue(text[literal.end + 1]),
         });
         member = null;
@@ -865,10 +1013,9 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       continue;
     }
     if (c === '{' || c === '[') {
-      nameNext = c === '{';
       const container = { owner: newOwner(c === '{', i), list: null };
       if (member) {
-        const value = { name: member.name, malformed: member.malformed, named: member.named, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
+        const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
         member.owner.values.push(value);
         if (c === '[') container.list = value;
         member = null;
@@ -879,7 +1026,6 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
     } else if (c === '}' || c === ']') {
       if (stack.length > 0) judge(stack.pop().owner, ctx);
       member = null;
-      nameNext = false;
     } else if (!member && stack.length > 0 && stack[stack.length - 1].list && !isSpace(c) && c !== ',' && c !== ':') {
       // A number, true, false or null in a secret-named list is no mask.
       let end = i;
@@ -892,7 +1038,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       // A scalar value runs to the next delimiter.
       let end = i;
       while (end < text.length && !endsScalar(text[end])) end++;
-      if (end > i) member.owner.values.push({ name: member.name, malformed: member.malformed, named: member.named, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
+      if (end > i) member.owner.values.push({ name: member.name, malformed: member.malformed, kind: 'scalar', value: text.slice(i, end), text: text.slice(i, end) });
       member = null;
       ctx.work += end - i;
       i = Math.max(end, i + 1);
@@ -902,6 +1048,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   }
   while (stack.length > 0) judge(stack.pop().owner, ctx);
   judge(top, ctx);
+  if (mode !== MAIN) jwkLeaks(text, ctx);
   ctx.kty[level] ??= [];
   for (const m of text.matchAll(KTY_SPELLING)) {
     if (m.index >= stopAt) break;
