@@ -77,15 +77,16 @@ export async function review(lines, filters, output, onGap = () => {}) {
 
 const SEGMENT = /^audit-\d{6,}\.jsonl$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-// The writer lists a segment it could not seal with this marker in place of a checksum (AuditJournal.sealQuietly).
-// The segment cannot be verified, so --verify reports it as `seal_failed`; review still reads its events.
-const SEAL_FAILED = 'unsealed';
+// The writer lists a segment it could not seal with a JSON null in place of a checksum (AuditJournal.sealQuietly);
+// journals written before #323 hold the string 'unsealed' there. Either way the segment cannot be verified, so
+// --verify reports it as `seal_failed`; review still reads its events. A missing sha256 or the string 'null' is invalid.
+const sealFailed = sha256 => sha256 === null || sha256 === 'unsealed';
 
 async function loadManifest(dir) {
   const manifest = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
   if (manifest?.version !== 1 || !Array.isArray(manifest.segments)) throw new Error('Unsupported manifest');
   for (const s of manifest.segments) {
-    if (typeof s.file !== 'string' || !SEGMENT.test(s.file) || (s.sha256 !== SEAL_FAILED && !SHA256.test(s.sha256))) throw new Error('Invalid manifest');
+    if (typeof s.file !== 'string' || !SEGMENT.test(s.file) || (!sealFailed(s.sha256) && !SHA256.test(s.sha256))) throw new Error('Invalid manifest');
   }
   return manifest;
 }
@@ -126,7 +127,7 @@ export async function verify(dir, write) {
     const entry = listed.get(file);
     let status = 'ok';
     if (!entry) status = highest === null || sequence(file) > highest ? 'unsealed' : 'unlisted';
-    else if (entry.sha256 === SEAL_FAILED) status = 'seal_failed';
+    else if (sealFailed(entry.sha256)) status = 'seal_failed';
     else {
       const path = join(dir, file);
       let sealed = null;
