@@ -851,6 +851,22 @@ test('reads a nested copy that ends in a malformed \\u escape once per level, wi
     }
   }
 });
+test('flags a copied secret value cut off in a malformed \\u escape, which Redactor masks with it (#342)', () => {
+  // Automated review on 058e89a: after a stray quote and a raw line break, an unclosed copy whose value is the mask
+  // followed by \uZ, \u0Z or \u00G at the end of the text is not Redactor's output: Redactor masks the whole value,
+  // suffix and all, and writes a closing quote. 058e89a cut the malformed escape as half an escape, which left the bare
+  // mask, and accepted it (RedactorTest.masksACopiedSecretValueCutOffInAMalformedUnicodeEscape).
+  const q = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+      for (const head of [`{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`, `{${q}password${q}:${q}`]) {
+        assertFlagged(`he said "${lb}${head}${MASK}${tail}`);
+        assertFlagged(`he said "${lb}${head}FAKE_JWK_K_342${tail}`);
+        assertAccepted(`he said "${lb}${head}${MASK}${q}`);
+      }
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
