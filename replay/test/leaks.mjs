@@ -438,6 +438,8 @@ const decodeString = (body, ctx, read = []) => {
     }
   };
   const leftOut = [];
+  const gaps = [];
+  let afterLineBreak = false;
   let from = 0;
   for (let i = 0; i < body.length;) {
     if (body[i] === '\\') {
@@ -449,11 +451,13 @@ const decodeString = (body, ctx, read = []) => {
       continue;
     }
     decodeSpan(from, i);
+    if (afterLineBreak) gaps.push([from, i]);
     // A quoted string, to its closing quote or the end of the text; a backslash takes the next character with it.
     let end = i + 1;
     while (end < body.length && body[end] !== '"') end += body[end] === '\\' ? 2 : 1;
     const content = body.slice(i + 1, Math.min(end, body.length));
     ctx.work += content.length;
+    afterLineBreak ||= content.includes('\n') || content.includes('\r');
     try {
       const decodedContent = JSON.parse(`"${escapeControls(content)}"`);
       // scanJson decodes a string JSON reads, where it is: unless it read the string otherwise (unread).
@@ -466,8 +470,15 @@ const decodeString = (body, ctx, read = []) => {
     from = Math.min(i, body.length);
   }
   decodeSpan(from, body.length);
+  if (afterLineBreak) gaps.push([from, body.length]);
   ctx.work += read.length + leftOut.length;
   const unread = unreadSpans(leftOut, read);
+  // The text between strings after one paired across a raw line break, where it holds an escaped quote: scanJson and
+  // Redactor cut that string at the line break, so from there their quotes paired otherwise, and a copy whose quotes
+  // are all escaped may be in no string here, where decodeSpan keeps its escapes (automated review on 4175db6).
+  for (const [from, to] of gaps) {
+    if (to - from > 1 && body.slice(from, to).includes('\\"')) unread.push([from, to]);
+  }
   // After a string scanJson opened at a quote no backslash escapes and cut off at a raw line break, the text from that
   // line break to the next such quote, where no string left out holds it: there the quotes paired as decodeString pairs
   // them may leave a copy after the line break in no string at all, as after two stray quotes and line breaks, and
@@ -759,6 +770,13 @@ const KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"[ \t\n\x0B\f\r]*:/
 /** A kty name at a member's name, as Redactor checks each name of an object it read. */
 const KTY_AT = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"/y;
 
+/** Whether `root` spells the line break at `lineBreak` as backslashes and an n or r: neither raw nor a \u escape. */
+const escapedLineBreak = (root, lineBreak) => {
+  let r = lineBreak;
+  while (root[r] === '\\') r++;
+  return r > lineBreak && (root[r] === 'n' || root[r] === 'r');
+};
+
 /** The line breaks Java's regex dot does not match: Redactor's escape takes any character but these. */
 const LINE_BREAKS = '\n\r\u0085\u2028\u2029';
 
@@ -806,15 +824,16 @@ function unmaskedPrivateFields(text, ctx, toRoot) {
       fields.push([at, text.slice(at, v + 40), 'JSON secret structure']);
     } else if (text[v] === '"') {
       // Redactor's escape takes any character but a line break, so a backslash before one, or at the end, ends the value
-      // (automated review on 5173e8e). A line break that is a raw one in the scanned text, any of Java's (automated
-      // review on e2487e1: a raw U+0085), was one Redactor read past an escaped backslash, not an escape it ended at:
-      // then the value goes on, so this fails safe.
+      // (automated review on 5173e8e). Only where the scanned text spells the line break as an \n or \r escape is that
+      // the form Redactor reads: a raw line break, any of Java's (automated review on e2487e1: a raw U+0085),
+      // or one spelled as a \u escape (automated review on 4175db6), Redactor reads past, so the value goes on,
+      // which fails safe.
       let end = v + 1;
       while (end < text.length && text[end] !== '"') {
         if (text[end] !== '\\') {
           end++;
         } else if (end + 1 >= text.length
-            || (LINE_BREAKS.includes(text[end + 1]) && !LINE_BREAKS.includes(ctx.text[toRoot(end + 1)]))) {
+            || (LINE_BREAKS.includes(text[end + 1]) && escapedLineBreak(ctx.text, toRoot(end + 1)))) {
           break;
         } else {
           end += 2;
