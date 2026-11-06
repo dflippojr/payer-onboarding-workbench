@@ -1253,6 +1253,34 @@ class RedactorTest {
     }
 
     @Test
+    void masksACopiedValueAfterABackslashAndARawUnicodeLineBreakAndReadsNoFormFeedEscapeAsWhitespace() {
+        // #342 (automated review on e2487e1): the leak scanner's test of the same form relies on these outputs. A
+        // backslash escaped in the copy, then a raw U+0085, U+2028 or U+2029, is part of the value, so the whole value is
+        // masked; a \f escape is no whitespace in an escaped copy, so no member is found, while a \u000c is.
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            String masked = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + "[REDACTED]" + b + "}";
+            for (String brk : List.of("\u0085", "\u2028", "\u2029")) {
+                for (String k : List.of("", "[REDACTED]")) {
+                    String in = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + k + "\\\\" + brk
+                            + "TAIL" + b + "}";
+                    assertEquals(masked, Redactor.redact(in));
+                }
+            }
+            for (String value : List.of("true", "1", "{}", b + "FAKE_JWK_K_342" + b)) {
+                for (String form : List.of("{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s:\\f%2$s}", "{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s\\f:%2$s}",
+                        "{%1$skty%1$s\\f:%1$soct%1$s,%1$sk%1$s:%2$s}")) {
+                    String kept = "he said \"" + lb + form.formatted(b, value);
+                    assertEquals(kept, Redactor.redact(kept));
+                }
+            }
+            String formFeed = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000ctrue}";
+            assertEquals("he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000c" + b + "[REDACTED]" + b + "}",
+                    Redactor.redact(formFeed));
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

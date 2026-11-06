@@ -701,6 +701,36 @@ test('flags a JWK copied after two stray quotes and raw line breaks, and ends a 
     assertAccepted(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"[REDACTED]\\${lb}TAIL"}`).slice(1, -1)}`);
   }
 });
+test('flags a copied value after a backslash and a raw Unicode line break, and reads no \\f escape as whitespace (#342)', () => {
+  // Automated review on e2487e1, finding 1: a copied value that starts with a backslash and a raw U+0085, U+2028 or
+  // U+2029 is an escaped backslash and a raw character in the text Redactor reads, so it masks the whole value, and the
+  // scanner cut the value there and accepted it. Finding 3: Redactor's whitespace in an escaped copy is a raw one or an
+  // escaped line break or tab, so with a \f escape around a colon it finds no member and keeps the text; the scanner
+  // decoded the escape to whitespace and flagged it. A \u000c Redactor does read as whitespace
+  // (RedactorTest.masksACopiedValueAfterABackslashAndARawUnicodeLineBreakAndReadsNoFormFeedEscapeAsWhitespace).
+  for (const lb of ['\n', '\r\n']) {
+    for (const brk of ['\u0085', '\u2028', '\u2029']) {
+      assertFlagged(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"\\${brk}TAIL"}`).slice(1, -1)}`);
+      assertFlagged(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"${MASK}\\${brk}TAIL"}`).slice(1, -1)}`);
+    }
+    for (const value of ['true', '1', '{}', '\\"FAKE_JWK_K_342\\"']) {
+      assertAccepted(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\f${value}}`);
+      assertAccepted(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\"\\f:${value}}`);
+      assertAccepted(`he said "${lb}{\\"kty\\"\\f:\\"oct\\",\\"k\\":${value}}`);
+      assertFlagged(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\u000c${value}}`);
+      assertFlagged(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\n${value}}`);
+    }
+  }
+});
+test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
+  // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
+  // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
+  const text = '"\n'.repeat(100_000) + '\\u0041';
+  const started = performance.now();
+  assert.deepEqual(findTextLeaks(text), []);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 3000, `took ${Math.round(elapsed)} ms`);
+});
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
   // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
   // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.
