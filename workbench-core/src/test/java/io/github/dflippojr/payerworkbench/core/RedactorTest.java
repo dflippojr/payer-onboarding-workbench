@@ -1342,6 +1342,21 @@ class RedactorTest {
     }
 
     @Test
+    void masksACopyThatEndsInAMalformedUnicodeEscape() {
+        // #342 (automated review on 92f3ad6): the leak scanner's test of the same form uses these outputs.
+        List<String> forms = List.of("{\"kty\":\"oct\",\"k\":\"%s\"}", "{\"password\":\"%s\"}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
+                for (String form : forms) {
+                    String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]")) + tail;
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")) + tail));
+                    assertEquals(masked, Redactor.redact(masked));
+                }
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

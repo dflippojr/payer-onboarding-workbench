@@ -795,6 +795,21 @@ test('flags a JWK private member whose opening quote is escaped one level more t
     }
   }
 });
+test('flags a copy that ends in a malformed \\u escape, a \\u with fewer than four hex digits and then a letter (#342)', () => {
+  // Automated review on 92f3ad6: after a stray quote and a raw line break, an escaped JWK or secret field followed at the
+  // end of the text by \uZ, \u0Z or \u00G could not be parsed, so its \" escapes were kept and no view held the
+  // member; Redactor masks it. Main misses it too
+  // (RedactorTest.masksACopyThatEndsInAMalformedUnicodeEscape).
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  for (const lb of ['\n', '\r\n']) {
+    for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+      for (const form of [v => `{"kty":"oct","k":"${v}"}`, v => `{"password":"${v}"}`]) {
+        assertFlagged(`he said "${lb}${copy(form('FAKE_JWK_K_342'))}${tail}`);
+        assertAccepted(`he said "${lb}${copy(form(MASK))}${tail}`);
+      }
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
