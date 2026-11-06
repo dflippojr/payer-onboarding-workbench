@@ -1328,6 +1328,20 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkPrivateMemberWhoseOpeningQuoteIsEscapedOneLevelMore() {
+        // #342 (automated review on 32194d8): the leak scanner's test of the same form uses these outputs.
+        List<String> forms = List.of("{\"kty\":\"oct\",\\\"k\":\"%1$s\"}", "{\"kty\":\"oct\", \\\"d\":\"%1$s\"}",
+                "{\"kty\":\"RSA\",\"n\":\"AQAB\",\\\"d\":\"%1$s\",\\\"p\":\"%1$s\"}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String form : forms) {
+                String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]"));
+                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342"))));
+                assertEquals(masked, Redactor.redact(masked));
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

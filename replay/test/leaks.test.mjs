@@ -778,6 +778,23 @@ test('flags a copy cut off in half an escape at the end of the text, and reads a
     assert.ok(scanWork.characters <= 41 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
   }
 });
+test('flags a JWK private member whose opening quote is escaped one level more than the copy around it (#342)', () => {
+  // Automated review on 32194d8, finding 1: in a JWK copied after a stray quote and a raw line break, a member written
+  // \"k" inside the object, so escaped once more in the copy, kept an odd run of backslashes before its opening quote,
+  // and the scanner skipped it; Redactor matches the field from the last backslash before its quote and masks it. Main
+  // misses it too (RedactorTest.masksAJwkPrivateMemberWhoseOpeningQuoteIsEscapedOneLevelMore).
+  const forms = [
+    v => `{"kty":"oct",\\"k":"${v}"}`,
+    v => `{"kty":"oct", \\"d":"${v}"}`,
+    v => `{"kty":"RSA","n":"AQAB",\\"d":"${v}",\\"p":"${v}"}`,
+  ];
+  for (const lb of ['\n', '\r\n']) {
+    for (const form of forms) {
+      assertFlagged(`he said "${lb}${JSON.stringify(form('FAKE_JWK_K_342')).slice(1, -1)}`);
+      assertAccepted(`he said "${lb}${JSON.stringify(form(MASK)).slice(1, -1)}`);
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
@@ -788,8 +805,9 @@ test('looks up each string cut at a line break in time that grows with the text,
   assert.ok(elapsed < 3000, `took ${Math.round(elapsed)} ms`);
 });
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
-  // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
-  // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.
+  // Only in a view main does not read (UNREAD or WHOLE, where jwkLeaks decides) does the quote count decide whether a
+  // kty name makes a JWK. In plain JSON main reads, the scanner reads the name after a stray "" as a member, as on main,
+  // and so exempts less than Redactor, which keeps these.
   assertFlagged('{"body":""kty":"RSA","d":"FAKE_PRIVATE_KEY_342"}');
   assertFlagged('{"body":""a":0,"kty":"RSA","d":"FAKE_PRIVATE_KEY_342"}');
 });
