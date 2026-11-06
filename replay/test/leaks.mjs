@@ -552,6 +552,28 @@ const withoutPartialEscape = body => {
 };
 
 /**
+ * sourceOffsets for the text JSON read in place of `span`, withoutPartialEscape(span): where each decoded character
+ * starts in `span` itself. The repair only removes characters, so a walk of both texts maps each kept one back; without
+ * it every index past a repaired escape pointed one character off in the scanned text, and the check of a \f escape
+ * read the wrong character (automated review on a7d0f8f).
+ */
+const repairedOffsets = (span, ctx, length) => {
+  const repaired = withoutPartialEscape(span);
+  if (repaired === span) return sourceOffsets(span, ctx, length);
+  ctx.work += span.length;
+  const kept = new Int32Array(repaired.length + 1);
+  for (let i = 0, j = 0; i < span.length && j < repaired.length; i++) {
+    if (span[i] === repaired[j]) kept[j++] = i;
+  }
+  kept[repaired.length] = span.length;
+  const at = sourceOffsets(repaired, ctx, length);
+  return j => {
+    const r = at(j);
+    return r < repaired.length ? kept[r] : span.length;
+  };
+};
+
+/**
  * Reads the spans of `text` that decodeString left out and scanJson did not decode (`unread`), each as the content of
  * one more string, one level down: decoded whole if JSON reads it as one, else its unicode escapes. A string's whole
  * content is read as such (WHOLE); every other span, as a view main does not read (UNREAD).
@@ -565,7 +587,7 @@ function readUnread(text, unread, level, ctx, toRoot) {
     if (whole) {
       // decodeString decoded a string's whole content already.
       decoded = content;
-      at = sourceOffsets(span, ctx, decoded.length);
+      at = repairedOffsets(span, ctx, decoded.length);
       if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), WHOLE);
       continue;
     }
@@ -574,7 +596,7 @@ function readUnread(text, unread, level, ctx, toRoot) {
       // A span cut off at the end of the text may end in half an escape (a lone backslash, or a \u with fewer than four
       // hex digits), which Redactor's parser stops at and JSON cannot read: it is dropped (automated review on 5ca573a).
       decoded = JSON.parse(`"${escapeControls(withoutPartialEscape(span))}"`);
-      at = sourceOffsets(span, ctx, decoded.length);
+      at = repairedOffsets(span, ctx, decoded.length);
     } catch {
       const parts = [];
       const offsets = [];
