@@ -476,7 +476,7 @@ const decodeString = (body, ctx, read = []) => {
     if ((body[to] !== '\n' && body[to] !== '\r') || body[from] !== '"' || backslashesBefore(body, from) % 2 === 1) continue;
     let start = to;
     while (body[start] === '\n' || body[start] === '\r') start++;
-    if (leftOut.some(([f, t]) => start > f && start < t)) continue;
+    if (inLeftOut(leftOut, start, ctx)) continue;
     let end = start;
     for (let backslashes = 0; end < body.length && !(body[end] === '"' && backslashes % 2 === 0); end++) {
       backslashes = body[end] === '\\' ? backslashes + 1 : 0;
@@ -486,6 +486,23 @@ const decodeString = (body, ctx, read = []) => {
   }
   if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread };
   return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread };
+};
+
+/**
+ * Whether index `i` is inside one of the strings `leftOut` ([from, to), in order, not overlapping), past its opening
+ * quote: a binary search, each step counted as work, so each look-up costs the log of their number rather than their
+ * number (automated review on e2487e1: one look-up per cut string made the scan quadratic).
+ */
+const inLeftOut = (leftOut, i, ctx) => {
+  let lo = 0;
+  let hi = leftOut.length;
+  while (lo < hi) {
+    ctx.work++;
+    const mid = (lo + hi) >> 1;
+    if (leftOut[mid][0] < i) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 && i < leftOut[lo - 1][1];
 };
 
 /**
@@ -742,6 +759,23 @@ const KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"[ \t\n\x0B\f\r]*:/
 /** A kty name at a member's name, as Redactor checks each name of an object it read. */
 const KTY_AT = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"/y;
 
+/** The line breaks Java's regex dot does not match: Redactor's escape takes any character but these. */
+const LINE_BREAKS = '\n\r\u0085\u2028\u2029';
+
+/**
+ * Whether `text` from `from` to `to` holds a form feed the scanned text spells as a \f escape. Redactor's whitespace
+ * in an escaped copy is a raw one or an escaped line break or tab, so such a form feed ends a name's whitespace there,
+ * and the member is not one; a raw one, or a \u000c, Redactor reads as whitespace (automated review on e2487e1).
+ */
+const escapedFormFeed = (text, from, to, ctx, toRoot) => {
+  for (let i = text.indexOf('\f', from); i >= 0 && i < to; i = text.indexOf('\f', i + 1)) {
+    let r = toRoot(i);
+    while (ctx.text[r] === '\\') r++;
+    if (ctx.text[r] === 'f') return true;
+  }
+  return false;
+};
+
 /** A name with its \u escapes decoded. */
 const decodedName = name => name.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
 
@@ -767,18 +801,20 @@ function unmaskedPrivateFields(text, ctx, toRoot) {
     const m = PRIVATE_FIELD.exec(text);
     if (m === null || !JWK_PRIVATE_MEMBERS.has(decodedName(m[1])) || backslashesBefore(text, at) % 2 === 1) continue;
     const v = PRIVATE_FIELD.lastIndex;
+    if (escapedFormFeed(text, at, v, ctx, toRoot)) continue;
     if (text[v] === '{' || text[v] === '[') {
       fields.push([at, text.slice(at, v + 40), 'JSON secret structure']);
     } else if (text[v] === '"') {
       // Redactor's escape takes any character but a line break, so a backslash before one, or at the end, ends the value
-      // (automated review on 5173e8e). A line break that is a raw one in the scanned text was one Redactor read past an
-      // escaped backslash, not an escape it ended at: then the value goes on, so this fails safe.
+      // (automated review on 5173e8e). A line break that is a raw one in the scanned text, any of Java's (automated
+      // review on e2487e1: a raw U+0085), was one Redactor read past an escaped backslash, not an escape it ended at:
+      // then the value goes on, so this fails safe.
       let end = v + 1;
       while (end < text.length && text[end] !== '"') {
         if (text[end] !== '\\') {
           end++;
         } else if (end + 1 >= text.length
-            || ('\n\r\u0085\u2028\u2029'.includes(text[end + 1]) && !'\n\r'.includes(ctx.text[toRoot(end + 1)]))) {
+            || (LINE_BREAKS.includes(text[end + 1]) && !LINE_BREAKS.includes(ctx.text[toRoot(end + 1)]))) {
           break;
         } else {
           end += 2;
@@ -891,7 +927,7 @@ function jwkLeaks(text, ctx, toRoot) {
   let spent = false;
   for (const m of text.matchAll(KTY_TYPE)) {
     const member = m.index;
-    if (member < readEnd) continue;
+    if (member < readEnd || escapedFormFeed(text, member, member + m[0].length, ctx, toRoot)) continue;
     const run = backslashesBefore(text, member);
     budget -= run;
     if (run % 2 !== 0) continue;
