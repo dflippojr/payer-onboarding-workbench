@@ -1257,6 +1257,23 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkAfterALongPadCopiedAndClosedThreeDeep() {
+        // #342 (automated review on feb555e): the leak scanner's test reading this form within its scan budget uses this
+        // output as its masked form.
+        String jwk = "{\"pad\":\"" + "x".repeat(5000) + "\",\"kty\":\"oct\",\"k\":\"%s\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            String masked = jwk.formatted("[REDACTED]");
+            String leaked = jwk.formatted("FAKE_JWK_K_342");
+            for (int i = 0; i < 3; i++) {
+                masked = "he said \"" + lb + escapedForJson(masked) + "\"";
+                leaked = "he said \"" + lb + escapedForJson(leaked) + "\"";
+            }
+            assertEquals(masked, Redactor.redact(masked));
+            assertEquals(masked, Redactor.redact(leaked));
+        }
+    }
+
+    @Test
     void readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft() {
         // Codex round 7, finding 2: the JWK read after the key blocks are masked spends what the read of the text as it
         // came left at each escape level, 4n + 1024 in all for a text of length n, and masks every private member name

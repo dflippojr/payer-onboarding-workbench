@@ -730,6 +730,26 @@ test('reads a masked JWK with a long pad copied after a stray quote and a raw li
     assert.ok(scanWork.characters <= 35 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
   }
 });
+test('reads a masked JWK after a long pad, copied after a stray quote and closed at each level, 3 deep, within the scan budget (#342)', () => {
+  // Automated review on feb555e: with the pad before kty and a closing quote after each copy, the whole-string reads
+  // re-read the pad at each level and spent the budget (213,200 against 210,776 with a 5,000-character pad). Main
+  // accepts it, and Redactor keeps it and masks k (RedactorTest.masksAJwkAfterALongPadCopiedAndClosedThreeDeep).
+  const nest = (k, lb) => {
+    let text = JSON.stringify({ pad: 'x'.repeat(5000), kty: 'oct', k });
+    for (let i = 0; i < 3; i++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}"`;
+    return text;
+  };
+  for (const lb of ['\n', '\r\n']) {
+    const masked = nest(MASK, lb);
+    assertAccepted(masked);
+    const leaked = nest('FAKE_JWK_K_342', lb);
+    assertFlagged(leaked);
+    assert.ok(findTextLeaks(leaked).some(leak => leak.check === 'JSON secret field'), 'k not judged');
+    scanWork.characters = 0;
+    findTextLeaks(masked);
+    assert.ok(scanWork.characters <= 38 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
