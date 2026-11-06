@@ -459,7 +459,8 @@ const decodeString = (body, ctx, read = []) => {
     ctx.work += content.length;
     afterLineBreak ||= content.includes('\n') || content.includes('\r');
     try {
-      const decodedContent = JSON.parse(`"${escapeControls(content)}"`);
+      // A string the end of the text cuts off may end in half an escape, which is dropped (withoutPartialEscape).
+      const decodedContent = JSON.parse(`"${escapeControls(end >= body.length ? withoutPartialEscape(content) : content)}"`);
       // scanJson decodes a string JSON reads, where it is: unless it read the string otherwise (unread).
       leftOut.push([i, Math.min(end + 1, body.length), Math.min(end, body.length), decodedContent]);
     } catch {
@@ -473,47 +474,17 @@ const decodeString = (body, ctx, read = []) => {
   if (afterLineBreak) gaps.push([from, body.length]);
   ctx.work += read.length + leftOut.length;
   const unread = unreadSpans(leftOut, read);
-  // The text between strings after one paired across a raw line break, where it holds an escaped quote: scanJson and
-  // Redactor cut that string at the line break, so from there their quotes paired otherwise, and a copy whose quotes
-  // are all escaped may be in no string here, where decodeSpan keeps its escapes (automated review on 4175db6).
+  // The text between strings after one paired across a raw line break, where it holds a backslash: scanJson and
+  // Redactor cut that string at the line break, so from there their quotes paired otherwise, and a copy may be in no
+  // string here, where decodeSpan keeps its escapes: after two stray quotes and line breaks (automated review on
+  // 5173e8e), or after "<line break>","body": with every quote of the copy escaped (automated review on 4175db6). The
+  // spans do not overlap, and a copy is read once here rather than also from each line break (automated review on
+  // 5ca573a: that read the copy twice per level and spent the budget at depth 3).
   for (const [from, to] of gaps) {
-    if (to - from > 1 && body.slice(from, to).includes('\\"')) unread.push([from, to]);
-  }
-  // After a string scanJson opened at a quote no backslash escapes and cut off at a raw line break, the text from that
-  // line break to the next such quote, where no string left out holds it: there the quotes paired as decodeString pairs
-  // them may leave a copy after the line break in no string at all, as after two stray quotes and line breaks, and
-  // nothing else decodes it (automated review on 5173e8e). Each such span ends at a quote, so they do not overlap.
-  for (const [from, to] of read) {
-    if ((body[to] !== '\n' && body[to] !== '\r') || body[from] !== '"' || backslashesBefore(body, from) % 2 === 1) continue;
-    let start = to;
-    while (body[start] === '\n' || body[start] === '\r') start++;
-    if (inLeftOut(leftOut, start, ctx)) continue;
-    let end = start;
-    for (let backslashes = 0; end < body.length && !(body[end] === '"' && backslashes % 2 === 0); end++) {
-      backslashes = body[end] === '\\' ? backslashes + 1 : 0;
-    }
-    ctx.work += end - start;
-    if (body.slice(start, end).includes('\\')) unread.push([start, end]);
+    if (to - from > 1 && body.slice(from, to).includes('\\')) unread.push([from, to]);
   }
   if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread };
   return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread };
-};
-
-/**
- * Whether index `i` is inside one of the strings `leftOut` ([from, to), in order, not overlapping), past its opening
- * quote: a binary search, each step counted as work, so each look-up costs the log of their number rather than their
- * number (automated review on e2487e1: one look-up per cut string made the scan quadratic).
- */
-const inLeftOut = (leftOut, i, ctx) => {
-  let lo = 0;
-  let hi = leftOut.length;
-  while (lo < hi) {
-    ctx.work++;
-    const mid = (lo + hi) >> 1;
-    if (leftOut[mid][0] < i) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo > 0 && i < leftOut[lo - 1][1];
 };
 
 /**
@@ -564,6 +535,13 @@ const MAIN = 0;
 const UNREAD = 1;
 const WHOLE = 2;
 
+/** `body` without half an escape at its end: an odd run of backslashes, or a \u with fewer than four hex digits. */
+const withoutPartialEscape = body => {
+  const partial = /\\u[0-9A-Fa-f]{0,3}$/.exec(body);
+  if (partial !== null && backslashesBefore(body, partial.index) % 2 === 0) return body.slice(0, partial.index);
+  return backslashesBefore(body, body.length) % 2 === 1 ? body.slice(0, -1) : body;
+};
+
 /**
  * Reads the spans of `text` that decodeString left out and scanJson did not decode (`unread`), each as the content of
  * one more string, one level down: decoded whole if JSON reads it as one, else its unicode escapes. A string's whole
@@ -584,7 +562,9 @@ function readUnread(text, unread, level, ctx, toRoot) {
     }
     ctx.work += span.length;
     try {
-      decoded = JSON.parse(`"${escapeControls(span)}"`);
+      // A span cut off at the end of the text may end in half an escape (a lone backslash, or a \u with fewer than four
+      // hex digits), which Redactor's parser stops at and JSON cannot read: it is dropped (automated review on 5ca573a).
+      decoded = JSON.parse(`"${escapeControls(withoutPartialEscape(span))}"`);
       at = sourceOffsets(span, ctx, decoded.length);
     } catch {
       const parts = [];
