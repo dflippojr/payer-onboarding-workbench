@@ -827,6 +827,30 @@ test('reads a \\f escape where the text spells it after a malformed \\u escape i
     }
   }
 });
+test('reads a nested copy that ends in a malformed \\u escape once per level, within the scan budget (#342)', () => {
+  // Automated review on c5a0b7f: a masked JWK with a long pad copied three times after a stray quote and a raw line
+  // break, then \uZ, spent the budget (56n with a 1,000-character pad, against 35n without the \uZ). The loose decode
+  // kept "uZ" where scanJson's literal dropped \uZ, so the two copies differed and each level was read twice. Main
+  // accepts it, and Redactor keeps it and masks k (RedactorTest.masksANestedCopyThatEndsInAMalformedUnicodeEscape).
+  for (const lb of ['\n', '\r\n']) {
+    for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+      const nest = (k, pad) => {
+        let text = JSON.stringify({ pad: 'x'.repeat(pad), kty: 'oct', k });
+        for (let i = 0; i < 3; i++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}`;
+        return text + tail;
+      };
+      for (const pad of [1000, 2000]) {
+        assertAccepted(nest(MASK, pad));
+        assertFlagged(nest('FAKE_JWK_K_342', pad));
+      }
+      // 58.3n on c5a0b7f, 36.4n with the fix and without the \uZ.
+      const masked = nest(MASK, 2000);
+      scanWork.characters = 0;
+      findTextLeaks(masked);
+      assert.ok(scanWork.characters <= 38 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
