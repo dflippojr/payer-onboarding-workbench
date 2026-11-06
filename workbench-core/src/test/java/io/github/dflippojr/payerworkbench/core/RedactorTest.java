@@ -1357,6 +1357,25 @@ class RedactorTest {
     }
 
     @Test
+    void readsAFormFeedEscapeAfterARepairedMalformedUnicodeEscape() {
+        // #342 (automated review on a7d0f8f): the leak scanner's test of the same form relies on these outputs.
+        String q = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String pre : List.of("\\uZ", "\\u0Z", "\\u00G")) {
+                for (String value : List.of("true", q + "FAKE_JWK_K_342" + q)) {
+                    String colon = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":\\f" + value + "}";
+                    String kty = "he said \"" + lb + pre + "{" + q + "kty" + q + "\\f:" + q + "oct" + q + "," + q + "k" + q + ":" + value + "}";
+                    assertEquals(colon, Redactor.redact(colon));
+                    assertEquals(kty, Redactor.redact(kty));
+                }
+                String masked = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + "[REDACTED]" + q + "}";
+                assertEquals(masked, Redactor.redact(masked.replace("[REDACTED]", "FAKE_JWK_K_342")));
+                assertEquals(masked, Redactor.redact(masked));
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

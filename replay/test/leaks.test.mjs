@@ -810,6 +810,23 @@ test('flags a copy that ends in a malformed \\u escape, a \\u with fewer than fo
     }
   }
 });
+test('reads a \\f escape where the text spells it after a malformed \\u escape is repaired (#342)', () => {
+  // Automated review on a7d0f8f: after a stray quote and a raw line break, a malformed \uZ, \u0Z or \u00G before an
+  // escaped JWK lost its backslash for JSON to read the copy, but the decoded view's offsets were still those of the text
+  // before the repair, one character off past it. So the check of a \f escape around a colon read the wrong character
+  // and flagged a member Redactor does not find (RedactorTest.readsAFormFeedEscapeAfterARepairedMalformedUnicodeEscape).
+  const q = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    for (const pre of ['\\uZ', '\\u0Z', '\\u00G']) {
+      for (const value of ['true', `${q}FAKE_JWK_K_342${q}`]) {
+        assertAccepted(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:\\f${value}}`);
+        assertAccepted(`he said "${lb}${pre}{${q}kty${q}\\f:${q}oct${q},${q}k${q}:${value}}`);
+      }
+      assertFlagged(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}FAKE_JWK_K_342${q}}`);
+      assertAccepted(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}${MASK}${q}}`);
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
