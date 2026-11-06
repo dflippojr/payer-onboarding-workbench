@@ -747,6 +747,37 @@ test('reads past a line break spelled as a \\u escape in a value, and flags a co
     }
   }
 });
+test('flags a copy cut off in half an escape at the end of the text, and reads a nest of paired stray strings within the scan budget (#342)', () => {
+  // Automated review on 5ca573a, finding 1: a lone backslash or a \u with fewer than four hex digits at the end made
+  // the copy one JSON could not read, so its \" escapes were kept and no view held the JWK; Redactor masks k. Finding
+  // 2: a masked JWK copied three times after "<line break>"<line break> spent the budget (37,564 against 30,056 with a
+  // 500-character pad): the text between strings and the text after a cut string were both read for the same copy.
+  // Main accepts it, and Redactor keeps it and masks k
+  // (RedactorTest.masksACopyCutOffInHalfAnEscapeAndANestOfPairedStrayStrings).
+  const copy = k => JSON.stringify(`{"kty":"oct","k":"${k}"}`).slice(1, -1);
+  for (const lb of ['\n', '\r\n']) {
+    for (const tail of ['\\', '\\u0', '\\u00', '\\u002', '\\\\\\']) {
+      assertFlagged(`he said "${lb}${copy('FAKE_JWK_K_342')}${tail}`);
+      assertAccepted(`he said "${lb}${copy(MASK)}${tail}`);
+    }
+    const nest = (k, pad) => {
+      let text = `{"kty":"oct","k":"${k}","pad":"${'x'.repeat(pad)}"}`;
+      for (let i = 0; i < 3; i++) text = `"${lb}"${lb}${JSON.stringify(text).slice(1, -1)}`;
+      return text;
+    };
+    for (const pad of [500, 2000]) {
+      assertAccepted(nest(MASK, pad));
+      assertFlagged(nest('FAKE_JWK_K_342', pad));
+    }
+    // With a 10,000-character pad the report form, one level deeper, fails closed, as on 4175db6 (accepted, row 2x).
+    assert.deepEqual(findTextLeaks(nest(MASK, 10000)), []);
+    // 57.9n on 5ca573a, 40.6n on 4175db6.
+    const masked = nest(MASK, 2000);
+    scanWork.characters = 0;
+    findTextLeaks(masked);
+    assert.ok(scanWork.characters <= 41 * masked.length, `read ${scanWork.characters} of ${masked.length} characters`);
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
