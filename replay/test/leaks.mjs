@@ -714,11 +714,14 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN) {
   readUnread(decoded, unread, level + 1, ctx, toRoot);
 }
 
-/** A JWK private member's name and colon, each letter also as a \u escape, as Redactor matches a field's name. */
-const PRIVATE_FIELD = /"((?:[A-Za-z_-]|\\u[0-9A-Fa-f]{4}){1,64})"\s*:\s*/y;
+/**
+ * A JWK private member's name and colon, each letter also as a \u escape, as Redactor matches a field's name. Its
+ * whitespace is Java's \s, ASCII only: JavaScript's also takes a no-break space (automated review on 7050fef).
+ */
+const PRIVATE_FIELD = /"((?:[A-Za-z_-]|\\u[0-9A-Fa-f]{4}){1,64})"[ \t\n\x0B\f\r]*:[ \t\n\x0B\f\r]*/y;
 
-/** A kty name and colon, as Redactor finds a JWK's type member. */
-const KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"\s*:/g;
+/** A kty name and colon, as Redactor finds a JWK's type member, with Java's whitespace. */
+const KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"[ \t\n\x0B\f\r]*:/g;
 
 /** A kty name at a member's name, as Redactor checks each name of an object it read. */
 const KTY_AT = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"/y;
@@ -736,8 +739,9 @@ const backslashesBefore = (text, i) => {
 /**
  * The private member fields in `text` whose value Redactor would have masked and did not: from a name's opening quote
  * (one no backslash escapes), the name and colon, then an object or array, a number, true or false, or a string that is
- * neither the mask nor empty (to its closing quote, or cut by a line break or the end of the text, as Redactor reads a
- * field). Each comes as [where its name starts, text to report, check].
+ * neither the mask nor empty: to its closing quote through any line break, or to the end of the text where it was cut
+ * (with any half escape there dropped), as Redactor reads a field (automated review on 7050fef: a value that starts with
+ * a line break read as empty). Each comes as [where its name starts, text to report, check].
  */
 function unmaskedPrivateFields(text, ctx) {
   const fields = [];
@@ -751,7 +755,7 @@ function unmaskedPrivateFields(text, ctx) {
       fields.push([at, text.slice(at, v + 40), 'JSON secret structure']);
     } else if (text[v] === '"') {
       let end = v + 1;
-      while (end < text.length && text[end] !== '"' && text[end] !== '\n' && text[end] !== '\r') end += text[end] === '\\' ? 2 : 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
       let content = text.slice(v + 1, Math.min(end, text.length));
       if (text[end] !== '"' && content.endsWith('\\')) content = content.slice(0, -1);
       let value;
@@ -905,7 +909,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
   let stopAt = text.length;
   // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
   // Redactor, unless its JWK search may spend its budget (textLeaks).
-  const newOwner = (object, start = -1) => ({ object, start, kty: false, values: [] });
+  const newOwner = object => ({ object, kty: false, values: [] });
   const top = newOwner(false);
   // The open objects and arrays, innermost last; a secret-named member's array also collects its items.
   const stack = [];
@@ -1013,7 +1017,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN) {
       continue;
     }
     if (c === '{' || c === '[') {
-      const container = { owner: newOwner(c === '{', i), list: null };
+      const container = { owner: newOwner(c === '{'), list: null };
       if (member) {
         const value = { name: member.name, malformed: member.malformed, kind: c === '{' ? 'object' : 'array', items: [], nested: false, text: text.slice(i, i + 80) };
         member.owner.values.push(value);
