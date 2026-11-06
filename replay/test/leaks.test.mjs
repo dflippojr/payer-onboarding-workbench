@@ -556,6 +556,23 @@ test('flags a copied JWK with mixed quote escapes after an escaped quote in a va
     }
   }
 });
+test('accepts a kty in a copied value read whole that opens no member after a stray quote and a raw line break (#342)', () => {
+  // Automated review on 0ab5aeb: reading the stray quote's string whole, a kty name with no comma or open bracket before
+  // it ({"x":0 "kty":...}) made a JWK, though Redactor counts as a member name only the first string after { or , and
+  // leaves these as they are (RedactorTest.keepsAKtyThatOpensNoMemberInACopiedValueAfterAStrayQuote). A name after a
+  // comma still makes one, also with other text between them, as Redactor reads it.
+  const b = '\\"';
+  const form = (mid, d) => `{${b}x${b}:${mid}${b}kty${b}:${b}RSA${b},${b}d${b}:${b}${d}${b}}`;
+  for (const lb of ['\n', '\r\n']) {
+    for (const mid of ['0 ', `${b}a${b} `, `{${b}y${b}:1} `, '[1] ']) {
+      assertAccepted(`he said "${lb}${form(mid, 'dimension')}`);
+    }
+    for (const mid of ['0,', '0 , ', '0, x ', `{${b}y${b}:1},`, '[1],']) {
+      assertFlagged(`he said "${lb}${form(mid, 'FAKE_PRIVATE_KEY_342')}`);
+      assertAccepted(`he said "${lb}${form(mid, MASK)}`);
+    }
+  }
+});
 test('still flags a private member after a loose kty in plain JSON, as on main (#342)', () => {
   // Only in a string read whole does the quote count decide whether a kty name makes a JWK. Elsewhere the scanner
   // reads the name after a stray "" as a member, as on main, and so exempts less than Redactor, which keeps these.

@@ -1111,6 +1111,25 @@ class RedactorTest {
     }
 
     @Test
+    void keepsAKtyThatOpensNoMemberInACopiedValueAfterAStrayQuote() {
+        // #342 (automated review on 0ab5aeb): only the first string after { or , is a member name, so a kty after a
+        // value with no comma makes no JWK. The leak scanner's test of the same form uses these outputs.
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String mid : List.of("0 ", b + "a" + b + " ", "{" + b + "y" + b + ":1} ", "[1] ")) {
+                String text = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
+                        + b + "d" + b + ":" + b + "dimension" + b + "}";
+                assertEquals(text, Redactor.redact(text));
+            }
+            for (String mid : List.of("0,", "0 , ", "0, x ", "{" + b + "y" + b + ":1},", "[1],")) {
+                String form = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
+                        + b + "d" + b + ":" + b + "%s" + b + "}";
+                assertEquals(form.formatted("[REDACTED]"), Redactor.redact(form.formatted("FAKE_PRIVATE_KEY_342")));
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
