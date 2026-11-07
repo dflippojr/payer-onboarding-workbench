@@ -853,9 +853,10 @@ public final class Redactor {
      * its own level, and a view unescaped past it reads an escape of the value as a quote of its own
      * ({@code "s3cr3t\\\\"} as {@code "s3cr3t\\"}), running the value on through the next member (review on
      * c8d676f); the same value found by two readings, an empty one included, is so masked once. An object or array's
-     * mask is dropped only where an earlier object or array's mask overlaps it: over string masks taken before, the
-     * members of that object, it is taken and masks them with it (review on 806a28c). The spans taken never overlap,
-     * so each mask is checked against its neighbours only.
+     * mask that starts where an earlier mask does is such a competing reading and is dropped too; over masks taken
+     * before that start inside it, its members' values and objects, it is taken and masks them with it (reviews on
+     * 806a28c and 43b954a), unless an earlier object or array's mask reaches outside it. The spans taken never
+     * overlap, so each mask is checked against its neighbours only.
      */
     private static final class SecretMasks {
 
@@ -868,21 +869,27 @@ public final class Redactor {
             int end = mask.end();
             Integer from = spans.floorKey(start);
             List<Integer> overlapped = new ArrayList<>();
+            int first = start;
             int union = end;
             for (Map.Entry<Integer, int[]> span : spans.subMap(from == null ? start : from, true, Math.max(end, start + 1),
                     false).entrySet()) {
-                if (!overlaps(span.getKey(), span.getValue()[0], start, end)) {
+                int spanStart = span.getKey();
+                int spanEnd = span.getValue()[0];
+                if (!overlaps(spanStart, spanEnd, start, end)) {
                     continue;
                 }
-                if (!structure || span.getValue()[1] == 1) {
+                // A string or scalar's mask, one starting where an earlier mask does (a competing reading of the same
+                // value), or one an earlier object or array's mask does not lie wholly inside, is dropped.
+                boolean inside = start < spanStart && spanEnd <= end;
+                if (!structure || spanStart == start || (span.getValue()[1] == 1 && !inside)) {
                     return;
                 }
-                overlapped.add(span.getKey());
-                start = Math.min(start, span.getKey());
-                union = Math.max(union, span.getValue()[0]);
+                overlapped.add(spanStart);
+                first = Math.min(first, spanStart);
+                union = Math.max(union, spanEnd);
             }
             overlapped.forEach(spans::remove);
-            spans.put(start, new int[] {union, structure ? 1 : 0});
+            spans.put(first, new int[] {union, structure ? 1 : 0});
             list.add(mask);
         }
 
