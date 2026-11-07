@@ -933,13 +933,12 @@ public final class Redactor {
             if (structure.region(at, json.length()).lookingAt()) {
                 int end = endOfStructure(json, structure.end(), embedded);
                 // An embedded object or array that a bare quote cuts off before its brackets close holds JSON quoted
-                // at another level ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest, so
-                // the plain reading of the next level masks it whole instead. The names up to that quote are passed
-                // over at this level, so each such structure is read once (review on 47c938e: reading each to one
-                // bare quote at the end made the work grow with the square of the names).
+                // at the level above ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest. It
+                // is read as plain JSON here, where its strings keep their own escapes (review on 7a80b9c: the next
+                // view takes one off, so "a\"}b" closed the object at its brace), and is so read once (review on
+                // 47c938e: reading each to one bare quote at the end made the work grow with the square of the names).
                 if (embedded && end < json.length() && json.charAt(end) == '"') {
-                    copied = end;
-                    continue;
+                    end = endOfStructure(json, structure.end(), false);
                 }
                 copied = end;
                 masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true);
