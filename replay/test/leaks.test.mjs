@@ -907,6 +907,26 @@ test('keeps a copied value cut off in half a \\u escape after an escaped backsla
     }
   }
 });
+test('flags a copied secret field cut off in half a \\u escape after a \\u005c backslash, which Redactor masks (#342)', () => {
+  // Automated review on 73e4411: a backslash spelled \u005c (or \u005C) before half a \u escape at the end decodes to the
+  // same lone backslash as an escaped one, but Redactor masks a secret field's value, half escape and all. 73e4411 kept
+  // the value as an escaped backslash's, and accepted it. Redactor's JWK search matches no k member there and keeps it,
+  // as the scanner does (RedactorTest.masksACopiedSecretFieldCutOffInHalfAUnicodeEscapeAfterAUnicodeBackslash).
+  const q = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    for (const backslash of ['\\u005c', '\\u005C']) {
+      for (const tail of ['\\u', '\\u0', '\\u005']) {
+        const secret = `he said "${lb}{${q}password${q}:${q}`;
+        assertFlagged(`${secret}${MASK}${backslash}${tail}`);
+        assertFlagged(`${secret}${backslash}${tail}`);
+        assertAccepted(`${secret}${MASK}\\\\${tail}`);
+        const jwk = `he said "${lb}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`;
+        assertAccepted(`${jwk}${MASK}${backslash}${tail}`);
+        assertAccepted(`${jwk}${backslash}${tail}`);
+      }
+    }
+  }
+});
 test('checks each private member name for a form feed in time that grows with the text, not its square (#342)', () => {
   // Codex security round 2 at 8a06f7e, finding 2: the check of a member name's whitespace for an escaped form feed
   // searched from the name to the end of the view, for every private member, work the scan budget did not count. With

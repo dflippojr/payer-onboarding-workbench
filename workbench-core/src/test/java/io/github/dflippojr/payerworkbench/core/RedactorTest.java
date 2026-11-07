@@ -1451,6 +1451,26 @@ class RedactorTest {
     }
 
     @Test
+    void masksACopiedSecretFieldCutOffInHalfAUnicodeEscapeAfterAUnicodeBackslash() {
+        // #342 (automated review on 73e4411): the leak scanner's test of the same form relies on these outputs. A
+        // backslash spelled as a unicode escape before half an escape at the end is masked with a secret field's value;
+        // the JWK search matches no k member there, and the text is kept.
+        String q = "\\\"";
+        for (String backslash : List.of("\\u005c", "\\u005C")) {
+            for (String tail : List.of("\\u", "\\u0", "\\u005")) {
+                for (String lb : List.of("\n", "\r\n")) {
+                    String secret = "he said \"" + lb + "{" + q + "password" + q + ":" + q;
+                    assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + "[REDACTED]" + backslash + tail));
+                    assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + backslash + tail));
+                    String jwk = "he said \"" + lb + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q;
+                    assertEquals(jwk + "[REDACTED]" + backslash + tail, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
+                    assertEquals(jwk + backslash + tail, Redactor.redact(jwk + backslash + tail));
+                }
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
