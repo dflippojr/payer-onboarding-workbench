@@ -655,6 +655,34 @@ public final class Redactor {
     }
 
     /**
+     * {@link #endOfStructure} in a {@link #flattened} view: a quote the view turned bare ({@code quotes}) inside a string
+     * a plain quote opens is that string's own {@code \\u0022}, not its closing quote (review on 84afef7: the object
+     * in {@code {"note":"a\\u0022{"}} ran on to the end of the text). A string such a quote opens closes at a quote of
+     * either kind.
+     */
+    private static int endOfFlatStructure(String json, int start, BitSet quotes) {
+        int depth = 0;
+        boolean inString = false;
+        boolean plain = false;
+        boolean escaped = false;
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (inString) {
+                inString = escaped || c != '"' || (plain && quotes.get(i));
+                escaped = !escaped && c == '\\';
+            } else if (c == '"') {
+                inString = true;
+                plain = !quotes.get(i);
+            } else if (c == '{' || c == '[') {
+                depth++;
+            } else if ((c == '}' || c == ']') && --depth == 0) {
+                return i + 1;
+            }
+        }
+        return json.length();
+    }
+
+    /**
      * Masks the {@link #JWK_PRIVATE_MEMBERS} of every JSON object with a {@code kty} member, as a secret
      * field is masked: a string or scalar value becomes the mask, and so does an object or array, through
      * its close bracket. Only the JWK's own members count, not those of an object inside or next to it.
@@ -777,7 +805,7 @@ public final class Redactor {
      */
     private static List<Mask> nestedJwkMasks(String text, int characters, Discovery discovery) {
         List<Mask> masks = new ArrayList<>();
-        View deepest = readNestedLevels(text, (view, normal, depth) -> {
+        View deepest = readNestedLevels(text, (view, normal, depth, fresh) -> {
             String json = normal.text();
             // With no quote one level deep, the view holds no JWK maskJwks would find in embedded JSON.
             if (!json.contains("\\\"")) {
@@ -806,11 +834,12 @@ public final class Redactor {
 
     /**
      * Reads one view of the text that {@link #readNestedLevels} gives: the view before its unicode escapes are decoded,
-     * the view {@link #normalized}, and the escape level it reads.
+     * the view {@link #normalized}, the escape level it reads, and where in the text each quote starts that taking the
+     * level above's escaping off made ({@link #unescaped}; {@code null} at depth 1, where every quote is the level's).
      */
     @FunctionalInterface
     private interface LevelReader {
-        void read(View view, View normal, int depth);
+        void read(View view, View normal, int depth, BitSet fresh);
     }
 
     /**
@@ -829,12 +858,13 @@ public final class Redactor {
             return null;
         }
         View view = new View(text, null);
+        BitSet fresh = null;
         for (int depth = 1; ; depth++) {
             View normal = normalized(view);
             String json = normal.text();
             // One level deep with no unicode escape to decode, the text itself is this view.
             if (depth > 1 || normal != view) {
-                reader.read(view, normal, depth);
+                reader.read(view, normal, depth, fresh);
             }
             if (!json.contains("\\\"") && !UNICODE_ESCAPE.matcher(json).find()) {
                 return null;
@@ -842,7 +872,8 @@ public final class Redactor {
             if (depth == NESTED_LEVELS) {
                 return normal;
             }
-            view = unescaped(normal);
+            fresh = new BitSet();
+            view = unescaped(normal, fresh);
         }
     }
 
@@ -876,7 +907,8 @@ public final class Redactor {
         if (text.contains("\\\"")) {
             secretFieldMasks(text, plain, 1, EMBEDDED_READING, masks);
         }
-        readNestedLevels(text, (view, normal, depth) -> {
+        readNestedLevels(text, (view, normal, depth, fresh) -> {
+            masks.fresh = fresh;
             secretFieldMasks(text, normal, depth, PLAIN_READING, masks);
             if (normal.text().contains("\\\"")) {
                 secretFieldMasks(text, normal, depth, EMBEDDED_READING, masks);
@@ -926,6 +958,8 @@ public final class Redactor {
         private int level;
         /** The quotes the flattened view being read turned bare ({@link #flattened}). */
         private BitSet flatQuotes;
+        /** Where the quotes of the view being read start in the text that its level's unescaping made, or {@code null}. */
+        private BitSet fresh;
 
         void add(Mask mask, boolean structure) {
             add(mask, structure, false, false);
@@ -1064,7 +1098,8 @@ public final class Redactor {
             int at = name.start();
             int quote = json.charAt(at) == '\\' ? 2 : 1;
             if (at < copied - 2 || !isSecretKey(decodeName(name.group(1)))
-                    || (mixed && !decodesQuote(view, at) && !decodesQuote(view, name.end(1)))) {
+                    || (mixed && !decodesQuote(view, at) && !decodesQuote(view, name.end(1)))
+                    || !opensAtItsLevel(view, at, reading, masks)) {
                 continue;
             }
             String spelled = quoteOf(text, view, at, quote);
@@ -1072,7 +1107,8 @@ public final class Redactor {
             // view reads), or for an embedded name the next one.
             masks.level = depth + (embedded ? 1 : 0);
             if (structure.region(at, json.length()).lookingAt()) {
-                int end = endOfStructure(json, structure.end(), embedded);
+                int end = reading == FLAT_READING ? endOfFlatStructure(json, structure.end(), masks.flatQuotes)
+                        : endOfStructure(json, structure.end(), embedded);
                 // An embedded object or array that a bare quote cuts off before its brackets close holds JSON quoted
                 // at the level above ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest. It
                 // is read as plain JSON here, where its strings keep their own escapes (review on 7a80b9c: the next
@@ -1105,6 +1141,22 @@ public final class Redactor {
                 }
             }
         }
+    }
+
+    /**
+     * Whether the name at {@code at} in {@code view} opens with a quote of the view's own level: past depth 1, one the
+     * level's unescaping made of an escaped quote, or one it decoded from {@code \\u0022}. A quote that was already
+     * bare a level up opens a name of that level, read there; this view, with one more escape taken off, would read
+     * {@code client\\\\u005fsecret} as {@code client_secret} (review on 84afef7).
+     */
+    private static boolean opensAtItsLevel(View view, int at, int reading, SecretMasks masks) {
+        if (masks.fresh == null) {
+            return true;
+        }
+        String json = view.text();
+        int quote = json.charAt(at) == '\\' ? at + 1 : at;
+        return masks.fresh.get(view.at(quote)) || (quote > at && decodesQuote(view, at))
+                || (reading == FLAT_READING && masks.flatQuotes.get(quote));
     }
 
     /** Whether a quote is at {@code close} in {@code json}, and after it the end, whitespace or a delimiter. */
@@ -1441,7 +1493,7 @@ public final class Redactor {
      * and each {@code \"} a quote; any other escape is kept as it is, so an escaped line break still reads
      * as whitespace and a name's {@code \\u} escape as an escape.
      */
-    private static View unescaped(View view) {
+    private static View unescaped(View view, BitSet fresh) {
         String text = view.text();
         StringBuilder out = new StringBuilder(text.length());
         int[] to = new int[text.length() + 1];
@@ -1463,6 +1515,9 @@ public final class Redactor {
             if ((run - i) % 2 == 1) {
                 to[out.length()] = view.at(run - 1);
                 boolean quote = run < text.length() && text.charAt(run) == '"';
+                if (quote) {
+                    fresh.set(view.at(run - 1));
+                }
                 out.append(quote ? '"' : '\\');
                 run += quote ? 1 : 0;
             }

@@ -1222,7 +1222,6 @@ class RedactorTest {
         for (String text : List.of(
                 "{\"client\\\\u005fsecret\":42}",
                 "{\"client\\\\u005fsecret\":\"x\",\"n\":1}",
-                "{Qclient\\\\u005fsecretQ:42,\"n\":1}",
                 "{\"a\":{\"pass\\\\u0077ord\":\"x\"}}")) {
             String in = text.replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,

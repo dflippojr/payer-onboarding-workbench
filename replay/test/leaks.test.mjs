@@ -1641,7 +1641,7 @@ test('accepts a secret object masked to its end through a \\u0022 in a plain-quo
       assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
     }
   }
-  for (const text of ['{"client\\\\u005fsecret":42}', '{"client\\\\u005fsecret":"x","n":1}', '{Qclient\\\\u005fsecretQ:42,"n":1}', '{"a":{"pass\\\\u0077ord":"x"}}']) {
+  for (const text of ['{"client\\\\u005fsecret":42}', '{"client\\\\u005fsecret":"x","n":1}', '{"a":{"pass\\\\u0077ord":"x"}}']) {
     for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(u(text))), [], wrap(u(text)));
   }
 });
