@@ -238,18 +238,36 @@ public final class Redactor {
     private static final Pattern VIEW_JSON_FIELD_STRUCTURE = Pattern.compile(
             "\"(" + NAME_CHAR + "{1,64})\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
 
+    /**
+     * A member name in a view whose quotes may each be plain or escaped once ({@code \"}), and its colon; group 1 is
+     * the name. {@link #secretFieldMasks} reads it where an escaped one is a quote the view decodes from {@code \\u0022}.
+     */
+    private static final String MIXED_NAME = BACKSLASH + "?+\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "?+\"";
+
+    /** {@link #MIXED_NAME} through its colon. */
+    private static final Pattern MIXED_FIELD_NAME = Pattern.compile(MIXED_NAME + EMBEDDED_SPACE + ":");
+
+    /** {@link #MIXED_NAME} and a plain-quoted string value, read as {@link #VIEW_JSON_FIELD} reads one; group 3 is its content. */
+    private static final Pattern MIXED_JSON_FIELD = Pattern.compile(MIXED_NAME + "(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE
+            + ")\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))");
+
+    /** {@link #MIXED_NAME} before an object or array. */
+    private static final Pattern MIXED_JSON_FIELD_STRUCTURE = Pattern.compile(
+            MIXED_NAME + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
+
     /** The same inside JSON embedded in a JSON string, as {@link #EMBEDDED_JSON_FIELD} starts; it starts at the backslash. */
     private static final Pattern EMBEDDED_FIELD_NAME = Pattern.compile(
             BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
     /**
      * For each reading of {@link #secretFieldMasks} ({@code PLAIN_READING}, {@code EMBEDDED_READING},
-     * {@code FLAT_READING}): the pattern that finds a name, the one for a name before an object or array, and the one
-     * for a name and its string or scalar value.
+     * {@code MIXED_READING}, {@code FLAT_READING}): the pattern that finds a name, the one for a name before an object
+     * or array, and the one for a name and its string or scalar value.
      */
     private static final Pattern[][] READINGS = {
         {FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD},
         {EMBEDDED_FIELD_NAME, EMBEDDED_JSON_FIELD_STRUCTURE, EMBEDDED_JSON_FIELD},
+        {MIXED_FIELD_NAME, MIXED_JSON_FIELD_STRUCTURE, MIXED_JSON_FIELD},
         {FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD},
     };
 
@@ -856,6 +874,7 @@ public final class Redactor {
             secretFieldMasks(text, normal, PLAIN_READING, masks);
             if (normal.text().contains("\\\"")) {
                 secretFieldMasks(text, normal, EMBEDDED_READING, masks);
+                secretFieldMasks(text, normal, MIXED_READING, masks);
             }
             View flat = flattened(view);
             if (flat != null) {
@@ -883,8 +902,8 @@ public final class Redactor {
     private static final class SecretMasks {
 
         private final List<Mask> list = new ArrayList<>();
-        /** Each span taken, by where it starts: where it ends, whether it is an object or array's, and its level. */
-        private final TreeMap<Integer, int[]> spans = new TreeMap<>();
+        /** Each span taken, by where it starts. */
+        private final TreeMap<Integer, Span> spans = new TreeMap<>();
         /** The level the masks added now are read at: 0 for the text itself, else the depth of its view. */
         private int level;
 
@@ -900,16 +919,17 @@ public final class Redactor {
             int first = start;
             int union = end;
             boolean sharesStart = false;
-            for (Map.Entry<Integer, int[]> span : spans.subMap(from == null ? start : from, true, Math.max(end, start + 1),
+            for (Map.Entry<Integer, Span> span : spans.subMap(from == null ? start : from, true, Math.max(end, start + 1),
                     false).entrySet()) {
                 int spanStart = span.getKey();
-                int spanEnd = span.getValue()[0];
+                Span taken = span.getValue();
+                int spanEnd = taken.end();
                 if (!overlaps(spanStart, spanEnd, start, end)) {
                     continue;
                 }
                 if (flat) {
                     // A flattened string's mask takes only string masks of its own level that lie inside it.
-                    if (span.getValue()[1] == 1 || span.getValue()[2] != level || spanStart < start || spanEnd > end
+                    if (taken.structure() || taken.level() != level || spanStart < start || spanEnd > end
                             || (spanStart == start && spanEnd == end)) {
                         return;
                     }
@@ -918,7 +938,7 @@ public final class Redactor {
                     // A string or scalar's mask, one starting where an earlier mask does (a competing reading of the same
                     // value), or one an earlier object or array's mask does not lie wholly inside, is dropped.
                     boolean inside = start < spanStart && spanEnd <= end;
-                    if (!structure || spanStart == start || (span.getValue()[1] == 1 && !inside)) {
+                    if (!structure || spanStart == start || (taken.structure() && !inside)) {
                         return;
                     }
                 }
@@ -930,8 +950,12 @@ public final class Redactor {
                 return;
             }
             overlapped.forEach(spans::remove);
-            spans.put(first, new int[] {union, structure ? 1 : 0, level});
+            spans.put(first, new Span(union, structure, level));
             list.add(mask);
+        }
+
+        /** A span taken: where it ends, whether it is an object or array's, and the level it was read at. */
+        private record Span(int end, boolean structure, int level) {
         }
 
         /** Whether span {@code [a, b)} and span {@code [s, e)} overlap; an empty span counts at its position. */
@@ -956,20 +980,30 @@ public final class Redactor {
     private static final int EMBEDDED_READING = 1;
 
     /**
-     * {@link #secretFieldMasks}: a {@link #flattened} view read as plain JSON, for a field the text quotes with
-     * {@code \\u0022} on only some of its quotes. Its value keeps its own escapes there: the view of
-     * {@code {"client_secret":\\u0022\\"s3cr3t\\u0022}} is {@code {"client_secret":"\\"s3cr3t"}} (security round 2), and that
-     * of {@code {\\u0022client_secret\\u0022:"s3\\"cr3t"}} is {@code {"client_secret":"s3\\"cr3t"}} (review on 5b051eb). The
-     * next view would take an escape off such a value: an escaped quote in it would close it early, and an escaped
-     * backslash at its end would run it through the next member.
+     * {@link #secretFieldMasks}: a view's names with a quote it decodes from {@code \\u0022} on either side, and their
+     * plain-quoted values, read as plain JSON in that view (reviews on 5b051eb and 96428f9). The value keeps its own
+     * escapes there, a quote the view decodes included: the next view would take one off, so an escaped quote in it
+     * ({@code "s3\\"cr3t"}) would close it early and an escaped backslash at its end would run it through the next
+     * member, and the {@link #FLAT_READING} would close {@code "pre\\u0022TAIL"} at its {@code \\u0022}. A name both of whose
+     * quotes are escaped is read by the embedded reading first.
      */
-    private static final int FLAT_READING = 2;
+    private static final int MIXED_READING = 2;
+
+    /**
+     * {@link #secretFieldMasks}: a {@link #flattened} view read as plain JSON, for a value whose opening quote the text
+     * spells {@code \\u0022} (security round 2). The value keeps its own escapes there: the view of
+     * {@code {"client_secret":\\u0022\\"s3cr3t\\u0022}} is {@code {"client_secret":"\\"s3cr3t"}}, while the next view would
+     * take an escape off it. A plain-quoted value is the other readings': this view would close it at a {@code \\u0022} of
+     * its own.
+     */
+    private static final int FLAT_READING = 3;
 
     /**
      * Adds to {@code masks} the mask of every secret-named field's value in {@code view}, as positions in the text (see
      * {@link #maskNestedSecretFields}), as the {@code reading} reads the view: {@link #PLAIN_READING},
-     * {@link #EMBEDDED_READING} or {@link #FLAT_READING}.
-     * The names are found first, apart from the values ({@link #FIELD_NAME}, {@link #EMBEDDED_FIELD_NAME}), as {@link #everyPrivateMember} finds JWK names: in malformed text a value can end at
+     * {@link #EMBEDDED_READING}, {@link #MIXED_READING} or {@link #FLAT_READING}.
+     * The names are found first, apart from the values ({@link #FIELD_NAME}, {@link #EMBEDDED_FIELD_NAME},
+     * {@link #MIXED_FIELD_NAME}), as {@link #everyPrivateMember} finds JWK names: in malformed text a value can end at
      * the quote that opens the next name ({@code "x":""client_secret":...}), and a search for whole fields would skip
      * that name. Each secret name's value is then matched from the name. A name inside a value already masked goes
      * with it, except one that opens on the quote that closed that value; so each value is read once, and the work
@@ -978,6 +1012,7 @@ public final class Redactor {
     private static void secretFieldMasks(String text, View view, int reading, SecretMasks masks) {
         String json = view.text();
         boolean embedded = reading == EMBEDDED_READING;
+        boolean mixed = reading == MIXED_READING;
         Matcher name = READINGS[reading][0].matcher(json);
         Matcher structure = READINGS[reading][1].matcher(json);
         Matcher field = READINGS[reading][2].matcher(json);
@@ -985,7 +1020,8 @@ public final class Redactor {
         while (name.find()) {
             int at = name.start();
             int quote = json.charAt(at) == '\\' ? 2 : 1;
-            if (at < copied - 2 || !isSecretKey(decodeName(name.group(1)))) {
+            if (at < copied - 2 || !isSecretKey(decodeName(name.group(1)))
+                    || (mixed && !decodesQuote(view, at) && !decodesQuote(view, name.end(1)))) {
                 continue;
             }
             String spelled = quoteOf(text, view, at, quote);
@@ -1011,6 +1047,18 @@ public final class Redactor {
                 }
             }
         }
+    }
+
+    /**
+     * Whether the escaped quote ({@code \\"}) at {@code at} in {@code view}, if one is there, is one {@link #normalized}
+     * decoded from {@code \\u0022}: the only escape whose backslash and quote start at the same place in the text. Unlike
+     * the text's spelling there, this tells a quote the view's level decodes from an escaped quote whose quote a level
+     * above decoded (an escaped backslash before a {@code \\u0022}).
+     */
+    private static boolean decodesQuote(View view, int at) {
+        String json = view.text();
+        return at + 1 < json.length() && json.charAt(at) == '\\' && json.charAt(at + 1) == '"'
+                && view.at(at) == view.at(at + 1);
     }
 
     /**

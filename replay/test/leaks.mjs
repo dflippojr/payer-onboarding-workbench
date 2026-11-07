@@ -774,8 +774,10 @@ const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 
  * Reads `text`, a MAIN view, once more with each quote it spells \u0022 by one backslash written as a quote: the
  * plain view Redactor reaches by decoding that escape to \" and taking that level of escaping off, where it masks a
  * secret field whose name and value quotes are spelled differently ({"client_secret":\u0022...\u0022},
- * {"client_secret":"..."}) (#339). The copy is a view main does not read (FLAT), so it is never flattened
- * again: each MAIN view adds at most one read of its own length.
+ * {\u0022client_secret\u0022:"..."}) (#339). A second copy keeps each \u0022 inside a plain-quoted string as the escape
+ * it is there (keepingPlainStrings), so a value such as "pre\u0022TAIL" after a name quoted with it is judged whole
+ * (review on 96428f9). The copies are views main does not read (FLAT), so they are never flattened again: each MAIN
+ * view adds at most two reads of its own length.
  */
 function readFlattened(text, level, ctx, toRoot, cut) {
   if (!text.includes('\\')) return;
@@ -796,15 +798,68 @@ function readFlattened(text, level, ctx, toRoot, cut) {
   }
   parts.push(text.slice(from));
   for (let k = from; k <= text.length; k++) at.push(k);
-  // The copy is read on top of what the other views may spend: the budget grows by what reading it spends, up to
-  // FLAT_ALLOWANCE times its length, so text the other views read within the budget is not failed closed for the copy
-  // (review on 806a28c). Each MAIN view has one copy, so the budget stays linear in the text.
-  const allowance = FLAT_ALLOWANCE * text.length;
+  const flat = parts.join('');
+  readFlatCopy(flat, at, level, ctx, toRoot, cut);
+  ctx.budget += text.length;
+  ctx.work += text.length;
+  const kept = keepingPlainStrings(text);
+  if (kept.copy !== flat) readFlatCopy(kept.copy, kept.at, level, ctx, toRoot, cut);
+}
+
+/**
+ * Reads a FLAT copy of a MAIN view (readFlattened), `at` mapping each of its characters to the view's. The copy is read
+ * on top of what the other views may spend: the budget grows by what reading it spends, up to FLAT_ALLOWANCE times its
+ * length, so text the other views read within the budget is not failed closed for the copy (review on 806a28c). Each
+ * MAIN view has at most two copies, so the budget stays linear in the text.
+ */
+function readFlatCopy(copy, at, level, ctx, toRoot, cut) {
+  const allowance = FLAT_ALLOWANCE * copy.length;
   ctx.budget += allowance;
   const before = ctx.work;
-  readNested(parts.join(''), level, ctx, j => toRoot(at[Math.min(j, at.length - 1)]), FLAT, cut);
+  readNested(copy, level, ctx, j => toRoot(at[Math.min(j, at.length - 1)]), FLAT, cut);
   ctx.budget -= Math.max(0, allowance - (ctx.work - before));
 }
+
+/**
+ * `text` with each quote it spells \u0022 written as a quote, as readFlattened's first copy, except inside a string a
+ * plain quote opens after a colon, a member's value: there a \u0022 is the string's own escape, and only a plain quote
+ * closes it. Any other string, a name included, closes at the next quote of either spelling, as in the first copy, so
+ * a name may open and close with different spellings. Escapes are read in pairs, so a \u0022 after an escaped backslash
+ * is a quote too. Returns the copy and, for each of its characters, where it starts in `text`.
+ */
+function keepingPlainStrings(text) {
+  const parts = [];
+  const at = [];
+  let from = 0;
+  let string = OUTSIDE;
+  let last = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const quote = c === '\\' && /^\\u0022/i.test(text.slice(i, i + 6));
+    if (quote && string !== PLAIN_VALUE) {
+      parts.push(text.slice(from, i), '"');
+      for (let k = from; k <= i; k++) at.push(k);
+      from = i + 6;
+      i += 5;
+      string = string === OUTSIDE ? LOOSE : OUTSIDE;
+    } else if (c === '\\') {
+      i++;
+    } else if (c === '"') {
+      if (string === OUTSIDE) string = last === ':' ? PLAIN_VALUE : LOOSE;
+      else string = OUTSIDE;
+    } else if (string === OUTSIDE && !isSpace(c)) {
+      last = c;
+    }
+  }
+  parts.push(text.slice(from));
+  for (let k = from; k <= text.length; k++) at.push(k);
+  return { copy: parts.join(''), at };
+}
+
+/** keepingPlainStrings: outside any string, in a member's plain-quoted value, or in any other string. */
+const OUTSIDE = 0;
+const PLAIN_VALUE = 1;
+const LOOSE = 2;
 
 /** The most a FLAT copy may spend reading, per character of the view it was copied from (readFlattened). */
 const FLAT_ALLOWANCE = 8;
