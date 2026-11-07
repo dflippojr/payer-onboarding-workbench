@@ -894,8 +894,9 @@ function unmaskedPrivateFields(text, ctx, toRoot, cut) {
         value = content;
       }
       ctx.work += content.length;
-      // In a view cut inside a value (readNested), a value open at its end lost bytes there.
-      const open = cut && (end >= text.length || (end + 1 >= text.length && text[end] === '\\'));
+      // In a view cut inside a value (readNested), a value open at its end lost bytes there. One that ends in a lone
+      // backslash Redactor does not match (automated review on b9d6038), so the loop above stops before it, at a mask.
+      const open = cut && end >= text.length;
       if (open || (value !== MASK && value !== '')) fields.push([at, text.slice(at, end + 1), 'JSON secret field']);
     } else if (/^(?:-?\d|true\b|false\b)/.test(text.slice(v, v + 6))) {
       fields.push([at, text.slice(at, v + 40), 'JSON secret field']);
@@ -1064,8 +1065,11 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = false) {
     return view ? view.read : null;
   };
   // Whether a literal's value lost bytes to a cut: half an escape decodeLiteral cut off its end, or, in a view cut inside
-  // a value (readNested), the literal is still open at the view's end.
-  const pending = literal => literal.cutEscape === true || (cut && !literal.terminated && literal.end >= text.length);
+  // a value (readNested), the literal is still open at the view's end. A view that ends in a lone backslash (an escaped
+  // one before the half escape in the copy) holds a value Redactor does not match, and keeps (automated review on
+  // b9d6038).
+  const pending = literal => literal.cutEscape === true
+    || (cut && !literal.terminated && literal.end >= text.length && backslashesBefore(text, text.length) % 2 === 0);
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
