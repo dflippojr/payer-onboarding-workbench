@@ -95,7 +95,12 @@
     {"id": "basic-unicode-escaped-form-feed", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Basic\\u000CRkFLRTpFU0NGRjAx0102\"}", "secrets": ["RkFLRTpFU0NGRjAx0102"]},
     {"id": "bearer-unicode-escaped-vertical-tab", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\u000bFAKE-u000b-0103\"}", "secrets": ["FAKE-u000b-0103"]},
     {"id": "bearer-tab-then-form-feed", "rule": "AUTH_SCHEME", "input": "{\"echo\":\"Bearer\\t\\fFAKE-tab-ff-0104\"}", "secrets": ["FAKE-tab-ff-0104"]},
-    {"id": "bearer-escaped-form-feed-in-json-string", "rule": "AUTH_SCHEME", "input": "{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\fFAKE-esc-esc-ff-0105\\\"}\"}", "secrets": ["FAKE-esc-esc-ff-0105"]}
+    {"id": "bearer-escaped-form-feed-in-json-string", "rule": "AUTH_SCHEME", "input": "{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\fFAKE-esc-esc-ff-0105\\\"}\"}", "secrets": ["FAKE-esc-esc-ff-0105"]},
+    {"id": "json-secret-nested-two-levels", "rule": "NESTED_SECRET_FIELD", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"FAKE-nested2-secret-0106\\\\\\\"}\\\"}\"}", "secrets": ["FAKE-nested2-secret-0106"]},
+    {"id": "json-secret-nested-three-levels", "rule": "NESTED_SECRET_FIELD", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"body\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_id\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"app\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"clientSecret\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"FAKE-nested3-secret-0107\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}", "secrets": ["FAKE-nested3-secret-0107"]},
+    {"id": "json-secret-unicode-escaped-quotes", "rule": "NESTED_SECRET_FIELD", "input": "{\"body\":\"{\\u0022client-secret\\u0022:\\u0022FAKE-u0022-secret-0108\\u0022}\"}", "secrets": ["FAKE-u0022-secret-0108"]},
+    {"id": "json-secret-unicode-escaped-quotes-top-level", "rule": "NESTED_SECRET_FIELD", "input": "{\\u0022access_token\\u0022:\\u0022FAKE-u0022-top-token-0109\\u0022}", "secrets": ["FAKE-u0022-top-token-0109"]},
+    {"id": "json-secret-nested-mixed-quote-escapes", "rule": "NESTED_SECRET_FIELD", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\u0022client\\\\\\\\u005fsecret\\\\u0022:\\\\u0022FAKE-mixed-nested-secret-0110\\\\u0022}\\\"}\"}", "secrets": ["FAKE-mixed-nested-secret-0110"]}
   ],
   "harmless": [
     {"id": "prose-bearer", "rule": "PROSE_WORD", "input": "missing bearer token"},
@@ -125,7 +130,9 @@
     {"id": "token-at-line-end", "rule": "AUTH_SCHEME", "input": "issue a token\n2 times per hour; DPoP\nproof-v2 required"},
     {"id": "token-url-then-arrow", "rule": "PROSE_WORD", "input": "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms"},
     {"id": "prose-bearer-plus-encoded", "rule": "PROSE_WORD", "input": "q=missing+bearer+token"},
-    {"id": "pgp-private-key-block-in-prose", "rule": "UNTERMINATED_PEM_KEY", "input": "paste the PGP PRIVATE KEY BLOCK into the vault, not here"}
+    {"id": "pgp-private-key-block-in-prose", "rule": "UNTERMINATED_PEM_KEY", "input": "paste the PGP PRIVATE KEY BLOCK into the vault, not here"},
+    {"id": "json-ordinary-field-nested-two-levels", "rule": "NESTED_SECRET_FIELD", "input": "{\"body\":\"{\\\"body\\\":\\\"{\\\\\\\"client_id\\\\\\\":\\\\\\\"app\\\\\\\",\\\\\\\"token_type\\\\\\\":\\\\\\\"Bearer\\\\\\\"}\\\"}\"}"},
+    {"id": "json-ordinary-field-unicode-escaped-quotes", "rule": "NESTED_SECRET_FIELD", "input": "{\"body\":\"{\\u0022client_id\\u0022:\\u0022app\\u0022,\\u0022secretary\\u0022:\\u0022s\\u0022}\"}"}
 ,
     {"id": "prose-bearer-escaped-newline", "rule": "PROSE_WORD", "input": "{\"m\":\"Missing bearer\\ntoken\"}"},
     {"id": "prose-basic-escaped-newline", "rule": "PROSE_WORD", "input": "{\"m\":\"Basic\\nplan\"}"},

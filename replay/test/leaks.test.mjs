@@ -1377,3 +1377,271 @@ test('class-level check: flags a mask that stops short of a generated secret', (
     assert.ok(flagged(placement), `${describeCase(c)} not flagged: ${placement.text ?? JSON.stringify(placement.record)}`);
   }
 });
+
+// #339: secret-named fields nested two or more levels deep, or spelled with \u0022 quotes. Each unmasked input is
+// flagged; what Redactor leaves for it (the strings RedactorTest expects) is not.
+const nestBody = text => JSON.stringify({ body: text });
+const nestQuotes = text => `{"body":"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\u0022')}"}`;
+const secretFieldShapes = [
+  // [unmasked, what Redactor leaves]
+  ['{"a":"{\\"b\\":\\"{\\\\\\"client_secret\\\\\\":\\\\\\"s3cr3t\\\\\\"}\\"}"}',
+    '{"a":"{\\"b\\":\\"{\\\\\\"client_secret\\\\\\":\\\\\\"[REDACTED]\\\\\\"}\\"}"}'],
+  ['{"a":"{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}"}', '{"a":"{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}"}'],
+  ['{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}', '{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}'],
+  ['{"a":"{\\u0022b\\u0022:\\u0022{\\\\\\"client_secret\\\\\\":\\\\\\"s3cr3t\\\\\\"}\\u0022}"}',
+    '{"a":"{\\u0022b\\u0022:\\u0022{\\\\\\"client_secret\\\\\\":\\\\\\"[REDACTED]\\\\\\"}\\u0022}"}'],
+  ['{"a":"{\\"b\\":\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022s3cr3t\\\\u0022}\\"}"}',
+    '{"a":"{\\"b\\":\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022[REDACTED]\\\\u0022}\\"}"}'],
+];
+for (const [json, masked] of [
+  ['{"client_id":"app","client_secret":"s3cr3t","scope":"x"}', '{"client_id":"app","client_secret":"[REDACTED]","scope":"x"}'],
+  ['{"clientSecret":"s3cr3t","n":1}', '{"clientSecret":"[REDACTED]","n":1}'],
+  ['{"grant":"x","client-secret":"s3cr3t"}', '{"grant":"x","client-secret":"[REDACTED]"}'],
+  ['{"client\\u005fsecret":"s3cr3t","client_id":"app"}', '{"client\\u005fsecret":"[REDACTED]","client_id":"app"}'],
+  ['{"password":123456,"user":"u"}', '{"password":"[REDACTED]","user":"u"}'],
+  ['{"private_key":{"x":"s3cr3t","y":[1,2]},"kid":"k1"}', '{"private_key":"[REDACTED]","kid":"k1"}'],
+]) {
+  for (const levels of [[nestBody, nestBody], [nestBody, nestBody, nestBody], [nestQuotes], [nestQuotes, nestBody],
+    [nestBody, nestQuotes], [nestQuotes, nestQuotes, nestBody]]) {
+    secretFieldShapes.push(levels.reduce(([a, b], level) => [level(a), level(b)], [json, masked]));
+  }
+}
+test('flags a secret field nested two or more levels deep or spelled with \\u0022 quotes, and accepts what Redactor leaves (#339)', () => {
+  for (const [unmasked, masked] of secretFieldShapes) {
+    assert.ok(findTextLeaks(unmasked).length > 0, `not flagged: ${unmasked}`);
+    assert.deepEqual(findTextLeaks(masked), [], masked);
+  }
+});
+test('accepts a non-secret field nested two levels deep or spelled with \\u0022 quotes (#339)', () => {
+  for (const text of [
+    '{"a":"{\\"b\\":\\"{\\\\\\"client_id\\\\\\":\\\\\\"app\\\\\\"}\\"}"}',
+    '{"a":"{\\u0022client_id\\u0022:\\u0022app\\u0022}"}',
+    '{\\u0022client_id\\u0022:\\u0022app\\u0022,\\u0022token_type\\u0022:\\u0022Bearer\\u0022}',
+    nestBody(nestBody(nestBody('{"client_id":"app","secretary":"s","n":1,"obj":{"x":[1]}}'))),
+    nestQuotes(nestBody('{"client_id":"app","scope":"a b"}')),
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
+
+// #339 security round 1, finding 1: " on only the name's quotes, only the value's, or single delimiters, bare
+// and wrapped in JSON strings. [unmasked, what Redactor leaves] (RedactorTest's exact expected outputs).
+const mixedQuoteShapes = [
+  ['{"client_secret":\\u0022s3cr3t\\u0022}', '{"client_secret":\\u0022[REDACTED]\\u0022}'],
+  ['{\\u0022client_secret\\u0022:"s3cr3t"}', '{\\u0022client_secret\\u0022:"[REDACTED]"}'],
+  ['{"client_secret\\u0022:"s3cr3t"}', '{"client_secret\\u0022:"[REDACTED]"}'],
+  ['{\\u0022client_secret":"s3cr3t"}', '{\\u0022client_secret":"[REDACTED]"}'],
+  ['{"client_secret":\\u0022s3cr3t"}', '{"client_secret":\\u0022[REDACTED]"}'],
+  ['{"n":1,"clientSecret":\\u0022s3cr3t\\u0022,"scope":"x"}', '{"n":1,"clientSecret":\\u0022[REDACTED]\\u0022,"scope":"x"}'],
+  ['{\\u0022password\\u0022:123456}', '{\\u0022password\\u0022:\\u0022[REDACTED]\\u0022}'],
+];
+const mixedQuoteWraps = [t => t, nestBody, nestQuotes, t => nestBody(nestBody(t)), t => nestQuotes(nestBody(t)), t => nestBody(nestQuotes(t))];
+test('flags a secret field whose name and value quotes are spelled differently, and accepts what Redactor leaves (#339)', () => {
+  for (const [unmasked, masked] of mixedQuoteShapes) {
+    for (const wrap of mixedQuoteWraps) {
+      assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  for (const text of ['{"client_id":\\u0022app\\u0022}', '{\\u0022client_id\\u0022:"app"}',
+    nestBody('{"client_id":\\u0022app\\u0022,\\u0022scope\\u0022:"a b"}')]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
+
+// #339 security round 1, finding 2: a secret name that opens on the quote closing the value before it ("x":""client_secret"),
+// bare and wrapped one to three levels deep, also with quotes spelled \u0022. [unmasked, what Redactor leaves].
+const sharedQuoteShapes = [
+  ['{"x":""client_secret":"s3cr3t"}', '{"x":""client_secret":"[REDACTED]"}'],
+  ['{"x":"a"password":"s3cr3t","n":1}', '{"x":"a"password":"[REDACTED]","n":1}'],
+  ['{"x":""private_key":{"d":"s3cr3t"},"kid":"k1"}', '{"x":""private_key":"[REDACTED]","kid":"k1"}'],
+];
+const sharedQuoteWraps = [t => t, nestBody, t => nestBody(nestBody(t)), t => nestBody(nestBody(nestBody(t))), nestQuotes,
+  t => nestQuotes(nestBody(t)), t => nestBody(nestQuotes(t)), t => nestBody(nestBody(nestQuotes(t)))];
+test('flags a secret name that opens on the quote closing the value before it, and accepts what Redactor leaves (#339)', () => {
+  for (const [unmasked, masked] of sharedQuoteShapes) {
+    for (const wrap of sharedQuoteWraps) {
+      assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  const u = s => s.replaceAll('Q', '\\u0022');
+  assert.ok(findTextLeaks(u('{QxQ:QQclient_secretQ:Qs3cr3tQ}')).length > 0);
+  assert.deepEqual(findTextLeaks(u('{QxQ:QQclient_secretQ:Q[REDACTED]Q}')), []);
+  const kept = nestBody(nestBody('{"x":""client_id":"app"}'));
+  assert.deepEqual(findTextLeaks(kept), [], kept);
+});
+
+test('reads text quoted with \u0022 five levels deep within the scan budget (#339)', () => {
+  // Each MAIN view holding a quote spelled \u0022 by one backslash is read once more, flattened: one read of its own
+  // length, so the work stays within the budget however deep the levels go.
+  let text = `[${'{"client_secret":"[REDACTED]","kid":"k1","n":1},'.repeat(5000)}{}]`;
+  for (let d = 0; d < 5; d++) text = nestQuotes(text);
+  const before = scanWork.characters;
+  assert.deepEqual(findTextLeaks(text), []);
+  assert.ok(scanWork.characters - before < 40 * text.length, `${scanWork.characters - before} >= 40 * ${text.length}`);
+});
+
+test('flags a JWK private member whose value is quoted with \\u0022 after plain-quoted names (#339, review on 47c938e)', () => {
+  // A MAIN view leaves a value opening with \u0022 to its FLAT copy only for a secret-named member, which that copy
+  // judges; a private member's value is judged where it is, as on main.
+  for (const text of ['{"kty":"oct","d":\\u0022PRIVD339\\u0022}', '{"kty":"RSA","n":"N1","d":\\u0022PRIVD339\\u0022,"e":"AQAB"}',
+    '[{"kty":"EC","d":\\u0022PRIVD339\\u0022}]', JSON.stringify({ body: '{"kty":"oct","k":\\u0022PRIVK339\\u0022}' })]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
+});
+
+test('accepts what Redactor leaves for an empty or escaped secret value at every depth, and flags it unmasked (#339, review on c8d676f)', () => {
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), t => nestBody(nestBody(nestBody(t))), nestQuotes,
+    t => nestQuotes(nestBody(t)), t => nestBody(nestQuotes(t))];
+  const masked = '{"client_secret":"[REDACTED]","client_id":"app","password":"[REDACTED]"}';
+  for (const value of ['', 's3cr3t\\\\', 's3\\"cr3t', 's3\\ncr3t']) {
+    const unmasked = `{"client_secret":"${value}","client_id":"app","password":"${value}"}`;
+    for (const wrap of wraps) {
+      if (value !== '') assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  // What the empty value used to become, masked twice, is not what Redactor leaves.
+  assert.ok(findTextLeaks('{"client_secret":"[REDACTED][REDACTED]"}').length > 0);
+});
+
+test('accepts a masked text with a long value quoted with \\u0022 five levels deep within the scan budget (#339, review on 806a28c)', () => {
+  // The flattened reads of each level are charged as they are made, on top of what the other views may spend.
+  let text = `{"client_secret":"[REDACTED]","note":"${'n'.repeat(10000)}"}`;
+  for (let d = 0; d < 5; d++) text = nestQuotes(text);
+  assert.deepEqual(findTextLeaks(text), []);
+  let leak = `{"client_secret":"LEAKED","note":"${'n'.repeat(10000)}"}`;
+  for (let d = 0; d < 5; d++) leak = nestQuotes(leak);
+  assert.ok(findTextLeaks(leak).some(l => l.check === 'JSON secret field'), 'not flagged');
+});
+test('flags a secret object whose members are quoted at another level, and accepts it masked whole (#339, review on 806a28c)', () => {
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes]) {
+    assert.ok(findTextLeaks(wrap(u('{QprivateKeyQ:{"password":"","other":42}}'))).length > 0, 'not flagged');
+    assert.deepEqual(findTextLeaks(wrap(u('{QprivateKeyQ:Q[REDACTED]Q}'))), []);
+  }
+});
+
+test('flags a plain-quoted value after a name quoted with \\u0022 and accepts it masked whole (#339, review on 5b051eb)', () => {
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{Qclient_secretQ:"s3\\"cr3t","n":1}', '{Qclient_secretQ:"[REDACTED]","n":1}'],
+    ['{Qclient_secretQ:"s3cr3t\\\\","n":1}', '{Qclient_secretQ:"[REDACTED]","n":1}'],
+    ['{Qpassword":"a\\\\\\"b","n":1}', '{Qpassword":"[REDACTED]","n":1}'],
+    ['{"client_secretQ:"s3\\"cr3t"}', '{"client_secretQ:"[REDACTED]"}'],
+    ['{Qprivate_key":{"note":"a\\"}b","other":"PRIVOTHER"},"n":1}', '{Qprivate_key":Q[REDACTED]Q,"n":1}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
+
+test('flags a value opened by a quote spelled \\u0022 with escapes of its own, and accepts it masked whole (#339, security round 2)', () => {
+  // RedactorTest.readsAValueOpenedByAUnicodeQuoteAtItsOwnEscapeLevel's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{"client_secret":Q\\"s3cr3tQ}', '{"client_secret":Q[REDACTED]Q}'],
+    ['{"client_secret":Q\\"s3cr3t"}', '{"client_secret":Q[REDACTED]"}'],
+    ['{"client_secret":Q\\\\\\"s3cr3tQ,"n":1}', '{"client_secret":Q[REDACTED]Q,"n":1}'],
+    ['{"client_secret":Qs3cr3t\\\\Q,"n":1}', '{"client_secret":Q[REDACTED]Q,"n":1}'],
+    ['{"password":Qs3\\"cr3t\\\\\\\\Q,"client_id":"app"}', '{"password":Q[REDACTED]Q,"client_id":"app"}'],
+    ['{Qclient_secretQ:Q\\"s3cr3tQ}', '{Qclient_secretQ:Q[REDACTED]Q}'],
+    ['{Qclient_secret":Qs3\\"cr3t"}', '{Qclient_secret":Q[REDACTED]"}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  // What Redactor left before the fix, an empty string masked before the value's escaped quote, keeps the secret.
+  assert.ok(findTextLeaks(u('{"client_secret":Q[REDACTED]\\"s3cr3tQ}')).length > 0, 'old output not flagged');
+  for (const text of [u('{"client_id":Q\\"appQ,"n":1}'), nestBody(nestBody(u('{"scope":Qa\\\\Q,"n":1}')))]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
+
+test('flags a plain-quoted value holding a quote spelled \\u0022 after a name quoted with it, and accepts it masked whole (#339, review on 96428f9)', () => {
+  // RedactorTest.keepsTheUnicodeQuotesInAPlainQuotedValueAfterANameQuotedWithThem's exact expected outputs. The value's
+  // \u0022 is an escape of its own: a copy that reads it as a closing quote judges only what comes before it.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  const pairs = [
+    ['{Qclient_secretQ:"preQTAIL"}', '{Qclient_secretQ:"[REDACTED]"}'],
+    ['{Qclient_secretQ:"Q,TAIL"}', '{Qclient_secretQ:"[REDACTED]"}'],
+    ['{"client_secretQ:"preQ,TAIL"}', '{"client_secretQ:"[REDACTED]"}'],
+    ['{Qclient_secret":"preQTAIL","n":1}', '{Qclient_secret":"[REDACTED]","n":1}'],
+    ['{QpasswordQ:"a\\"bQ\\\\c","client_id":"app"}', '{QpasswordQ:"[REDACTED]","client_id":"app"}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  // What Redactor left on 96428f9, the value masked only up to its own \u0022, keeps the rest of the secret.
+  for (const left of ['{Qclient_secretQ:"[REDACTED]QTAIL"}', '{Qclient_secretQ:"[REDACTED]Q,TAIL"}', '{"client_secretQ:"[REDACTED]Q,TAIL"}']) {
+    for (const wrap of wraps) assert.ok(findTextLeaks(wrap(u(left))).length > 0, `old output not flagged: ${wrap(u(left))}`);
+  }
+  for (const text of [u('{QscopeQ:"aQb","n":1}'), nestBody(u('{Qclient_idQ:"Q,x"}'))]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
+
+test('flags a secret object whose \\u0022-quoted strings hold an escaped quote, and accepts it masked whole (#339, review on ef4a81b)', () => {
+  // RedactorTest.masksASecretObjectWholeThroughAQuoteEscapedInsideItsUnicodeQuotedStrings's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:42}}', '{Qprivate_keyQ:Q[REDACTED]Q}'],
+    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:"PRIVOTHER"},"n":1}', '{Qprivate_keyQ:Q[REDACTED]Q,"n":1}'],
+    ['{QsecretQ:[Q\\"]Q,QPRIVOTHERQ]}', '{QsecretQ:Q[REDACTED]Q}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
+
+test('flags a secret object cut at a bracket in a \\u0022-quoted string, and a \\u0022-quoted value ending in an escaped backslash, and accepts what Redactor leaves (#339, review on 9de277d)', () => {
+  // RedactorTest.masksASecretObjectWholeThroughABracketInsideAUnicodeQuotedString and
+  // keepsTheDelimitersAfterAUnicodeQuotedValueEndingInAnEscapedBackslash's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{"private_key":{"note":Q}Q,"other":42},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":{"note":Q}Q,"other":"PRIVOTHER"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":[Q]Q,"PRIVOTHER"],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{QpasswordQ:Qx\\\\Q,"n":1}', '{QpasswordQ:Q[REDACTED]Q,"n":1}'],
+    ['{Qclient_secretQ:Qs3\\\\Q,"client_id":"app"}', '{Qclient_secretQ:Q[REDACTED]Q,"client_id":"app"}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
+
+test('accepts a secret object masked to its end through a \\u0022 in a plain-quoted string, and a name read at its own escape level (#339, review on 84afef7)', () => {
+  // RedactorTest.keepsTheUnicodeQuotesInsideAPlainQuotedStringOfASecretObject and readsANameAtItsOwnEscapeLevelOnly.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  for (const [unmasked, masked] of [
+    ['{"private_key":{"note":"aQ{","other":42},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":["aQ[",1],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{QpasswordQ:{"note":"aQ}","other":"PRIVOTHER"},"n":1}', '{QpasswordQ:Q[REDACTED]Q,"n":1}'],
+  ]) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  for (const text of ['{"client\\\\u005fsecret":42}', '{"client\\\\u005fsecret":"x","n":1}', '{"a":{"pass\\\\u0077ord":"x"}}']) {
+    for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(u(text))), [], wrap(u(text)));
+  }
+});
