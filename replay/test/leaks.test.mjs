@@ -1564,3 +1564,30 @@ test('flags a value opened by a quote spelled \\u0022 with escapes of its own, a
     assert.deepEqual(findTextLeaks(text), [], text);
   }
 });
+
+test('flags a plain-quoted value holding a quote spelled \\u0022 after a name quoted with it, and accepts it masked whole (#339, review on 96428f9)', () => {
+  // RedactorTest.keepsTheUnicodeQuotesInAPlainQuotedValueAfterANameQuotedWithThem's exact expected outputs. The value's
+  // \u0022 is an escape of its own: a copy that reads it as a closing quote judges only what comes before it.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  const pairs = [
+    ['{Qclient_secretQ:"preQTAIL"}', '{Qclient_secretQ:"[REDACTED]"}'],
+    ['{Qclient_secretQ:"Q,TAIL"}', '{Qclient_secretQ:"[REDACTED]"}'],
+    ['{"client_secretQ:"preQ,TAIL"}', '{"client_secretQ:"[REDACTED]"}'],
+    ['{Qclient_secret":"preQTAIL","n":1}', '{Qclient_secret":"[REDACTED]","n":1}'],
+    ['{QpasswordQ:"a\\"bQ\\\\c","client_id":"app"}', '{QpasswordQ:"[REDACTED]","client_id":"app"}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  // What Redactor left on 96428f9, the value masked only up to its own \u0022, keeps the rest of the secret.
+  for (const left of ['{Qclient_secretQ:"[REDACTED]QTAIL"}', '{Qclient_secretQ:"[REDACTED]Q,TAIL"}', '{"client_secretQ:"[REDACTED]Q,TAIL"}']) {
+    for (const wrap of wraps) assert.ok(findTextLeaks(wrap(u(left))).length > 0, `old output not flagged: ${wrap(u(left))}`);
+  }
+  for (const text of [u('{QscopeQ:"aQb","n":1}'), nestBody(u('{Qclient_idQ:"Q,x"}'))]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});

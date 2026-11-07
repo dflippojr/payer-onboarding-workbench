@@ -1100,6 +1100,27 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void keepsTheUnicodeQuotesInAPlainQuotedValueAfterANameQuotedWithThem() {
+        // Review on 96428f9: the flattened view reads every quote a level decodes from \\u0022 as a bare one, so a
+        // plain-quoted value after a name so quoted closed at a \\u0022 of its own and kept the rest. A plain-quoted
+        // value is read in the decoded view, where such a quote stays an escape, as a7a971d read it.
+        for (String[] pair : List.of(
+                new String[] {"{Qclient_secretQ:\"preQTAIL\"}", "{Qclient_secretQ:\"[REDACTED]\"}"},
+                new String[] {"{Qclient_secretQ:\"Q,TAIL\"}", "{Qclient_secretQ:\"[REDACTED]\"}"},
+                new String[] {"{\"client_secretQ:\"preQ,TAIL\"}", "{\"client_secretQ:\"[REDACTED]\"}"},
+                new String[] {"{Qclient_secret\":\"preQTAIL\",\"n\":1}", "{Qclient_secret\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{QpasswordQ:\"a\\\"bQ\\\\c\",\"client_id\":\"app\"}",
+                        "{QpasswordQ:\"[REDACTED]\",\"client_id\":\"app\"}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
