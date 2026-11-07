@@ -1625,17 +1625,20 @@ test('flags a secret object cut at a bracket in a \\u0022-quoted string, and a \
       assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
     }
   }
-  // The value's mask runs into the next member's name, so the scanner's mask-stops-short rule flags what Redactor
-  // leaves, as it flags the unmasked value (accepted with the decision: ambiguous text may lose its delimiters).
-  for (const [unmasked, left] of [
-    ['{QpasswordQ:Qx\\\\Q,"n":1}', '{QpasswordQ:Q[REDACTED]"n":1}'],
-    ['{Qclient_secretQ:Qs3\\\\Q,"client_id":"app"}', '{Qclient_secretQ:Q[REDACTED]"client_id":"app"}'],
+  // The value's end is unknown (its longer reading found no closing quote of its own), so Redactor masks it to the end
+  // of the string holding it, which the scanner accepts (review on 9593177: masked to the next member's quote, it was
+  // flagged as a mask that stops short).
+  for (const [unmasked, masked] of [
+    ['{QpasswordQ:Qx\\\\Q,"n":1}', '{QpasswordQ:Q[REDACTED]'],
+    ['{Qclient_secretQ:Qs3\\\\Q,"client_id":"app"}', '{Qclient_secretQ:Q[REDACTED]'],
   ]) {
     for (const wrap of wraps) {
       assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
-      assert.ok(findTextLeaks(wrap(u(left))).every(l => l.check === 'JSON secret field'), wrap(u(left)));
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
     }
   }
+  // What 9593177 left is flagged, as the review found.
+  assert.ok(findTextLeaks(u('{QpasswordQ:Q[REDACTED]"n":1}')).length > 0);
 });
 
 test('accepts a secret object masked to its end through a \\u0022 in a plain-quoted string, and a name read at its own escape level (#339, review on 84afef7)', () => {

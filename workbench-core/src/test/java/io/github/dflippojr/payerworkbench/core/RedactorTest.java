@@ -1182,12 +1182,14 @@ class RedactorTest {
     void masksAUnicodeQuotedValueEndingInAnEscapedBackslashThroughEveryReadingOfIt() {
         // Review on 9de277d, P2: the embedded reading reads the value's escaped backslash and closing \\u0022 as an
         // escaped quote and runs it on to the next bare quote; the flattened reading closes it at that \\u0022. By the
-        // owner's decision on #339 (fail closed) the union of the two is masked, the closing quote and comma with it.
+        // owner's decision on #339 (fail closed) the union is masked, and as the longer reading found no closing quote of
+        // its own, the value's end is unknown and it is masked to the end of the string holding it (review on 9593177:
+        // masked only to the next member's quote, the output read as a mask that stops short).
         for (String[] pair : List.of(
                 new String[] {"{QpasswordQ:Qx\\\\Q,\"n\":1}",
-                        "{QpasswordQ:Q[REDACTED]\"n\":1}"},
+                        "{QpasswordQ:Q[REDACTED]"},
                 new String[] {"{Qclient_secretQ:Qs3\\\\Q,\"client_id\":\"app\"}",
-                        "{Qclient_secretQ:Q[REDACTED]\"client_id\":\"app\"}"})) {
+                        "{Qclient_secretQ:Q[REDACTED]"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
@@ -1276,6 +1278,29 @@ class RedactorTest {
                 String out = Redactor.redact(wrap.apply(in));
                 assertFalse(out.contains("TAIL") || out.contains("other"), wrap.apply(in) + " => " + out);
                 assertTrue(out.contains("private_key"), out);
+            }
+        }
+    }
+
+    @Test
+    void keepsValidJsonsBoundsWhenItsStringsAreWrittenWithUnicodeQuotes() {
+        // Review on 9593177: written into a JSON string with \\u0022 for its quotes (nestedEscapingQuotes), valid JSON
+        // whose strings hold an escaped quote was over-masked: the flattened view turned the \\u0022 inside the plain
+        // string holding it into quotes, read an escaped quote as an escaped backslash and a closing quote, and that
+        // reading's mask ran on past the object. A \\u0022 inside a plain-quoted value is that string's own.
+        for (String[] pair : List.of(
+                new String[] {"{\"private_key\":{\"note\":\"a\\\"b\"},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"password\":\"a\\\"b\",\"n\":1}",
+                        "{\"password\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":[\"a\\\"]\",1],\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":{\"note\":\"a\\\\\"},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"})) {
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
+                    t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
             }
         }
     }
