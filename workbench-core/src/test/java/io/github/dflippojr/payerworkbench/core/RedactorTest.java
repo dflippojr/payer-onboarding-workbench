@@ -1411,6 +1411,28 @@ class RedactorTest {
     }
 
     @Test
+    void masksACopiedSecretValueCutOffInHalfAUnicodeEscape() {
+        // #342 (Codex security round 2 at 8a06f7e): the leak scanner's test of the same form relies on these outputs.
+        // Half an escape inside a value still open at the end is masked with it; after a closed value it is kept.
+        String q = "\\\"";
+        for (String tail : List.of("\\u", "\\u0", "\\u00", "\\u005")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
+                    String masked = "he said \"" + lb + head + "[REDACTED]" + q;
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + tail));
+                    assertEquals(masked + tail, Redactor.redact(masked + tail));
+                    assertEquals(masked + "}" + tail, Redactor.redact(masked + "}" + tail));
+                }
+            }
+            for (String head : List.of("{\"kty\":\"oct\",\"k\":\"", "{\"password\":\"")) {
+                assertEquals(head + "[REDACTED]\"", Redactor.redact(head + "[REDACTED]" + tail));
+                assertEquals(head + "[REDACTED]\"}" + tail, Redactor.redact(head + "[REDACTED]\"}" + tail));
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

@@ -867,6 +867,30 @@ test('flags a copied secret value cut off in a malformed \\u escape, which Redac
     }
   }
 });
+test('flags a copied secret value cut off in half a \\u escape, which Redactor masks with it (#342)', () => {
+  // Codex security round 2 at 8a06f7e, finding 1: a \u with zero to three hex digits at the end of the text, inside a
+  // value still open there, was cut as half an escape, which left the bare mask (or an empty value), and the scanner
+  // accepted it. Redactor masks the whole value, half escape and all, and writes a closing quote, so the text is not its
+  // output (RedactorTest.masksACopiedSecretValueCutOffInHalfAUnicodeEscape). After a closed value or object, half an
+  // escape is still accepted: a cut there loses nothing of a value.
+  const q = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    for (const tail of ['\\u', '\\u0', '\\u00', '\\u005']) {
+      for (const head of [`{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`, `{${q}password${q}:${q}`]) {
+        assertFlagged(`he said "${lb}${head}${MASK}${tail}`);
+        assertFlagged(`he said "${lb}${head}${tail}`);
+        assertAccepted(`he said "${lb}${head}${MASK}${q}${tail}`);
+        assertAccepted(`he said "${lb}${head}${MASK}${q}}${tail}`);
+      }
+    }
+  }
+  for (const tail of ['\\u', '\\u0', '\\u00', '\\u005']) {
+    for (const head of ['{"kty":"oct","k":"', '{"password":"']) {
+      assertFlagged(`${head}${MASK}${tail}`);
+      assertAccepted(`${head}${MASK}"}${tail}`);
+    }
+  }
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
