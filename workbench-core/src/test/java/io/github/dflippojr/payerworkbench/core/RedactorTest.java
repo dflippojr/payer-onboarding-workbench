@@ -912,6 +912,34 @@ class RedactorTest {
     }
 
     @Test
+    void masksSecretFieldsWhoseNameAndValueQuotesAreSpelledDifferently() {
+        // #339 security round 1, finding 1: \\u0022 on only the name's quotes, only the value's, or on single
+        // delimiters. Each quote keeps its spelling, and only the value's content becomes the mask.
+        for (String[] pair : List.of(
+                new String[] {"{\"client_secret\":\\u0022s3cr3t\\u0022}", "{\"client_secret\":\\u0022[REDACTED]\\u0022}"},
+                new String[] {"{\\u0022client_secret\\u0022:\"s3cr3t\"}", "{\\u0022client_secret\\u0022:\"[REDACTED]\"}"},
+                new String[] {"{\"client_secret\\u0022:\"s3cr3t\"}", "{\"client_secret\\u0022:\"[REDACTED]\"}"},
+                new String[] {"{\\u0022client_secret\":\"s3cr3t\"}", "{\\u0022client_secret\":\"[REDACTED]\"}"},
+                new String[] {"{\"client_secret\":\\u0022s3cr3t\"}", "{\"client_secret\":\\u0022[REDACTED]\"}"},
+                new String[] {"{\"n\":1,\"clientSecret\":\\u0022s3cr3t\\u0022,\"scope\":\"x\"}",
+                        "{\"n\":1,\"clientSecret\":\\u0022[REDACTED]\\u0022,\"scope\":\"x\"}"},
+                new String[] {"{\\u0022password\\u0022:123456}", "{\\u0022password\\u0022:\\u0022[REDACTED]\\u0022}"})) {
+            assertEquals(pair[1], Redactor.redact(pair[0]), pair[0]);
+            // Wrapped: the same text in a JSON string, one and two levels deep, whichever way each level escapes.
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(RedactorTest::nested,
+                    RedactorTest::nestedEscapingQuotes, t -> nested(nested(t)), t -> nestedEscapingQuotes(nested(t)),
+                    t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+            }
+        }
+        // Non-secret names spelled the same way stay byte for byte.
+        for (String in : List.of("{\"client_id\":\\u0022app\\u0022}", "{\\u0022client_id\\u0022:\"app\"}",
+                nested("{\"client_id\":\\u0022app\\u0022,\\u0022scope\\u0022:\"a b\"}"))) {
+            assertEquals(in, Redactor.redact(in));
+        }
+    }
+
+    @Test
     void masksNestedSecretFieldsInLinearTime() {
         // About 1 MB each of openers that never close, nested two levels deep and spelled with \\u0022: a fixed
         // number of levels, each read once, so time stays linear (quadratic time takes minutes).

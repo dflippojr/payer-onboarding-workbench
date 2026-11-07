@@ -1378,7 +1378,7 @@ test('class-level check: flags a mask that stops short of a generated secret', (
   }
 });
 
-// #339: secret-named fields nested two or more levels deep, or spelled with " quotes. Each unmasked input is
+// #339: secret-named fields nested two or more levels deep, or spelled with \u0022 quotes. Each unmasked input is
 // flagged; what Redactor leaves for it (the strings RedactorTest expects) is not.
 const nestBody = text => JSON.stringify({ body: text });
 const nestQuotes = text => `{"body":"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\u0022')}"}`;
@@ -1420,6 +1420,31 @@ test('accepts a non-secret field nested two levels deep or spelled with \\u0022 
     nestBody(nestBody(nestBody('{"client_id":"app","secretary":"s","n":1,"obj":{"x":[1]}}'))),
     nestQuotes(nestBody('{"client_id":"app","scope":"a b"}')),
   ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
+
+// #339 security round 1, finding 1: " on only the name's quotes, only the value's, or single delimiters, bare
+// and wrapped in JSON strings. [unmasked, what Redactor leaves] (RedactorTest's exact expected outputs).
+const mixedQuoteShapes = [
+  ['{"client_secret":\\u0022s3cr3t\\u0022}', '{"client_secret":\\u0022[REDACTED]\\u0022}'],
+  ['{\\u0022client_secret\\u0022:"s3cr3t"}', '{\\u0022client_secret\\u0022:"[REDACTED]"}'],
+  ['{"client_secret\\u0022:"s3cr3t"}', '{"client_secret\\u0022:"[REDACTED]"}'],
+  ['{\\u0022client_secret":"s3cr3t"}', '{\\u0022client_secret":"[REDACTED]"}'],
+  ['{"client_secret":\\u0022s3cr3t"}', '{"client_secret":\\u0022[REDACTED]"}'],
+  ['{"n":1,"clientSecret":\\u0022s3cr3t\\u0022,"scope":"x"}', '{"n":1,"clientSecret":\\u0022[REDACTED]\\u0022,"scope":"x"}'],
+  ['{\\u0022password\\u0022:123456}', '{\\u0022password\\u0022:\\u0022[REDACTED]\\u0022}'],
+];
+const mixedQuoteWraps = [t => t, nestBody, nestQuotes, t => nestBody(nestBody(t)), t => nestQuotes(nestBody(t)), t => nestBody(nestQuotes(t))];
+test('flags a secret field whose name and value quotes are spelled differently, and accepts what Redactor leaves (#339)', () => {
+  for (const [unmasked, masked] of mixedQuoteShapes) {
+    for (const wrap of mixedQuoteWraps) {
+      assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  for (const text of ['{"client_id":\\u0022app\\u0022}', '{\\u0022client_id\\u0022:"app"}',
+    nestBody('{"client_id":\\u0022app\\u0022,\\u0022scope\\u0022:"a b"}')]) {
     assert.deepEqual(findTextLeaks(text), [], text);
   }
 });
