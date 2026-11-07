@@ -1626,3 +1626,22 @@ test('flags a secret object cut at a bracket in a \\u0022-quoted string, and a \
     }
   }
 });
+
+test('accepts a secret object masked to its end through a \\u0022 in a plain-quoted string, and a name read at its own escape level (#339, review on 84afef7)', () => {
+  // RedactorTest.keepsTheUnicodeQuotesInsideAPlainQuotedStringOfASecretObject and readsANameAtItsOwnEscapeLevelOnly.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  for (const [unmasked, masked] of [
+    ['{"private_key":{"note":"aQ{","other":42},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":["aQ[",1],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{QpasswordQ:{"note":"aQ}","other":"PRIVOTHER"},"n":1}', '{QpasswordQ:Q[REDACTED]Q,"n":1}'],
+  ]) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  for (const text of ['{"client\\\\u005fsecret":42}', '{"client\\\\u005fsecret":"x","n":1}', '{Qclient\\\\u005fsecretQ:42,"n":1}', '{"a":{"pass\\\\u0077ord":"x"}}']) {
+    for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(u(text))), [], wrap(u(text)));
+  }
+});
