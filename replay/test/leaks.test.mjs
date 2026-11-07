@@ -1645,3 +1645,20 @@ test('accepts a secret object masked to its end through a \\u0022 in a plain-quo
     for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(u(text))), [], wrap(u(text)));
   }
 });
+
+test('flags a secret object with mixed-quoted member names or strings, and accepts it masked to its own close bracket (#339, review on 22ff6ea)', () => {
+  // RedactorTest.boundsASecretObjectByTheReadingWhoseBracketsClose's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const [unmasked, masked] of [
+    ['{"private_key":{"passwordQ:"}TAIL"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{QprivateKeyQ:{"note":QxQ},"n":1}', '{QprivateKeyQ:Q[REDACTED]Q,"n":1}'],
+    ['{"private_key":{"note":"aQ"},"n":"bQ}"}', '{"private_key":"[REDACTED]","n":"bQ}"}'],
+    ['{"private_key":[QaQ,"}TAIL"],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":{"passQword":"x"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+  ]) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});

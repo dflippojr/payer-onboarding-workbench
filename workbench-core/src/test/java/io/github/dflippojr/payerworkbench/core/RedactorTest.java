@@ -1231,6 +1231,32 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void boundsASecretObjectByTheReadingWhoseBracketsClose() {
+        // Review on 22ff6ea: a member name opened by a plain quote and closed by \\u0022 kept the flattened reading in
+        // the name, so the object closed at a brace in the value after it (P1); and a reading that ran to the end of the
+        // text kept the object's mask past its close bracket over the flattened reading that closes there (P2). The
+        // last three keep valid JSON's bounds: a \\u0022 inside a plain-quoted value or name is the string's own.
+        for (String[] pair : List.of(
+                new String[] {"{\"private_key\":{\"passwordQ:\"}TAIL\"},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{QprivateKeyQ:{\"note\":QxQ},\"n\":1}",
+                        "{QprivateKeyQ:Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{\"private_key\":{\"note\":\"aQ\"},\"n\":\"bQ}\"}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":\"bQ}\"}"},
+                new String[] {"{\"private_key\":[QaQ,\"}TAIL\"],\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":{\"passQword\":\"x\"},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
