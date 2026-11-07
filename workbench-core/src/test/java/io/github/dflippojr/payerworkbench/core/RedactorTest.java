@@ -1137,7 +1137,9 @@ class RedactorTest {
                 "{\"a\":\"" + "\\\"x\\\":\\\"\\\"client_secret\\\":\\\"".repeat(n) + "\"}",
                 ("\"client_secret\":" + "\\" + "u0022").repeat(n),
                 // Review on 47c938e: embedded structures that one bare quote at the end cuts off, each read to it.
-                ("\\u0022client_secret\\u0022:{").repeat(n) + "\"");
+                ("\\u0022client_secret\\u0022:{").repeat(n) + "\"",
+                // Security round 2: values the flattened view reads past the empty string another reading found.
+                ("\\u0022client_secret\\u0022:\\u0022\\\"s3\\u0022,").repeat(n));
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             String out = Redactor.redact(text);
             assertTrue(out.length() <= 2 * text.length(), () -> out.length() + " > 2 * " + text.length());
