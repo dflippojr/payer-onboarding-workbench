@@ -784,6 +784,7 @@ function readFlattened(text, level, ctx, toRoot, cut) {
   const found = LONE_UNICODE_QUOTE.test(text);
   LONE_UNICODE_QUOTE.lastIndex = 0;
   if (!found) return;
+  ctx.budget += text.length;
   ctx.work += text.length;
   const parts = [];
   const at = [];
@@ -795,8 +796,18 @@ function readFlattened(text, level, ctx, toRoot, cut) {
   }
   parts.push(text.slice(from));
   for (let k = from; k <= text.length; k++) at.push(k);
+  // The copy is read on top of what the other views may spend: the budget grows by what reading it spends, up to
+  // FLAT_ALLOWANCE times its length, so text the other views read within the budget is not failed closed for the copy
+  // (review on 806a28c). Each MAIN view has one copy, so the budget stays linear in the text.
+  const allowance = FLAT_ALLOWANCE * text.length;
+  ctx.budget += allowance;
+  const before = ctx.work;
   readNested(parts.join(''), level, ctx, j => toRoot(at[Math.min(j, at.length - 1)]), FLAT, cut);
+  ctx.budget -= Math.max(0, allowance - (ctx.work - before));
 }
+
+/** The most a FLAT copy may spend reading, per character of the view it was copied from (readFlattened). */
+const FLAT_ALLOWANCE = 8;
 
 /**
  * Reads a decoded string as the JSON it may hold, `level` levels down. A string with a quote is read as JSON. A

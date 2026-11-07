@@ -849,27 +849,55 @@ public final class Redactor {
     /**
      * The masks {@link #maskNestedSecretFields} finds, in the order its readings run: the text before the views, and
      * the views from the shallowest level down, each read as plain JSON (the level above) before embedded JSON. A
-     * mask that overlaps one taken before is dropped: the earlier reading read that value at its own level, and a view
-     * unescaped past it reads an escape of the value as a quote of its own ({@code "s3cr3t\\\\"} as
-     * {@code "s3cr3t\\"}), running the value on through the next member (review on c8d676f). The same value found
-     * by two readings, an empty one included, is so masked once.
+     * string or scalar value's mask that overlaps one taken before is dropped: the earlier reading read that value at
+     * its own level, and a view unescaped past it reads an escape of the value as a quote of its own
+     * ({@code "s3cr3t\\\\"} as {@code "s3cr3t\\"}), running the value on through the next member (review on
+     * c8d676f); the same value found by two readings, an empty one included, is so masked once. An object or array's
+     * mask is dropped only where an earlier object or array's mask overlaps it: over string masks taken before, the
+     * members of that object, it is taken and masks them with it (review on 806a28c). The spans taken never overlap,
+     * so each mask is checked against its neighbours only.
      */
     private static final class SecretMasks {
 
         private final List<Mask> list = new ArrayList<>();
-        private final TreeMap<Integer, Integer> spans = new TreeMap<>();
+        /** Each span taken, by where it starts: where it ends, and whether it is an object or array's. */
+        private final TreeMap<Integer, int[]> spans = new TreeMap<>();
 
-        void add(Mask mask) {
-            Map.Entry<Integer, Integer> before = spans.floorEntry(mask.start());
-            if (before != null && (before.getKey() == mask.start() || before.getValue() > mask.start())) {
-                return;
+        void add(Mask mask, boolean structure) {
+            int start = mask.start();
+            int end = mask.end();
+            Integer from = spans.floorKey(start);
+            List<Integer> overlapped = new ArrayList<>();
+            int union = end;
+            for (Map.Entry<Integer, int[]> span : spans.subMap(from == null ? start : from, true, Math.max(end, start + 1),
+                    false).entrySet()) {
+                if (!overlaps(span.getKey(), span.getValue()[0], start, end)) {
+                    continue;
+                }
+                if (!structure || span.getValue()[1] == 1) {
+                    return;
+                }
+                overlapped.add(span.getKey());
+                start = Math.min(start, span.getKey());
+                union = Math.max(union, span.getValue()[0]);
             }
-            Map.Entry<Integer, Integer> after = spans.higherEntry(mask.start());
-            if (after != null && after.getKey() < mask.end()) {
-                return;
-            }
-            spans.put(mask.start(), mask.end());
+            overlapped.forEach(spans::remove);
+            spans.put(start, new int[] {union, structure ? 1 : 0});
             list.add(mask);
+        }
+
+        /** Whether span {@code [a, b)} and span {@code [s, e)} overlap; an empty span counts at its position. */
+        private static boolean overlaps(int a, int b, int s, int e) {
+            if (a == b && s == e) {
+                return a == s;
+            }
+            if (a == b) {
+                return s <= a && a < e;
+            }
+            if (s == e) {
+                return a <= s && s < b;
+            }
+            return a < e && s < b;
         }
     }
 
@@ -907,14 +935,14 @@ public final class Redactor {
                     continue;
                 }
                 copied = end;
-                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled));
+                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true);
             } else if (field.region(at, json.length()).lookingAt()) {
                 copied = field.end();
                 if (field.group(3) != null) {
                     masks.add(new Mask(view.at(field.start(3)), view.at(field.end(3)),
-                            masked(decodeName(field.group(1)), field.group(3))));
+                            masked(decodeName(field.group(1)), field.group(3))), false);
                 } else {
-                    masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled));
+                    masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false);
                 }
             }
         }
