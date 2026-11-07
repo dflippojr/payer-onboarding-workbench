@@ -1305,6 +1305,33 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void keepsAValidNameWhoseUnicodeQuoteAColonFollowsWhole() {
+        // Security round 3, finding 2: {"note\\u0022:foo":...} is valid JSON, its name note":foo. The flattened view
+        // took that \\u0022 for the name's closing quote because a colon follows it, and its longer reading of the
+        // secret object, joined with the right one, ran on to the end of the text. A name that closes with a plain
+        // quote and a colon keeps its \\u0022 as its own.
+        for (String[] pair : List.of(
+                new String[] {"{\"private_key\":{\"noteQ:foo\":\"{TAIL\",\"other\":42},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":{\"noteQ :foo\":\"}TAIL\",\"other\":42},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":{\"aQ:bQ:c\":\"x\",\"other\":42},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":[{\"noteQ:foo\":\"]TAIL\"}],\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"noteQ:foo\":\"{\",\"password\":\"s3\",\"n\":1}",
+                        "{\"noteQ:foo\":\"{\",\"password\":\"[REDACTED]\",\"n\":1}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
+                    t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

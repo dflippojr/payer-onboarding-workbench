@@ -1686,3 +1686,32 @@ test('flags a secret object whose readings disagree on its bounds, in every wrap
     }
   }
 });
+
+test('flags every raw secret value opened by \\u0022 that main flags, empty ones included (#339, security round 3, main-vs-head differential)', () => {
+  // Main's scanner flags each of these 336 inputs: a plain-quoted secret name whose value opens with \u0022, empty or
+  // holding a \u0022 that closes it (computed against main's leaks.mjs, 25db12e). A value opening with \u0022 is left to
+  // the FLAT copy only when it starts with the mask, Redactor's own output; any other is judged as main judges it.
+  const U = '\\u0022';
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), t => nestBody(nestBody(nestBody(t))), nestQuotes,
+    t => nestBody(nestQuotes(t)), t => nestQuotes(nestBody(t))];
+  let count = 0;
+  for (const name of ['client_secret', 'password', 'clientSecret']) {
+    for (const value of ['', U + ',CR3T']) {
+      for (const close of ['"', U]) {
+        for (const tail of ['', ',"n":1', ',"client_id":"app"', `,${U}n${U}:1`]) {
+          for (const wrap of wraps) {
+            const text = wrap(`{"${name}":${U}${value}${close}${tail}}`);
+            assert.ok(findTextLeaks(text).length > 0, `main flags, head accepts: ${text}`);
+            count++;
+          }
+        }
+      }
+    }
+  }
+  assert.equal(count, 336);
+  // Redactor's outputs for values opened by \u0022 are still accepted.
+  for (const masked of [`{"client_secret":${U}[REDACTED]${U}}`, `{"client_secret":${U}[REDACTED]"}`, `{"password":${U}[REDACTED]`,
+    `{"client_secret":${U}[REDACTED]${U},"n":1}`]) {
+    for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+  }
+});
