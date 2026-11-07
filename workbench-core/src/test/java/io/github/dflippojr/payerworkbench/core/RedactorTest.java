@@ -871,6 +871,12 @@ class RedactorTest {
         }
     }
 
+    /** {@code text} as the content of a JSON string, escaped as a serializer escapes it, without its quotes. */
+    private static String escapedForJson(String text) {
+        String quoted = JSON.writeValueAsString(text);
+        return quoted.substring(1, quoted.length() - 1);
+    }
+
     /** {@code text} as the value of a JSON string member, escaped as a serializer escapes it. */
     private static String nested(String text) {
         return "{\"body\":" + JSON.writeValueAsString(text) + "}";
@@ -1013,6 +1019,493 @@ class RedactorTest {
     }
 
     @Test
+    void masksTheTwiceEscapedCopiedFormAfterAStrayQuoteAndARawLineBreak() {
+        // #342: a stray quote and a raw line break (LF, CRLF or CR, with or without a backslash before it) ahead of the
+        // copied form do not stop the JWK search from spending its budget in the twice-decoded view. The leak scanner's
+        // #342 test uses this output as its masked form.
+        String loose = "\"kty\":\"".repeat(63);
+        String quote = "\\u0022";
+        for (String before : List.of("he said \"\n", "he said \"\r\n", "he said \"\r", "\"\n", "he said \"\\\n",
+                "he said \"\\\r\n")) {
+            for (String after : List.of("", " note: \"ok\"")) {
+                assertEquals(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
+                        + "[REDACTED]" + escapedEverything(quote) + after,
+                        Redactor.redact(before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))
+                                + after));
+            }
+        }
+    }
+
+    @Test
+    void masksTheTwiceEscapedCopiedFormAfterAStrayQuoteThatOpensNoMember() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String loose = "\"kty\":\"".repeat(63);
+        String quote = "\\u0022";
+        for (String before : List.of("\"\n\",\"body\":", "\"\r\n\",\"body\":", "x\",\"body\":")) {
+            assertEquals(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
+                    + "[REDACTED]" + escapedEverything(quote),
+                    Redactor.redact(before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))));
+        }
+    }
+
+    @Test
+    void keepsALooseKtyInAStringAfterAValueWithARawLineBreak() {
+        // #342: the leak scanner must accept this as it is.
+        String text = "{\"note\":\"a\nb\",\"body\":\"" + "\"kty\":\"RSA\",\"d\":\"dimension\"".replace("\"", "\\u0022") + "\"}";
+        assertEquals(text, Redactor.redact(text));
+    }
+
+    @Test
+    void masksACopiedJwkBeforeAStrayQuoteAndAUnicodeEscape() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String after = " \"x\" \\u0041";
+        assertEquals("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}" + after,
+                Redactor.redact("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"FAKE_JWK_K_342\\\"}" + after));
+    }
+
+    @Test
+    void masksAnEscapedJwkAfterAStrayQuoteAndARawLineBreak() {
+        // #342: the leak scanner's escaped-JWK test uses this output as its masked form.
+        for (String before : List.of("he said \"\n", "he said \"\r\n")) {
+            assertEquals(before + escapedEverything("{\"kty\":\"oct\",\"k\":") + escapedEverything("\"") + "[REDACTED]"
+                    + escapedEverything("\"}"),
+                    Redactor.redact(before + escapedEverything("{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\"}")));
+        }
+    }
+
+    @Test
+    void masksACopiedJwkWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // #342 (automated review on 925a782): kty quoted with \u0022 and k with \" (or the other way round). The leak
+        // scanner's test of the same name uses this output as its masked form.
+        String u = "\\u0022";
+        String b = "\\\"";
+        List<java.util.function.Function<String, String>> forms = List.of(
+                v -> "{" + u + "kty" + u + ":" + u + "oct" + u + "," + b + "k" + b + ":" + b + v + b + "}",
+                v -> "{" + b + "kty" + b + ":" + b + "oct" + b + "," + u + "k" + u + ":" + u + v + u + "}",
+                v -> "{" + u + "kty" + u + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + v + b + "}",
+                v -> "{" + b + "kty" + b + ":" + u + "oct" + u + "," + b + "k" + b + ":" + b + v + b + "}");
+        for (String before : List.of("he said \"\n", "he said \"\r\n", "\"\n", "\"\r\n")) {
+            for (String after : List.of("", "\"", "\" and \"x\"")) {
+                for (var form : forms) {
+                    assertEquals(before + form.apply("[REDACTED]") + after,
+                            Redactor.redact(before + form.apply("FAKE_JWK_K_342") + after));
+                }
+            }
+        }
+    }
+
+    @Test
+    void keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // #342 (automated review on c4ffeef and 39dd7ff): the leak scanner must accept each as it is.
+        String u = "\\u0022";
+        String b = "\\\"";
+        List<String> before = List.of("", u + "a" + u + ":0,", u + "a" + u + ":0," + u + "b" + u + ":" + u + "x" + u + ",",
+                u + "a" + u + ":{" + u + "x" + u + ":1},", u + "a" + u + ":[1," + u + "y" + u + "],");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String members : before) {
+                String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + members + u + "kty" + u + ":" + u + "RSA" + u
+                        + "," + u + "d" + u + ":" + u + "dimension" + u + b + "}";
+                assertEquals(text, Redactor.redact(text));
+            }
+        }
+    }
+
+    @Test
+    void keepsAKtyThatOpensNoMemberInACopiedValueAfterAStrayQuote() {
+        // #342 (automated review on 0ab5aeb): only the first string after { or , is a member name, so a kty after a
+        // value with no comma makes no JWK. The leak scanner's test of the same form uses these outputs.
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String mid : List.of("0 ", b + "a" + b + " ", "{" + b + "y" + b + ":1} ", "[1] ")) {
+                String text = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
+                        + b + "d" + b + ":" + b + "dimension" + b + "}";
+                assertEquals(text, Redactor.redact(text));
+            }
+            for (String mid : List.of("0,", "0 , ", "0, x ", "{" + b + "y" + b + ":1},", "[1],")) {
+                String form = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
+                        + b + "d" + b + ":" + b + "%s" + b + "}";
+                assertEquals(form.formatted("[REDACTED]"), Redactor.redact(form.formatted("FAKE_PRIVATE_KEY_342")));
+            }
+        }
+    }
+
+    @Test
+    void keepsAKtyThatOpensNoMemberInAnEscapedCopyAfterAStrayQuote() {
+        // #342 (automated review on 380cf7c): the leak scanner's test of the same form uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"),
+                text -> text.replace("\"", "\\\\u0022"),
+                text -> escapedForJson(escapedForJson(text)),
+                text -> "{\\u0022body\\u0022:\\u0022" + text.replace("\"", "\\\\u0022") + "\\u0022}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ")) {
+                    String text = "he said \"" + lb + encode.apply("{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
+                    assertEquals(text, Redactor.redact(text));
+                }
+                for (String mid : List.of("0,", "0, x ")) {
+                    String form = "{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"%s\"}";
+                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                }
+            }
+        }
+    }
+
+    @Test
+    void keepsAKtyAfterAnOddNumberOfQuotesInAnEscapedCopyAfterAStrayQuote() {
+        // #342 (automated review on 9a3e247): the leak scanner's test of the same form uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"),
+                text -> text.replace("\"", "\\\\u0022"),
+                text -> escapedForJson(escapedForJson(text)));
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String before : List.of("\"\"a\":0,", "\"a\":\"b\"c\",")) {
+                    String text = "he said \"" + lb + encode.apply("{" + before + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
+                    assertEquals(text, Redactor.redact(text));
+                }
+                for (String before : List.of("\"a\":0,", "")) {
+                    String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
+                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                }
+            }
+        }
+    }
+
+    @Test
+    void keepsAPrivateMemberThatOpensNoMemberInAnEscapedCopyAfterAStrayQuote() {
+        // #342 (automated reviews on fa4fd1d and 223512b): the leak scanner's test of the same form uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"),
+                text -> text.replace("\"", "\\\\u0022"),
+                text -> escapedForJson(escapedForJson(text)));
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ", "\"\"a\":0,", "\"b\"c\",")) {
+                    String text = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"dimension\"}");
+                    assertEquals(text, Redactor.redact(text));
+                }
+                for (String mid : List.of("0,", "0, y ", "[1],", "\"b\"c\"\",")) {
+                    String form = "{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"%s\"}";
+                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                }
+            }
+        }
+    }
+
+    @Test
+    void readsJwksInAnEscapedCopyAfterAStrayQuoteAsItsSearchFindsThem() {
+        // #342 (automated review on 65e1e7f): the leak scanner's test of the same name uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"),
+                text -> text.replace("\"", "\\\\u0022"),
+                text -> escapedForJson(escapedForJson(text)));
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String before : List.of("\"{\":\"\"a\":0,", "\"[\":\"\"a\":0,\"b\":{", "\"a\":\"{\",")) {
+                    String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
+                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                }
+                String colons = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"d\"::\"dimension\"}");
+                assertEquals(colons, Redactor.redact(colons));
+            }
+        }
+    }
+
+    @Test
+    void readsAPrivateMemberValueThroughItsLineBreaksAndOnlyAsciiWhitespaceAroundAColon() {
+        // #342 (automated review on 7050fef): the leak scanner's test of the same form uses these outputs.
+        List<java.util.function.UnaryOperator<String>> encodings = List.of(
+                text -> text.replace("\"", "\\u0022"), text -> text.replace("\"", "\\\\u0022"));
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var encode : encodings) {
+                for (String value : List.of("\\nTAIL", "\\r\\nTAIL", "\\n")) {
+                    String text = "he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"" + value + "\"}");
+                    assertEquals("he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}"), Redactor.redact(text));
+                }
+                for (String space : List.of("\u00a0", "\u2003", "\u3000")) {
+                    for (String form : List.of("{\"kty\"" + space + ":\"oct\",\"k\":\"dimension\"}",
+                            "{\"kty\":\"oct\",\"k\"" + space + ":\"dimension\"}", "{\"kty\":\"oct\",\"k\":" + space + "\"dimension\"}")) {
+                        String text = "he said \"" + lb + encode.apply(form);
+                        assertEquals(text, Redactor.redact(text));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksAJwkCopiedAfterTwoStrayQuotesAndEndsAValueAtABackslashBeforeALineBreak() {
+        // #342 (automated review on 5173e8e): the leak scanner's test of the same form uses these outputs.
+        String jwk = "{\"kty\":\"oct\",\"k\":\"%s\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String before : List.of("he said \"" + lb + "he said \"" + lb, "he said \"" + lb + "x\"" + lb + "more" + lb, "\"" + lb + "\"" + lb)) {
+                assertEquals(before + escapedForJson(jwk.formatted("[REDACTED]")),
+                        Redactor.redact(before + escapedForJson(jwk.formatted("FAKE_JWK_K_342"))));
+            }
+            String cut = "he said \"" + lb + escapedForJson("{\"kty\":\"oct\",\"k\":\"[REDACTED]\\" + lb + "TAIL\"}");
+            assertEquals(cut, Redactor.redact(cut));
+        }
+    }
+
+    @Test
+    void masksACopiedValueAfterABackslashAndARawUnicodeLineBreakAndReadsNoFormFeedEscapeAsWhitespace() {
+        // #342 (automated review on e2487e1): the leak scanner's test of the same form relies on these outputs. A
+        // backslash escaped in the copy, then a raw U+0085, U+2028 or U+2029, is part of the value, so the whole value is
+        // masked; a \f escape is no whitespace in an escaped copy, so no member is found, while a \u000c is.
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            String masked = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + "[REDACTED]" + b + "}";
+            for (String brk : List.of("\u0085", "\u2028", "\u2029")) {
+                for (String k : List.of("", "[REDACTED]")) {
+                    String in = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + k + "\\\\" + brk
+                            + "TAIL" + b + "}";
+                    assertEquals(masked, Redactor.redact(in));
+                }
+            }
+            for (String value : List.of("true", "1", "{}", b + "FAKE_JWK_K_342" + b)) {
+                for (String form : List.of("{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s:\\f%2$s}", "{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s\\f:%2$s}",
+                        "{%1$skty%1$s\\f:%1$soct%1$s,%1$sk%1$s:%2$s}")) {
+                    String kept = "he said \"" + lb + form.formatted(b, value);
+                    assertEquals(kept, Redactor.redact(kept));
+                }
+            }
+            String formFeed = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000ctrue}";
+            assertEquals("he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000c" + b + "[REDACTED]" + b + "}",
+                    Redactor.redact(formFeed));
+        }
+    }
+
+    @Test
+    void readsPastALineBreakSpelledAsAUnicodeEscapeInAValueAndMasksACopyAfterAPairedStrayString() {
+        // #342 (automated review on 4175db6): the leak scanner's test of the same form relies on these outputs.
+        String u = "\\u0022";
+        String b = "\\\"";
+        java.util.function.BiFunction<String, String, String> jwk =
+                (q, k) -> "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + k + q + "}";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String q : List.of(u, b)) {
+                String masked = "he said \"" + lb + jwk.apply(q, "[REDACTED]");
+                for (String brk : List.of("\\u000a", "\\u000d", "\\u0085", "\\u2028", "\\u2029")) {
+                    for (String k : List.of("\\u005c" + brk + "TAIL", "[REDACTED]\\u005c" + brk + "TAIL", "[REDACTED]\\\\" + brk + "TAIL")) {
+                        assertEquals(masked, Redactor.redact("he said \"" + lb + jwk.apply(q, k)));
+                    }
+                }
+                String kept = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
+                assertEquals(kept, Redactor.redact(kept));
+            }
+            for (String before : List.of("\"" + lb + "\",\"body\":", "\"" + lb + "\",\"b\":1,\"body\":", "x\"" + lb + "\",\"body\":")) {
+                assertEquals(before + jwk.apply(b, "[REDACTED]"), Redactor.redact(before + jwk.apply(b, "FAKE_JWK_K_342")));
+            }
+        }
+    }
+
+    @Test
+    void masksACopyCutOffInHalfAnEscapeAndANestOfPairedStrayStrings() {
+        // #342 (automated review on 5ca573a): the leak scanner's test of the same form relies on these outputs.
+        String jwk = "{\"kty\":\"oct\",\"k\":\"%s\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String tail : List.of("\\", "\\u0", "\\u00", "\\u002", "\\\\\\")) {
+                String masked = "he said \"" + lb + escapedForJson(jwk.formatted("[REDACTED]")) + tail;
+                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(jwk.formatted("FAKE_JWK_K_342")) + tail));
+                assertEquals(masked, Redactor.redact(masked));
+            }
+            for (int pad : List.of(500, 2000, 10000)) {
+                String leaked = "{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\",\"pad\":\"" + "x".repeat(pad) + "\"}";
+                String masked = "{\"kty\":\"oct\",\"k\":\"[REDACTED]\",\"pad\":\"" + "x".repeat(pad) + "\"}";
+                for (int i = 0; i < 3; i++) {
+                    leaked = "\"" + lb + "\"" + lb + escapedForJson(leaked);
+                    masked = "\"" + lb + "\"" + lb + escapedForJson(masked);
+                }
+                assertEquals(masked, Redactor.redact(leaked));
+                assertEquals(masked, Redactor.redact(masked));
+            }
+        }
+    }
+
+    @Test
+    void masksAJwkPrivateMemberWhoseOpeningQuoteIsEscapedOneLevelMore() {
+        // #342 (automated review on 32194d8): the leak scanner's test of the same form uses these outputs.
+        List<String> forms = List.of("{\"kty\":\"oct\",\\\"k\":\"%1$s\"}", "{\"kty\":\"oct\", \\\"d\":\"%1$s\"}",
+                "{\"kty\":\"RSA\",\"n\":\"AQAB\",\\\"d\":\"%1$s\",\\\"p\":\"%1$s\"}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String form : forms) {
+                String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]"));
+                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342"))));
+                assertEquals(masked, Redactor.redact(masked));
+            }
+        }
+    }
+
+    @Test
+    void masksACopyThatEndsInAMalformedUnicodeEscape() {
+        // #342 (automated review on 92f3ad6): the leak scanner's test of the same form uses these outputs.
+        List<String> forms = List.of("{\"kty\":\"oct\",\"k\":\"%s\"}", "{\"password\":\"%s\"}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
+                for (String form : forms) {
+                    String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]")) + tail;
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")) + tail));
+                    assertEquals(masked, Redactor.redact(masked));
+                }
+            }
+        }
+    }
+
+    @Test
+    void readsAFormFeedEscapeAfterARepairedMalformedUnicodeEscape() {
+        // #342 (automated review on a7d0f8f): the leak scanner's test of the same form relies on these outputs.
+        String q = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String pre : List.of("\\uZ", "\\u0Z", "\\u00G")) {
+                for (String value : List.of("true", q + "FAKE_JWK_K_342" + q)) {
+                    String colon = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":\\f" + value + "}";
+                    String kty = "he said \"" + lb + pre + "{" + q + "kty" + q + "\\f:" + q + "oct" + q + "," + q + "k" + q + ":" + value + "}";
+                    assertEquals(colon, Redactor.redact(colon));
+                    assertEquals(kty, Redactor.redact(kty));
+                }
+                String masked = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + "[REDACTED]" + q + "}";
+                assertEquals(masked, Redactor.redact(masked.replace("[REDACTED]", "FAKE_JWK_K_342")));
+                assertEquals(masked, Redactor.redact(masked));
+            }
+        }
+    }
+
+    @Test
+    void masksANestedCopyThatEndsInAMalformedUnicodeEscape() {
+        // #342 (automated review on c5a0b7f): the leak scanner's test of the same form relies on these outputs.
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
+                for (int pad : List.of(1000, 2000)) {
+                    String leaked = "{\"pad\":\"" + "x".repeat(pad) + "\",\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\"}";
+                    String masked = leaked.replace("FAKE_JWK_K_342", "[REDACTED]");
+                    for (int i = 0; i < 3; i++) {
+                        leaked = "he said \"" + lb + escapedForJson(leaked);
+                        masked = "he said \"" + lb + escapedForJson(masked);
+                    }
+                    assertEquals(masked + tail, Redactor.redact(leaked + tail));
+                    assertEquals(masked + tail, Redactor.redact(masked + tail));
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksACopiedSecretValueCutOffInAMalformedUnicodeEscape() {
+        // #342 (automated review on 058e89a): the leak scanner's test of the same form relies on these outputs.
+        String q = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
+                for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
+                    String masked = "he said \"" + lb + head + "[REDACTED]" + q;
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "FAKE_JWK_K_342" + tail));
+                    assertEquals(masked, Redactor.redact(masked));
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksACopiedSecretValueCutOffInHalfAUnicodeEscape() {
+        // #342 (Codex security round 2 at 8a06f7e): the leak scanner's test of the same form relies on these outputs.
+        // Half an escape inside a value still open at the end is masked with it; after a closed value it is kept.
+        String q = "\\\"";
+        for (String tail : List.of("\\u", "\\u0", "\\u00", "\\u005")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
+                    String masked = "he said \"" + lb + head + "[REDACTED]" + q;
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
+                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + tail));
+                    assertEquals(masked + tail, Redactor.redact(masked + tail));
+                    assertEquals(masked + "}" + tail, Redactor.redact(masked + "}" + tail));
+                }
+            }
+            for (String head : List.of("{\"kty\":\"oct\",\"k\":\"", "{\"password\":\"")) {
+                assertEquals(head + "[REDACTED]\"", Redactor.redact(head + "[REDACTED]" + tail));
+                assertEquals(head + "[REDACTED]\"}" + tail, Redactor.redact(head + "[REDACTED]\"}" + tail));
+            }
+        }
+    }
+
+    @Test
+    void keepsACopiedValueCutOffInHalfAUnicodeEscapeAfterAnEscapedBackslash() {
+        // #342 (automated review on b9d6038): the leak scanner's test of the same form relies on these outputs. An
+        // escaped backslash before half an escape at the end leaves the cut value unmatched, so the text is kept.
+        String q = "\\\"";
+        String b = "\\\\";
+        for (String tail : List.of("\\u", "\\u0", "\\u005")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
+                    String masked = "he said \"" + lb + head + "[REDACTED]" + b + tail;
+                    assertEquals(masked, Redactor.redact(masked));
+                    String empty = "he said \"" + lb + head + b + tail;
+                    assertEquals(empty, Redactor.redact(empty));
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksACopiedSecretFieldCutOffInHalfAUnicodeEscapeAfterAUnicodeBackslash() {
+        // #342 (automated review on 73e4411): the leak scanner's test of the same form relies on these outputs. A
+        // backslash spelled as a unicode escape before half an escape at the end is masked with a secret field's value;
+        // the JWK search matches no k member there, and the text is kept.
+        String q = "\\\"";
+        for (String backslash : List.of("\\u005c", "\\u005C")) {
+            for (String tail : List.of("\\u", "\\u0", "\\u005")) {
+                for (String lb : List.of("\n", "\r\n")) {
+                    String secret = "he said \"" + lb + "{" + q + "password" + q + ":" + q;
+                    assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + "[REDACTED]" + backslash + tail));
+                    assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + backslash + tail));
+                    String jwk = "he said \"" + lb + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q;
+                    assertEquals(jwk + "[REDACTED]" + backslash + tail, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
+                    assertEquals(jwk + backslash + tail, Redactor.redact(jwk + backslash + tail));
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String u = "\\u0022";
+        String b = "\\\"";
+        String escapedQuote = "\\\\\\\"";
+        List<java.util.function.Function<String, String>> forms = List.of(
+                k -> "{" + u + "note" + u + ":" + u + "a" + escapedQuote + "b" + u + "," + b + "kty" + b + ":" + b + "oct" + b + ","
+                        + b + "k" + b + ":" + b + k + b + "}",
+                k -> "{" + b + "note" + b + ":" + b + "a" + escapedQuote + "b" + b + "," + u + "kty" + u + ":" + u + "oct" + u + ","
+                        + b + "k" + b + ":" + b + k + b + "}");
+        for (String lb : List.of("\n", "\r\n")) {
+            for (var form : forms) {
+                String before = "he said \"" + lb;
+                assertEquals(before + form.apply("[REDACTED]"), Redactor.redact(before + form.apply("FAKE_JWK_K_342")));
+            }
+        }
+    }
+
+    @Test
+    void masksACopiedSecretFieldWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // #342: the leak scanner's test of the same name uses this output as its masked form.
+        String u = "\\u0022";
+        String b = "\\\"";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String name : List.of("password", "client_secret", "access_token", "authorization")) {
+                String before = "he said \"" + lb;
+                assertEquals(before + "{" + u + "a" + u + ":1," + b + name + b + ":" + b + "[REDACTED]" + b + "}",
+                        Redactor.redact(before + "{" + u + "a" + u + ":1," + b + name + b + ":" + b + "FAKE_SECRET_342" + b + "}"));
+                assertEquals(before + "{" + b + name + b + ":" + b + "[REDACTED]" + b + "}",
+                        Redactor.redact(before + "{" + b + name + b + ":" + b + "FAKE_SECRET_342" + u + "}"));
+            }
+        }
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwks() {
         // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. The JWK search reads a few
         // hundred characters of its 4n + 1024, so "d" is kept. The leak scanner's r8 test uses this as an accepted form.
@@ -1025,6 +1518,77 @@ class RedactorTest {
             assertEquals(form, Redactor.redact(form, reads));
         }
         assertTrue(reads.stream().allMatch(read -> read.after() >= 0), reads::toString);
+    }
+
+    @Test
+    void keepsALoosePrivateMemberNextToMaskedJwksCopiedAfterAStrayQuoteAndARawLineBreak() {
+        // #342: the r8 text copied with \" (or \" and \u0022 mixed) after a stray quote and a raw line break. The JWK
+        // search still cannot spend its budget, so "d" is kept; an unmasked private member is masked. The leak
+        // scanner's test of the same name uses these as accepted forms.
+        String jwk = "{\"kty\":\"RSA\",\"kid\":\"%s\",\"use\":\"sig\",\"alg\":\"RS256\",\"n\":\""
+                + "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA".repeat(4) + "\",\"e\":\"AQAB\",\"d\":\"[REDACTED]\","
+                + "\"p\":\"[REDACTED]\",\"q\":\"[REDACTED]\",\"dp\":\"[REDACTED]\",\"dq\":\"[REDACTED]\",\"qi\":\"[REDACTED]\"}";
+        java.util.function.UnaryOperator<String> u = t -> t.replace("\"", "\\u0022");
+        java.util.function.UnaryOperator<String> b = t -> t.replace("\"", "\\\"");
+        String head = "{\"keys\":[" + jwk.formatted("a") + ",";
+        String tail = jwk.formatted("b") + "],\"d\":\"dimension\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            for (String copied : List.of(b.apply(head + tail), u.apply(head) + b.apply(tail), b.apply(head) + u.apply(tail))) {
+                String text = "he said \"" + lb + copied;
+                assertEquals(text, Redactor.redact(text));
+                assertEquals(text, Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
+            }
+        }
+    }
+
+    @Test
+    void masksAJwkCopiedAfterAStrayQuoteAndARawLineBreakNestedEightDeep() {
+        // #342: the leak scanner's test reading this form within its scan budget uses this output as its masked form.
+        String jwk = "{\"kty\":\"oct\",\"k\":\"%s\",\"pad\":\"" + "x".repeat(100) + "\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            String masked = jwk.formatted("[REDACTED]");
+            String leaked = jwk.formatted("FAKE_JWK_K_342");
+            for (int i = 0; i < 8; i++) {
+                masked = "he said \"" + lb + escapedForJson(masked);
+                leaked = "he said \"" + lb + escapedForJson(leaked);
+            }
+            assertEquals(masked, Redactor.redact(masked));
+            assertEquals(masked, Redactor.redact(leaked));
+        }
+    }
+
+    @Test
+    void masksAJwkWithALongPadCopiedAfterAStrayQuoteNestedThreeDeep() {
+        // #342, Codex security round 1 at 0ab5aeb: the leak scanner's test reading this form within its scan budget uses
+        // this output as its masked form.
+        String jwk = "{\"kty\":\"oct\",\"k\":\"%s\",\"pad\":\"" + "x".repeat(2000) + "\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            String masked = jwk.formatted("[REDACTED]");
+            String leaked = jwk.formatted("FAKE_JWK_K_342");
+            for (int i = 0; i < 3; i++) {
+                masked = "he said \"" + lb + escapedForJson(masked);
+                leaked = "he said \"" + lb + escapedForJson(leaked);
+            }
+            assertEquals(masked, Redactor.redact(masked));
+            assertEquals(masked, Redactor.redact(leaked));
+        }
+    }
+
+    @Test
+    void masksAJwkAfterALongPadCopiedAndClosedThreeDeep() {
+        // #342 (automated review on feb555e): the leak scanner's test reading this form within its scan budget uses this
+        // output as its masked form.
+        String jwk = "{\"pad\":\"" + "x".repeat(5000) + "\",\"kty\":\"oct\",\"k\":\"%s\"}";
+        for (String lb : List.of("\n", "\r\n")) {
+            String masked = jwk.formatted("[REDACTED]");
+            String leaked = jwk.formatted("FAKE_JWK_K_342");
+            for (int i = 0; i < 3; i++) {
+                masked = "he said \"" + lb + escapedForJson(masked) + "\"";
+                leaked = "he said \"" + lb + escapedForJson(leaked) + "\"";
+            }
+            assertEquals(masked, Redactor.redact(masked));
+            assertEquals(masked, Redactor.redact(leaked));
+        }
     }
 
     @Test
