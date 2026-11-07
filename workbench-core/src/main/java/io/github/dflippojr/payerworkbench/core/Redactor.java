@@ -672,7 +672,8 @@ public final class Redactor {
      * {@code \\u0022}, not its closing quote (review on 84afef7: the object in {@code {"note":"a\\u0022{"}} ran on to
      * the end of the text). In a name a plain quote opens, such a quote closes the name only before its colon, so a name
      * may open with a plain quote and close with {@code \\u0022} (review on 22ff6ea) and still hold one elsewhere
-     * ({@code "pass\\u0022word"}). A string such a quote opens closes at a quote of either kind. It also ends at a quote
+     * ({@code "pass\\u0022word"}); the view turns it bare only where the name is not valid on its own
+     * ({@link FlatContext}). A string such a quote opens closes at a quote of either kind. It also ends at a quote
      * {@code outer} names.
      */
     private static int endOfFlatStructure(String json, int start, BitSet quotes, IntPredicate outer) {
@@ -740,6 +741,27 @@ public final class Redactor {
      */
     private static boolean endsValue(String json, int at) {
         return at >= json.length() || ",}]:\"\\".indexOf(json.charAt(at)) >= 0 || Character.isWhitespace(json.charAt(at));
+    }
+
+    /**
+     * Whether the string from {@code from} in {@code text}, a name a plain quote opens, closes with a plain quote that a
+     * colon follows: a valid name, whose {@code \\u0022} escapes are its own however a colon follows them
+     * ({@code "note\\u0022:foo":}, security round 3). It reads to the first plain quote, which the caller then reads
+     * past, so the work stays linear.
+     */
+    private static boolean closesAsName(String text, int from) {
+        int i = from;
+        while (i < text.length()) {
+            char c = text.charAt(i);
+            if (c == '\\') {
+                i += 2;
+            } else if (c == '"') {
+                return beforeColon(text, i + 1);
+            } else {
+                i++;
+            }
+        }
+        return false;
     }
 
     /** Whether the next character from {@code from} in {@code json} that is not whitespace is a colon. */
@@ -1498,7 +1520,7 @@ public final class Redactor {
             if (text.charAt(i) != '\\') {
                 if (flat && i != escaped) {
                     char c = text.charAt(i);
-                    context.read(c, c == '"' && fresh != null && !fresh.get(view.at(i)));
+                    context.read(c, c == '"' && fresh != null && !fresh.get(view.at(i)), text, i);
                 }
                 to[out.length()] = view.at(i);
                 out.append(text.charAt(i++));
@@ -1525,7 +1547,7 @@ public final class Redactor {
                     flattenedAny = true;
                     quotes.set(out.length());
                 } else if (flat && c != '"' && c != '\\') {
-                    context.read(c, false);
+                    context.read(c, false, text, i);
                 }
                 if (c == '\\' || (c == '"' && !flattens)) {
                     to[out.length()] = view.at(run - 1);
@@ -1547,8 +1569,9 @@ public final class Redactor {
     /**
      * Where {@link #flattened} is in the JSON it reads, to tell which quotes spelled {@code \\u0022} it turns bare: one
      * outside every string (opening a string, which a quote of either kind then closes), one closing such a string, and
-     * one closing a name a plain quote opens, before its colon. Inside a value a plain quote opens (after a colon, or an
-     * array item) such a quote is that string's own, as anywhere else in such a name ({@code "pass\\u0022word"}): a
+     * one closing a name a plain quote opens, before its colon, unless that name closes with a plain quote and a colon
+     * of its own ({@link #closesAsName}). Inside a value a plain quote opens (after a colon, or an array item) such a
+     * quote is that string's own, as anywhere else in such a name ({@code "pass\\u0022word"}): a
      * JSON string written with {@code \\u0022} for its quotes holds JSON one level deeper, not at this level (review on
      * 9593177: read at this level, {@code a\\\\\\u0022b} in it read as an escaped backslash and a closing quote).
      */
@@ -1563,12 +1586,14 @@ public final class Redactor {
         private int state = OUTSIDE;
         private int depth;
         private char before;
+        /** Whether the plain-quoted name being read closes with a plain quote and a colon: a valid name, read whole. */
+        private boolean validName;
 
         /**
-         * Reads one character that is not an escape; {@code outer} for a quote of the level above, which starts or ends
-         * the string holding this level's JSON.
+         * Reads one character that is not an escape, at {@code at} in {@code text}; {@code outer} for a quote of the level
+         * above, which starts or ends the string holding this level's JSON.
          */
-        void read(char c, boolean outer) {
+        void read(char c, boolean outer, String text, int at) {
             if (outer) {
                 state = OUTSIDE;
                 depth = 0;
@@ -1576,6 +1601,7 @@ public final class Redactor {
             } else if (c == '"') {
                 boolean value = before == ':' || (arrays.get(depth) && (before == '[' || before == ','));
                 state = state != OUTSIDE ? OUTSIDE : value ? PLAIN_VALUE : PLAIN_NAME;
+                validName = state == PLAIN_NAME && closesAsName(text, at + 1);
                 before = c;
             } else if (state == OUTSIDE) {
                 if (c == '{' || c == '[') {
@@ -1591,7 +1617,8 @@ public final class Redactor {
 
         /** Whether the quote spelled {@code \\u0022} that ends at {@code after} in {@code text} is turned bare. */
         boolean flattens(String text, int after) {
-            boolean flattens = state == OUTSIDE || state == FLAT_STRING || (state == PLAIN_NAME && beforeColon(text, after));
+            boolean flattens = state == OUTSIDE || state == FLAT_STRING
+                    || (state == PLAIN_NAME && !validName && beforeColon(text, after));
             if (flattens) {
                 state = state == OUTSIDE ? FLAT_STRING : OUTSIDE;
                 before = '"';
