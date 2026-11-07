@@ -1008,6 +1008,35 @@ class RedactorTest {
     }
 
     @Test
+    void masksASecretObjectWholeOverTheSecretObjectsInsideItButNotPastItsEnd() {
+        // Review on 43b954a: an earlier reading's mask of a secret object inside a secret object
+        // ({Qprivate_keyQ:{Qpassword":{},...}}) made the enclosing mask drop, keeping "other":42. A mask that starts
+        // where an earlier one does is a competing reading of the same value, and still loses: a view unescaped past
+        // the JSON's own level must not run an object on past its close bracket.
+        for (String[] pair : List.of(
+                new String[] {"{Qprivate_keyQ:{Qpassword\":{},\"other\":42}}", "{Qprivate_keyQ:Q[REDACTED]Q}"},
+                new String[] {"{QprivateKeyQ:{\"a\":1,Qclient_secret\":[1,2],\"other\":\"PRIVOTHER\"},\"kid\":\"k1\"}",
+                        "{QprivateKeyQ:Q[REDACTED]Q,\"kid\":\"k1\"}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes)) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+        String in = "{\"private_key\":{\"a\":\"x\\\\\",\"b\":[\"]\\\\\"]},\"client_id\":\"app\",\"n\":[1]}";
+        String out = "{\"private_key\":\"[REDACTED]\",\"client_id\":\"app\",\"n\":[1]}";
+        UnaryOperator<String> wrap = UnaryOperator.identity();
+        for (int depth = 0; depth <= 4; depth++, wrap = compose(wrap)) {
+            assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+        }
+    }
+
+    private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
+        return t -> nested(wrap.apply(t));
+    }
+
+    @Test
     void masksNestedSecretFieldsInLinearTime() {
         // About 1 MB each of openers that never close, nested two levels deep and spelled with \\u0022: a fixed
         // number of levels, each read once, so time stays linear (quadratic time takes minutes).
