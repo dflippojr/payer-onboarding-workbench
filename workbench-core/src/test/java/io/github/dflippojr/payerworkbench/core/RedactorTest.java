@@ -925,7 +925,9 @@ class RedactorTest {
                 nested(nested(nested("{\"client_secret\":\"" + "x".repeat(20 * n)))));
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             String out = Redactor.redact(text);
-            assertTrue(out.length() <= text.length() + 64, () -> out.length() + " > " + text.length());
+            // Empty values in the malformed openers ({\"client_secret\":\"\"}) get the mask, so the text may grow,
+            // but only by a bounded factor.
+            assertTrue(out.length() <= 2 * text.length(), () -> out.length() + " > 2 * " + text.length());
         }));
         String cut = nested(nested(nested("{\"client_secret\":\"s3cr3t" + "x".repeat(20 * n))));
         assertFalse(Redactor.redact(cut).contains("s3cr3t"));

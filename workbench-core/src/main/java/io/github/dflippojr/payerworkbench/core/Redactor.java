@@ -41,8 +41,8 @@ import java.util.stream.IntStream;
  * of a JSON object with a {@code kty} member, also in JSON nested in JSON strings at any
  * depth), and the values of well-known secret fields such as {@code client_secret},
  * {@code access_token} and {@code private_key} in form and query bodies and in JSON (any
- * value, including an object such as a private JWK, also in JSON embedded one level deep in
- * a JSON string; see {@link #isSecretField(String)}). The value of a
+ * value, including an object such as a private JWK, also in JSON nested in JSON strings at any
+ * depth and in JSON whose quotes are spelled {@code \\u0022}; see {@link #isSecretField(String)}). The value of a
  * credential header ({@link #isSensitiveHeader(String)}, such as {@code Cookie}) is
  * masked in a header map, in a {@code Name: value} line of free text and in a JSON field
  * of that name. A JSON member name is read as JSON reads it, a {@code \\u} escape as the
@@ -379,6 +379,7 @@ public final class Redactor {
         out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecretKey(decodeName(m.group(1)))
                 ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(decodeName(m.group(1)), m.group(3)) + "\\\""
                 : m.group()));
+        out = maskNestedSecretFields(out);
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
@@ -719,42 +720,110 @@ public final class Redactor {
      */
     private static List<Mask> nestedJwkMasks(String text, int characters, Discovery discovery) {
         List<Mask> masks = new ArrayList<>();
-        // No quote with three backslashes before it and no unicode escape: every JWK is plain or one level
-        // deep, where maskJwks finds it.
+        View deepest = readNestedLevels(text, (normal, depth) -> {
+            String json = normal.text();
+            List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, true,
+                    discovery.nested(depth, json.length()))
+                    : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
+            for (JwkValue value : values) {
+                String quote = quoteOf(text, normal, value.name());
+                masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
+            }
+        });
+        if (deepest != null) {
+            List<Mask> strings = stringsHoldingEscapes(text);
+            masks.addAll(strings);
+            // A string found only in a view (its quotes spelled as unicode escapes in the text) has no bare
+            // quote to bound it by: with an escape still unread outside every string found, mask the text
+            // whole.
+            if (!holdsEveryEscape(strings, deepest)) {
+                masks.add(new Mask(0, text.length(), MASK));
+            }
+        }
+        return masks;
+    }
+
+    /** Reads one view of the text that {@link #readNestedLevels} gives: the view, and the escape level it reads. */
+    @FunctionalInterface
+    private interface LevelReader {
+        void read(View normal, int depth);
+    }
+
+    /**
+     * Gives {@code reader}, level by level, each view of the text that holds JSON nested in JSON strings beyond what
+     * the plain and embedded patterns read on the text itself: two or more levels deep, or spelled with unicode
+     * escapes. Each view is {@link #normalized} and reads the next level down as JSON embedded one level deep; the
+     * next view takes that level of escaping off ({@link #unescaped}). There are at most {@link #NESTED_LEVELS}
+     * views, each no longer than the text, so the walk is linear in its length. Returns the deepest view when the
+     * text still holds an escape after the last level (JSON nested deeper than {@code NESTED_LEVELS}), else
+     * {@code null}.
+     */
+    private static View readNestedLevels(String text, LevelReader reader) {
+        // No quote with three backslashes before it and no unicode escape: all JSON is plain or one level deep,
+        // where the patterns on the text itself read it.
         if (!text.contains("\\\\\\\"") && !UNICODE_ESCAPE.matcher(text).find()) {
-            return masks;
+            return null;
         }
         View view = new View(text, null);
         for (int depth = 1; ; depth++) {
             View normal = normalized(view);
             String json = normal.text();
-            // One level deep with no unicode escape to decode, maskJwks has read this view already.
+            // One level deep with no unicode escape to decode, the text itself is this view.
             if ((depth > 1 || normal != view) && json.contains("\\\"")) {
-                List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, true,
-                        discovery.nested(depth, json.length()))
-                        : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
-                for (JwkValue value : values) {
-                    String quote = text.substring(normal.at(value.name()), normal.at(value.name() + 2));
-                    masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
-                }
+                reader.read(normal, depth);
             }
             if (!json.contains("\\\"") && !UNICODE_ESCAPE.matcher(json).find()) {
-                break;
+                return null;
             }
             if (depth == NESTED_LEVELS) {
-                List<Mask> strings = stringsHoldingEscapes(text);
-                masks.addAll(strings);
-                // A string found only in a view (its quotes spelled as unicode escapes in the text) has no bare
-                // quote to bound it by: with an escape still unread outside every string found, mask the text
-                // whole.
-                if (!holdsEveryEscape(strings, normal)) {
-                    masks.add(new Mask(0, text.length(), MASK));
-                }
-                break;
+                return normal;
             }
             view = unescaped(normal);
         }
-        return masks;
+    }
+
+    /**
+     * The opening quote of the member name that starts at {@code name} in {@code normal}, as the text spells it
+     * ({@code \"}, {@code \\\"}, {@code \\u0022}...): a mask quoted with it reads at that name's level.
+     */
+    private static String quoteOf(String text, View normal, int name) {
+        return text.substring(normal.at(name), normal.at(name + 2));
+    }
+
+    /**
+     * Masks the value of every secret-named field ({@link #isSecretKey(String)}) in JSON nested in JSON strings that
+     * {@link #JSON_FIELD} and {@link #EMBEDDED_JSON_FIELD} do not reach on the text itself: two or more levels deep,
+     * or spelled with unicode escapes ({@code \\u0022} for a quote, also at the top level of text copied from
+     * inside a string). Each level {@link #readNestedLevels} gives is read with {@link #EMBEDDED_JSON_FIELD} and
+     * {@link #EMBEDDED_JSON_FIELD_STRUCTURE}, as the text itself is one level deep; an object or array value is masked
+     * through its close bracket. A value already masked is masked the same way again. JSON nested deeper than
+     * {@link #NESTED_LEVELS} is masked string by string by {@link #nestedJwkMasks} before this runs.
+     */
+    private static String maskNestedSecretFields(String text) {
+        List<Mask> masks = new ArrayList<>();
+        readNestedLevels(text, (normal, depth) -> {
+            String json = normal.text();
+            Matcher structure = EMBEDDED_JSON_FIELD_STRUCTURE.matcher(json);
+            int from = 0;
+            while (from < json.length() && structure.find(from)) {
+                from = structure.end();
+                if (isSecretKey(decodeName(structure.group(1)))) {
+                    from = endOfStructure(json, structure.end(), true);
+                    String quote = quoteOf(text, normal, structure.start());
+                    masks.add(new Mask(normal.at(structure.end()), normal.at(from), quote + MASK + quote));
+                }
+            }
+            Matcher field = EMBEDDED_JSON_FIELD.matcher(json);
+            while (field.find()) {
+                String name = decodeName(field.group(1));
+                if (isSecretKey(name)) {
+                    String quote = quoteOf(text, normal, field.start());
+                    masks.add(new Mask(normal.at(field.end(2)), normal.at(field.end()),
+                            quote + masked(name, field.group(3)) + quote));
+                }
+            }
+        });
+        return applyMasks(text, masks);
     }
 
     /**
