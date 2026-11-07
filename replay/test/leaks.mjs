@@ -1252,9 +1252,12 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       i = Math.max(end, i + 1);
       continue;
     } else if (member && !isSpace(c)) {
-      // A value that opens with a quote spelled \u0022 by one backslash is a string, which the flattened copy of a
-      // MAIN view reads and judges (readFlattened), as Redactor reads it (#339).
-      if ((mode === MAIN && opensLoneUnicodeQuote(text, i)) || (mode === FLAT && BACKSLASHED_UNICODE_QUOTE.test(text.slice(i, i + 64)))) {
+      // A secret-named member's value that opens with a quote spelled \u0022 by one backslash is a string, which the
+      // flattened copy of a MAIN view reads and judges (readFlattened), as Redactor reads it (#339). Any other
+      // member's value, a JWK private member's included, is judged here: the copy judges secret-named fields only
+      // (review on 47c938e).
+      if (isSecretKey(member.name) && ((mode === MAIN && opensLoneUnicodeQuote(text, i))
+        || (mode === FLAT && BACKSLASHED_UNICODE_QUOTE.test(text.slice(i, i + 64))))) {
         member = null;
         i++;
         continue;

@@ -871,8 +871,11 @@ public final class Redactor {
                 int end = endOfStructure(json, structure.end(), embedded);
                 // An embedded object or array that a bare quote cuts off before its brackets close holds JSON quoted
                 // at another level ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest, so
-                // the plain reading of the next level masks it whole instead.
+                // the plain reading of the next level masks it whole instead. The names up to that quote are passed
+                // over at this level, so each such structure is read once (review on 47c938e: reading each to one
+                // bare quote at the end made the work grow with the square of the names).
                 if (embedded && end < json.length() && json.charAt(end) == '"') {
+                    copied = end;
                     continue;
                 }
                 copied = end;
