@@ -1032,6 +1032,24 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksAMixedQuotedSecretObjectWholeThroughEscapedQuotesInItsStrings() {
+        // Review on 7a80b9c: a secret object whose name is quoted one level deeper than its members was masked in the
+        // next view, which also takes an escape off the members' strings, so "a\"}b" read as closing the object at its
+        // brace. It is read in its own view instead, its strings at their own level.
+        for (String[] pair : List.of(
+                new String[] {"{Qprivate_keyQ:{\"note\":\"a\\\"}b\",\"other\":\"PRIVOTHER\"},\"kid\":\"k1\"}",
+                        "{Qprivate_keyQ:Q[REDACTED]Q,\"kid\":\"k1\"}"},
+                new String[] {"{Qclient_secretQ:[\"x\\\"]\",\"PRIVITEM\"],\"n\":1}", "{Qclient_secretQ:Q[REDACTED]Q,\"n\":1}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
