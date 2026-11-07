@@ -826,7 +826,11 @@ const LINE_BREAKS = '\n\r\u0085\u2028\u2029';
  * and the member is not one; a raw one, or a \u000c, Redactor reads as whitespace (automated review on e2487e1).
  */
 const escapedFormFeed = (text, from, to, ctx, toRoot) => {
-  for (let i = text.indexOf('\f', from); i >= 0 && i < to; i = text.indexOf('\f', i + 1)) {
+  // Only the name and whitespace are looked at, and charged: a search to the end of the view for each member made the
+  // work grow with the square of the members in it, uncharged (Codex security round 2 at 8a06f7e, finding 2).
+  ctx.work += to - from;
+  for (let i = from; i < to; i++) {
+    if (text[i] !== '\f') continue;
     let r = toRoot(i);
     while (ctx.text[r] === '\\') r++;
     if (ctx.text[r] === 'f') return true;
