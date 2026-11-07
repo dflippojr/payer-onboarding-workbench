@@ -1471,3 +1471,13 @@ test('flags a secret name that opens on the quote closing the value before it, a
   const kept = nestBody(nestBody('{"x":""client_id":"app"}'));
   assert.deepEqual(findTextLeaks(kept), [], kept);
 });
+
+test('reads text quoted with \u0022 five levels deep within the scan budget (#339)', () => {
+  // Each MAIN view holding a quote spelled \u0022 by one backslash is read once more, flattened: one read of its own
+  // length, so the work stays within the budget however deep the levels go.
+  let text = `[${'{"client_secret":"[REDACTED]","kid":"k1","n":1},'.repeat(5000)}{}]`;
+  for (let d = 0; d < 5; d++) text = nestQuotes(text);
+  const before = scanWork.characters;
+  assert.deepEqual(findTextLeaks(text), []);
+  assert.ok(scanWork.characters - before < 40 * text.length, `${scanWork.characters - before} >= 40 * ${text.length}`);
+});

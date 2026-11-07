@@ -986,6 +986,22 @@ class RedactorTest {
         assertFalse(Redactor.redact(cut).contains("s3cr3t"));
     }
 
+    @Test
+    void findsSecretNamesApartFromTheirValuesInLinearTime() {
+        // About 1 MB each (security round 1): names that each open on the quote closing the value before them, plain
+        // and embedded, and names and values quoted differently. Every name is found apart from its value and each
+        // value is read once, so time stays linear.
+        int n = 60_000;
+        List<String> texts = List.of(
+                "\"x\":\"\"password\":\"".repeat(n),
+                "{\"a\":\"" + "\\\"x\\\":\\\"\\\"client_secret\\\":\\\"".repeat(n) + "\"}",
+                ("\"client_secret\":" + "\\" + "u0022").repeat(n));
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
+            String out = Redactor.redact(text);
+            assertTrue(out.length() <= 2 * text.length(), () -> out.length() + " > 2 * " + text.length());
+        }));
+    }
+
     /** {@link #nested}, with each quote in the string escaped as {@code \\u0022}. */
     private static String nestedEscapingQuotes(String text) {
         return "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\u0022") + "\"}";

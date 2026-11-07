@@ -534,6 +534,15 @@ const unreadSpans = (leftOut, read) => {
 const MAIN = 0;
 const UNREAD = 1;
 const WHOLE = 2;
+/**
+ * FLAT: the copy of a MAIN view readFlattened reads, with its quotes spelled \u0022 by one backslash written as
+ * quotes. It is read in place only, for secret-named fields only: the strings it holds and the loose decodes of its
+ * text are the views of the MAIN view it was copied from, and the JWKs are judged where Redactor's JWK search finds
+ * them. A value there that opens with a quote spelled \u0022 behind more backslashes, a quote of a deeper level, is left
+ * to the deeper view that reads it. So a FLAT copy only adds to what the other views flag, and each MAIN view adds
+ * one read of its own length (#339).
+ */
+const FLAT = 3;
 
 /** A \u escape without four hex digits after it, with an even run of backslashes before it (kept, as group 1). */
 const MALFORMED_UNICODE = /(?<!\\)((?:\\\\)*)\\u(?![0-9A-Fa-f]{4})/g;
@@ -716,16 +725,18 @@ const failClosed = (ctx, check, text) => ctx.leaks.push({ check, match: text.sli
  * Judges the members a JSON object (or array, or the text around any) held, once it closes or the text ends:
  * a secret-named field's value must be what Redactor leaves for it, and in an object with its own kty member,
  * so must a private member's. Each member is judged, a repeated one too. An unmasked private member in no such
- * object is kept for textLeaks, which flags it if Redactor's JWK search may spend its budget on the text.
+ * object is kept for textLeaks, which flags it if Redactor's JWK search may spend its budget on the text. With
+ * `secretOnly` (a FLAT copy, read for secret-named fields only), private members are not judged: the views that
+ * read JWKs judge them as Redactor's JWK search finds them (#339).
  */
-function judge(owner, ctx) {
+function judge(owner, ctx, secretOnly = false) {
   for (const value of owner.values) {
     if (isSecretKey(value.name)) {
       const masked = value.kind === 'string' ? value.value !== null && isMaskedValue(value.name, value.value) && !value.cutShort
         : value.kind === 'scalar' ? value.value === 'null'
           : value.kind === 'array' && !value.nested && value.items.every(item => isMaskedItem(value.name, item));
       if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
-    } else if (isPrivateName(value.name, value.malformed)) {
+    } else if (!secretOnly && isPrivateName(value.name, value.malformed)) {
       const masked = value.kind === 'string' ? (value.value === MASK || value.value === '') && !value.cutShort
         : value.kind === 'scalar' && value.value === 'null';
       const check = value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field';
@@ -748,6 +759,44 @@ const endsScalar = c => isSpace(c) || c === ',' || c === '}' || c === ']' || c =
 
 /** Whether a character is JSON whitespace. */
 const isSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+/** A quote spelled \u0022 (either hex case) by one backslash: no backslash before it escapes that one. */
+const LONE_UNICODE_QUOTE = /(?<!\\)\\u0022/gi;
+
+/** A quote spelled \u0022 behind backslashes, where a value opens in a FLAT copy: a quote of a deeper level. */
+const BACKSLASHED_UNICODE_QUOTE = /^\\+u0022/i;
+
+/** Whether a quote spelled \u0022 by one backslash starts at index `i` of `text`. */
+const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
+  ? /^\\u0022/i.test(text.slice(i, i + 6)) && backslashesBefore(text, i) === 0 : false;
+
+/**
+ * Reads `text`, a MAIN view, once more with each quote it spells \u0022 by one backslash written as a quote: the
+ * plain view Redactor reaches by decoding that escape to \" and taking that level of escaping off, where it masks a
+ * secret field whose name and value quotes are spelled differently ({"client_secret":\u0022...\u0022},
+ * {"client_secret":"..."}) (#339). The copy is a view main does not read (FLAT), so it is never flattened
+ * again: each MAIN view adds at most one read of its own length.
+ */
+function readFlattened(text, level, ctx, toRoot, cut) {
+  if (!text.includes('\\')) return;
+  // matchAll copies lastIndex, so the test must leave it at 0.
+  LONE_UNICODE_QUOTE.lastIndex = 0;
+  const found = LONE_UNICODE_QUOTE.test(text);
+  LONE_UNICODE_QUOTE.lastIndex = 0;
+  if (!found) return;
+  ctx.work += text.length;
+  const parts = [];
+  const at = [];
+  let from = 0;
+  for (const m of text.matchAll(LONE_UNICODE_QUOTE)) {
+    parts.push(text.slice(from, m.index), '"');
+    for (let k = from; k <= m.index; k++) at.push(k);
+    from = m.index + 6;
+  }
+  parts.push(text.slice(from));
+  for (let k = from; k <= text.length; k++) at.push(k);
+  readNested(parts.join(''), level, ctx, j => toRoot(at[Math.min(j, at.length - 1)]), FLAT, cut);
+}
 
 /**
  * Reads a decoded string as the JSON it may hold, `level` levels down. A string with a quote is read as JSON. A
@@ -783,9 +832,11 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
   }
   const read = quoted ? scanJson(decoded, level, ctx, toRoot, mode, cut) : [];
   view.read = read;
+  if (mode === MAIN) readFlattened(decoded, level, ctx, toRoot, cut);
   // What a view main does not read holds is not read by main either.
   const below = mode === MAIN ? MAIN : UNREAD;
-  if (!decoded.includes('\\')) return;
+  // A FLAT copy is read in place only (see FLAT).
+  if (!decoded.includes('\\') || mode === FLAT) return;
   const { decoded: unescaped, at: inDecoded, unread } = decodeString(decoded, ctx, read);
   if (unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'))) {
     if (level >= MAX_LEVELS) {
@@ -1099,6 +1150,8 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       return;
     }
     read.push([literal.start, literal.terminated ? literal.end + 1 : literal.end]);
+    // A FLAT copy is read in place only (see FLAT).
+    if (mode === FLAT) return;
     const inBody = sourceOffsets(literal.body, ctx, literal.terminated ? decoded.length : Infinity);
     readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)), mode === MAIN ? MAIN : UNREAD, pending(literal) ? cutOf(literal.body, decoded) : 0);
   };
@@ -1188,7 +1241,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       }
       stack.push(container);
     } else if (c === '}' || c === ']') {
-      if (stack.length > 0) judge(stack.pop().owner, ctx);
+      if (stack.length > 0) judge(stack.pop().owner, ctx, mode === FLAT);
       member = null;
     } else if (!member && stack.length > 0 && stack[stack.length - 1].list && !isSpace(c) && c !== ',' && c !== ':') {
       // A number, true, false or null in a secret-named list is no mask.
@@ -1199,6 +1252,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       i = Math.max(end, i + 1);
       continue;
     } else if (member && !isSpace(c)) {
+      // A value that opens with a quote spelled \u0022 by one backslash is a string, which the flattened copy of a
+      // MAIN view reads and judges (readFlattened), as Redactor reads it (#339).
+      if ((mode === MAIN && opensLoneUnicodeQuote(text, i)) || (mode === FLAT && BACKSLASHED_UNICODE_QUOTE.test(text.slice(i, i + 64)))) {
+        member = null;
+        i++;
+        continue;
+      }
       // A scalar value runs to the next delimiter.
       let end = i;
       while (end < text.length && !endsScalar(text[end])) end++;
@@ -1210,8 +1270,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     }
     i++;
   }
-  while (stack.length > 0) judge(stack.pop().owner, ctx);
-  judge(top, ctx);
+  while (stack.length > 0) judge(stack.pop().owner, ctx, mode === FLAT);
+  judge(top, ctx, mode === FLAT);
+  // A FLAT copy is read for secret-named fields only: its JWKs, and their kty names, are the other views' to judge.
+  if (mode === FLAT) {
+    ctx.work += stopAt;
+    return read;
+  }
   if (mode !== MAIN) jwkLeaks(text, ctx, toRoot, cut);
   ctx.kty[level] ??= [];
   for (const m of text.matchAll(KTY_SPELLING)) {
@@ -1242,6 +1307,7 @@ function textLeaks(text, level) {
     }
   }
   const read = scanJson(text, level, ctx);
+  readFlattened(text, level, ctx, j => j, 0);
   // Text with escapes may be the content of a JSON string: text copied from inside one ({\"kty\":...}) has
   // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too, loosely
   // when quoted prose around it makes it no string's content (decodeString).

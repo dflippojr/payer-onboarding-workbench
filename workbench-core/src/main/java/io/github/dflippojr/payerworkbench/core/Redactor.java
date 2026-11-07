@@ -221,6 +221,26 @@ public final class Redactor {
             BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE
                     + "(?=[{\\[])");
 
+    /**
+     * A JSON member name and its colon in a view {@link #readNestedLevels} gives, or in the text; group 1 is the name.
+     * Its whitespace may be escaped, as in {@link #EMBEDDED_SPACE}: a view keeps every escape but a quote's and a
+     * backslash's, so whitespace the text escapes more than once still reads as escaped there.
+     */
+    private static final Pattern FIELD_NAME = Pattern.compile("\"(" + NAME_CHAR + "{1,64})\"" + EMBEDDED_SPACE + ":");
+
+    /** {@link #JSON_FIELD} with whitespace as in {@link #FIELD_NAME}; group 1 is the name, group 3 a string's content. */
+    private static final Pattern VIEW_JSON_FIELD = Pattern.compile(
+            "\"(" + NAME_CHAR + "{1,64})\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:\"((?:[^\"\\\\]++|\\\\.)*+)"
+                    + "(?:\"|\\\\?+(?=\\R|\\z))|" + JSON_SCALAR + ")");
+
+    /** {@link #JSON_FIELD_STRUCTURE} with whitespace as in {@link #FIELD_NAME}. */
+    private static final Pattern VIEW_JSON_FIELD_STRUCTURE = Pattern.compile(
+            "\"(" + NAME_CHAR + "{1,64})\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
+
+    /** The same inside JSON embedded in a JSON string, as {@link #EMBEDDED_JSON_FIELD} starts; it starts at the backslash. */
+    private static final Pattern EMBEDDED_FIELD_NAME = Pattern.compile(
+            BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
+
     /** {@link #KTY_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_KTY_NAME = Pattern.compile(
             BACKSLASH + "\"" + spelled("kty", true) + BACKSLASH + "\"");
@@ -722,11 +742,15 @@ public final class Redactor {
         List<Mask> masks = new ArrayList<>();
         View deepest = readNestedLevels(text, (normal, depth) -> {
             String json = normal.text();
+            // With no quote one level deep, the view holds no JWK maskJwks would find in embedded JSON.
+            if (!json.contains("\\\"")) {
+                return;
+            }
             List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, true,
                     discovery.nested(depth, json.length()))
                     : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
             for (JwkValue value : values) {
-                String quote = quoteOf(text, normal, value.name());
+                String quote = quoteOf(text, normal, value.name(), 2);
                 masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
             }
         });
@@ -769,7 +793,7 @@ public final class Redactor {
             View normal = normalized(view);
             String json = normal.text();
             // One level deep with no unicode escape to decode, the text itself is this view.
-            if ((depth > 1 || normal != view) && json.contains("\\\"")) {
+            if (depth > 1 || normal != view) {
                 reader.read(normal, depth);
             }
             if (!json.contains("\\\"") && !UNICODE_ESCAPE.matcher(json).find()) {
@@ -783,47 +807,86 @@ public final class Redactor {
     }
 
     /**
-     * The opening quote of the member name that starts at {@code name} in {@code normal}, as the text spells it
+     * The opening quote, {@code length} characters of {@code normal}, of the member name that starts at {@code name}
+     * there, as the text spells it
      * ({@code \"}, {@code \\\"}, {@code \\u0022}...): a mask quoted with it reads at that name's level.
      */
-    private static String quoteOf(String text, View normal, int name) {
-        return text.substring(normal.at(name), normal.at(name + 2));
+    private static String quoteOf(String text, View normal, int name, int length) {
+        return text.substring(normal.at(name), normal.at(name + length));
     }
 
     /**
      * Masks the value of every secret-named field ({@link #isSecretKey(String)}) in JSON nested in JSON strings that
      * {@link #JSON_FIELD} and {@link #EMBEDDED_JSON_FIELD} do not reach on the text itself: two or more levels deep,
      * or spelled with unicode escapes ({@code \\u0022} for a quote, also at the top level of text copied from
-     * inside a string). Each level {@link #readNestedLevels} gives is read with {@link #EMBEDDED_JSON_FIELD} and
-     * {@link #EMBEDDED_JSON_FIELD_STRUCTURE}, as the text itself is one level deep; an object or array value is masked
-     * through its close bracket. A value already masked is masked the same way again. JSON nested deeper than
-     * {@link #NESTED_LEVELS} is masked string by string by {@link #nestedJwkMasks} before this runs.
+     * inside a string, and on only some of a field's quotes). Each level {@link #readNestedLevels} gives is read as
+     * plain JSON and as JSON embedded one level deep, so a field whose name and value quotes the text spells
+     * differently ({@code {"client_secret":\\u0022...\\u0022}}) is found in the view where both read the same. A
+     * string value's content becomes the mask, so each of its quotes keeps the text's spelling; a number or boolean,
+     * and an object or array through its close bracket, become the mask quoted as the field's name is. A value
+     * already masked is masked the same way again. JSON nested deeper than {@link #NESTED_LEVELS} is masked string by
+     * string by {@link #nestedJwkMasks} before this runs.
      */
     private static String maskNestedSecretFields(String text) {
         List<Mask> masks = new ArrayList<>();
+        // The text itself, for a name that opens on the quote closing the value before it, which the patterns' own
+        // whole-field search skips.
+        View plain = new View(text, null);
+        secretFieldMasks(text, plain, false, masks);
+        if (text.contains("\\\"")) {
+            secretFieldMasks(text, plain, true, masks);
+        }
         readNestedLevels(text, (normal, depth) -> {
-            String json = normal.text();
-            Matcher structure = EMBEDDED_JSON_FIELD_STRUCTURE.matcher(json);
-            int from = 0;
-            while (from < json.length() && structure.find(from)) {
-                from = structure.end();
-                if (isSecretKey(decodeName(structure.group(1)))) {
-                    from = endOfStructure(json, structure.end(), true);
-                    String quote = quoteOf(text, normal, structure.start());
-                    masks.add(new Mask(normal.at(structure.end()), normal.at(from), quote + MASK + quote));
-                }
-            }
-            Matcher field = EMBEDDED_JSON_FIELD.matcher(json);
-            while (field.find()) {
-                String name = decodeName(field.group(1));
-                if (isSecretKey(name)) {
-                    String quote = quoteOf(text, normal, field.start());
-                    masks.add(new Mask(normal.at(field.end(2)), normal.at(field.end()),
-                            quote + masked(name, field.group(3)) + quote));
-                }
+            secretFieldMasks(text, normal, false, masks);
+            if (normal.text().contains("\\\"")) {
+                secretFieldMasks(text, normal, true, masks);
             }
         });
         return applyMasks(text, masks);
+    }
+
+    /**
+     * Adds to {@code masks} the mask of every secret-named field's value in {@code view}, read as plain JSON or, if
+     * {@code embedded}, as JSON embedded one level deep, as positions in the text (see {@link #maskNestedSecretFields}).
+     * The names are found first, apart from the values ({@link #FIELD_NAME}, {@link #EMBEDDED_FIELD_NAME}), as
+     * {@link #everyPrivateMember} finds JWK names: in malformed text a value can end at the quote that opens the next
+     * name ({@code "x":""client_secret":...}), and a search for whole fields would skip that name. Each secret name's
+     * value is then matched from the name. A name inside a value already masked goes with it, except one that opens on
+     * the quote that closed that value; so each value is read once, and the work stays linear in the view's length.
+     */
+    private static void secretFieldMasks(String text, View view, boolean embedded, List<Mask> masks) {
+        String json = view.text();
+        int quote = embedded ? 2 : 1;
+        Matcher name = (embedded ? EMBEDDED_FIELD_NAME : FIELD_NAME).matcher(json);
+        Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : VIEW_JSON_FIELD_STRUCTURE).matcher(json);
+        Matcher field = (embedded ? EMBEDDED_JSON_FIELD : VIEW_JSON_FIELD).matcher(json);
+        int copied = 0;
+        while (name.find()) {
+            int at = name.start();
+            if (at < copied - quote || !isSecretKey(decodeName(name.group(1)))) {
+                continue;
+            }
+            String spelled = quoteOf(text, view, at, quote);
+            if (structure.region(at, json.length()).lookingAt()) {
+                int end = endOfStructure(json, structure.end(), embedded);
+                // An embedded object or array that a bare quote cuts off before its brackets close holds JSON quoted
+                // at another level ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest, so
+                // the plain reading of the next level masks it whole instead.
+                if (embedded && end < json.length() && json.charAt(end) == '"') {
+                    continue;
+                }
+                copied = end;
+                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled));
+            } else if (field.region(at, json.length()).lookingAt()) {
+                copied = field.end();
+                if (field.group(3) != null) {
+                    masks.add(new Mask(view.at(field.start(3)), view.at(field.end(3)),
+                            masked(decodeName(field.group(1)), field.group(3))));
+                } else {
+                    masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled));
+                }
+            }
+        }
     }
 
     /**
