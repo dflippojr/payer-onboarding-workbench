@@ -817,6 +817,16 @@ const escapedLineBreak = (root, lineBreak) => {
   return r > lineBreak && (root[r] === 'n' || root[r] === 'r');
 };
 
+/**
+ * Whether `root` spells the backslash at `at` as a \u005c escape, at any level: backslashes, then u005c. An escaped
+ * backslash before half an escape is backslashes and then at most u and three hex digits.
+ */
+const unicodeBackslash = (root, at) => {
+  let r = at;
+  while (root[r] === '\\') r++;
+  return r > at && /^u005[cC]/.test(root.slice(r, r + 5));
+};
+
 /** The line breaks Java's regex dot does not match: Redactor's escape takes any character but these. */
 const LINE_BREAKS = '\n\r\u0085\u2028\u2029';
 
@@ -1065,11 +1075,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = false) {
     return view ? view.read : null;
   };
   // Whether a literal's value lost bytes to a cut: half an escape decodeLiteral cut off its end, or, in a view cut inside
-  // a value (readNested), the literal is still open at the view's end. A view that ends in a lone backslash (an escaped
-  // one before the half escape in the copy) holds a value Redactor does not match, and keeps (automated review on
-  // b9d6038).
+  // a value (readNested), the literal is still open at the view's end. A view that ends in a lone backslash the scanned
+  // text spells as an escaped one (\\ before the half escape in the copy) holds a value Redactor does not match, and
+  // keeps (automated review on b9d6038); one spelled as a \u005c escape, at any level, Redactor masks (automated review
+  // on 73e4411).
   const pending = literal => literal.cutEscape === true
-    || (cut && !literal.terminated && literal.end >= text.length && backslashesBefore(text, text.length) % 2 === 0);
+    || (cut && !literal.terminated && literal.end >= text.length
+      && (backslashesBefore(text, text.length) % 2 === 0 || unicodeBackslash(ctx.text, toRoot(text.length - 1))));
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
