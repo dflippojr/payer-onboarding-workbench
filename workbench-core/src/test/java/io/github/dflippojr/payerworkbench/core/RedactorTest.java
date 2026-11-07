@@ -832,6 +832,105 @@ class RedactorTest {
         assertFalse(Redactor.redact(prose).contains("PRIVK"), Redactor.redact(prose));
     }
 
+    @Test
+    void masksSecretFieldsNestedTwoOrMoreLevelsDeep() {
+        // #339: the issue's shape, two levels deep with \\\" quotes.
+        assertEquals("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"[REDACTED]\\\\\\\"}\\\"}\"}",
+                Redactor.redact("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"s3cr3t\\\\\\\"}\\\"}\"}"));
+        // Three levels deep, \\\\\\\" quotes.
+        assertEquals("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"c\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_secret\\\\\\\\\\\\\\\":"
+                        + "\\\\\\\\\\\\\\\"[REDACTED]\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}",
+                Redactor.redact("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"c\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_secret\\\\\\\\\\\\\\\":"
+                        + "\\\\\\\\\\\\\\\"s3cr3t\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}"));
+        // Every spelling isSecretField accepts, a name spelled with a \\u escape, a number and an object value, with
+        // other members around them: only the secret values change, at every depth.
+        for (String json : List.of(
+                "{\"client_id\":\"app\",\"client_secret\":\"s3cr3t\",\"scope\":\"x\"}",
+                "{\"clientSecret\":\"s3cr3t\",\"n\":1}",
+                "{\"grant\":\"x\",\"client-secret\":\"s3cr3t\"}",
+                "{\"client\\u005fsecret\":\"s3cr3t\",\"client_id\":\"app\"}",
+                "{\"password\":123456,\"user\":\"u\"}",
+                "{\"private_key\":{\"x\":\"s3cr3t\",\"y\":[1,2]},\"kid\":\"k1\"}",
+                "{\"note\":\"a \\\"quoted\\\" \\\\ word\",\"access_token\":\"s3cr3t\"}")) {
+            String masked = Redactor.redact(json);
+            assertFalse(masked.contains("s3cr3t"), masked);
+            assertFalse(masked.contains("123456"), masked);
+            String in = json;
+            String out = masked;
+            for (int depth = 1; depth <= 4; depth++) {
+                in = nested(in);
+                out = nested(out);
+                assertEquals(out, Redactor.redact(in), "depth " + depth + ": " + json);
+            }
+        }
+    }
+
+    @Test
+    void masksSecretFieldsWhoseEmbeddedJsonIsSpelledWithUnicodeEscapes() {
+        // #339: quotes spelled \\u0022, in a JSON string and at the top level (text copied from inside a string).
+        assertEquals("{\"a\":\"{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}\"}",
+                Redactor.redact("{\"a\":\"{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}\"}"));
+        assertEquals("{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}",
+                Redactor.redact("{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}"));
+        // A level written with \" inside a level written with \\u0022, and the reverse.
+        assertEquals("{\"a\":\"{\\u0022b\\u0022:\\u0022{\\\\\\\"client_secret\\\\\\\":\\\\\\\"[REDACTED]\\\\\\\"}\\u0022}\"}",
+                Redactor.redact("{\"a\":\"{\\u0022b\\u0022:\\u0022{\\\\\\\"client_secret\\\\\\\":\\\\\\\"s3cr3t\\\\\\\"}\\u0022}\"}"));
+        assertEquals("{\"a\":\"{\\\"b\\\":\\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022[REDACTED]\\\\u0022}\\\"}\"}",
+                Redactor.redact("{\"a\":\"{\\\"b\\\":\\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022s3cr3t\\\\u0022}\\\"}\"}"));
+        // Every mix of escapes one to three levels deep keeps all but the secret values byte for byte.
+        List<UnaryOperator<String>> levels = List.of(RedactorTest::nested, RedactorTest::nestedEscapingQuotes);
+        for (String json : List.of(
+                "{\"client_id\":\"app\",\"client_secret\":\"s3cr3t\",\"scope\":\"x\"}",
+                "{\"clientSecret\":\"s3cr3t\"}",
+                "{\"client-secret\":\"s3cr3t\",\"n\":1}",
+                "{\"client\\u005fsecret\":\"s3cr3t\"}")) {
+            String masked = Redactor.redact(json);
+            for (UnaryOperator<String> a : levels) {
+                for (UnaryOperator<String> b : levels) {
+                    for (UnaryOperator<String> c : levels) {
+                        for (String[] pair : List.of(new String[] {a.apply(json), a.apply(masked)},
+                                new String[] {b.apply(a.apply(json)), b.apply(a.apply(masked))},
+                                new String[] {c.apply(b.apply(a.apply(json))), c.apply(b.apply(a.apply(masked)))})) {
+                            assertEquals(pair[1], Redactor.redact(pair[0]), pair[0]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void leavesNonSecretFieldsNestedDeepOrSpelledWithUnicodeEscapesAlone() {
+        for (String in : List.of(
+                "{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_id\\\\\\\":\\\\\\\"app\\\\\\\"}\\\"}\"}",
+                "{\"a\":\"{\\u0022client_id\\u0022:\\u0022app\\u0022}\"}",
+                "{\\u0022client_id\\u0022:\\u0022app\\u0022,\\u0022token_type\\u0022:\\u0022Bearer\\u0022}",
+                nested(nested(nested("{\"client_id\":\"app\",\"secretary\":\"s\",\"n\":1,\"obj\":{\"x\":[1]}}"))),
+                nestedEscapingQuotes(nested("{\"client_id\":\"app\",\"scope\":\"a b\"}")))) {
+            assertEquals(in, Redactor.redact(in));
+        }
+    }
+
+    @Test
+    void masksNestedSecretFieldsInLinearTime() {
+        // About 1 MB each of openers that never close, nested two levels deep and spelled with \\u0022: a fixed
+        // number of levels, each read once, so time stays linear (quadratic time takes minutes).
+        int n = 60_000;
+        List<String> texts = List.of(
+                "{\"a\":\"{\\\"b\\\":\\\"" + "\\\\\\\"client_secret\\\\\\\":".repeat(n) + "\\\"}\"}",
+                "{\"a\":\"{\\\"b\\\":\\\"" + "\\\\\\\"client_secret\\\\\\\":\\\\\\\"".repeat(n) + "\\\"}\"}",
+                "{\"a\":\"" + "\\u0022client_secret\\u0022:".repeat(n) + "\"}",
+                "\\u0022client_secret\\u0022:\\u0022".repeat(n),
+                "{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":{" + "\\\\\\\"x\\\\\\\":[".repeat(n) + "\\\"}\"}",
+                nested(nested(nested("{\"client_secret\":\"" + "x".repeat(20 * n)))));
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
+            String out = Redactor.redact(text);
+            assertTrue(out.length() <= text.length() + 64, () -> out.length() + " > " + text.length());
+        }));
+        String cut = nested(nested(nested("{\"client_secret\":\"s3cr3t" + "x".repeat(20 * n))));
+        assertFalse(Redactor.redact(cut).contains("s3cr3t"));
+    }
+
     /** {@link #nested}, with each quote in the string escaped as {@code \\u0022}. */
     private static String nestedEscapingQuotes(String text) {
         return "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\u0022") + "\"}";

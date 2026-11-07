@@ -1377,3 +1377,49 @@ test('class-level check: flags a mask that stops short of a generated secret', (
     assert.ok(flagged(placement), `${describeCase(c)} not flagged: ${placement.text ?? JSON.stringify(placement.record)}`);
   }
 });
+
+// #339: secret-named fields nested two or more levels deep, or spelled with " quotes. Each unmasked input is
+// flagged; what Redactor leaves for it (the strings RedactorTest expects) is not.
+const nestBody = text => JSON.stringify({ body: text });
+const nestQuotes = text => `{"body":"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\u0022')}"}`;
+const secretFieldShapes = [
+  // [unmasked, what Redactor leaves]
+  ['{"a":"{\\"b\\":\\"{\\\\\\"client_secret\\\\\\":\\\\\\"s3cr3t\\\\\\"}\\"}"}',
+    '{"a":"{\\"b\\":\\"{\\\\\\"client_secret\\\\\\":\\\\\\"[REDACTED]\\\\\\"}\\"}"}'],
+  ['{"a":"{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}"}', '{"a":"{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}"}'],
+  ['{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}', '{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}'],
+  ['{"a":"{\\u0022b\\u0022:\\u0022{\\\\\\"client_secret\\\\\\":\\\\\\"s3cr3t\\\\\\"}\\u0022}"}',
+    '{"a":"{\\u0022b\\u0022:\\u0022{\\\\\\"client_secret\\\\\\":\\\\\\"[REDACTED]\\\\\\"}\\u0022}"}'],
+  ['{"a":"{\\"b\\":\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022s3cr3t\\\\u0022}\\"}"}',
+    '{"a":"{\\"b\\":\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022[REDACTED]\\\\u0022}\\"}"}'],
+];
+for (const [json, masked] of [
+  ['{"client_id":"app","client_secret":"s3cr3t","scope":"x"}', '{"client_id":"app","client_secret":"[REDACTED]","scope":"x"}'],
+  ['{"clientSecret":"s3cr3t","n":1}', '{"clientSecret":"[REDACTED]","n":1}'],
+  ['{"grant":"x","client-secret":"s3cr3t"}', '{"grant":"x","client-secret":"[REDACTED]"}'],
+  ['{"client\\u005fsecret":"s3cr3t","client_id":"app"}', '{"client\\u005fsecret":"[REDACTED]","client_id":"app"}'],
+  ['{"password":123456,"user":"u"}', '{"password":"[REDACTED]","user":"u"}'],
+  ['{"private_key":{"x":"s3cr3t","y":[1,2]},"kid":"k1"}', '{"private_key":"[REDACTED]","kid":"k1"}'],
+]) {
+  for (const levels of [[nestBody, nestBody], [nestBody, nestBody, nestBody], [nestQuotes], [nestQuotes, nestBody],
+    [nestBody, nestQuotes], [nestQuotes, nestQuotes, nestBody]]) {
+    secretFieldShapes.push(levels.reduce(([a, b], level) => [level(a), level(b)], [json, masked]));
+  }
+}
+test('flags a secret field nested two or more levels deep or spelled with \\u0022 quotes, and accepts what Redactor leaves (#339)', () => {
+  for (const [unmasked, masked] of secretFieldShapes) {
+    assert.ok(findTextLeaks(unmasked).length > 0, `not flagged: ${unmasked}`);
+    assert.deepEqual(findTextLeaks(masked), [], masked);
+  }
+});
+test('accepts a non-secret field nested two levels deep or spelled with \\u0022 quotes (#339)', () => {
+  for (const text of [
+    '{"a":"{\\"b\\":\\"{\\\\\\"client_id\\\\\\":\\\\\\"app\\\\\\"}\\"}"}',
+    '{"a":"{\\u0022client_id\\u0022:\\u0022app\\u0022}"}',
+    '{\\u0022client_id\\u0022:\\u0022app\\u0022,\\u0022token_type\\u0022:\\u0022Bearer\\u0022}',
+    nestBody(nestBody(nestBody('{"client_id":"app","secretary":"s","n":1,"obj":{"x":[1]}}'))),
+    nestQuotes(nestBody('{"client_id":"app","scope":"a b"}')),
+  ]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
