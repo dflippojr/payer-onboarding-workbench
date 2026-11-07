@@ -1257,6 +1257,25 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksTheUnionOfDisagreeingReadingsOfASecretObject() {
+        // Review on 59b603d, owner decision (fail closed, #339): where readings of a secret object at one level disagree
+        // on its bounds, the union of their masks is masked, so nothing a reading finds in it is kept. These texts mix
+        // plain, escaped and \\u0022 quotes at one level; nested(nestedEscapingQuotes(...)) of the first kept TAIL and
+        // "other":42. Masking past the object in such ambiguous text is accepted.
+        for (String shape : List.of(
+                "{\"private_key\":{\"noteQ:Q\\\"}TAILQ,\"other\":42},\"n\":1}",
+                "{\"private_key\":{\"note\":Q\\\"}TAILQ,\"other\":42},\"n\":1}")) {
+            String in = shape.replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                String out = Redactor.redact(wrap.apply(in));
+                assertFalse(out.contains("TAIL") || out.contains("other"), wrap.apply(in) + " => " + out);
+                assertTrue(out.contains("private_key"), out);
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

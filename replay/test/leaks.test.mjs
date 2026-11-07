@@ -1662,3 +1662,13 @@ test('flags a secret object with mixed-quoted member names or strings, and accep
     }
   }
 });
+
+test('flags a secret object whose readings disagree on its bounds, in every wrap (#339, review on 59b603d, fail closed)', () => {
+  // RedactorTest.masksTheUnionOfDisagreeingReadingsOfASecretObject's inputs, unmasked.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const shape of ['{"private_key":{"noteQ:Q\\"}TAILQ,"other":42},"n":1}', '{"private_key":{"note":Q\\"}TAILQ,"other":42},"n":1}']) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(shape))).length > 0, `not flagged: ${wrap(u(shape))}`);
+    }
+  }
+});
