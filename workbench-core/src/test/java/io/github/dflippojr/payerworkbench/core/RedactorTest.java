@@ -990,6 +990,24 @@ class RedactorTest {
     }
 
     @Test
+    void masksASecretObjectWholeWhoseMembersAnEarlierReadingMasked() {
+        // Review on 806a28c: a secret-named object whose own members a shallower reading masked first
+        // ({\\u0022private_key\\u0022:{"password":"",...}}) lost its whole-object mask, keeping its other members.
+        for (String[] pair : List.of(
+                new String[] {"{QprivateKeyQ:{\"password\":\"\",\"other\":42}}", "{QprivateKeyQ:Q[REDACTED]Q}"},
+                new String[] {"{Qprivate_keyQ:{\"password\":\"pw\",\"other\":\"PRIVOTHER\"},\"kid\":\"k1\"}",
+                        "{Qprivate_keyQ:Q[REDACTED]Q,\"kid\":\"k1\"}"},
+                new String[] {"{Qclient_secretQ:[\"a\",{\"access_token\":\"t\"},\"PRIVITEM\"]}", "{Qclient_secretQ:Q[REDACTED]Q}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes)) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
+    @Test
     void masksNestedSecretFieldsInLinearTime() {
         // About 1 MB each of openers that never close, nested two levels deep and spelled with \\u0022: a fixed
         // number of levels, each read once, so time stays linear (quadratic time takes minutes).

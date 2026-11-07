@@ -1505,3 +1505,20 @@ test('accepts what Redactor leaves for an empty or escaped secret value at every
   // What the empty value used to become, masked twice, is not what Redactor leaves.
   assert.ok(findTextLeaks('{"client_secret":"[REDACTED][REDACTED]"}').length > 0);
 });
+
+test('accepts a masked text with a long value quoted with \\u0022 five levels deep within the scan budget (#339, review on 806a28c)', () => {
+  // The flattened reads of each level are charged as they are made, on top of what the other views may spend.
+  let text = `{"client_secret":"[REDACTED]","note":"${'n'.repeat(10000)}"}`;
+  for (let d = 0; d < 5; d++) text = nestQuotes(text);
+  assert.deepEqual(findTextLeaks(text), []);
+  let leak = `{"client_secret":"LEAKED","note":"${'n'.repeat(10000)}"}`;
+  for (let d = 0; d < 5; d++) leak = nestQuotes(leak);
+  assert.ok(findTextLeaks(leak).some(l => l.check === 'JSON secret field'), 'not flagged');
+});
+test('flags a secret object whose members are quoted at another level, and accepts it masked whole (#339, review on 806a28c)', () => {
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes]) {
+    assert.ok(findTextLeaks(wrap(u('{QprivateKeyQ:{"password":"","other":42}}'))).length > 0, 'not flagged');
+    assert.deepEqual(findTextLeaks(wrap(u('{QprivateKeyQ:Q[REDACTED]Q}'))), []);
+  }
+});
