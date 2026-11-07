@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
@@ -828,7 +829,7 @@ public final class Redactor {
      * string by {@link #nestedJwkMasks} before this runs.
      */
     private static String maskNestedSecretFields(String text) {
-        List<Mask> masks = new ArrayList<>();
+        SecretMasks masks = new SecretMasks();
         // The text itself, for a name that opens on the quote closing the value before it, which the patterns' own
         // whole-field search skips.
         View plain = new View(text, null);
@@ -842,7 +843,34 @@ public final class Redactor {
                 secretFieldMasks(text, normal, true, masks);
             }
         });
-        return applyMasks(text, masks);
+        return applyMasks(text, masks.list);
+    }
+
+    /**
+     * The masks {@link #maskNestedSecretFields} finds, in the order its readings run: the text before the views, and
+     * the views from the shallowest level down, each read as plain JSON (the level above) before embedded JSON. A
+     * mask that overlaps one taken before is dropped: the earlier reading read that value at its own level, and a view
+     * unescaped past it reads an escape of the value as a quote of its own ({@code "s3cr3t\\\\"} as
+     * {@code "s3cr3t\\"}), running the value on through the next member (review on c8d676f). The same value found
+     * by two readings, an empty one included, is so masked once.
+     */
+    private static final class SecretMasks {
+
+        private final List<Mask> list = new ArrayList<>();
+        private final TreeMap<Integer, Integer> spans = new TreeMap<>();
+
+        void add(Mask mask) {
+            Map.Entry<Integer, Integer> before = spans.floorEntry(mask.start());
+            if (before != null && (before.getKey() == mask.start() || before.getValue() > mask.start())) {
+                return;
+            }
+            Map.Entry<Integer, Integer> after = spans.higherEntry(mask.start());
+            if (after != null && after.getKey() < mask.end()) {
+                return;
+            }
+            spans.put(mask.start(), mask.end());
+            list.add(mask);
+        }
     }
 
     /**
@@ -854,7 +882,7 @@ public final class Redactor {
      * value is then matched from the name. A name inside a value already masked goes with it, except one that opens on
      * the quote that closed that value; so each value is read once, and the work stays linear in the view's length.
      */
-    private static void secretFieldMasks(String text, View view, boolean embedded, List<Mask> masks) {
+    private static void secretFieldMasks(String text, View view, boolean embedded, SecretMasks masks) {
         String json = view.text();
         int quote = embedded ? 2 : 1;
         Matcher name = (embedded ? EMBEDDED_FIELD_NAME : FIELD_NAME).matcher(json);
