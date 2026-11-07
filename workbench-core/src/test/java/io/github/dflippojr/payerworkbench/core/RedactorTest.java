@@ -1071,6 +1071,35 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void readsAValueOpenedByAUnicodeQuoteAtItsOwnEscapeLevel() {
+        // Security round 2: a string value whose opening quote is spelled \\u0022 after a plain or mixed-quoted name
+        // was read only in the next view, which takes an escape off it: an escaped quote at its start closed it there,
+        // so an empty string was masked and the rest kept, and an escaped backslash at its end ran it on. It is read in
+        // its own view, with its own escapes, and masked whole.
+        for (String[] pair : List.of(
+                new String[] {"{\"client_secret\":Q\\\"s3cr3tQ}", "{\"client_secret\":Q[REDACTED]Q}"},
+                new String[] {"{\"client_secret\":Q\\\"s3cr3t\"}", "{\"client_secret\":Q[REDACTED]\"}"},
+                new String[] {"{\"client_secret\":Q\\\\\\\"s3cr3tQ,\"n\":1}", "{\"client_secret\":Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{\"client_secret\":Qs3cr3t\\\\Q,\"n\":1}", "{\"client_secret\":Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{\"password\":Qs3\\\"cr3t\\\\\\\\Q,\"client_id\":\"app\"}",
+                        "{\"password\":Q[REDACTED]Q,\"client_id\":\"app\"}"},
+                new String[] {"{Qclient_secretQ:Q\\\"s3cr3tQ}", "{Qclient_secretQ:Q[REDACTED]Q}"},
+                new String[] {"{Qclient_secret\":Qs3\\\"cr3t\"}", "{Qclient_secret\":Q[REDACTED]\"}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+        // A non-secret value so quoted keeps every byte.
+        for (String text : List.of("{\"client_id\":Q\\\"appQ,\"n\":1}".replace("Q", "\\u0022"),
+                nested(nested("{\"scope\":Qa\\\\Q,\"n\":1}".replace("Q", "\\u0022"))))) {
+            assertEquals(text, Redactor.redact(text));
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

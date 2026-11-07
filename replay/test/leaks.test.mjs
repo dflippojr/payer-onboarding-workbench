@@ -1539,3 +1539,28 @@ test('flags a plain-quoted value after a name quoted with \\u0022 and accepts it
     }
   }
 });
+
+test('flags a value opened by a quote spelled \\u0022 with escapes of its own, and accepts it masked whole (#339, security round 2)', () => {
+  // RedactorTest.readsAValueOpenedByAUnicodeQuoteAtItsOwnEscapeLevel's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{"client_secret":Q\\"s3cr3tQ}', '{"client_secret":Q[REDACTED]Q}'],
+    ['{"client_secret":Q\\"s3cr3t"}', '{"client_secret":Q[REDACTED]"}'],
+    ['{"client_secret":Q\\\\\\"s3cr3tQ,"n":1}', '{"client_secret":Q[REDACTED]Q,"n":1}'],
+    ['{"client_secret":Qs3cr3t\\\\Q,"n":1}', '{"client_secret":Q[REDACTED]Q,"n":1}'],
+    ['{"password":Qs3\\"cr3t\\\\\\\\Q,"client_id":"app"}', '{"password":Q[REDACTED]Q,"client_id":"app"}'],
+    ['{Qclient_secretQ:Q\\"s3cr3tQ}', '{Qclient_secretQ:Q[REDACTED]Q}'],
+    ['{Qclient_secret":Qs3\\"cr3t"}', '{Qclient_secret":Q[REDACTED]"}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  // What Redactor left before the fix, an empty string masked before the value's escaped quote, keeps the secret.
+  assert.ok(findTextLeaks(u('{"client_secret":Q[REDACTED]\\"s3cr3tQ}')).length > 0, 'old output not flagged');
+  for (const text of [u('{"client_id":Q\\"appQ,"n":1}'), nestBody(nestBody(u('{"scope":Qa\\\\Q,"n":1}')))]) {
+    assert.deepEqual(findTextLeaks(text), [], text);
+  }
+});
