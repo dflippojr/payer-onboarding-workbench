@@ -927,6 +927,25 @@ test('flags a copied secret field cut off in half a \\u escape after a \\u005c b
     }
   }
 });
+test('reads a nested copy cut in half a \\u escape after an escaped backslash within the scan budget, 3 deep (#342)', () => {
+  // Automated review on d79595f: a masked JWK after a 5,000-character pad, cut after an escaped backslash and half a \u
+  // escape, copied after a stray quote and a raw line break three times. Redactor keeps it and 8a06f7e accepted it.
+  // d79595f mapped the cut's last character back to the scanned text at each level to see how it was spelled, which
+  // built offset maps mid-scan and spent the budget. With one backslash before the half escape, it is still flagged.
+  for (const lb of ['\n', '\r\n']) {
+    for (const backslashes of [3, 1]) {
+      let text = JSON.stringify({ pad: `${'x'.repeat(5_000)}"`, kty: 'oct', k: MASK }).slice(0, -2);
+      text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}${'\\'.repeat(backslashes)}u005`;
+      for (let level = 1; level < 3; level++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}`;
+      if (backslashes === 3) {
+        assert.deepEqual(findTextLeaks(text), [], JSON.stringify(lb));
+        assert.deepEqual(findJsonLeaks({ responseBody: text }), [], JSON.stringify(lb));
+      } else {
+        assert.ok(findTextLeaks(text).some(leak => leak.check === 'JSON secret field'), JSON.stringify(lb));
+      }
+    }
+  }
+});
 test('checks each private member name for a form feed in time that grows with the text, not its square (#342)', () => {
   // Codex security round 2 at 8a06f7e, finding 2: the check of a member name's whitespace for an escaped form feed
   // searched from the name to the end of the view, for every private member, work the scan budget did not count. With
