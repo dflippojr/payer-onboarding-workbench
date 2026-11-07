@@ -1433,6 +1433,24 @@ class RedactorTest {
     }
 
     @Test
+    void keepsACopiedValueCutOffInHalfAUnicodeEscapeAfterAnEscapedBackslash() {
+        // #342 (automated review on b9d6038): the leak scanner's test of the same form relies on these outputs. An
+        // escaped backslash before half an escape at the end leaves the cut value unmatched, so the text is kept.
+        String q = "\\\"";
+        String b = "\\\\";
+        for (String tail : List.of("\\u", "\\u0", "\\u005")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
+                    String masked = "he said \"" + lb + head + "[REDACTED]" + b + tail;
+                    assertEquals(masked, Redactor.redact(masked));
+                    String empty = "he said \"" + lb + head + b + tail;
+                    assertEquals(empty, Redactor.redact(empty));
+                }
+            }
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";

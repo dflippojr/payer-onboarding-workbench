@@ -891,6 +891,22 @@ test('flags a copied secret value cut off in half a \\u escape, which Redactor m
     }
   }
 });
+test('keeps a copied value cut off in half a \\u escape after an escaped backslash, as Redactor does (#342)', () => {
+  // Automated review on b9d6038: after a stray quote and a raw line break, a copy whose open value ends in an escaped
+  // backslash and then half a \u escape (\\\u005 in the copy) is not matched by Redactor, which leaves the text as it
+  // is, and 8a06f7e accepted it. b9d6038 judged the value open at the cut and flagged it. One backslash before the half
+  // escape is still Redactor's mask's suffix, flagged (RedactorTest.keepsACopiedValueCutOffInHalfAUnicodeEscapeAfterAnEscapedBackslash).
+  const q = '\\"';
+  for (const lb of ['\n', '\r\n']) {
+    for (const tail of ['\\u', '\\u0', '\\u005']) {
+      for (const head of [`{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`, `{${q}password${q}:${q}`]) {
+        assertAccepted(`he said "${lb}${head}${MASK}\\\\${tail}`);
+        assertAccepted(`he said "${lb}${head}\\\\${tail}`);
+        assertFlagged(`he said "${lb}${head}${MASK}${tail}`);
+      }
+    }
+  }
+});
 test('checks each private member name for a form feed in time that grows with the text, not its square (#342)', () => {
   // Codex security round 2 at 8a06f7e, finding 2: the check of a member name's whitespace for an escaped form feed
   // searched from the name to the end of the view, for every private member, work the scan budget did not count. With
