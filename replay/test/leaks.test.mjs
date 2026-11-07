@@ -1522,3 +1522,20 @@ test('flags a secret object whose members are quoted at another level, and accep
     assert.deepEqual(findTextLeaks(wrap(u('{QprivateKeyQ:Q[REDACTED]Q}'))), []);
   }
 });
+
+test('flags a plain-quoted value after a name quoted with \\u0022 and accepts it masked whole (#339, review on 5b051eb)', () => {
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{Qclient_secretQ:"s3\\"cr3t","n":1}', '{Qclient_secretQ:"[REDACTED]","n":1}'],
+    ['{Qclient_secretQ:"s3cr3t\\\\","n":1}', '{Qclient_secretQ:"[REDACTED]","n":1}'],
+    ['{Qpassword":"a\\\\\\"b","n":1}', '{Qpassword":"[REDACTED]","n":1}'],
+    ['{"client_secretQ:"s3\\"cr3t"}', '{"client_secretQ:"[REDACTED]"}'],
+    ['{Qprivate_key":{"note":"a\\"}b","other":"PRIVOTHER"},"n":1}', '{Qprivate_key":Q[REDACTED]Q,"n":1}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
