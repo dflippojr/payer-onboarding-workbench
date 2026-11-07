@@ -1142,6 +1142,45 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksASecretObjectWholeThroughABracketInsideAUnicodeQuotedString() {
+        // Review on 9de277d, P1: the plain structure pass ran first and closed the object at a bracket inside a string
+        // quoted with \\u0022, keeping the members after it, before the flattened view could read the object whole.
+        for (String[] pair : List.of(
+                new String[] {"{\"private_key\":{\"note\":Q}Q,\"other\":42},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":{\"note\":Q}Q,\"other\":\"PRIVOTHER\"},\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"private_key\":[Q]Q,\"PRIVOTHER\"],\"n\":1}",
+                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
+    @Test
+    void keepsTheDelimitersAfterAUnicodeQuotedValueEndingInAnEscapedBackslash() {
+        // Review on 9de277d, P2: the embedded reading read the value's escaped backslash and closing \\u0022 as an
+        // escaped quote, ran it on to the next bare quote and masked the closing quote and comma with it. The flattened
+        // reading, which closes the value there, takes that reading's place.
+        for (String[] pair : List.of(
+                new String[] {"{QpasswordQ:Qx\\\\Q,\"n\":1}",
+                        "{QpasswordQ:Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{Qclient_secretQ:Qs3\\\\Q,\"client_id\":\"app\"}",
+                        "{Qclient_secretQ:Q[REDACTED]Q,\"client_id\":\"app\"}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

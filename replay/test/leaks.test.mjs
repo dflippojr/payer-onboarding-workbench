@@ -1607,3 +1607,22 @@ test('flags a secret object whose \\u0022-quoted strings hold an escaped quote, 
     }
   }
 });
+
+test('flags a secret object cut at a bracket in a \\u0022-quoted string, and a \\u0022-quoted value ending in an escaped backslash, and accepts what Redactor leaves (#339, review on 9de277d)', () => {
+  // RedactorTest.masksASecretObjectWholeThroughABracketInsideAUnicodeQuotedString and
+  // keepsTheDelimitersAfterAUnicodeQuotedValueEndingInAnEscapedBackslash's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{"private_key":{"note":Q}Q,"other":42},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":{"note":Q}Q,"other":"PRIVOTHER"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":[Q]Q,"PRIVOTHER"],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{QpasswordQ:Qx\\\\Q,"n":1}', '{QpasswordQ:Q[REDACTED]Q,"n":1}'],
+    ['{Qclient_secretQ:Qs3\\\\Q,"client_id":"app"}', '{Qclient_secretQ:Q[REDACTED]Q,"client_id":"app"}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
