@@ -1490,3 +1490,18 @@ test('flags a JWK private member whose value is quoted with \\u0022 after plain-
     assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
   }
 });
+
+test('accepts what Redactor leaves for an empty or escaped secret value at every depth, and flags it unmasked (#339, review on c8d676f)', () => {
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), t => nestBody(nestBody(nestBody(t))), nestQuotes,
+    t => nestQuotes(nestBody(t)), t => nestBody(nestQuotes(t))];
+  const masked = '{"client_secret":"[REDACTED]","client_id":"app","password":"[REDACTED]"}';
+  for (const value of ['', 's3cr3t\\\\', 's3\\"cr3t', 's3\\ncr3t']) {
+    const unmasked = `{"client_secret":"${value}","client_id":"app","password":"${value}"}`;
+    for (const wrap of wraps) {
+      if (value !== '') assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  // What the empty value used to become, masked twice, is not what Redactor leaves.
+  assert.ok(findTextLeaks('{"client_secret":"[REDACTED][REDACTED]"}').length > 0);
+});

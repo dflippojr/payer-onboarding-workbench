@@ -970,6 +970,26 @@ class RedactorTest {
     }
 
     @Test
+    void masksEmptyAndEscapedSecretValuesOnceAndKeepsTheSeparatorsAfterThem() {
+        // Review on c8d676f: an empty value was masked twice ([REDACTED][REDACTED]), once by each reading that found
+        // it, and a view unescaped past the JSON's own level read a value ending in an escaped backslash as running on
+        // through the next member, dropping the separator. Each value becomes one mask and the rest stays byte for
+        // byte, at every depth and however each level spells its quotes.
+        List<UnaryOperator<String>> wraps = List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                t -> nested(nested(t)), t -> nested(nested(nested(t))), t -> nested(nested(nested(nested(t)))),
+                RedactorTest::nestedEscapingQuotes, t -> nestedEscapingQuotes(nested(t)), t -> nested(nestedEscapingQuotes(t)),
+                t -> nested(nested(nestedEscapingQuotes(t))));
+        for (String value : List.of("", "s3cr3t\\\\", "s3\\\"cr3t", "\\\\\\\\", "s3\\\\\\\"cr3t", "s3\\ncr3t", "\\\\s3cr3t")) {
+            String in = "{\"client_secret\":\"" + value + "\",\"client_id\":\"app\",\"password\":\"" + value + "\"}";
+            String out = "{\"client_secret\":\"[REDACTED]\",\"client_id\":\"app\",\"password\":\"[REDACTED]\"}";
+            for (UnaryOperator<String> wrap : wraps) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+        assertEquals("{QpasswordQ:Q[REDACTED]Q}".replace("Q", "\\u0022"), Redactor.redact("{QpasswordQ:QQ}".replace("Q", "\\u0022")));
+    }
+
+    @Test
     void masksNestedSecretFieldsInLinearTime() {
         // About 1 MB each of openers that never close, nested two levels deep and spelled with \\u0022: a fixed
         // number of levels, each read once, so time stays linear (quadratic time takes minutes).
