@@ -941,22 +941,22 @@ public final class Redactor {
         // The text itself, for a name that opens on the quote closing the value before it, which the patterns' own
         // whole-field search skips.
         View plain = new View(text, null);
-        secretFieldMasks(text, plain, 1, PLAIN_READING, masks);
+        secretFieldMasks(text, plain, PLAIN_READING, masks);
         if (text.contains("\\\"")) {
-            secretFieldMasks(text, plain, 1, EMBEDDED_READING, masks);
+            secretFieldMasks(text, plain, EMBEDDED_READING, masks);
         }
         readNestedLevels(text, (view, normal, depth, fresh) -> {
             masks.fresh = fresh;
-            secretFieldMasks(text, normal, depth, PLAIN_READING, masks);
+            secretFieldMasks(text, normal, PLAIN_READING, masks);
             if (normal.text().contains("\\\"")) {
-                secretFieldMasks(text, normal, depth, EMBEDDED_READING, masks);
-                secretFieldMasks(text, normal, depth, MIXED_READING, masks);
+                secretFieldMasks(text, normal, EMBEDDED_READING, masks);
+                secretFieldMasks(text, normal, MIXED_READING, masks);
             }
             BitSet quotes = new BitSet();
             View flat = flattened(view, quotes);
             if (flat != null) {
                 masks.flatQuotes = quotes;
-                secretFieldMasks(text, flat, depth, FLAT_READING, masks);
+                secretFieldMasks(text, flat, FLAT_READING, masks);
             }
         });
         return applyMasks(text, masks.list);
@@ -964,55 +964,36 @@ public final class Redactor {
 
     /**
      * The masks {@link #maskNestedSecretFields} finds, in the order its readings run: the text before the views, and
-     * the views from the shallowest level down, each read as plain JSON (the level above) before embedded JSON. A
-     * string or scalar value's mask that overlaps one taken before is dropped: the earlier reading read that value at
-     * its own level, and a view unescaped past it reads an escape of the value as a quote of its own
-     * ({@code "s3cr3t\\\\"} as {@code "s3cr3t\\"}), running the value on through the next member (review on
-     * c8d676f); the same value found by two readings, an empty one included, is so masked once. An object or array's
-     * mask that starts where an earlier mask does is such a competing reading and is dropped too; over masks taken
-     * before that start inside it, its members' values and objects, it is taken and masks them with it (reviews on
-     * 806a28c and 43b954a), unless an earlier object or array's mask reaches outside it. A value's mask from
-     * {@link #FLAT_READING} takes the masks of its own level's readings of that value, which start where it does and
-     * end before it: another reading of that level closed the value at an escape of its own (security round 2: the
-     * embedded reading closed {@code \\u0022\\"s3cr3t\\u0022} at its {@code \\"}, masking an empty string; review on
-     * ef4a81b: it closed {@code {\\u0022note\\u0022:\\u0022\\"}\\u0022}} at its {@code \\"} and brace). A string's mask takes only strings,
-     * and the strings of that level inside it. A flattened string value ending at its closing quote and a delimiter
-     * also replaces the embedded reading's longer reading of that value that a bare quote cut off, at its own level
-     * (review on 9de277d: the embedded reading read
-     * an escaped backslash and the {@code \\u0022} after it as an escaped quote, and ran on to the next member's
-     * quote). The spans taken never overlap, so each mask is checked against its
-     * neighbours only.
+     * the views from the shallowest level down. Where readings of a secret object or value disagree on its bounds, the
+     * union of their masks is masked (owner decision on #339, fail closed): a mask that starts where one taken before
+     * does is another reading of that value, and is merged with every span it overlaps, so nothing a reading finds in
+     * the value is kept; in text whose quotes are spelled more than one way some non-secret bytes may be masked with
+     * it. A reading of the same value that masks nothing more is dropped, so a value found twice, an empty one included,
+     * is masked once (review on c8d676f). Any other string or scalar value's mask that overlaps one taken before is
+     * dropped; an object or array's is taken over the masks inside it, its members' values and objects (reviews on
+     * 806a28c and 43b954a), unless an earlier object or array's mask reaches outside it. The readings keep valid JSON's
+     * bounds, so the union does not reach past them there: each reads names at their own escape level
+     * ({@link #opensAtItsLevel}) and, past depth 1, stops at a quote of the level above. The spans taken never
+     * overlap, so each mask is checked against its neighbours only.
      */
     private static final class SecretMasks {
 
         private final List<Mask> list = new ArrayList<>();
         /** Each span taken, by where it starts. */
         private final TreeMap<Integer, Span> spans = new TreeMap<>();
-        /**
-         * The level the masks added now are read at: the depth of the view (1 for the text itself), one more for the
-         * embedded reading.
-         */
-        private int level;
         /** The quotes the flattened view being read turned bare ({@link #flattened}). */
         private BitSet flatQuotes;
         /** Where the quotes of the view being read start in the text that its level's unescaping made, or {@code null}. */
         private BitSet fresh;
 
         void add(Mask mask, boolean structure) {
-            add(mask, structure, false);
-        }
-
-        void add(Mask mask, boolean structure, boolean flat) {
             int start = mask.start();
             int end = mask.end();
             Integer from = spans.floorKey(start);
+            boolean sameValue = spans.containsKey(start);
             List<Integer> overlapped = new ArrayList<>();
             int first = start;
             int union = end;
-            boolean sharesStart = false;
-            // Another reading of a value already masked, starting where it does: where the readings disagree on where it
-            // ends, the union of their masks is masked (owner decision on #339, fail closed).
-            boolean sameValue = spans.containsKey(start);
             boolean structureUnion = structure;
             for (Map.Entry<Integer, Span> span : spans.subMap(from == null ? start : from, true, Math.max(end, start + 1),
                     false).entrySet()) {
@@ -1024,52 +1005,24 @@ public final class Redactor {
                 }
                 if (sameValue) {
                     if (spanStart == start && spanEnd >= end && (spanEnd > end || taken.structure() || !structure)) {
-                        // This reading masks nothing the other did not.
+                        // This reading of the value masks nothing the other did not.
                         return;
                     }
                     structureUnion |= taken.structure();
-                } else if (flat && !structure) {
-                    // A flattened string's mask takes only string masks of its own level that lie inside it.
-                    if (taken.structure() || !ownLevel(taken) || spanStart < start || spanEnd > end
-                            || (spanStart == start && spanEnd == end)) {
-                        return;
-                    }
-                    sharesStart |= spanStart == start;
-                } else {
-                    // A string or scalar's mask, one starting where an earlier mask does (a competing reading of the same
-                    // value), or one an earlier object or array's mask does not lie wholly inside, is dropped; unless it
-                    // is a flattened object or array's, and that earlier mask its own level's shorter reading of it.
-                    boolean inside = start < spanStart && spanEnd <= end;
-                    // A flattened structure's reading of the same object as its own level's: one whose brackets close
-                    // over one that ran on without closing, else the longer.
-                    boolean reread = flat && structure && spanStart == start && spanEnd < end && ownLevel(taken);
-                    if (!structure || (spanStart == start && !reread) || (taken.structure() && !inside && !reread)) {
-                        return;
-                    }
+                } else if (!structure || (taken.structure() && !(start < spanStart && spanEnd <= end))) {
+                    return;
                 }
                 overlapped.add(spanStart);
                 first = Math.min(first, spanStart);
                 union = Math.max(union, spanEnd);
             }
-            if (flat && !structure && !sameValue && !overlapped.isEmpty() && !sharesStart) {
-                return;
-            }
             overlapped.forEach(spans::remove);
-            spans.put(first, new Span(union, structureUnion, level));
+            spans.put(first, new Span(union, structureUnion));
             list.add(mask);
         }
 
-        /** A span taken: where it ends, whether it is an object or array's, and the level it was read at. */
-        private record Span(int end, boolean structure, int level) {
-        }
-
-        /**
-         * Whether {@code taken} is a mask of the flattened reading's own level: one read at its depth, or one the
-         * embedded reading of the same view read a level down, by the quotes that view decoded from {@code \\u0022}
-         * that the flattened view reads as its own.
-         */
-        private boolean ownLevel(Span taken) {
-            return taken.level() == level || taken.level() == level + 1;
+        /** A span taken: where it ends, and whether it is an object or array's. */
+        private record Span(int end, boolean structure) {
         }
 
         /** Whether span {@code [a, b)} and span {@code [s, e)} overlap; an empty span counts at its position. */
@@ -1123,7 +1076,7 @@ public final class Redactor {
      * with it, except one that opens on the quote that closed that value; so each value is read once, and the work
      * stays linear in the view's length.
      */
-    private static void secretFieldMasks(String text, View view, int depth, int reading, SecretMasks masks) {
+    private static void secretFieldMasks(String text, View view, int reading, SecretMasks masks) {
         String json = view.text();
         boolean embedded = reading == EMBEDDED_READING;
         boolean mixed = reading == MIXED_READING;
@@ -1146,9 +1099,6 @@ public final class Redactor {
             // ran on through it, the outer string's closing quote reading as an escaped one here).
             IntPredicate outer = masks.fresh == null ? k -> false : k -> !masks.fresh.get(view.at(k))
                     && !(k > 0 && decodesQuote(view, k - 1)) && !(reading == FLAT_READING && masks.flatQuotes.get(k));
-            // The level of the quotes the field is read by: the view's own (depth 1 for the text itself, which the first
-            // view reads), or for an embedded name the next one.
-            masks.level = depth + (embedded ? 1 : 0);
             // The mixed reading reads string values only: an object or array after such a name is the flattened reading's,
             // which reads its members however they are quoted; read as plain JSON here, members quoted with \\u0022
             // ran it on to the end of the text (owner decision on #339: the readings' masks are joined).
@@ -1165,8 +1115,7 @@ public final class Redactor {
                     end = endOfStructure(json, structure.end(), false, outer);
                 }
                 copied = end;
-                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true,
-                        reading == FLAT_READING);
+                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true);
             } else if (field.region(at, json.length()).lookingAt()) {
                 // A plain-quoted value is the other readings': the flattened view would close it at a quote of its own.
                 if (reading == FLAT_READING && field.group(3) != null && !masks.flatQuotes.get(field.start(3) - 1)) {
@@ -1181,8 +1130,7 @@ public final class Redactor {
                         }
                     }
                     masks.add(new Mask(view.at(field.start(3)), view.at(close),
-                            masked(decodeName(field.group(1)), json.substring(field.start(3), close))), false,
-                            reading == FLAT_READING);
+                            masked(decodeName(field.group(1)), json.substring(field.start(3), close))), false);
                 } else {
                     masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false);
                 }
