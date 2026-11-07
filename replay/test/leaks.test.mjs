@@ -891,6 +891,19 @@ test('flags a copied secret value cut off in half a \\u escape, which Redactor m
     }
   }
 });
+test('checks each private member name for a form feed in time that grows with the text, not its square (#342)', () => {
+  // Codex security round 2 at 8a06f7e, finding 2: the check of a member name's whitespace for an escaped form feed
+  // searched from the name to the end of the view, for every private member, work the scan budget did not count. With
+  // 200,000 already masked members after a stray quote and a raw line break and no form feed, that took about 7 s,
+  // against about 1 s now; the work is counted, within the budget.
+  const text = `he said "\n{${'\\"k\\":\\"\\",'.repeat(200_000)}\\"kty\\":\\"oct\\"}`;
+  const before = scanWork.characters;
+  const started = performance.now();
+  assert.deepEqual(findTextLeaks(text), []);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 4000, `took ${Math.round(elapsed)} ms`);
+  assert.ok(scanWork.characters - before <= 40 * text.length + 4096);
+});
 test('looks up each string cut at a line break in time that grows with the text, not its square (#342)', () => {
   // Automated review on e2487e1, finding 2: each string cut at a raw line break searched every string left out, work
   // the scan budget did not count: 100,000 stray quotes and line breaks took about 18 s, against about 0.2 s now.
