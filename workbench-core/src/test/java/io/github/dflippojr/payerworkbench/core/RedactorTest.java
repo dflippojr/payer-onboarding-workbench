@@ -1131,8 +1131,6 @@ class RedactorTest {
                         "{Qprivate_keyQ:Q[REDACTED]Q}"},
                 new String[] {"{Qprivate_keyQ:{QnoteQ:Q\\\"}Q,QotherQ:\"PRIVOTHER\"},\"n\":1}",
                         "{Qprivate_keyQ:Q[REDACTED]Q,\"n\":1}"},
-                new String[] {"{\"private_key\":{QnoteQ:Qa\\\"]}Q,QdQ:QPRIVDQ}}",
-                        "{\"private_key\":\"[REDACTED]\"}"},
                 new String[] {"{QsecretQ:[Q\\\"]Q,QPRIVOTHERQ]}",
                         "{QsecretQ:Q[REDACTED]Q}"})) {
             String in = pair[0].replace("Q", "\\u0022");

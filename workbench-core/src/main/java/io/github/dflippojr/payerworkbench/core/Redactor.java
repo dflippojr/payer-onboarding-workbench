@@ -264,12 +264,16 @@ public final class Redactor {
      * {@code MIXED_READING}, {@code FLAT_READING}): the pattern that finds a name, the one for a name before an object
      * or array, and the one for a name and its string or scalar value.
      */
-    private static final Pattern[][] READINGS = {
-        {FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD},
-        {EMBEDDED_FIELD_NAME, EMBEDDED_JSON_FIELD_STRUCTURE, EMBEDDED_JSON_FIELD},
-        {MIXED_FIELD_NAME, MIXED_JSON_FIELD_STRUCTURE, MIXED_JSON_FIELD},
-        {FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD},
+    private static final Reading[] READINGS = {
+        new Reading(FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD),
+        new Reading(EMBEDDED_FIELD_NAME, EMBEDDED_JSON_FIELD_STRUCTURE, EMBEDDED_JSON_FIELD),
+        new Reading(MIXED_FIELD_NAME, MIXED_JSON_FIELD_STRUCTURE, MIXED_JSON_FIELD),
+        new Reading(FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD),
     };
+
+    /** A {@link #READINGS} entry: the pattern for a name, for a name before an object or array, and for a name and value. */
+    private record Reading(Pattern name, Pattern structure, Pattern field) {
+    }
 
     /** {@link #KTY_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_KTY_NAME = Pattern.compile(
@@ -862,6 +866,8 @@ public final class Redactor {
      */
     private static String maskNestedSecretFields(String text) {
         SecretMasks masks = new SecretMasks();
+        // The text itself is read at the level of its first view's own quotes, the level the flattened view reads.
+        masks.level = 1;
         // The text itself, for a name that opens on the quote closing the value before it, which the patterns' own
         // whole-field search skips.
         View plain = new View(text, null);
@@ -893,18 +899,20 @@ public final class Redactor {
      * c8d676f); the same value found by two readings, an empty one included, is so masked once. An object or array's
      * mask that starts where an earlier mask does is such a competing reading and is dropped too; over masks taken
      * before that start inside it, its members' values and objects, it is taken and masks them with it (reviews on
-     * 806a28c and 43b954a), unless an earlier object or array's mask reaches outside it. A string value's mask from
-     * {@link #FLAT_READING} takes the masks of its own level's string values that start where it does and lie inside
-     * it: another reading of that level closed the value at an escape of its own (security round 2: the embedded
-     * reading closed {@code \\u0022\\"s3cr3t\\u0022} at its {@code \\"}, masking an empty string). The spans taken
-     * never overlap, so each mask is checked against its neighbours only.
+     * 806a28c and 43b954a), unless an earlier object or array's mask reaches outside it. A value's mask from
+     * {@link #FLAT_READING} takes the masks of its own level's readings of that value, which start where it does and
+     * end before it: another reading of that level closed the value at an escape of its own (security round 2: the
+     * embedded reading closed {@code \\u0022\\"s3cr3t\\u0022} at its {@code \\"}, masking an empty string; review on
+     * ef4a81b: it closed {@code {\\u0022note\\u0022:\\u0022\\"}\\u0022}} at its {@code \\"} and brace). A string's mask takes only strings,
+     * and the strings of that level inside it. The spans taken never overlap, so each mask is checked against its
+     * neighbours only.
      */
     private static final class SecretMasks {
 
         private final List<Mask> list = new ArrayList<>();
         /** Each span taken, by where it starts. */
         private final TreeMap<Integer, Span> spans = new TreeMap<>();
-        /** The level the masks added now are read at: 0 for the text itself, else the depth of its view. */
+        /** The level the masks added now are read at: the depth of the view, 1 for the text itself. */
         private int level;
 
         void add(Mask mask, boolean structure) {
@@ -927,7 +935,7 @@ public final class Redactor {
                 if (!overlaps(spanStart, spanEnd, start, end)) {
                     continue;
                 }
-                if (flat) {
+                if (flat && !structure) {
                     // A flattened string's mask takes only string masks of its own level that lie inside it.
                     if (taken.structure() || taken.level() != level || spanStart < start || spanEnd > end
                             || (spanStart == start && spanEnd == end)) {
@@ -936,9 +944,11 @@ public final class Redactor {
                     sharesStart |= spanStart == start;
                 } else {
                     // A string or scalar's mask, one starting where an earlier mask does (a competing reading of the same
-                    // value), or one an earlier object or array's mask does not lie wholly inside, is dropped.
+                    // value), or one an earlier object or array's mask does not lie wholly inside, is dropped; unless it
+                    // is a flattened object or array's, and that earlier mask its own level's shorter reading of it.
                     boolean inside = start < spanStart && spanEnd <= end;
-                    if (!structure || spanStart == start || (taken.structure() && !inside)) {
+                    boolean shorter = flat && spanStart == start && spanEnd < end && taken.level() == level;
+                    if (!structure || (spanStart == start && !shorter) || (taken.structure() && !inside && !shorter)) {
                         return;
                     }
                 }
@@ -946,7 +956,7 @@ public final class Redactor {
                 first = Math.min(first, spanStart);
                 union = Math.max(union, spanEnd);
             }
-            if (flat && !overlapped.isEmpty() && !sharesStart) {
+            if (flat && !structure && !overlapped.isEmpty() && !sharesStart) {
                 return;
             }
             overlapped.forEach(spans::remove);
@@ -1013,9 +1023,9 @@ public final class Redactor {
         String json = view.text();
         boolean embedded = reading == EMBEDDED_READING;
         boolean mixed = reading == MIXED_READING;
-        Matcher name = READINGS[reading][0].matcher(json);
-        Matcher structure = READINGS[reading][1].matcher(json);
-        Matcher field = READINGS[reading][2].matcher(json);
+        Matcher name = READINGS[reading].name().matcher(json);
+        Matcher structure = READINGS[reading].structure().matcher(json);
+        Matcher field = READINGS[reading].field().matcher(json);
         int copied = 0;
         while (name.find()) {
             int at = name.start();
@@ -1036,7 +1046,8 @@ public final class Redactor {
                     end = endOfStructure(json, structure.end(), false);
                 }
                 copied = end;
-                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true);
+                masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true,
+                        reading == FLAT_READING);
             } else if (field.region(at, json.length()).lookingAt()) {
                 copied = field.end();
                 if (field.group(3) != null) {

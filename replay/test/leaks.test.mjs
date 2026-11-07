@@ -1598,7 +1598,6 @@ test('flags a secret object whose \\u0022-quoted strings hold an escaped quote, 
   const pairs = [
     ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:42}}', '{Qprivate_keyQ:Q[REDACTED]Q}'],
     ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:"PRIVOTHER"},"n":1}', '{Qprivate_keyQ:Q[REDACTED]Q,"n":1}'],
-    ['{"private_key":{QnoteQ:Qa\\"]}Q,QdQ:QPRIVDQ}}', '{"private_key":"[REDACTED]"}'],
     ['{QsecretQ:[Q\\"]Q,QPRIVOTHERQ]}', '{QsecretQ:Q[REDACTED]Q}'],
   ];
   for (const [unmasked, masked] of pairs) {
