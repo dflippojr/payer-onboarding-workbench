@@ -1481,3 +1481,12 @@ test('reads text quoted with \u0022 five levels deep within the scan budget (#33
   assert.deepEqual(findTextLeaks(text), []);
   assert.ok(scanWork.characters - before < 40 * text.length, `${scanWork.characters - before} >= 40 * ${text.length}`);
 });
+
+test('flags a JWK private member whose value is quoted with \\u0022 after plain-quoted names (#339, review on 47c938e)', () => {
+  // A MAIN view leaves a value opening with \u0022 to its FLAT copy only for a secret-named member, which that copy
+  // judges; a private member's value is judged where it is, as on main.
+  for (const text of ['{"kty":"oct","d":\\u0022PRIVD339\\u0022}', '{"kty":"RSA","n":"N1","d":\\u0022PRIVD339\\u0022,"e":"AQAB"}',
+    '[{"kty":"EC","d":\\u0022PRIVD339\\u0022}]', JSON.stringify({ body: '{"kty":"oct","k":\\u0022PRIVK339\\u0022}' })]) {
+    assert.ok(findTextLeaks(text).length > 0, `not flagged: ${text}`);
+  }
+});

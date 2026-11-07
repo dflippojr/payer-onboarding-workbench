@@ -932,6 +932,11 @@ class RedactorTest {
                 assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
             }
         }
+        // A value opened with a plain quote is a JSON string, where \\u0022 is a character of it: masked through its
+        // plain closing quote, as JSON_FIELD masks it on main (review on 47c938e), so no part of the value is kept.
+        assertEquals("{\"client_secret\":\"[REDACTED]\"client_id\":\"app\"}",
+                Redactor.redact("{\"client_secret\":\"s3cr3t\\u0022,\"client_id\":\"app\"}"));
+        assertEquals("{\"password\":\"[REDACTED]\"}", Redactor.redact("{\"password\":\"ab\\u0022cd\"}"));
         // Non-secret names spelled the same way stay byte for byte.
         for (String in : List.of("{\"client_id\":\\u0022app\\u0022}", "{\\u0022client_id\\u0022:\"app\"}",
                 nested("{\"client_id\":\\u0022app\\u0022,\\u0022scope\\u0022:\"a b\"}"))) {
@@ -995,7 +1000,9 @@ class RedactorTest {
         List<String> texts = List.of(
                 "\"x\":\"\"password\":\"".repeat(n),
                 "{\"a\":\"" + "\\\"x\\\":\\\"\\\"client_secret\\\":\\\"".repeat(n) + "\"}",
-                ("\"client_secret\":" + "\\" + "u0022").repeat(n));
+                ("\"client_secret\":" + "\\" + "u0022").repeat(n),
+                // Review on 47c938e: embedded structures that one bare quote at the end cuts off, each read to it.
+                ("\\u0022client_secret\\u0022:{").repeat(n) + "\"");
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             String out = Redactor.redact(text);
             assertTrue(out.length() <= 2 * text.length(), () -> out.length() + " > 2 * " + text.length());
