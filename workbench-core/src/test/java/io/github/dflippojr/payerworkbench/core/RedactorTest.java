@@ -940,6 +940,31 @@ class RedactorTest {
     }
 
     @Test
+    void masksASecretFieldWhoseNameOpensOnTheQuoteThatClosesTheValueBeforeIt() {
+        // #339 security round 1, finding 2: in malformed recorded text the quote that closes one value ("x":"") is also
+        // the one that opens the next name; a search for whole fields consumed it with x and skipped client_secret.
+        // Masked at every depth, also with quotes spelled \\u0022, and the structure kept byte for byte.
+        for (String[] pair : List.of(
+                new String[] {"{\"x\":\"\"client_secret\":\"s3cr3t\"}", "{\"x\":\"\"client_secret\":\"[REDACTED]\"}"},
+                new String[] {"{\"x\":\"a\"password\":\"s3cr3t\",\"n\":1}", "{\"x\":\"a\"password\":\"[REDACTED]\",\"n\":1}"},
+                new String[] {"{\"x\":\"\"private_key\":{\"d\":\"s3cr3t\"},\"kid\":\"k1\"}",
+                        "{\"x\":\"\"private_key\":\"[REDACTED]\",\"kid\":\"k1\"}"})) {
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
+                    t -> nestedEscapingQuotes(nested(t)), t -> nested(nestedEscapingQuotes(t)),
+                    t -> nested(nested(nestedEscapingQuotes(t))))) {
+                assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+            }
+        }
+        // The same with every quote of the text spelled \\u0022.
+        assertEquals("{QxQ:QQclient_secretQ:Q[REDACTED]Q}".replace("Q", "\\u0022"),
+                Redactor.redact("{QxQ:QQclient_secretQ:Qs3cr3tQ}".replace("Q", "\\u0022")));
+        // A non-secret name in the same place is kept.
+        String kept = nested(nested("{\"x\":\"\"client_id\":\"app\"}"));
+        assertEquals(kept, Redactor.redact(kept));
+    }
+
+    @Test
     void masksNestedSecretFieldsInLinearTime() {
         // About 1 MB each of openers that never close, nested two levels deep and spelled with \\u0022: a fixed
         // number of levels, each read once, so time stays linear (quadratic time takes minutes).

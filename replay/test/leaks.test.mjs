@@ -1448,3 +1448,26 @@ test('flags a secret field whose name and value quotes are spelled differently, 
     assert.deepEqual(findTextLeaks(text), [], text);
   }
 });
+
+// #339 security round 1, finding 2: a secret name that opens on the quote closing the value before it ("x":""client_secret"),
+// bare and wrapped one to three levels deep, also with quotes spelled \u0022. [unmasked, what Redactor leaves].
+const sharedQuoteShapes = [
+  ['{"x":""client_secret":"s3cr3t"}', '{"x":""client_secret":"[REDACTED]"}'],
+  ['{"x":"a"password":"s3cr3t","n":1}', '{"x":"a"password":"[REDACTED]","n":1}'],
+  ['{"x":""private_key":{"d":"s3cr3t"},"kid":"k1"}', '{"x":""private_key":"[REDACTED]","kid":"k1"}'],
+];
+const sharedQuoteWraps = [t => t, nestBody, t => nestBody(nestBody(t)), t => nestBody(nestBody(nestBody(t))), nestQuotes,
+  t => nestQuotes(nestBody(t)), t => nestBody(nestQuotes(t)), t => nestBody(nestBody(nestQuotes(t)))];
+test('flags a secret name that opens on the quote closing the value before it, and accepts what Redactor leaves (#339)', () => {
+  for (const [unmasked, masked] of sharedQuoteShapes) {
+    for (const wrap of sharedQuoteWraps) {
+      assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  const u = s => s.replaceAll('Q', '\\u0022');
+  assert.ok(findTextLeaks(u('{QxQ:QQclient_secretQ:Qs3cr3tQ}')).length > 0);
+  assert.deepEqual(findTextLeaks(u('{QxQ:QQclient_secretQ:Q[REDACTED]Q}')), []);
+  const kept = nestBody(nestBody('{"x":""client_id":"app"}'));
+  assert.deepEqual(findTextLeaks(kept), [], kept);
+});
