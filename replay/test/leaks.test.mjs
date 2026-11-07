@@ -1591,3 +1591,20 @@ test('flags a plain-quoted value holding a quote spelled \\u0022 after a name qu
     assert.deepEqual(findTextLeaks(text), [], text);
   }
 });
+
+test('flags a secret object whose \\u0022-quoted strings hold an escaped quote, and accepts it masked whole (#339, review on ef4a81b)', () => {
+  // RedactorTest.masksASecretObjectWholeThroughAQuoteEscapedInsideItsUnicodeQuotedStrings's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const pairs = [
+    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:42}}', '{Qprivate_keyQ:Q[REDACTED]Q}'],
+    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:"PRIVOTHER"},"n":1}', '{Qprivate_keyQ:Q[REDACTED]Q,"n":1}'],
+    ['{"private_key":{QnoteQ:Qa\\"]}Q,QdQ:QPRIVDQ}}', '{"private_key":"[REDACTED]"}'],
+    ['{QsecretQ:[Q\\"]Q,QPRIVOTHERQ]}', '{QsecretQ:Q[REDACTED]Q}'],
+  ];
+  for (const [unmasked, masked] of pairs) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});

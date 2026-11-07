@@ -1121,6 +1121,29 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksASecretObjectWholeThroughAQuoteEscapedInsideItsUnicodeQuotedStrings() {
+        // Review on ef4a81b: in a secret object or array whose strings are quoted with \\u0022 and hold an escaped quote
+        // of their own, the embedded reading closed the string at that quote and the object at the brace after it,
+        // keeping the members after it. The flattened view reads the object whole, and its mask takes the shorter one.
+        for (String[] pair : List.of(
+                new String[] {"{Qprivate_keyQ:{QnoteQ:Q\\\"}Q,QotherQ:42}}",
+                        "{Qprivate_keyQ:Q[REDACTED]Q}"},
+                new String[] {"{Qprivate_keyQ:{QnoteQ:Q\\\"}Q,QotherQ:\"PRIVOTHER\"},\"n\":1}",
+                        "{Qprivate_keyQ:Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{\"private_key\":{QnoteQ:Qa\\\"]}Q,QdQ:QPRIVDQ}}",
+                        "{\"private_key\":\"[REDACTED]\"}"},
+                new String[] {"{QsecretQ:[Q\\\"]Q,QPRIVOTHERQ]}",
+                        "{QsecretQ:Q[REDACTED]Q}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
