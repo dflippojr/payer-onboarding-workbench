@@ -629,17 +629,14 @@ public final class Redactor {
      * the inner JSON), and an unescaped quote ends the outer string and with it the inner JSON.
      */
     private static int endOfStructure(String text, int start, boolean embedded) {
-        return endOfStructure(text, start, embedded, null, i -> false);
+        return endOfStructure(text, start, embedded, i -> false);
     }
 
     /**
-     * {@link #endOfStructure}, setting {@code closed[0]} to whether the structure's brackets close. Read as plain JSON,
-     * it also ends, cut off, at a quote {@code outer} names: one of a level above, which ends the string holding it.
+     * {@link #endOfStructure} that, read as plain JSON, also ends at a quote {@code outer} names: one of a level above,
+     * which ends the string holding the structure.
      */
-    private static int endOfStructure(String text, int start, boolean embedded, boolean[] closed, IntPredicate outer) {
-        if (closed != null) {
-            closed[0] = false;
-        }
+    private static int endOfStructure(String text, int start, boolean embedded, IntPredicate outer) {
         int depth = 0;
         boolean inString = false;
         boolean escaped = false;
@@ -663,9 +660,6 @@ public final class Redactor {
             } else if (c == '{' || c == '[') {
                 depth++;
             } else if ((c == '}' || c == ']') && --depth == 0) {
-                if (closed != null) {
-                    closed[0] = true;
-                }
                 return i;
             }
         }
@@ -673,20 +667,21 @@ public final class Redactor {
     }
 
     /**
-     * {@link #endOfStructure} in a {@link #flattened} view, setting {@code closed[0]} as it does. A quote the view turned
+     * {@link #endOfStructure} in a {@link #flattened} view. A quote the view turned
      * bare ({@code quotes}) inside a value a plain quote opens (after a colon, or an array item) is that string's own
      * {@code \\u0022}, not its closing quote (review on 84afef7: the object in {@code {"note":"a\\u0022{"}} ran on to
-     * the end of the text). Any other string, a member name included, closes at a quote of either kind, so a name may
-     * open with a plain quote and close with {@code \\u0022} (review on 22ff6ea). It also ends, cut off, at a quote
+     * the end of the text). In a name a plain quote opens, such a quote closes the name only before its colon, so a name
+     * may open with a plain quote and close with {@code \\u0022} (review on 22ff6ea) and still hold one elsewhere
+     * ({@code "pass\\u0022word"}). A string such a quote opens closes at a quote of either kind. It also ends at a quote
      * {@code outer} names.
      */
-    private static int endOfFlatStructure(String json, int start, BitSet quotes, boolean[] closed, IntPredicate outer) {
-        closed[0] = false;
+    private static int endOfFlatStructure(String json, int start, BitSet quotes, IntPredicate outer) {
         BitSet arrays = new BitSet();
         int depth = 0;
         char before = 0;
         boolean inString = false;
-        boolean ownQuotes = false;
+        boolean plainValue = false;
+        boolean plainName = false;
         boolean escaped = false;
         for (int i = start; i < json.length(); i++) {
             char c = json.charAt(i);
@@ -694,18 +689,19 @@ public final class Redactor {
                 return i;
             }
             if (inString) {
-                inString = escaped || c != '"' || (ownQuotes && quotes.get(i));
+                boolean own = quotes.get(i) && (plainValue || (plainName && !beforeColon(json, i + 1)));
+                inString = escaped || c != '"' || own;
                 escaped = !escaped && c == '\\';
                 continue;
             }
             if (c == '"') {
                 inString = true;
                 boolean value = before == ':' || (arrays.get(depth) && (before == '[' || before == ','));
-                ownQuotes = value && !quotes.get(i);
+                plainValue = value && !quotes.get(i);
+                plainName = !value && !quotes.get(i);
             } else if (c == '{' || c == '[') {
                 arrays.set(++depth, c == '[');
             } else if ((c == '}' || c == ']') && --depth == 0) {
-                closed[0] = true;
                 return i + 1;
             }
             if (!Character.isWhitespace(c)) {
@@ -713,6 +709,15 @@ public final class Redactor {
             }
         }
         return json.length();
+    }
+
+    /** Whether the next character from {@code from} in {@code json} that is not whitespace is a colon. */
+    private static boolean beforeColon(String json, int from) {
+        int i = from;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) {
+            i++;
+        }
+        return i < json.length() && json.charAt(i) == ':';
     }
 
     /**
@@ -954,7 +959,6 @@ public final class Redactor {
                 secretFieldMasks(text, flat, depth, FLAT_READING, masks);
             }
         });
-        masks.list.removeIf(mask -> mask == null);
         return applyMasks(text, masks.list);
     }
 
@@ -995,10 +999,10 @@ public final class Redactor {
         private BitSet fresh;
 
         void add(Mask mask, boolean structure) {
-            add(mask, structure, false, false);
+            add(mask, structure, false);
         }
 
-        void add(Mask mask, boolean structure, boolean flat, boolean cut) {
+        void add(Mask mask, boolean structure, boolean flat) {
             int start = mask.start();
             int end = mask.end();
             Integer from = spans.floorKey(start);
@@ -1006,7 +1010,10 @@ public final class Redactor {
             int first = start;
             int union = end;
             boolean sharesStart = false;
-            Span replaced = null;
+            // Another reading of a value already masked, starting where it does: where the readings disagree on where it
+            // ends, the union of their masks is masked (owner decision on #339, fail closed).
+            boolean sameValue = spans.containsKey(start);
+            boolean structureUnion = structure;
             for (Map.Entry<Integer, Span> span : spans.subMap(from == null ? start : from, true, Math.max(end, start + 1),
                     false).entrySet()) {
                 int spanStart = span.getKey();
@@ -1015,16 +1022,13 @@ public final class Redactor {
                 if (!overlaps(spanStart, spanEnd, start, end)) {
                     continue;
                 }
-                if (flat && !structure && !cut && spanStart == start && end < spanEnd && !taken.structure()
-                        && ownLevel(taken) && taken.cut()) {
-                    // Its own level's reading of the same value ran past this closing quote to a cut: this one replaces it.
-                    spans.remove(spanStart);
-                    list.set(taken.index(), null);
-                    spans.put(start, new Span(end, false, level, false, list.size()));
-                    list.add(mask);
-                    return;
-                }
-                if (flat && !structure) {
+                if (sameValue) {
+                    if (spanStart == start && spanEnd >= end && (spanEnd > end || taken.structure() || !structure)) {
+                        // This reading masks nothing the other did not.
+                        return;
+                    }
+                    structureUnion |= taken.structure();
+                } else if (flat && !structure) {
                     // A flattened string's mask takes only string masks of its own level that lie inside it.
                     if (taken.structure() || !ownLevel(taken) || spanStart < start || spanEnd > end
                             || (spanStart == start && spanEnd == end)) {
@@ -1038,13 +1042,7 @@ public final class Redactor {
                     boolean inside = start < spanStart && spanEnd <= end;
                     // A flattened structure's reading of the same object as its own level's: one whose brackets close
                     // over one that ran on without closing, else the longer.
-                    boolean reread = flat && structure && spanStart == start && spanEnd != end && ownLevel(taken)
-                            && (taken.structure() || spanEnd < end)
-                            && (taken.cut() && !cut || (taken.cut() == cut && spanEnd < end));
-                    if (reread && spanEnd > end) {
-                        replaced = taken;
-                        break;
-                    }
+                    boolean reread = flat && structure && spanStart == start && spanEnd < end && ownLevel(taken);
                     if (!structure || (spanStart == start && !reread) || (taken.structure() && !inside && !reread)) {
                         return;
                     }
@@ -1053,29 +1051,16 @@ public final class Redactor {
                 first = Math.min(first, spanStart);
                 union = Math.max(union, spanEnd);
             }
-            if (replaced != null) {
-                // A shorter reading that closes replaces one that ran on: its mask goes, those it took stay.
-                spans.remove(start);
-                list.set(replaced.index(), null);
-                spans.put(start, new Span(end, true, level, false, list.size()));
-                list.add(mask);
-                return;
-            }
-            if (flat && !structure && !overlapped.isEmpty() && !sharesStart) {
+            if (flat && !structure && !sameValue && !overlapped.isEmpty() && !sharesStart) {
                 return;
             }
             overlapped.forEach(spans::remove);
-            spans.put(first, new Span(union, structure, level, cut, list.size()));
+            spans.put(first, new Span(union, structureUnion, level));
             list.add(mask);
         }
 
-        /**
-         * A span taken: where it ends, whether it is an object or array's, the level it was read at, whether its reading
-         * was cut off (an embedded string value a bare quote ends before its closing quote, a flattened one not ending at
-         * a quote and a delimiter, or an object or array whose brackets do not close), and where its mask is in
-         * {@code list}.
-         */
-        private record Span(int end, boolean structure, int level, boolean cut, int index) {
+        /** A span taken: where it ends, whether it is an object or array's, and the level it was read at. */
+        private record Span(int end, boolean structure, int level) {
         }
 
         /**
@@ -1155,18 +1140,21 @@ public final class Redactor {
                 continue;
             }
             String spelled = quoteOf(text, view, at, quote);
+            // Past depth 1, a quote neither this level's unescaping made nor its decoding is the level above's: it ends
+            // the string holding this JSON, and with it any value or structure read here (review on 22ff6ea: read past
+            // it, a cut-off object balanced on the brace of the object around that string; review on 59b603d: a value
+            // ran on through it, the outer string's closing quote reading as an escaped one here).
+            IntPredicate outer = masks.fresh == null ? k -> false : k -> !masks.fresh.get(view.at(k))
+                    && !(k > 0 && decodesQuote(view, k - 1)) && !(reading == FLAT_READING && masks.flatQuotes.get(k));
             // The level of the quotes the field is read by: the view's own (depth 1 for the text itself, which the first
             // view reads), or for an embedded name the next one.
             masks.level = depth + (embedded ? 1 : 0);
-            if (structure.region(at, json.length()).lookingAt()) {
-                boolean[] closed = new boolean[1];
-                // Past depth 1, a quote neither this level's unescaping made nor its decoding is the level above's: it
-                // ends the string holding this JSON (review on 22ff6ea: read past it, a cut-off object balanced on the
-                // brace of the object around that string).
-                IntPredicate outer = masks.fresh == null ? k -> false : k -> !masks.fresh.get(view.at(k))
-                        && !(reading == FLAT_READING && masks.flatQuotes.get(k));
-                int end = reading == FLAT_READING ? endOfFlatStructure(json, structure.end(), masks.flatQuotes, closed, outer)
-                        : endOfStructure(json, structure.end(), embedded, closed, outer);
+            // The mixed reading reads string values only: an object or array after such a name is the flattened reading's,
+            // which reads its members however they are quoted; read as plain JSON here, members quoted with \\u0022
+            // ran it on to the end of the text (owner decision on #339: the readings' masks are joined).
+            if (!mixed && structure.region(at, json.length()).lookingAt()) {
+                int end = reading == FLAT_READING ? endOfFlatStructure(json, structure.end(), masks.flatQuotes, outer)
+                        : endOfStructure(json, structure.end(), embedded, outer);
                 // An embedded object or array that a bare quote cuts off before its brackets close holds JSON quoted
                 // at the level above ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest. It
                 // is read as plain JSON here, where its strings keep their own escapes (review on 7a80b9c: the next
@@ -1174,11 +1162,11 @@ public final class Redactor {
                 // 47c938e: reading each to one bare quote at the end made the work grow with the square of the names). In the
                 // text itself the bare quote ends the string that holds the embedded JSON, as maskStructures reads it.
                 if (embedded && view.origin() != null && end < json.length() && json.charAt(end) == '"') {
-                    end = endOfStructure(json, structure.end(), false, closed, outer);
+                    end = endOfStructure(json, structure.end(), false, outer);
                 }
                 copied = end;
                 masks.add(new Mask(view.at(structure.end()), view.at(copied), spelled + MASK + spelled), true,
-                        reading == FLAT_READING, !closed[0]);
+                        reading == FLAT_READING);
             } else if (field.region(at, json.length()).lookingAt()) {
                 // A plain-quoted value is the other readings': the flattened view would close it at a quote of its own.
                 if (reading == FLAT_READING && field.group(3) != null && !masks.flatQuotes.get(field.start(3) - 1)) {
@@ -1187,13 +1175,14 @@ public final class Redactor {
                 copied = field.end();
                 if (field.group(3) != null) {
                     int close = field.end(3);
-                    // An embedded value that a bare quote cuts off, or a flattened one that does not end at a closing
-                    // quote with a delimiter after it: see SecretMasks.
-                    boolean cut = embedded
-                            ? !json.startsWith("\\\"", close) && !json.regionMatches(true, close, "\\u0022", 0, 6)
-                            : reading == FLAT_READING && !endsAtQuote(json, close);
+                    for (int k = json.indexOf('"', field.start(3)); k >= 0 && k < close; k = json.indexOf('"', k + 1)) {
+                        if (outer.test(k)) {
+                            close = json.charAt(k - 1) == '\\' ? k - 1 : k;
+                        }
+                    }
                     masks.add(new Mask(view.at(field.start(3)), view.at(close),
-                            masked(decodeName(field.group(1)), field.group(3))), false, reading == FLAT_READING, cut);
+                            masked(decodeName(field.group(1)), json.substring(field.start(3), close))), false,
+                            reading == FLAT_READING);
                 } else {
                     masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false);
                 }
@@ -1215,14 +1204,6 @@ public final class Redactor {
         int quote = json.charAt(at) == '\\' ? at + 1 : at;
         return masks.fresh.get(view.at(quote)) || (quote > at && decodesQuote(view, at))
                 || (reading == FLAT_READING && masks.flatQuotes.get(quote));
-    }
-
-    /** Whether a quote is at {@code close} in {@code json}, and after it the end, whitespace or a delimiter. */
-    private static boolean endsAtQuote(String json, int close) {
-        if (close >= json.length() || json.charAt(close) != '"') {
-            return false;
-        }
-        return close + 1 == json.length() || ",}] \t\r\n".indexOf(json.charAt(close + 1)) >= 0;
     }
 
     /**

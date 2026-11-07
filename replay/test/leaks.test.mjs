@@ -1610,19 +1610,30 @@ test('flags a secret object whose \\u0022-quoted strings hold an escaped quote, 
 
 test('flags a secret object cut at a bracket in a \\u0022-quoted string, and a \\u0022-quoted value ending in an escaped backslash, and accepts what Redactor leaves (#339, review on 9de277d)', () => {
   // RedactorTest.masksASecretObjectWholeThroughABracketInsideAUnicodeQuotedString and
-  // keepsTheDelimitersAfterAUnicodeQuotedValueEndingInAnEscapedBackslash's exact expected outputs.
+  // masksAUnicodeQuotedValueEndingInAnEscapedBackslashThroughEveryReadingOfIt's exact expected outputs: the union of the
+  // readings of this ambiguous text (owner decision on #339, fail closed).
   const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
   const pairs = [
-    ['{"private_key":{"note":Q}Q,"other":42},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
-    ['{"private_key":{"note":Q}Q,"other":"PRIVOTHER"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
-    ['{"private_key":[Q]Q,"PRIVOTHER"],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
-    ['{QpasswordQ:Qx\\\\Q,"n":1}', '{QpasswordQ:Q[REDACTED]Q,"n":1}'],
-    ['{Qclient_secretQ:Qs3\\\\Q,"client_id":"app"}', '{Qclient_secretQ:Q[REDACTED]Q,"client_id":"app"}'],
+    ['{"private_key":{"note":Q}Q,"other":42},"n":1}', '{"private_key":"[REDACTED]"'],
+    ['{"private_key":{"note":Q}Q,"other":"PRIVOTHER"},"n":1}', '{"private_key":"[REDACTED]"'],
+    ['{"private_key":[Q]Q,"PRIVOTHER"],"n":1}', '{"private_key":"[REDACTED]"'],
   ];
   for (const [unmasked, masked] of pairs) {
-    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
+    for (const wrap of wraps) {
       assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
       assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  // The value's mask runs into the next member's name, so the scanner's mask-stops-short rule flags what Redactor
+  // leaves, as it flags the unmasked value (accepted with the decision: ambiguous text may lose its delimiters).
+  for (const [unmasked, left] of [
+    ['{QpasswordQ:Qx\\\\Q,"n":1}', '{QpasswordQ:Q[REDACTED]"n":1}'],
+    ['{Qclient_secretQ:Qs3\\\\Q,"client_id":"app"}', '{Qclient_secretQ:Q[REDACTED]"client_id":"app"}'],
+  ]) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.ok(findTextLeaks(wrap(u(left))).every(l => l.check === 'JSON secret field'), wrap(u(left)));
     }
   }
 });
@@ -1651,7 +1662,7 @@ test('flags a secret object with mixed-quoted member names or strings, and accep
   const u = s => s.replaceAll('Q', '\\u0022');
   for (const [unmasked, masked] of [
     ['{"private_key":{"passwordQ:"}TAIL"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
-    ['{QprivateKeyQ:{"note":QxQ},"n":1}', '{QprivateKeyQ:Q[REDACTED]Q,"n":1}'],
+    ['{QprivateKeyQ:{"note":QxQ},"n":1}', '{QprivateKeyQ:Q[REDACTED]Q'],
     ['{"private_key":{"note":"aQ"},"n":"bQ}"}', '{"private_key":"[REDACTED]","n":"bQ}"}'],
     ['{"private_key":[QaQ,"}TAIL"],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
     ['{"private_key":{"passQword":"x"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
