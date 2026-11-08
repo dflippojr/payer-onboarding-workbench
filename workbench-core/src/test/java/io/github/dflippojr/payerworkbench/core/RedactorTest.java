@@ -13,6 +13,7 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -1494,6 +1495,98 @@ class RedactorTest {
                 assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
+    }
+
+    @Test
+    void masksAValueAfterEscapedWhitespaceAndAnEscapedQuoteToTheEndOfItsString() {
+        // Codex round 4 on b856d74: {"client_secret":\\t\\"s3cr3t\\u0022} (\\t written as two characters) was kept whole.
+        // The fallback for a value an escaped quote opens skipped only real whitespace, so escaped whitespace before that
+        // quote, which EMBEDDED_SPACE reads as whitespace, hid the value from every reading. Quoted two ways, the value
+        // has no end a reading can trust: it is masked from where it starts to the end of the string holding it (owner
+        // decision on #339, fail closed), with \\t, \\n or \\r, after a plain or \\u0022-closed name, at every depth.
+        for (String space : List.of("~t", "~n", "~r")) {
+            for (String[] pair : List.of(
+                    new String[] {"{\"client_secret\":S~\"s3cr3tQ}", "{\"client_secret\":S\"[REDACTED]\""},
+                    new String[] {"{\"client_secret\":S~\"s3cr3tQ,\"n\":1}", "{\"client_secret\":S\"[REDACTED]\""},
+                    new String[] {"{\"client_secret\":S~\"s3cr3t~\",\"n\":1}", "{\"client_secret\":S\"[REDACTED]\""},
+                    new String[] {"{\"passwordQ:S~\"s3cr3t~\"}", "{\"passwordQ:S\"[REDACTED]\""},
+                    new String[] {"{\"passwordQ:S~\"s3cr3tQ,\"n\":1}", "{\"passwordQ:S\"[REDACTED]\""},
+                    new String[] {"{\"client_secretQ:SQs3cr3tQ}", "{\"client_secretQ:S\"[REDACTED]\""})) {
+                String in = withEscapes(pair[0].replace("S", space));
+                assertEquals(withEscapes(pair[1].replace("S", space)), Redactor.redact(in), in);
+                // Nested, the embedded reading masks from the escaped whitespace on, which the text escapes again there;
+                // everything before the value is kept.
+                String secret = in.contains("password") ? "password" : "client_secret";
+                for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(RedactorTest::nested,
+                        t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                    String wrapped = wrap.apply(in);
+                    String out = Redactor.redact(wrapped);
+                    assertFalse(out.contains("s3cr3t"), () -> wrapped + " => " + out);
+                    assertTrue(out.startsWith(wrapped.substring(0, wrapped.indexOf(':', wrapped.indexOf(secret)) + 1)),
+                            () -> wrapped + " => " + out);
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksEverySecretValueQuotedTwoWaysOrOpenedByAnEscapeAtEveryDepth() {
+        // Codex round 4 on b856d74: each review round found one more spelling of a field quoted two ways at one level
+        // that its own fallback missed. Every spelling of the name's quotes (plain, closed or opened by \\u0022, both
+        // \\u0022), every gap between its colon and value (none, escaped \\t \\n \\r, those among spaces, a run of
+        // backslashes, \\u0009), and the values of the earlier rounds (opened and closed by escaped, \\u0022 and plain quotes,
+        // an escaped backslash before a \\u0022, an empty escaped string first), keep no part of the secret, bare and
+        // nested every way.
+        List<String> names = List.of("\"client_secret\"", "\"client_secretQ", "Qclient_secret\"", "Qclient_secretQ");
+        List<String> gaps = List.of("", "~t", "~n", "~r", " ~t ", "~~t", "~u0009");
+        List<String> values = List.of("~\"s3cr3tQ", "~\"s3cr3t~\"", "Qs3cr3tQ", "Qs3cr3t\"", "\"s3cr3tQ", "~\"s3cr3t\"",
+                "\"s3cr3t\"", "Q~\"s3cr3tQ", "QS3~~Q,s3cr3tQ", "~\"S3~~Q,s3cr3t\"", "~\"~\"s3cr3t\"");
+        List<UnaryOperator<String>> wraps = List.of(t -> t, RedactorTest::nested, t -> nested(nested(t)),
+                RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)));
+        List<String> kept = new ArrayList<>();
+        int texts = 0;
+        for (String name : names) {
+            for (String gap : gaps) {
+                for (String value : values) {
+                    for (String tail : List.of("}", ",\"n\":1}")) {
+                        String in = withEscapes("{" + name + ":" + gap + value + tail);
+                        for (UnaryOperator<String> wrap : wraps) {
+                            texts++;
+                            String out = Redactor.redact(wrap.apply(in));
+                            if (out.contains("s3cr3t")) {
+                                kept.add(wrap.apply(in) + " => " + out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int total = texts;
+        assertEquals(List.of(), kept, () -> kept.size() + " of " + total + " texts kept the secret, first: "
+                + kept.subList(0, Math.min(5, kept.size())));
+    }
+
+    @Test
+    void keepsValidJsonWithWhitespaceBeforeItsValuesWholeButTheSecretsAtEveryDepth() {
+        // Codex round 4 on b856d74: a value is now located past the whitespace EMBEDDED_SPACE reads, a line break or tab
+        // written plainly or escaped once, and one that then starts with an escape is quoted two ways. Valid JSON has no
+        // such value: pretty-printed, and nested however a level escapes its quotes and backslashes, it keeps every byte
+        // but the secrets.
+        String doc = "{\n\t\"password\":\t\"s3cr3t\",\n\t\"note\":\n\t\t\"a\\\"b\",\n\t\"client_secret\" :\r\n 42,\n"
+                + "\t\"private_key\":\t{\"x\":\t\"y\"},\n\t\"n\": null\n}";
+        String masked = "{\n\t\"password\":\t\"[REDACTED]\",\n\t\"note\":\n\t\t\"a\\\"b\",\n\t\"client_secret\" :\r\n"
+                + " \"[REDACTED]\",\n\t\"private_key\":\t\"[REDACTED]\",\n\t\"n\": null\n}";
+        for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
+                RedactorTest::nestedEscapingBackslashes, t -> nested(nestedEscapingBackslashes(t)),
+                t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
+            assertEquals(wrap.apply(masked), Redactor.redact(wrap.apply(doc)), wrap.apply(doc));
+        }
+    }
+
+    /** {@code text} with each {@code ~} a backslash and each {@code Q} a quote spelled {@code \\u0022}. */
+    private static String withEscapes(String text) {
+        return text.replace("~", "\\").replace("Q", "\\u0022");
     }
 
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {

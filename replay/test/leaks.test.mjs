@@ -1827,3 +1827,24 @@ test('flags a deferred mask followed by an escaped continuation, which main flag
     for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
   }
 });
+
+test('flags every secret value quoted two ways or opened after escaped whitespace, at every depth (#339, Codex round 4)', () => {
+  // The Redactor masks such a value from where it starts to the end of the string holding it (owner decision on #339,
+  // fail closed); unmasked, the scanner flags it however the name, the gap after its colon and the value are quoted,
+  // bare and nested every way: {"client_secret":\t\"s3cr3t"} with \t written as two characters, and its kin.
+  const B = '\\';
+  const U = B + 'u0022';
+  const names = ['"client_secret"', `"client_secret${U}`, `${U}client_secret"`, `${U}client_secret${U}`];
+  const gaps = ['', `${B}t`, `${B}n`, `${B}r`, ` ${B}t `, `${B}${B}t`, `${B}u0009`];
+  const values = [`${B}"s3cr3t${U}`, `${B}"s3cr3t${B}"`, `${U}s3cr3t${U}`, `${U}s3cr3t"`, `"s3cr3t${U}`, `${B}"s3cr3t"`, '"s3cr3t"',
+    `${U}${B}"s3cr3t${U}`, `${U}S3${B}${B}${U},s3cr3t${U}`, `${B}"S3${B}${B}${U},s3cr3t"`, `${B}"${B}"s3cr3t"`];
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  const missed = [];
+  for (const name of names) for (const gap of gaps) for (const value of values) for (const tail of ['}', ',"n":1}']) {
+    for (const wrap of wraps) {
+      const text = wrap(`{${name}:${gap}${value}${tail}`);
+      if (findTextLeaks(text).length === 0) missed.push(text);
+    }
+  }
+  assert.deepEqual(missed, []);
+});
