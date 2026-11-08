@@ -1456,6 +1456,27 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksAValueOpenedByAnEscapedQuoteThatNoReadingBoundsToTheEndOfItsString() {
+        // Review on f94fa05: {"client_secret":\\"s3cr3t\\u0022} was kept whole: no reading reads a value an escaped quote
+        // opens after a plain-quoted name, whatever closes it. Such a value has no end any reading finds, so it is masked
+        // to the end of the string holding it (owner decision on #339, fail closed); valid JSON has no such value.
+        for (String[] pair : List.of(
+                new String[] {"{\"client_secret\":\\\"s3cr3tQ}",
+                        "{\"client_secret\":\"[REDACTED]\""},
+                new String[] {"{\"password\":\\\"s3cr3tQ,\"n\":1}",
+                        "{\"password\":\"[REDACTED]\""},
+                new String[] {"{\"client_secret\":\\\"s3cr3t\"}",
+                        "{\"client_secret\":\"[REDACTED]\""})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

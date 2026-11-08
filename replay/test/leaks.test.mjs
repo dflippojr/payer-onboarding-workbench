@@ -1785,3 +1785,18 @@ test('flags a value quoted with escaped quotes after a name closed by \\u0022, a
     }
   }
 });
+
+test('flags a value opened by an escaped quote after a plain-quoted secret name, and accepts it masked to the end of its string (#339, review on f94fa05)', () => {
+  // RedactorTest.masksAValueOpenedByAnEscapedQuoteThatNoReadingBoundsToTheEndOfItsString's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const [unmasked, masked] of [
+    ['{"client_secret":\\"s3cr3tQ}', '{"client_secret":"[REDACTED]"'],
+    ['{"password":\\"s3cr3tQ,"n":1}', '{"password":"[REDACTED]"'],
+    ['{"client_secret":\\"s3cr3t"}', '{"client_secret":"[REDACTED]"'],
+  ]) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
