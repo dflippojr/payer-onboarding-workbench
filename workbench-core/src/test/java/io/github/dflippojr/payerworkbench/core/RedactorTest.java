@@ -1477,6 +1477,25 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksAnEscapedQuoteValueAfterAUnicodeClosedNameToTheEndOfItsStringWhenItsEndIsUnsure() {
+        // Found with the review on f94fa05: after a name closed by \\u0022, a value an escaped quote opens was read as an
+        // embedded string, which closed at a bare quote or at an escaped quote with more of the value right after it,
+        // keeping that rest (TAIL, S3CR3T). With no end of its own the value is masked to the end of its string.
+        for (String[] pair : List.of(
+                new String[] {"{\"client_secretQ:\\\"S3\\\\Q,TAIL\"}",
+                        "{\"client_secretQ:\"[REDACTED]\""},
+                new String[] {"{\"client_secretQ:\\\"\\\"S3CR3T\"}",
+                        "{\"client_secretQ:\"[REDACTED]\""})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

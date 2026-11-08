@@ -1800,3 +1800,16 @@ test('flags a value opened by an escaped quote after a plain-quoted secret name,
     }
   }
 });
+
+test('flags an escaped-quote value after a \\u0022-closed name whose end is unsure, and accepts it masked to its string\'s end (#339, review on f94fa05)', () => {
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const [unmasked, masked] of [
+    ['{"client_secretQ:\\"S3\\\\Q,TAIL"}', '{"client_secretQ:"[REDACTED]"'],
+    ['{"client_secretQ:\\"\\"S3CR3T"}', '{"client_secretQ:"[REDACTED]"'],
+  ]) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
