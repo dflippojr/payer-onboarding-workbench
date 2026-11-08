@@ -1715,3 +1715,22 @@ test('flags every raw secret value opened by \\u0022 that main flags, empty ones
     for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
   }
 });
+
+test('accepts an Authorization value opened by \\u0022 masked with its scheme kept, and flags it unmasked (#339, review on 3c5ddac)', () => {
+  // Redactor keeps an Authorization-style value's scheme ({"Authorization":\u0022Bearer [REDACTED]\u0022}); the MAIN
+  // reading leaves such a value to the FLAT copy, which judges it whole, as it does a bare mask.
+  const U = '\\u0022';
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  for (const [unmasked, masked] of [
+    [`{"Authorization":${U}Bearer abc123${U}}`, `{"Authorization":${U}Bearer [REDACTED]${U}}`],
+    [`{"proxy-authorization":${U}Basic dXNlcjpwYXNz${U},"n":1}`, `{"proxy-authorization":${U}Basic [REDACTED]${U},"n":1}`],
+    [`{${U}Authorization${U}:${U}Bearer abc123${U}}`, `{${U}Authorization${U}:${U}Bearer [REDACTED]${U}}`],
+  ]) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(unmasked)).length > 0, `not flagged: ${wrap(unmasked)}`);
+      assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+    }
+  }
+  // A scheme with no mask after it is no masked value.
+  assert.ok(findTextLeaks(`{"Authorization":${U}Bearer ${U}}`).length > 0);
+});

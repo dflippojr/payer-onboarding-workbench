@@ -1332,6 +1332,24 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void leavesAValidNameHoldingAUnicodeQuoteBeforeASecretWordAlone() {
+        // Review on 3c5ddac: {"x\\u0022password":...} is valid JSON, its name x"password. Decoded, the view held
+        // "x\"password", and the plain and mixed readings opened a name at that escaped quote, read password, and masked
+        // the value. A name opens only at a quote the reading reads as one.
+        for (String text : List.of(
+                "{\"xQpassword\":\"visible\",\"n\":1}",
+                "{\"note\":\"a\",\"xQclient_secret\":42}",
+                "{\"aQ:Qpassword\":\"v\",\"n\":1}",
+                "{\"kid\":\"k1\",\"xQpassword\":{\"y\":1}}")) {
+            String in = text.replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(in), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
