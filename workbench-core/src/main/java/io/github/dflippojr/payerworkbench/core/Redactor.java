@@ -1000,15 +1000,20 @@ public final class Redactor {
         }
         readNestedLevels(text, (view, normal, depth, fresh) -> {
             masks.fresh = fresh;
+            // The flattened view first: the mixed reading takes a decoded quote for a name's only where it is one.
+            BitSet quotes = new BitSet();
+            View flat = flattened(view, quotes, fresh);
+            masks.flatQuotes = quotes;
+            masks.flatQuotesAt = new BitSet();
+            if (flat != null) {
+                quotes.stream().forEach(k -> masks.flatQuotesAt.set(flat.at(k)));
+            }
             secretFieldMasks(text, normal, PLAIN_READING, masks);
             if (normal.text().contains("\\\"")) {
                 secretFieldMasks(text, normal, EMBEDDED_READING, masks);
                 secretFieldMasks(text, normal, MIXED_READING, masks);
             }
-            BitSet quotes = new BitSet();
-            View flat = flattened(view, quotes, fresh);
             if (flat != null) {
-                masks.flatQuotes = quotes;
                 secretFieldMasks(text, flat, FLAT_READING, masks);
             }
         });
@@ -1036,6 +1041,8 @@ public final class Redactor {
         private final TreeMap<Integer, Span> spans = new TreeMap<>();
         /** The quotes the flattened view being read turned bare ({@link #flattened}). */
         private BitSet flatQuotes;
+        /** Where those quotes start in the text, or, before any view, {@code null}. */
+        private BitSet flatQuotesAt;
         /** Where the quotes of the view being read start in the text that its level's unescaping made, or {@code null}. */
         private BitSet fresh;
 
@@ -1150,23 +1157,27 @@ public final class Redactor {
         Matcher name = READINGS[reading].name().matcher(json);
         Matcher structure = READINGS[reading].structure().matcher(json);
         Matcher field = READINGS[reading].field().matcher(json);
+        // Past depth 1, a quote neither this level's unescaping made nor its decoding is the level above's: it ends the
+        // string holding this JSON, and with it any name, value or structure read here (review on 22ff6ea: read past it,
+        // a cut-off object balanced on the brace of the object around that string; review on 59b603d: a value ran on
+        // through it, the outer string's closing quote reading as an escaped one here; review on 3c5ddac: a name opened at
+        // a quote decoded inside a name of the level above and closed at that name's own quote).
+        IntPredicate outer = masks.fresh == null ? k -> false : k -> !masks.fresh.get(view.at(k))
+                && !(k > 0 && decodesQuote(view, k - 1)) && !(reading == FLAT_READING && masks.flatQuotes.get(k));
         int copied = 0;
         int[] limits = null;
         while (name.find()) {
             int at = name.start();
             int quote = json.charAt(at) == '\\' ? 2 : 1;
-            if (at < copied - 2 || !isSecretKey(decodeName(name.group(1)))
-                    || (mixed && !decodesQuote(view, at) && !decodesQuote(view, name.end(1)))
+            int closing = json.charAt(name.end(1)) == '\\' ? name.end(1) + 1 : name.end(1);
+            if (at < copied - 2 || !isSecretKey(decodeName(name.group(1))) || outer.test(closing)
+                    || (mixed && !quotesName(view, at, masks) && !quotesName(view, name.end(1), masks))
+                    || (mixed && json.charAt(at) == '\\' && !quotesName(view, at, masks))
+                    || (!embedded && !mixed && backslashesBefore(json, at) % 2 == 1)
                     || !opensAtItsLevel(view, at, reading, masks)) {
                 continue;
             }
             String spelled = quoteOf(text, view, at, quote);
-            // Past depth 1, a quote neither this level's unescaping made nor its decoding is the level above's: it ends
-            // the string holding this JSON, and with it any value or structure read here (review on 22ff6ea: read past
-            // it, a cut-off object balanced on the brace of the object around that string; review on 59b603d: a value
-            // ran on through it, the outer string's closing quote reading as an escaped one here).
-            IntPredicate outer = masks.fresh == null ? k -> false : k -> !masks.fresh.get(view.at(k))
-                    && !(k > 0 && decodesQuote(view, k - 1)) && !(reading == FLAT_READING && masks.flatQuotes.get(k));
             // The mixed reading reads string values only: an object or array after such a name is the flattened reading's,
             // which reads its members however they are quoted; read as plain JSON here, members quoted with \\u0022
             // ran it on to the end of the text (owner decision on #339: the readings' masks are joined).
@@ -1205,7 +1216,14 @@ public final class Redactor {
                         close = limit;
                         cut = true;
                     }
-                    masks.add(new Mask(view.at(field.start(3)), view.at(close),
+                    // After a mixed-quoted name, which only ambiguous text has, a value whose closing quote no delimiter
+                    // follows ({\\u0022client_secret":"s3\\u0022,"n":1}) has no end of its own: it is masked to the end of
+                    // the string holding it (fail closed), even read once.
+                    int maskEnd = mixed && cut && close < json.length() && json.charAt(close) == '"' ? limit : close;
+                    if (maskEnd != close) {
+                        cut = false;
+                    }
+                    masks.add(new Mask(view.at(field.start(3)), view.at(maskEnd),
                             masked(decodeName(field.group(1)), json.substring(field.start(3), close))), false, cut,
                             view.at(limit));
                 } else {
@@ -1230,6 +1248,16 @@ public final class Redactor {
         int quote = json.charAt(at) == '\\' ? at + 1 : at;
         return masks.fresh.get(view.at(quote)) || (quote > at && decodesQuote(view, at))
                 || (reading == FLAT_READING && masks.flatQuotes.get(quote));
+    }
+
+    /**
+     * Whether the escaped quote at {@code at} in {@code view} is a quote of the view's level: one {@link #normalized}
+     * decoded from {@code \\u0022} that the flattened view also turns bare, outside every string or closing a name that
+     * is not valid on its own ({@link FlatContext}). Inside a valid name or a plain-quoted value such a quote is the
+     * string's own (review on 3c5ddac: in {@code "x\\u0022password"} the mixed reading opened a name at it).
+     */
+    private static boolean quotesName(View view, int at, SecretMasks masks) {
+        return decodesQuote(view, at) && masks.flatQuotesAt != null && masks.flatQuotesAt.get(view.at(at));
     }
 
     /**

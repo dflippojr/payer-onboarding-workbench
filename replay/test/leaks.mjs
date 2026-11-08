@@ -766,6 +766,16 @@ const LONE_UNICODE_QUOTE = /(?<!\\)\\u0022/gi;
 /** A quote spelled \u0022 behind backslashes, where a value opens in a FLAT copy: a quote of a deeper level. */
 const BACKSLASHED_UNICODE_QUOTE = /^\\+u0022/i;
 
+/** A mask with an Authorization-style value's scheme kept in front of it, as isMaskedValue accepts one. */
+const SCHEME_MASK = new RegExp(`^${SCHEME} \\[REDACTED\\]`);
+
+/**
+ * Whether the value text from `i` starts as Redactor masks a value of the member `name`: with the mask, or, for an
+ * Authorization-style name, a scheme and the mask (Bearer [REDACTED]).
+ */
+const opensMask = (name, text, i) => text.startsWith(MASK, i)
+  || (/authorization$/i.test(name) && SCHEME_MASK.test(text.slice(i, i + 80)));
+
 /** Whether a quote spelled \u0022 by one backslash starts at index `i` of `text`. */
 const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
   ? /^\\u0022/i.test(text.slice(i, i + 6)) && backslashesBefore(text, i) === 0 : false;
@@ -1318,13 +1328,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       i = Math.max(end, i + 1);
       continue;
     } else if (member && !isSpace(c)) {
-      // A secret-named member's value that opens with a quote spelled \u0022 by one backslash and then the mask is
-      // Redactor's output, a string the flattened copy of a MAIN view reads and judges whole (readFlattened), as
+      // A secret-named member's value that opens with a quote spelled \u0022 by one backslash and then the mask (with
+      // an Authorization-style value's scheme in front of it, review on 3c5ddac) is Redactor's output, a string the flattened copy of a MAIN view reads and judges whole (readFlattened), as
       // Redactor reads it (#339). Any other value so opened, an empty one included, is judged here as main judges it
       // (security round 3: deferring every such value accepted {"client_secret":\u0022\u0022}, which main flags). Any
       // other member's value, a JWK private member's included, is judged here: the copy judges secret-named fields
       // only (review on 47c938e).
-      if (isSecretKey(member.name) && ((mode === MAIN && opensLoneUnicodeQuote(text, i) && text.startsWith(MASK, i + 6))
+      if (isSecretKey(member.name) && ((mode === MAIN && opensLoneUnicodeQuote(text, i) && opensMask(member.name, text, i + 6))
         || (mode === FLAT && BACKSLASHED_UNICODE_QUOTE.test(text.slice(i, i + 64))))) {
         member = null;
         i++;
