@@ -1771,3 +1771,17 @@ test('flags a \\u0022-quoted value masked only up to a quote its escaped backsla
     assert.ok(findTextLeaks(left).length > 0, `92c40cb output not flagged: ${left}`);
   }
 });
+
+test('flags a value quoted with escaped quotes after a name closed by \\u0022, and accepts it masked (#339, review on 9d5f47d)', () => {
+  // RedactorTest.masksAValueQuotedWithEscapedQuotesAfterANameClosedByAUnicodeQuote's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  for (const [unmasked, masked] of [
+    ['{"client_secretQ:\\"s3cr3t\\"}', '{"client_secretQ:"[REDACTED]"}'],
+    ['{"passwordQ:\\"s3cr3t\\","n":1}', '{"passwordQ:"[REDACTED]","n":1}'],
+  ]) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes]) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});

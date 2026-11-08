@@ -1414,6 +1414,48 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksAValueQuotedWithEscapedQuotesAfterANameClosedByAUnicodeQuote() {
+        // Review on 9d5f47d, P1: {"client_secret\\u0022:\\"s3cr3t\\"} was kept whole: the mixed reading needs a
+        // plain-quoted value, the flattened one a value opened by \\u0022, and the deeper views read the name as the level
+        // above's. After a name the flattened view closes with a quote it turned bare, a value opened by an escaped quote
+        // is read as an embedded string and masked whole, escaped quotes included, quoted as the name is.
+        for (String[] pair : List.of(
+                new String[] {"{\"client_secretQ:\\\"s3cr3t\\\"}",
+                        "{\"client_secretQ:\"[REDACTED]\"}"},
+                new String[] {"{\"passwordQ:\\\"s3cr3t\\\",\"n\":1}",
+                        "{\"passwordQ:\"[REDACTED]\",\"n\":1}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
+    @Test
+    void leavesAValidNameHoldingAnEscapedQuoteAloneAtEveryDepth() {
+        // Review on 9d5f47d, P2: {"x\\"password":...} is valid JSON, its name x"password. Nested twice, its escaped quote
+        // is \\\\\\" in the view, an escaped quote at the embedded level, and the embedded reading opened a name at its
+        // last \\" and masked the value. An embedded name opens only after a run of backslashes 1 more than a multiple of 4.
+        // Unwrapped, or nested once with \\" or \\u005C, main's patterns on the text itself mask it already; those are
+        // out of this test. Nested once with \\u0022, and twice in any way, main keeps it whole.
+        List<UnaryOperator<String>> levels = List.of(RedactorTest::nested, RedactorTest::nestedEscapingQuotes,
+                RedactorTest::nestedEscapingBackslashes);
+        for (String text : List.of(
+                "{\"x\\\"password\":\"visible\",\"n\":1}",
+                "{\"note\":\"a\",\"x\\\"client_secret\":42}",
+                "{\"a\\\":\\\"password\":\"v\",\"n\":1}")) {
+            assertEquals(nestedEscapingQuotes(text), Redactor.redact(nestedEscapingQuotes(text)));
+            for (UnaryOperator<String> a : levels) {
+                for (UnaryOperator<String> b : levels) {
+                    assertEquals(b.apply(a.apply(text)), Redactor.redact(b.apply(a.apply(text))), b.apply(a.apply(text)));
+                }
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
