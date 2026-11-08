@@ -1374,6 +1374,21 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void readsAValidNameHoldingManyUnicodeQuotesBeforeColonsInLinearTime() {
+        // Review on 2b4b788: a valid name holding \\u0022: many times made each of them decode the whole part of the
+        // name before it, to see whether it is a secret name, so the work grew with the square of the name's length.
+        int n = 150_000;
+        List<String> texts = List.of(
+                "{\"a" + "\\u0022:".repeat(n) + "\":1}",
+                "{\"private_key" + "\\u0022:".repeat(n) + "\":1}",
+                nested("{\"a" + "\\u0022:".repeat(n / 2) + "\":1}"));
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
+            String out = Redactor.redact(text);
+            assertTrue(out.length() <= 2 * text.length(), () -> out.length() + " > 2 * " + text.length());
+        }));
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }
