@@ -249,14 +249,6 @@ public final class Redactor {
     /** {@link #MIXED_NAME} through its colon. */
     private static final Pattern MIXED_FIELD_NAME = Pattern.compile(MIXED_NAME + EMBEDDED_SPACE + ":");
 
-    /** {@link #MIXED_NAME} and a plain-quoted string value, read as {@link #VIEW_JSON_FIELD} reads one; group 3 is its content. */
-    private static final Pattern MIXED_JSON_FIELD = Pattern.compile(MIXED_NAME + "(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE
-            + ")\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))");
-
-    /** {@link #MIXED_NAME} before an object or array. */
-    private static final Pattern MIXED_JSON_FIELD_STRUCTURE = Pattern.compile(
-            MIXED_NAME + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
-
     /** The same inside JSON embedded in a JSON string, as {@link #EMBEDDED_JSON_FIELD} starts; it starts at the backslash. */
     private static final Pattern EMBEDDED_FIELD_NAME = Pattern.compile(
             BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
@@ -264,12 +256,13 @@ public final class Redactor {
     /**
      * For each reading of {@link #secretFieldMasks} ({@code PLAIN_READING}, {@code EMBEDDED_READING},
      * {@code MIXED_READING}, {@code FLAT_READING}): the pattern that finds a name, the one for a name before an object
-     * or array, and the one for a name and its string or scalar value.
+     * or array, and the one for a name and its string or scalar value. The mixed reading reads no value with a pattern:
+     * a name quoted two ways has no value whose end it can trust.
      */
     private static final Reading[] READINGS = {
         new Reading(FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD),
         new Reading(EMBEDDED_FIELD_NAME, EMBEDDED_JSON_FIELD_STRUCTURE, EMBEDDED_JSON_FIELD),
-        new Reading(MIXED_FIELD_NAME, MIXED_JSON_FIELD_STRUCTURE, MIXED_JSON_FIELD),
+        new Reading(MIXED_FIELD_NAME, null, null),
         new Reading(FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD),
     };
 
@@ -756,25 +749,6 @@ public final class Redactor {
     }
 
     /**
-     * Where the string opened by the escaped quote ({@code \\"}) at {@code open} in {@code json} ends, read as a string
-     * of JSON embedded one level deep: after the next quote one backslash escapes (a run of backslashes 1 more than a
-     * multiple of 4 before it: {@code \\\\\\"} is that string's own escaped quote), else at {@code limit}. After a name
-     * the flattened view closes with a quote it turned bare, such a value has no other reading (review on 9d5f47d).
-     */
-    private static int embeddedStringEnd(String json, int open, int limit) {
-        for (int k = json.indexOf('"', open + 2); k >= 0 && k < limit; k = json.indexOf('"', k + 1)) {
-            int run = backslashesBefore(json, k);
-            if (run % 4 == 1) {
-                return k + 1;
-            }
-            if (run % 2 == 0) {
-                return k;
-            }
-        }
-        return limit;
-    }
-
-    /**
      * Whether a value's closing quote just before {@code at} in {@code json} ends it: at the end, or before whitespace, a
      * separator, a bracket, a colon, a quote or an escape. Before anything else (a name, as in {@code "x"n":1}), the
      * quote is the value's only by a misreading.
@@ -1022,11 +996,12 @@ public final class Redactor {
      * {@link #JSON_FIELD} and {@link #EMBEDDED_JSON_FIELD} do not reach on the text itself: two or more levels deep,
      * or spelled with unicode escapes ({@code \\u0022} for a quote, also at the top level of text copied from
      * inside a string, and on only some of a field's quotes). Each level {@link #readNestedLevels} gives is read as
-     * plain JSON, as JSON embedded one level deep and {@link #flattened}, so a field whose name and value quotes the
-     * text spells differently ({@code {"client_secret":\\u0022...\\u0022}}) is found in the view where both read the same. A
-     * string value's content becomes the mask, so each of its quotes keeps the text's spelling; a number or boolean,
-     * and an object or array through its close bracket, become the mask quoted as the field's name is. A value
-     * already masked is masked the same way again. JSON nested deeper than {@link #NESTED_LEVELS} is masked string by
+     * plain JSON, as JSON embedded one level deep and {@link #flattened}. A string value's content becomes the mask, so
+     * each of its quotes keeps the text's spelling; a number or boolean, and an object or array through its close
+     * bracket, become the mask quoted as the field's name is. A field the text quotes two ways at one level (a name's
+     * quotes, or a name and its value, spelled differently: {@code {"client_secret":\\u0022...\\u0022}}), or whose value
+     * starts with an escape no reading reads as one, is masked from its value to the end of the string holding it
+     * (owner decision on #339, fail closed). A value already masked is masked the same way again. JSON nested deeper than {@link #NESTED_LEVELS} is masked string by
      * string by {@link #nestedJwkMasks} before this runs.
      */
     private static String maskNestedSecretFields(String text) {
@@ -1161,21 +1136,21 @@ public final class Redactor {
     private static final int EMBEDDED_READING = 1;
 
     /**
-     * {@link #secretFieldMasks}: a view's names with a quote it decodes from {@code \\u0022} on either side, and their
-     * plain-quoted values, read as plain JSON in that view (reviews on 5b051eb and 96428f9). The value keeps its own
-     * escapes there, a quote the view decodes included: the next view would take one off, so an escaped quote in it
-     * ({@code "s3\\"cr3t"}) would close it early and an escaped backslash at its end would run it through the next
-     * member, and the {@link #FLAT_READING} would close {@code "pre\\u0022TAIL"} at its {@code \\u0022}. A name both of whose
-     * quotes are escaped is read by the embedded reading first.
+     * {@link #secretFieldMasks}: a view's names with a quote it decodes from {@code \\u0022} on either side, where the
+     * flattened view also turns that quote bare (reviews on 5b051eb and 96428f9). A name quoted two ways
+     * ({@code "client_secret\\u0022:}), or one both of whose quotes are decoded before a plain-quoted value, has its value
+     * masked to the end of the string holding it (Codex round 4 on b856d74). A name both of whose quotes are decoded is
+     * otherwise the embedded reading's, and a valid name read both ways the flattened reading's.
      */
     private static final int MIXED_READING = 2;
 
     /**
      * {@link #secretFieldMasks}: a {@link #flattened} view read as plain JSON, for a value whose opening quote the text
-     * spells {@code \\u0022} (security round 2). The value keeps its own escapes there: the view of
-     * {@code {"client_secret":\\u0022\\"s3cr3t\\u0022}} is {@code {"client_secret":"\\"s3cr3t"}}, while the next view would
-     * take an escape off it. A plain-quoted value is the other readings': this view would close it at a {@code \\u0022} of
-     * its own.
+     * spells {@code \\u0022} as its name's are (security round 2). The value keeps its own escapes there: the view of
+     * {@code {\\u0022client_secret\\u0022:\\u0022\\"s3cr3t\\u0022}} is {@code {"client_secret":"\\"s3cr3t"}}, while the next
+     * view would take an escape off it. A plain-quoted value is the other readings': this view would close it at a
+     * {@code \\u0022} of its own. After a plain-quoted name such a value is quoted two ways, and is masked to the end of
+     * the string holding it by the plain reading, where its quote is still an escape.
      */
     private static final int FLAT_READING = 3;
 
@@ -1195,8 +1170,8 @@ public final class Redactor {
         boolean embedded = reading == EMBEDDED_READING;
         boolean mixed = reading == MIXED_READING;
         Matcher name = READINGS[reading].name().matcher(json);
-        Matcher structure = READINGS[reading].structure().matcher(json);
-        Matcher field = READINGS[reading].field().matcher(json);
+        Matcher structure = mixed ? null : READINGS[reading].structure().matcher(json);
+        Matcher field = mixed ? null : READINGS[reading].field().matcher(json);
         // Past depth 1, a quote neither this level's unescaping made nor its decoding is the level above's: it ends the
         // string holding this JSON, and with it any name, value or structure read here (review on 22ff6ea: read past it,
         // a cut-off object balanced on the brace of the object around that string; review on 59b603d: a value ran on
@@ -1219,16 +1194,46 @@ public final class Redactor {
                 continue;
             }
             String spelled = quoteOf(text, view, at, quote);
-            // The mixed reading reads string values only: an object or array after such a name is the flattened reading's,
-            // which reads its members however they are quoted; read as plain JSON here, members quoted with \\u0022
-            // ran it on to the end of the text (owner decision on #339: the readings' masks are joined).
-            if (!mixed && structure.region(at, json.length()).lookingAt()) {
+            int value = valueStart(json, name.end());
+            // Mixed quoting at one level has no end any reading can trust (owner decision on #339, fail closed; Codex round
+            // 4 on b856d74: each fallback for one spelling missed the next, escaped whitespace before an escaped quote). A
+            // value after a name quoted two ways, and one the plain or flattened reading cannot read that starts with an
+            // escape (an escaped quote, \\u0022 decoded, a run of backslashes, whitespace escaped more than once), is
+            // masked from where it starts to the end of the string holding it, quoted as the name is, and takes the masks
+            // other readings found inside it, as an object's mask does. Valid JSON has neither: past depth 1 its names are
+            // read at their own level, and a value there opens with a quote of that level, a digit, a letter or a bracket.
+            // A name valid on its own whose part before a \\u0022 and a colon is a secret name is read both ways (review on
+            // 9f45005): its second reading's value ends inside it, at its own closing quote.
+            boolean opensEscaped = json.charAt(at) == '\\';
+            boolean twoWays = mixed && (opensEscaped != (closing > name.end(1))
+                    ? opensEscaped || !closesAsName(json, at + 1)
+                    : value < json.length() && json.charAt(value) == '"');
+            // One level deep a single escape may open the value or space it (\\", \\u0022, \\u0020); a run of two or more
+            // backslashes is the level below's.
+            boolean escaped = !mixed && value < json.length() && json.charAt(value) == '\\'
+                    && (!embedded || json.startsWith("\\\\", value));
+            if (twoWays || escaped) {
+                if (limits == null) {
+                    limits = stringEnds(json, embedded, outer);
+                }
+                int end = Math.max(value, limits[value]);
+                if (reading == FLAT_READING && masks.flatQuotes.get(closing) && !masks.flatQuotes.get(at)) {
+                    end = Math.min(end, endOfWholeName(json, closing + 1, end, masks.flatQuotes));
+                }
+                masks.add(new Mask(view.at(value), view.at(end), spelled + MASK + spelled), true, false, view.at(end));
+                copied = end;
+                continue;
+            }
+            if (mixed) {
+                continue;
+            }
+            if (structure.region(at, json.length()).lookingAt()) {
                 int end = reading == FLAT_READING ? endOfFlatStructure(json, structure.end(), masks.flatQuotes, outer)
                         : endOfStructure(json, structure.end(), embedded, outer);
                 // An embedded object or array that a bare quote cuts off before its brackets close holds JSON quoted
-                // at the level above ({\"client_secret\":{"x":...}}): masking up to that quote would keep the rest. It
+                // at the level above ({\\"client_secret\\":{"x":...}}): masking up to that quote would keep the rest. It
                 // is read as plain JSON here, where its strings keep their own escapes (review on 7a80b9c: the next
-                // view takes one off, so "a\"}b" closed the object at its brace), and is so read once (review on
+                // view takes one off, so "a\\"}b" closed the object at its brace), and is so read once (review on
                 // 47c938e: reading each to one bare quote at the end made the work grow with the square of the names). In the
                 // text itself the bare quote ends the string that holds the embedded JSON, as maskStructures reads it.
                 if (embedded && view.origin() != null && end < json.length() && json.charAt(end) == '"') {
@@ -1257,14 +1262,7 @@ public final class Redactor {
                         close = limit;
                         cut = true;
                     }
-                    // After a mixed-quoted name, which only ambiguous text has, a value whose closing quote no delimiter
-                    // follows ({\\u0022client_secret":"s3\\u0022,"n":1}) has no end of its own: it is masked to the end of
-                    // the string holding it (fail closed), even read once.
-                    int maskEnd = mixed && cut && close < json.length() && json.charAt(close) == '"' ? limit : close;
-                    if (maskEnd != close) {
-                        cut = false;
-                    }
-                    masks.add(new Mask(view.at(field.start(3)), view.at(maskEnd),
+                    masks.add(new Mask(view.at(field.start(3)), view.at(close),
                             masked(decodeName(field.group(1)), json.substring(field.start(3), close))), false, cut,
                             view.at(limit));
                     int escapedEnd = reading == FLAT_READING ? escapedQuoteEnd(json, close, limit, masks.flatQuotes) : -1;
@@ -1277,39 +1275,49 @@ public final class Redactor {
                     masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false, false,
                             view.at(copied));
                 }
-            } else if (!embedded && !mixed) {
-                // A value an escaped quote opens, which neither plain JSON nor the flattened view reads (review on
-                // 9d5f47d, f94fa05). After a name the flattened view closes with a quote it turned bare, it is read as a
-                // string embedded one level deep; else no reading finds its end, and it is masked to the end of the
-                // string holding it (owner decision on #339, fail closed). A quote the view decoded from \\u0022 is
-                // the readings' own, read as one; valid JSON has no value an escaped quote opens.
-                int value = name.end();
-                while (value < json.length() && Character.isWhitespace(json.charAt(value))) {
-                    value++;
-                }
-                if (json.startsWith("\\\"", value) && backslashesBefore(json, value) % 2 == 0
-                        && !decodesQuote(view, value)) {
-                    if (limits == null) {
-                        limits = stringEnds(json, false, outer);
-                    }
-                    int end = limits[value];
-                    if (reading == FLAT_READING && masks.flatQuotes.get(closing)) {
-                        // The embedded string's end counts only where an escaped quote closes it and what can follow a
-                        // value follows; at a bare quote, or with more of the value right after, its end is unsure.
-                        int closed = embeddedStringEnd(json, value, end);
-                        if (closed < end && closed - 1 > value + 1 && json.charAt(closed - 1) == '"'
-                                && backslashesBefore(json, closed - 1) % 4 == 1 && endsValue(json, closed)) {
-                            end = closed;
-                        }
-                    }
-                    // Masked whole, escaped quotes included, it takes the masks other readings found inside it (an empty
-                    // string the embedded reading closed at its second escaped quote), as an object's mask does.
-                    masks.add(new Mask(view.at(value), view.at(end), spelled + MASK + spelled), true, false,
-                            view.at(end));
-                    copied = end;
-                }
             }
         }
+    }
+
+    /**
+     * Where a secret field's value starts in {@code json}, from {@code from} just after its colon: past the whitespace
+     * that {@link #EMBEDDED_SPACE} reads, a line break or tab written plainly or escaped once, as the value patterns read
+     * it. An escape of any other kind, or one escaped again, is where the value starts: no value pattern reads it.
+     */
+    private static int valueStart(String json, int from) {
+        int i = from;
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (" \t\n\u000B\f\r".indexOf(c) >= 0) {
+                i++;
+            } else if (c == '\\' && i + 1 < json.length() && "nrt".indexOf(json.charAt(i + 1)) >= 0) {
+                i += 2;
+            } else {
+                break;
+            }
+        }
+        return i;
+    }
+
+    /**
+     * For a name the flattened view closes at a quote it turned bare, read from {@code from} just after that quote: where
+     * the name ends when read whole, at the next plain quote before {@code limit} that a colon follows ({@link
+     * #closesAsName}), or {@code limit} when it is not a name valid on its own. Its escapes are skipped, a turned-bare
+     * quote among them.
+     */
+    private static int endOfWholeName(String json, int from, int limit, BitSet quotes) {
+        int i = from;
+        while (i < limit) {
+            char c = json.charAt(i);
+            if (c == '\\') {
+                i += 2;
+            } else if (c == '"' && !quotes.get(i)) {
+                return beforeColon(json, i + 1) ? i : limit;
+            } else {
+                i++;
+            }
+        }
+        return limit;
     }
 
     /**
