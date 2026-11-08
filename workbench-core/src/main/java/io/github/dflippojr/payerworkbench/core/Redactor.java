@@ -756,6 +756,25 @@ public final class Redactor {
     }
 
     /**
+     * Where the string opened by the escaped quote ({@code \\"}) at {@code open} in {@code json} ends, read as a string
+     * of JSON embedded one level deep: after the next quote one backslash escapes (a run of backslashes 1 more than a
+     * multiple of 4 before it: {@code \\\\\\"} is that string's own escaped quote), else at {@code limit}. After a name
+     * the flattened view closes with a quote it turned bare, such a value has no other reading (review on 9d5f47d).
+     */
+    private static int embeddedStringEnd(String json, int open, int limit) {
+        for (int k = json.indexOf('"', open + 2); k >= 0 && k < limit; k = json.indexOf('"', k + 1)) {
+            int run = backslashesBefore(json, k);
+            if (run % 4 == 1) {
+                return k + 1;
+            }
+            if (run % 2 == 0) {
+                return k;
+            }
+        }
+        return limit;
+    }
+
+    /**
      * Whether a value's closing quote just before {@code at} in {@code json} ends it: at the end, or before whitespace, a
      * separator, a bracket, a colon, a quote or an escape. Before anything else (a name, as in {@code "x"n":1}), the
      * quote is the value's only by a misreading.
@@ -1195,6 +1214,7 @@ public final class Redactor {
                     || (mixed && !quotesName(view, at, masks) && !quotesName(view, name.end(1), masks))
                     || (mixed && json.charAt(at) == '\\' && !quotesName(view, at, masks))
                     || (!embedded && !mixed && backslashesBefore(json, at) % 2 == 1)
+                    || (embedded && backslashesBefore(json, at) % 4 != 0)
                     || !opensAtItsLevel(view, at, reading, masks)) {
                 continue;
             }
@@ -1256,6 +1276,20 @@ public final class Redactor {
                 } else {
                     masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false, false,
                             view.at(copied));
+                }
+            } else if (reading == FLAT_READING && masks.flatQuotes.get(closing)) {
+                int value = name.end();
+                while (value < json.length() && Character.isWhitespace(json.charAt(value))) {
+                    value++;
+                }
+                if (json.startsWith("\\\"", value) && backslashesBefore(json, value) % 2 == 0) {
+                    if (limits == null) {
+                        limits = stringEnds(json, false, outer);
+                    }
+                    int end = embeddedStringEnd(json, value, limits[value]);
+                    masks.add(new Mask(view.at(value), view.at(end), spelled + MASK + spelled), false, false,
+                            view.at(end));
+                    copied = end;
                 }
             }
         }
