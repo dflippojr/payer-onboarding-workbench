@@ -1389,6 +1389,29 @@ class RedactorTest {
         }));
     }
 
+    @Test
+    void masksAUnicodeQuotedValueThroughAQuoteItsEscapedBackslashMayEscape() {
+        // Review on 92c40cb: in {"client_secret":\\u0022S3\\\\\\u0022,TAIL\\u0022} the flattened view read the escaped
+        // backslash and the \\u0022 after it as the value's end, and only S3 was masked. Read as text copied from inside a
+        // string, those decode to an escaped quote, and the value runs on to the last \\u0022: both readings are taken
+        // and their union masked (owner decision on #339, fail closed). Five backslashes are an escaped backslash and a
+        // closing quote either way.
+        for (String[] pair : List.of(
+                new String[] {"{\"client_secret\":QS3\\\\Q,TAILQ}",
+                        "{\"client_secret\":Q[REDACTED]Q}"},
+                new String[] {"{\"password\":Qa\\\\QbQ,\"n\":1}",
+                        "{\"password\":Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{\"password\":Qa\\\\\\\\Q,\"n\":1}",
+                        "{\"password\":Q[REDACTED]Q,\"n\":1}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

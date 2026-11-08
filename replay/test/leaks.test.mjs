@@ -1749,3 +1749,25 @@ test('flags a valid name whose part before a \\u0022 and colon is a secret name,
     }
   }
 });
+
+test('flags a \\u0022-quoted value masked only up to a quote its escaped backslash may escape, and accepts it masked whole (#339, review on 92c40cb)', () => {
+  // RedactorTest.masksAUnicodeQuotedValueThroughAQuoteItsEscapedBackslashMayEscape's exact expected outputs. A mask
+  // the MAIN reading leaves to the FLAT copy must be followed by what can follow a value; a bare word after it
+  // (,TAIL) is part of the value cut off, judged as main judges it.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  for (const [unmasked, masked] of [
+    ['{"client_secret":QS3\\\\Q,TAILQ}', '{"client_secret":Q[REDACTED]Q}'],
+    ['{"password":Qa\\\\QbQ,"n":1}', '{"password":Q[REDACTED]Q,"n":1}'],
+    ['{"password":Qa\\\\\\\\Q,"n":1}', '{"password":Q[REDACTED]Q,"n":1}'],
+  ]) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+  for (const wrap of wraps) {
+    const left = wrap(u('{"client_secret":Q[REDACTED]Q,TAILQ}'));
+    assert.ok(findTextLeaks(left).length > 0, `92c40cb output not flagged: ${left}`);
+  }
+});
