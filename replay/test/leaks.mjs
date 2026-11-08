@@ -772,8 +772,9 @@ const SCHEME_MASK = new RegExp(`^${SCHEME} \\[REDACTED\\]`);
 /**
  * Whether the value text from `i` is a value of the member `name` as Redactor masks it: the mask, or, for an
  * Authorization-style name, a scheme and the mask (Bearer [REDACTED]), then its closing quote if it has one, and then
- * what can follow a value: a separator before a quote or bracket, a quote, a bracket, or the end. A bare word after it
- * ("[REDACTED]\u0022,TAIL\u0022) is part of the value the mask stops short of (review on 92c40cb).
+ * what can follow a value: a separator before a quote (plain, or escaped as \" or \u0022) or bracket, a quote, a
+ * bracket, or the end. A bare word after it ("[REDACTED]\u0022,TAIL\u0022) is part of the value the mask stops short
+ * of (review on 92c40cb), and so is any other escape (,\u0054AIL, review on 0e14a36).
  */
 const opensMask = (name, text, i) => {
   let p = text.startsWith(MASK, i) ? i + MASK.length : -1;
@@ -789,7 +790,10 @@ const opensMask = (name, text, i) => {
     p++;
     while (p < text.length && isSpace(text[p])) p++;
   }
-  return p >= text.length || text[p] === '"' || text[p] === '\\' || text[p] === '}' || text[p] === ']';
+  // A backslash may follow only as a quote escape, the next member's: any other escape (,\u0054AIL) is more of the
+  // value (review on 0e14a36).
+  const quoteEscape = text[p] === '\\' && (text[p + 1] === '"' || /^\\u0022/i.test(text.slice(p, p + 6)));
+  return p >= text.length || text[p] === '"' || quoteEscape || text[p] === '}' || text[p] === ']';
 };
 
 /** Whether a quote spelled \u0022 by one backslash starts at index `i` of `text`. */
