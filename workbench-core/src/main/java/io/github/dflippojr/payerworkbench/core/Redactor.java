@@ -735,6 +735,27 @@ public final class Redactor {
     }
 
     /**
+     * For a value the flattened view closes at the quote at {@code close} in {@code json}: where the value ends when that
+     * quote is read as escaped instead, or {@code -1} when it is not. A quote the view turned bare from {@code \\u0022}
+     * after a number of backslashes that is 2 more than a multiple of 4 ({@code \\\\\\u0022} in the text) is an
+     * escaped backslash and a quote at the view's level, and, read as text copied from inside a JSON string, an escaped
+     * quote one level down (review on 92c40cb). Read that way the value goes on to the next quote that closes it there:
+     * a turned-bare one after a multiple of 4 backslashes, or a plain one after an even number, else to {@code limit}.
+     */
+    private static int escapedQuoteEnd(String json, int close, int limit, BitSet quotes) {
+        if (close >= json.length() || !quotes.get(close) || backslashesBefore(json, close) % 4 != 2) {
+            return -1;
+        }
+        for (int k = json.indexOf('"', close + 1); k >= 0 && k < limit; k = json.indexOf('"', k + 1)) {
+            int run = backslashesBefore(json, k);
+            if (quotes.get(k) ? run % 4 == 0 : run % 2 == 0) {
+                return k;
+            }
+        }
+        return limit;
+    }
+
+    /**
      * Whether a value's closing quote just before {@code at} in {@code json} ends it: at the end, or before whitespace, a
      * separator, a bracket, a colon, a quote or an escape. Before anything else (a name, as in {@code "x"n":1}), the
      * quote is the value's only by a misreading.
@@ -1226,6 +1247,12 @@ public final class Redactor {
                     masks.add(new Mask(view.at(field.start(3)), view.at(maskEnd),
                             masked(decodeName(field.group(1)), json.substring(field.start(3), close))), false, cut,
                             view.at(limit));
+                    int escapedEnd = reading == FLAT_READING ? escapedQuoteEnd(json, close, limit, masks.flatQuotes) : -1;
+                    if (escapedEnd > close) {
+                        masks.add(new Mask(view.at(field.start(3)), view.at(escapedEnd), MASK), false,
+                                escapedEnd >= limit || !endsValue(json, escapedEnd + 1), view.at(limit));
+                        copied = Math.max(copied, escapedEnd);
+                    }
                 } else {
                     masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false, false,
                             view.at(copied));

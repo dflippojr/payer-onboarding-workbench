@@ -770,11 +770,27 @@ const BACKSLASHED_UNICODE_QUOTE = /^\\+u0022/i;
 const SCHEME_MASK = new RegExp(`^${SCHEME} \\[REDACTED\\]`);
 
 /**
- * Whether the value text from `i` starts as Redactor masks a value of the member `name`: with the mask, or, for an
- * Authorization-style name, a scheme and the mask (Bearer [REDACTED]).
+ * Whether the value text from `i` is a value of the member `name` as Redactor masks it: the mask, or, for an
+ * Authorization-style name, a scheme and the mask (Bearer [REDACTED]), then its closing quote if it has one, and then
+ * what can follow a value: a separator before a quote or bracket, a quote, a bracket, or the end. A bare word after it
+ * ("[REDACTED]\u0022,TAIL\u0022) is part of the value the mask stops short of (review on 92c40cb).
  */
-const opensMask = (name, text, i) => text.startsWith(MASK, i)
-  || (/authorization$/i.test(name) && SCHEME_MASK.test(text.slice(i, i + 80)));
+const opensMask = (name, text, i) => {
+  let p = text.startsWith(MASK, i) ? i + MASK.length : -1;
+  if (p < 0 && /authorization$/i.test(name)) {
+    const scheme = SCHEME_MASK.exec(text.slice(i, i + 80));
+    if (scheme) p = i + scheme[0].length;
+  }
+  if (p < 0) return false;
+  if (/^\\u0022/i.test(text.slice(p, p + 6))) p += 6;
+  else if (text[p] === '"') p++;
+  while (p < text.length && isSpace(text[p])) p++;
+  if (text[p] === ',') {
+    p++;
+    while (p < text.length && isSpace(text[p])) p++;
+  }
+  return p >= text.length || text[p] === '"' || text[p] === '\\' || text[p] === '}' || text[p] === ']';
+};
 
 /** Whether a quote spelled \u0022 by one backslash starts at index `i` of `text`. */
 const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')

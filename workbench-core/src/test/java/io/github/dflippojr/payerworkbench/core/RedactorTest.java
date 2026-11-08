@@ -1090,12 +1090,14 @@ class RedactorTest {
         // Security round 2: a string value whose opening quote is spelled \\u0022 after a plain or mixed-quoted name
         // was read only in the next view, which takes an escape off it: an escaped quote at its start closed it there,
         // so an empty string was masked and the rest kept, and an escaped backslash at its end ran it on. It is read in
-        // its own view, with its own escapes, and masked whole.
+        // its own view, with its own escapes, and masked whole. The escaped backslash before a closing \\u0022 may also read
+        // as an escaped quote (review on 92c40cb), so that value has no certain end and is masked to the end of the string
+        // holding it (owner decision on #339, fail closed).
         for (String[] pair : List.of(
                 new String[] {"{\"client_secret\":Q\\\"s3cr3tQ}", "{\"client_secret\":Q[REDACTED]Q}"},
                 new String[] {"{\"client_secret\":Q\\\"s3cr3t\"}", "{\"client_secret\":Q[REDACTED]\"}"},
                 new String[] {"{\"client_secret\":Q\\\\\\\"s3cr3tQ,\"n\":1}", "{\"client_secret\":Q[REDACTED]Q,\"n\":1}"},
-                new String[] {"{\"client_secret\":Qs3cr3t\\\\Q,\"n\":1}", "{\"client_secret\":Q[REDACTED]Q,\"n\":1}"},
+                new String[] {"{\"client_secret\":Qs3cr3t\\\\Q,\"n\":1}", "{\"client_secret\":Q[REDACTED]"},
                 new String[] {"{\"password\":Qs3\\\"cr3t\\\\\\\\Q,\"client_id\":\"app\"}",
                         "{\"password\":Q[REDACTED]Q,\"client_id\":\"app\"}"},
                 new String[] {"{Qclient_secretQ:Q\\\"s3cr3tQ}", "{Qclient_secretQ:Q[REDACTED]Q}"},

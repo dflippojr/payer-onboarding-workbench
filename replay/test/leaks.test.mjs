@@ -1547,7 +1547,7 @@ test('flags a value opened by a quote spelled \\u0022 with escapes of its own, a
     ['{"client_secret":Q\\"s3cr3tQ}', '{"client_secret":Q[REDACTED]Q}'],
     ['{"client_secret":Q\\"s3cr3t"}', '{"client_secret":Q[REDACTED]"}'],
     ['{"client_secret":Q\\\\\\"s3cr3tQ,"n":1}', '{"client_secret":Q[REDACTED]Q,"n":1}'],
-    ['{"client_secret":Qs3cr3t\\\\Q,"n":1}', '{"client_secret":Q[REDACTED]Q,"n":1}'],
+    ['{"client_secret":Qs3cr3t\\\\Q,"n":1}', '{"client_secret":Q[REDACTED]'],
     ['{"password":Qs3\\"cr3t\\\\\\\\Q,"client_id":"app"}', '{"password":Q[REDACTED]Q,"client_id":"app"}'],
     ['{Qclient_secretQ:Q\\"s3cr3tQ}', '{Qclient_secretQ:Q[REDACTED]Q}'],
     ['{Qclient_secret":Qs3\\"cr3t"}', '{Qclient_secret":Q[REDACTED]"}'],
