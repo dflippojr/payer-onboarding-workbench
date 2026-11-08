@@ -1813,3 +1813,17 @@ test('flags an escaped-quote value after a \\u0022-closed name whose end is unsu
     }
   }
 });
+
+test('flags a deferred mask followed by an escaped continuation, which main flags, and still accepts a quote escape there (#339, review on 0e14a36)', () => {
+  // After a value the MAIN reading leaves to the FLAT copy, a backslash may follow only as a quote escape (the next
+  // member's \" or "); any other escape is more of the value the mask stops short of (,TAIL is ,TAIL).
+  const B = '\\';
+  const U = B + 'u0022';
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes];
+  for (const left of [`{"client_secret":${U}[REDACTED]${U},${B}u0054AIL${U}}`, `{"password":${U}[REDACTED]${U},${B}u0041${B}u0042"}`]) {
+    for (const wrap of wraps) assert.ok(findTextLeaks(wrap(left)).length > 0, `not flagged: ${wrap(left)}`);
+  }
+  for (const masked of [`{"client_secret":${U}[REDACTED]${U},${U}n${U}:1}`, `{"client_secret":${U}[REDACTED]${U},${B}"n${B}":1}`]) {
+    for (const wrap of wraps) assert.deepEqual(findTextLeaks(wrap(masked)), [], wrap(masked));
+  }
+});
