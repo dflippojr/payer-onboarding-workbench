@@ -1598,7 +1598,7 @@ public final class Redactor {
      * Where {@link #flattened} is in the JSON it reads, to tell which quotes spelled {@code \\u0022} it turns bare: one
      * outside every string (opening a string, which a quote of either kind then closes), one closing such a string, and
      * one closing a name a plain quote opens, before its colon, unless that name closes with a plain quote and a colon
-     * of its own ({@link #closesAsName}). Inside a value a plain quote opens (after a colon, or an array item) such a
+     * of its own ({@link #closesAsName}) and its part before that quote is no secret name. Inside a value a plain quote opens (after a colon, or an array item) such a
      * quote is that string's own, as anywhere else in such a name ({@code "pass\\u0022word"}): a
      * JSON string written with {@code \\u0022} for its quotes holds JSON one level deeper, not at this level (review on
      * 9593177: read at this level, {@code a\\\\\\u0022b} in it read as an escaped backslash and a closing quote).
@@ -1616,6 +1616,8 @@ public final class Redactor {
         private char before;
         /** Whether the plain-quoted name being read closes with a plain quote and a colon: a valid name, read whole. */
         private boolean validName;
+        /** Where the plain-quoted name being read starts, after its opening quote. */
+        private int nameStart;
 
         /**
          * Reads one character that is not an escape, at {@code at} in {@code text}; {@code outer} for a quote of the level
@@ -1630,6 +1632,7 @@ public final class Redactor {
                 boolean value = before == ':' || (arrays.get(depth) && (before == '[' || before == ','));
                 state = state != OUTSIDE ? OUTSIDE : value ? PLAIN_VALUE : PLAIN_NAME;
                 validName = state == PLAIN_NAME && closesAsName(text, at + 1);
+                nameStart = at + 1;
                 before = c;
             } else if (state == OUTSIDE) {
                 if (c == '{' || c == '[') {
@@ -1643,10 +1646,21 @@ public final class Redactor {
             }
         }
 
+        /**
+         * Whether the part of the plain-quoted name being read before the quote spelled {@code \\u0022} that ends at
+         * {@code after} is a secret name. Then a valid name is read both ways (owner decision on #339, fail closed): read
+         * whole, {@code "private_key\\u0022:{\\u0022x"} is a name of its own; with that quote as its closing quote it is
+         * {@code private_key} and an object (review on 9f45005).
+         */
+        private boolean secretBefore(String text, int after) {
+            int escape = after - 6;
+            return escape >= nameStart && isSecretKey(decodeName(text.substring(nameStart, escape)));
+        }
+
         /** Whether the quote spelled {@code \\u0022} that ends at {@code after} in {@code text} is turned bare. */
         boolean flattens(String text, int after) {
             boolean flattens = state == OUTSIDE || state == FLAT_STRING
-                    || (state == PLAIN_NAME && !validName && beforeColon(text, after));
+                    || (state == PLAIN_NAME && beforeColon(text, after) && (!validName || secretBefore(text, after)));
             if (flattens) {
                 state = state == OUTSIDE ? FLAT_STRING : OUTSIDE;
                 before = '"';
