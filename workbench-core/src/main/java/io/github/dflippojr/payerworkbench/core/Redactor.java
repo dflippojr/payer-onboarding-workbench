@@ -1654,7 +1654,10 @@ public final class Redactor {
          */
         private boolean secretBefore(String text, int after) {
             int escape = after - 6;
-            return escape >= nameStart && isSecretKey(decodeName(text.substring(nameStart, escape)));
+            // A secret name has at most 64 characters, each at most a six-character escape: a longer part is none, and
+            // is not decoded, so a name holding many such quotes is read in linear time (review on 2b4b788).
+            return escape >= nameStart && escape - nameStart <= 6 * 64
+                    && isSecretKey(decodeName(text.substring(nameStart, escape)));
         }
 
         /** Whether the quote spelled {@code \\u0022} that ends at {@code after} in {@code text} is turned bare. */
