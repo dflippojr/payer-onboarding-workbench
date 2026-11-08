@@ -1277,17 +1277,34 @@ public final class Redactor {
                     masks.add(new Mask(view.at(field.end(2)), view.at(copied), spelled + MASK + spelled), false, false,
                             view.at(copied));
                 }
-            } else if (reading == FLAT_READING && masks.flatQuotes.get(closing)) {
+            } else if (!embedded && !mixed) {
+                // A value an escaped quote opens, which neither plain JSON nor the flattened view reads (review on
+                // 9d5f47d, f94fa05). After a name the flattened view closes with a quote it turned bare, it is read as a
+                // string embedded one level deep; else no reading finds its end, and it is masked to the end of the
+                // string holding it (owner decision on #339, fail closed). A quote the view decoded from \\u0022 is
+                // the readings' own, read as one; valid JSON has no value an escaped quote opens.
                 int value = name.end();
                 while (value < json.length() && Character.isWhitespace(json.charAt(value))) {
                     value++;
                 }
-                if (json.startsWith("\\\"", value) && backslashesBefore(json, value) % 2 == 0) {
+                if (json.startsWith("\\\"", value) && backslashesBefore(json, value) % 2 == 0
+                        && !decodesQuote(view, value)) {
                     if (limits == null) {
                         limits = stringEnds(json, false, outer);
                     }
-                    int end = embeddedStringEnd(json, value, limits[value]);
-                    masks.add(new Mask(view.at(value), view.at(end), spelled + MASK + spelled), false, false,
+                    int end = limits[value];
+                    if (reading == FLAT_READING && masks.flatQuotes.get(closing)) {
+                        // The embedded string's end counts only where an escaped quote closes it and what can follow a
+                        // value follows; at a bare quote, or with more of the value right after, its end is unsure.
+                        int closed = embeddedStringEnd(json, value, end);
+                        if (closed < end && closed - 1 > value + 1 && json.charAt(closed - 1) == '"'
+                                && backslashesBefore(json, closed - 1) % 4 == 1 && endsValue(json, closed)) {
+                            end = closed;
+                        }
+                    }
+                    // Masked whole, escaped quotes included, it takes the masks other readings found inside it (an empty
+                    // string the embedded reading closed at its second escaped quote), as an object's mask does.
+                    masks.add(new Mask(view.at(value), view.at(end), spelled + MASK + spelled), true, false,
                             view.at(end));
                     copied = end;
                 }
