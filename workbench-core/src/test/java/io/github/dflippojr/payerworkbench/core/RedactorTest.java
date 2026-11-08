@@ -1350,6 +1350,30 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void readsAValidNameWhosePartBeforeAUnicodeQuoteAndColonIsASecretNameBothWays() {
+        // Review on 9f45005: {"private_key\\u0022:{\\u0022x":42}} is valid JSON with one name, private_key":{"x, and also,
+        // with \\u0022 read as a quote, {"private_key":{"x":42}}. Keeping every valid name whole missed the secret
+        // object. Where the part of a valid name before a \\u0022 and a colon is a secret name, both readings are
+        // admitted and their union masked (owner decision on #339, fail closed); a name whose part there is not a secret
+        // name is kept whole, as before.
+        for (String[] pair : List.of(
+                new String[] {"{\"private_keyQ:{Qx\":42}}",
+                        "{\"private_keyQ:\"[REDACTED]\"}"},
+                new String[] {"{\"client_secretQ:Qs3cr3t\":1}",
+                        "{\"client_secretQ:Q[REDACTED]\":1}"},
+                new String[] {"{\"noteQ:{Qx\":42}}",
+                        "{\"noteQ:{Qx\":42}}"})) {
+            String in = pair[0].replace("Q", "\\u0022");
+            String out = pair[1].replace("Q", "\\u0022");
+            for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
+                    t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
+                    t -> nested(nestedEscapingQuotes(t)))) {
+                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            }
+        }
+    }
+
     private static UnaryOperator<String> compose(UnaryOperator<String> wrap) {
         return t -> nested(wrap.apply(t));
     }

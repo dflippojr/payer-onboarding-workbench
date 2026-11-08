@@ -1734,3 +1734,18 @@ test('accepts an Authorization value opened by \\u0022 masked with its scheme ke
   // A scheme with no mask after it is no masked value.
   assert.ok(findTextLeaks(`{"Authorization":${U}Bearer ${U}}`).length > 0);
 });
+
+test('flags a valid name whose part before a \\u0022 and colon is a secret name, and accepts it masked (#339, review on 9f45005)', () => {
+  // RedactorTest.readsAValidNameWhosePartBeforeAUnicodeQuoteAndColonIsASecretNameBothWays's exact expected outputs.
+  const u = s => s.replaceAll('Q', '\\u0022');
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), t => nestBody(nestBody(nestBody(t))), nestQuotes, t => nestBody(nestQuotes(t))];
+  for (const [unmasked, masked] of [
+    ['{"private_keyQ:{Qx":42}}', '{"private_keyQ:"[REDACTED]"}'],
+    ['{"client_secretQ:Qs3cr3t":1}', '{"client_secretQ:Q[REDACTED]":1}'],
+  ]) {
+    for (const wrap of wraps) {
+      assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
+      assert.deepEqual(findTextLeaks(wrap(u(masked))), [], wrap(u(masked)));
+    }
+  }
+});
