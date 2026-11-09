@@ -296,20 +296,31 @@ function jwtStart(text, start, end, ctx) {
 }
 
 /**
- * A quote as some escape level spells it: a run of backslashes, each also spelled \ by the level above, then a
- * quote or a " escape, as Redactor's ANY_QUOTE reads it (#339, Codex round 5).
+ * A quote as some escape level spells it: a run of backslashes, each also spelled as a u005c escape by the level
+ * above, then a quote or a u0022 escape, as Redactor's ANY_QUOTE reads it (#339, Codex round 5). A u005c or u0022
+ * counts after a backslash or after a u005c that does, so a chain of u005c escapes (backslash, u005cu005cu0022) is a
+ * quote at any depth (owner decision, 2026-11-09; review on a7a1eef); quoteLevelOf decodes it at most 16 times.
  */
-const ANY_QUOTE = String.raw`(?:\\|(?<=\\)u005[cC])*(?:"|(?<=\\)u0022)`;
+const ANY_QUOTE = String.raw`(?:\\|(?<=\\|u005[cC])u005[cC])*(?:"|(?<=\\|u005[cC])u0022)`;
+
+/** A backslash as any escape level spells it: a backslash, then more of them or u005c escapes of one. */
+const ANY_BACKSLASH = String.raw`\\(?:\\|u005[cC])*`;
 
 /**
  * From just after a name's opening quote: the name, its closing quote spelled any way, whitespace written plainly or
- * escaped at any level, and the colon, which may be a : escape (Redactor's ANY_SECRET_NAME).
+ * escaped at any level, and the colon, which may be a u003a escape (Redactor's ANY_SECRET_NAME). The backslash of each
+ * escape in the name or the colon may be spelled through a chain of u005c escapes too. A name character is no u005c
+ * escape itself (a backslash is in no secret name), so a run of them splits into name characters one way only: the
+ * scanner has no possessive repetition, and a run of n of them would otherwise be tried 2^n ways.
  */
-const SECRET_NAME_REST = new RegExp(String.raw`((?:[A-Za-z_-]|\\+u[0-9A-Fa-f]{4}){1,64}?)(${ANY_QUOTE})`
-  + String.raw`(?:\s|(?:\\|u005[cC])+(?:[nrt]|u00(?:20|09|0[aAdD])))*(?::|(?:\\(?!u003[aA])|u005[cC])*\\u003[aA])`, 'y');
+const SECRET_NAME_REST = new RegExp(String.raw`((?:[A-Za-z_-]|${ANY_BACKSLASH}u(?!005[cC])[0-9A-Fa-f]{4}){1,64}?)(${ANY_QUOTE})`
+  + String.raw`(?:\s|(?:\\|u005[cC])+(?:[nrt]|u00(?:20|09|0[aAdD])))*(?::|(?:\\|u005[cC])*(?<=\\|u005[cC])u003[aA])`, 'y');
 
-/** A name with each \u escape decoded, however many backslashes come before it, as Redactor's decodeName reads it. */
-const decodedEscapedName = name => name.replace(/\\+u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+/** Each unicode escape of a name, its backslash spelled as ANY_BACKSLASH, its four hex digits in group 1. */
+const ANY_UNICODE_ESCAPE = new RegExp(String.raw`${ANY_BACKSLASH}u(?!005[cC])([0-9A-Fa-f]{4})`, 'g');
+
+/** A name with each unicode escape decoded, however its backslash is spelled, as Redactor's decodedThroughChains reads it. */
+const decodedEscapedName = name => name.replace(ANY_UNICODE_ESCAPE, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
 
 /** What a Decoder reads at the end of its level, and where its level is not JSON string content. */
 const END = -1;
@@ -479,13 +490,21 @@ function quoteLevelOf(spelling) {
   for (let level = 0; level <= MAX_LEVELS - 1 && s !== null; level++) {
     if (s === '"') return level;
     const d = new Decoder(`${s}"`, 0, 1);
-    let out = '';
+    // Collected as codes and joined in chunks: a string grown by one character at a time is mostly garbage for a long
+    // chain of escapes, decoded once per level.
+    let codes = [];
     for (let c = d.next(); c !== END; c = d.next()) {
       if (c === BAD) {
-        out = null;
+        codes = null;
         break;
       }
-      out += String.fromCharCode(c);
+      codes.push(c);
+    }
+    let out = null;
+    if (codes !== null) {
+      const chunks = [];
+      for (let i = 0; i < codes.length; i += 8192) chunks.push(String.fromCharCode(...codes.slice(i, i + 8192)));
+      out = chunks.join('');
     }
     s = out !== null && d.at() === s.length ? out : null;
   }
@@ -609,19 +628,28 @@ class Certainty {
   }
 }
 
-/** The next " escape's u in `text` from `from`, or -1. */
+/** Whether a u005c or u005C ends at `end` in `text`. */
+const endsBackslashEscape = (text, end) => end >= 5 && text.startsWith('u005', end - 5) && (text[end - 1] === 'c' || text[end - 1] === 'C');
+
+/** The next u0022 escape's u in `text` from `from`, after a backslash or a u005c (ANY_QUOTE), or -1. */
 const unicodeQuoteAt = (text, from) => {
-  for (let i = text.indexOf('u0022', from); i >= 0; i = text.indexOf('u0022', i + 1)) if (i > 0 && text[i - 1] === '\\') return i;
+  for (let i = text.indexOf('u0022', from); i >= 0; i = text.indexOf('u0022', i + 1)) {
+    if ((i > 0 && text[i - 1] === '\\') || endsBackslashEscape(text, i)) return i;
+  }
   return -1;
 };
 
-/** Where the quote whose " or u0022 is at `quote` starts: its whole run of backslashes, each also \. */
+/**
+ * Where the quote whose " or u0022 is at `quote` starts: its whole run of backslashes before it, each also spelled as a
+ * u005c escape, through a chain of them, from the first plain backslash of the run; `quote` when no backslash starts one.
+ */
 const quoteRunStartAt = (text, quote) => {
+  let start = quote;
   let i = quote;
   for (;;) {
-    if (i > 0 && text[i - 1] === '\\') i--;
-    else if (i >= 6 && text[i - 6] === '\\' && text.slice(i - 5, i).toLowerCase() === 'u005c') i -= 6;
-    else return i;
+    if (i > 0 && text[i - 1] === '\\') start = --i;
+    else if (endsBackslashEscape(text, i)) i -= 5;
+    else return start;
   }
 };
 
@@ -646,7 +674,7 @@ function unconsumedSecretNames(text, ctx) {
     else unicode = unicodeQuoteAt(text, quote + 1);
     if (name >= text.length || !/[A-Za-z_\\-]/.test(text[name])) continue;
     const open = quoteRunStartAt(text, quote);
-    if (open < skipTo) continue;
+    if ((open === quote && !isPlain) || open < skipTo) continue;
     SECRET_NAME_REST.lastIndex = name;
     const m = SECRET_NAME_REST.exec(text);
     if (m === null || !isSecretKey(decodedEscapedName(m[1]))) continue;
@@ -666,7 +694,9 @@ function unconsumedSecretNames(text, ctx) {
     const ends = certainty.maskEnds(open, close + m[2].length);
     if (ends === null) continue;
     const colon = name + m[0].length;
-    const mask = m[2] + MASK + m[2];
+    // Unquoted after a closing quote of no level, a chain decoded to a quote only past 16 levels, as Redactor masks it.
+    const closer = quoteLevelOf(m[2]) < 0 ? '' : m[2];
+    const mask = closer + MASK + closer;
     if (text.startsWith(mask, colon) && ends.includes(colon + mask.length)) {
       skipTo = colon + mask.length;
     } else {

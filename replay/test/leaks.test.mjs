@@ -1973,9 +1973,12 @@ test('flags a secret name whose quote is spelled through an escape chain of any 
   assert.equal(findTextLeaks('{"password\\u005cu0022:"s3cr3t"}').length > 0, true);
   const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => `log: ${t} next line`];
   const wrong = [];
-  for (const input of escapeChainInputs()) for (const wrap of wraps) {
-    const text = wrap(input);
-    if ((findTextLeaks(text).length > 0) === isValidWithoutSecretNames(text)) wrong.push(text);
+  for (const input of escapeChainInputs()) {
+    const kept = isValidWithoutSecretNames(input);
+    // Valid JSON is kept; in a log line it is text that is not JSON, where the fail-closed rule holds.
+    for (const text of wraps.map(wrap => wrap(input))) {
+      if ((findTextLeaks(text).length > 0) === (kept && isValidWithoutSecretNames(text))) wrong.push(text);
+    }
   }
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
 });
@@ -1992,6 +1995,21 @@ test('accepts every output of the Redactor for the escape-chain grid (#339, revi
   assert.equal(pairs.length, escapeChainInputs().length * 5);
   const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
+});
+
+test('reads secret names quoted through long escape chains in linear work (#339, review on a7a1eef)', () => {
+  // The inputs of RedactorTest.masksSecretNamesQuotedThroughLongEscapeChainsInLinearTime, unmasked: each is flagged,
+  // and the work stays a fixed multiple of the text's length. A name character is never itself a u005c escape, so a run
+  // of chains splits one way only (a run of 20 took seconds per quote when it could split 2^20 ways).
+  const B = '\\';
+  const texts = [`{"password${B}${'u005c'.repeat(200_000)}u0022:"s3cr3t"}`, `{"password${B}u005cu005cu0022:"s3cr3t",`.repeat(40_000),
+    `${`"${`${B}u005c`.repeat(20)}u0022`.repeat(8_000)}{"password${B}u005cu0022:"s3cr3t"}`,
+    nestBody(`{"pass${B}u005cu0077ord${B}u005cu0022:"s3cr3t",`.repeat(20_000))];
+  for (const text of texts) {
+    scanWork.characters = 0;
+    assert.ok(findTextLeaks(text).length > 0, text.slice(0, 60));
+    assert.ok(scanWork.characters <= 60 * text.length, `read ${scanWork.characters} characters of a ${text.length}-character text`);
+  }
 });
 
 test('reads the rest of a secret field\'s object once for all its secret fields, within the scan budget (#339, review on b00189e)', () => {

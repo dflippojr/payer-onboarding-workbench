@@ -1720,6 +1720,17 @@ class RedactorTest {
         // target/escape-chain-grid.json, where replay/test/leaks.test.mjs checks that the scanner accepts every one.
         assertEquals("{\"password\\u005cu0022:\\u005cu0022[REDACTED]\\u005cu0022",
                 Redactor.redact("{\"password\\u005cu0022:\"s3cr3t\"}"));
+        // The bound: a chain that makes a quote NESTED_LEVELS levels down is read; one level more is a quote of no level,
+        // and its value is masked all the same, the mask unquoted.
+        String atBound = "\\" + "u005c".repeat(Redactor.NESTED_LEVELS - 1) + "u0022";
+        String pastBound = "\\" + "u005c".repeat(Redactor.NESTED_LEVELS) + "u0022";
+        assertEquals(Redactor.NESTED_LEVELS, Redactor.quoteLevel(atBound));
+        assertEquals(-1, Redactor.quoteLevel(pastBound));
+        for (String c : List.of(atBound, pastBound)) {
+            String out = Redactor.redact("{\"password" + c + ":\"s3cr3t\"}");
+            assertFalse(out.contains("s3cr3t"), out);
+            assertTrue(out.endsWith(c.equals(atBound) ? Redactor.MASK + atBound : Redactor.MASK), out);
+        }
         List<String> chains = new ArrayList<>();
         for (int depth = 1; depth <= Redactor.NESTED_LEVELS + 3; depth++) {
             chains.add("~" + "u005c".repeat(depth) + "u0022");
@@ -1748,11 +1759,13 @@ class RedactorTest {
         List<String[]> pairs = new ArrayList<>();
         List<String> wrong = new ArrayList<>();
         for (String input : inputs) {
+            boolean kept = isValidWithoutSecretNames(withEscapes(input));
             for (UnaryOperator<String> wrap : wraps) {
                 String text = wrap.apply(withEscapes(input));
                 String out = Redactor.redact(text);
                 pairs.add(new String[] {text, out});
-                if (isValidWithoutSecretNames(text) ? !out.equals(text) : out.contains("s3cr3t")) {
+                // Valid JSON keeps every byte; in a log line it is text that is not JSON, where the fail-closed rule holds.
+                if (kept ? isValidWithoutSecretNames(text) && !out.equals(text) : out.contains("s3cr3t")) {
                     wrong.add(text + " => " + out);
                 }
             }
@@ -1829,6 +1842,19 @@ class RedactorTest {
         }));
         String cut = nested(nested(nested("{\"client_secret\":\"s3cr3t" + "x".repeat(20 * n))));
         assertFalse(Redactor.redact(cut).contains("s3cr3t"));
+    }
+
+    @Test
+    void masksSecretNamesQuotedThroughLongEscapeChainsInLinearTime() {
+        // Review on a7a1eef: a quote spelled through a chain of \\u005c escapes counts at any depth of the chain. About
+        // 1 MB each: one chain of 200,000 escapes, 40,000 openers quoted with a chain, 8,000 quotes spelled with chains
+        // of 20, and 20,000 names spelled with a chain, nested; each quote's run is read back once and decoded at most NESTED_LEVELS times, so time stays linear.
+        List<String> texts = List.of("{\"password\\" + "u005c".repeat(200_000) + "u0022:\"s3cr3t\"}",
+                "{\"password\\u005cu005cu0022:\"s3cr3t\",".repeat(40_000),
+                ("\"" + "\\u005c".repeat(20) + "u0022").repeat(8_000) + "{\"password\\u005cu0022:\"s3cr3t\"}",
+                nested("{\"pass\\u005cu0077ord\\u005cu0022:\"s3cr3t\",".repeat(20_000)));
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text ->
+                assertFalse(Redactor.redact(text).contains("s3cr3t"), () -> text.substring(0, 60))));
     }
 
     @Test

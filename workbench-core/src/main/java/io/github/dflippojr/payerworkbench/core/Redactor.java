@@ -398,6 +398,10 @@ public final class Redactor {
         List<Mask> masks = jwkMasks(text, discovery);
         List<Mask> pem = pemMasks(text);
         masks.addAll(pem);
+        // So are the secret names no strict reading reads (fail closed, owner decision on #339): the string a JWK read
+        // masks whole, as one holding JSON nested deeper than NESTED_LEVELS, may hold such a name but not its value, which
+        // the name's mask then still covers ({"password\u005c...u0022:"s3cr3t"}, review on a7a1eef).
+        masks.addAll(unconsumedSecretNameMasks(text));
         String out = applyMasks(text, masks);
         // A stray quote in a masked block may have hidden a JWK member from that read ({"kty":"RSA","note":
         // "-----BEGIN PRIVATE KEY-----"-----END PRIVATE KEY-----","d":...}): with the blocks masked, the JWKs are
@@ -985,19 +989,33 @@ public final class Redactor {
 
     /**
      * A quote as some escape level spells it: a run of backslashes, each also spelled {@code \\u005c} by the level
-     * above, then a quote or a {@code \\u0022} escape. {@link #quoteLevel} says which level it is a quote of, if any.
+     * above, then a quote or a {@code \\u0022} escape. A {@code u005c} or {@code u0022} counts after a backslash or
+     * after a {@code u005c} that does, so a chain of {@code \\u005c} escapes ({@code \\u005cu005cu0022}) is a quote
+     * at any depth (owner decision on #339, 2026-11-09; review on a7a1eef). {@link #quoteLevel} says which level it is
+     * a quote of, decoding the chain at most {@link #NESTED_LEVELS} times; a chain deeper than that is a quote of no
+     * level, which no strict reading reads, so a secret name quoted with it is masked.
      */
-    private static final String ANY_QUOTE = "(?:\\\\|(?<=\\\\)u005[cC])*+(?:\"|(?<=\\\\)u0022)";
+    private static final String ANY_QUOTE = "(?:\\\\|(?<=\\\\|u005[cC])u005[cC])*+(?:\"|(?<=\\\\|u005[cC])u0022)";
+
+    /** A backslash as any escape level spells it: a backslash, then more of them or {@code \\u005c} escapes of one. */
+    private static final String ANY_BACKSLASH = "\\\\(?:\\\\|u005[cC])*+";
+
+    /**
+     * A {@code \\u} escape whose backslash is spelled as {@link #ANY_BACKSLASH}, its four hex digits in group 1; not a
+     * {@code \\u005c} itself, which is a backslash, in no secret name, so a run of them splits into escapes one way only.
+     */
+    private static final Pattern ANY_UNICODE_ESCAPE = Pattern.compile(ANY_BACKSLASH + "u(?!005[cC])([0-9A-Fa-f]{4})");
 
     /**
      * From just after a name's opening quote: the name (group 1, a secret one if {@link #isSecretKey(String)} says so
      * of it decoded), its closing quote (group 2) spelled as {@link #ANY_QUOTE} however the opening one is, whitespace
-     * written plainly or escaped at any level, and the colon, which may be a {@code \\u003a} escape. With the opening
+     * written plainly or escaped at any level, and the colon, which may be a {@code \\u003a} escape. The backslash of
+     * each escape in the name or the colon may be spelled through a chain of {@code \\u005c} escapes too. With the opening
      * quote ({@link #maskUnconsumedSecretNames}), every place any reading of any level may find a secret field.
      */
     private static final Pattern ANY_SECRET_NAME = Pattern.compile(
-            "((?:[A-Za-z_-]|\\\\++u[0-9A-Fa-f]{4}){1,64}?)(" + ANY_QUOTE + ")"
-            + "(?:\\s|(?:\\\\|u005[cC])++(?:[nrt]|u00(?:20|09|0[aAdD])))*+(?::|(?:\\\\(?!u003[aA])|u005[cC])*+\\\\u003[aA])");
+            "((?:[A-Za-z_-]|" + ANY_BACKSLASH + "u(?!005[cC])[0-9A-Fa-f]{4}){1,64}?)(" + ANY_QUOTE + ")"
+            + "(?:\\s|(?:\\\\|u005[cC])++(?:[nrt]|u00(?:20|09|0[aAdD])))*+(?::|(?:\\\\|u005[cC])*+(?<=\\\\|u005[cC])u003[aA])");
 
     /** What a {@link Decoder} reads at the end of its level: the end of the text, or the quote closing the string. */
     private static final int END = -1;
@@ -1024,10 +1042,16 @@ public final class Redactor {
      * left to the other passes too. Any other one has its value masked from just after its colon to the end of the
      * outermost string that holds it, or, when no valid JSON around it says where that is, to the end of the text: an
      * end found by a nested or escaped reading is never used. The mask is quoted with the name's closing quote as the
-     * text spells it, so the masked field reads strictly at that level and this pass leaves it as it is. Candidates
+     * text spells it, so the masked field reads strictly at that level and this pass leaves it as it is; a closing quote of no
+     * level is left out, and the mask is unquoted. Candidates
      * inside a value masked or read whole are skipped, so each part of the text is read a bounded number of times.
      */
     private static String maskUnconsumedSecretNames(String text) {
+        return applyMasks(text, unconsumedSecretNameMasks(text));
+    }
+
+    /** What {@link #maskUnconsumedSecretNames} masks, as masks on the text. */
+    private static List<Mask> unconsumedSecretNameMasks(String text) {
         Matcher m = ANY_SECRET_NAME.matcher(text);
         Certainty certainty = null;
         ProvenObjects proven = new ProvenObjects();
@@ -1049,7 +1073,8 @@ public final class Redactor {
                 continue;
             }
             int open = quoteRunStart(text, quote);
-            if (open < skipTo || !m.region(name, text.length()).lookingAt() || !isSecretKey(decodeName(m.group(1)))) {
+            if ((open == quote && !isPlain) || open < skipTo || !m.region(name, text.length()).lookingAt()
+                    || !isSecretKey(decodedThroughChains(m.group(1)))) {
                 continue;
             }
             // A value the strict reading consumes is left to the other passes wherever the name is; only a name it does
@@ -1066,20 +1091,43 @@ public final class Redactor {
             if (end == NONE) {
                 continue;
             }
-            masks.add(new Mask(m.end(), end, m.group(2) + MASK + m.group(2)));
+            // A quote of no level (a chain decoded to one only past NESTED_LEVELS) is one no reading reads: the mask is
+            // left unquoted rather than quoted with what reads as JSON nested deeper than that.
+            String closer = quoteLevel(m.group(2)) < 0 ? "" : m.group(2);
+            masks.add(new Mask(m.end(), end, closer + MASK + closer));
             skipTo = end;
         }
-        return masks.isEmpty() ? text : applyMasks(text, masks);
+        return masks;
     }
 
-    /** The next {@code \\u0022} escape's {@code u} in {@code text} from {@code from}, or -1. */
+    /**
+     * The next {@code \\u0022} escape's {@code u} in {@code text} from {@code from}, after a backslash or a {@code u005c}
+     * ({@link #ANY_QUOTE}), or -1.
+     */
     private static int unicodeQuote(String text, int from) {
         for (int i = text.indexOf("u0022", from); i >= 0; i = text.indexOf("u0022", i + 1)) {
-            if (i > 0 && text.charAt(i - 1) == '\\') {
+            if ((i > 0 && text.charAt(i - 1) == '\\') || endsBackslashEscape(text, i)) {
                 return i;
             }
         }
         return -1;
+    }
+
+    /** Whether a {@code u005c} or {@code u005C} ends at {@code end} in {@code text}. */
+    private static boolean endsBackslashEscape(String text, int end) {
+        return end >= 5 && text.startsWith("u005", end - 5) && (text.charAt(end - 1) == 'c' || text.charAt(end - 1) == 'C');
+    }
+
+    /**
+     * {@code name} with each escape {@link #ANY_UNICODE_ESCAPE} matches decoded, however long the chain of backslashes
+     * spelling its backslash: {@code pass\\u005cu0077ord} is {@code password}.
+     */
+    private static String decodedThroughChains(String name) {
+        if (name.indexOf('\\') < 0) {
+            return name;
+        }
+        return ANY_UNICODE_ESCAPE.matcher(name).replaceAll(e ->
+                Matcher.quoteReplacement(String.valueOf((char) Integer.parseInt(e.group(1), 16))));
     }
 
     private static boolean isNameStart(char c) {
@@ -1088,17 +1136,19 @@ public final class Redactor {
 
     /**
      * Where the quote whose {@code "} or {@code u0022} is at {@code quote} in {@code text} starts: its whole run of
-     * backslashes before it, each also spelled {@code \\u005c}, as {@link #ANY_QUOTE} reads it.
+     * backslashes before it, each also spelled {@code \\u005c}, through a chain of them ({@link #ANY_QUOTE}), from the
+     * first plain backslash of the run; {@code quote} when no backslash starts one.
      */
     private static int quoteRunStart(String text, int quote) {
+        int start = quote;
         int i = quote;
         while (true) {
             if (i > 0 && text.charAt(i - 1) == '\\') {
-                i--;
-            } else if (i >= 6 && text.charAt(i - 6) == '\\' && text.regionMatches(true, i - 5, "u005c", 0, 5)) {
-                i -= 6;
+                start = --i;
+            } else if (endsBackslashEscape(text, i)) {
+                i -= 5;
             } else {
-                return i;
+                return start;
             }
         }
     }
