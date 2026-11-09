@@ -1947,6 +1947,53 @@ test('accepts every output of the Redactor for the Codex round 5 grid (#339)', (
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
 });
 
+/** The inputs of RedactorTest.masksASecretNameWhoseQuoteIsSpelledThroughAnEscapeChainOfAnyDepth..., in its order. */
+function escapeChainInputs() {
+  const B = '\\';
+  const chains = [];
+  for (let depth = 1; depth <= 16 + 3; depth++) chains.push(`${B}${'u005c'.repeat(depth)}u0022`);
+  chains.push(`${B}${B}u005cu0022`, `${B}u005c${B}u005cu0022`, `${B}u005c${B}"`, `${B}u005Cu0022`,
+    `${B}u005cu005C${B}${B}u0022`, `${B}${B}${B}u005cu005cu0022`);
+  const colons = [':', `${B}u005cu003a`, `${B}u005cu005cu003A`];
+  const names = ['password', `pass${B}u005cu0077ord`, `client${B}u005cu005cu005fsecret`];
+  const inputs = [`{"note":"password${B}u005cu0022: s3cr3t"}`, `{"x${B}u005cu0022":"password${B}u005cu0022:s3cr3t","n":1}`,
+    `{"a${B}u005cu005cu0022b":1,"note":"password${B}u005cu005cu0022:s3cr3t"}`];
+  for (const c of chains) for (const colon of colons) for (const name of names) {
+    inputs.push(`{"${name}${c}${colon}"s3cr3t"}`, `{${c}${name}"${colon}"s3cr3t"}`, `{${c}${name}${c}${colon}${c}s3cr3t${c}}`,
+      `{"${name}${c}${colon}"s3cr3t`, `{"${name}"${colon}${c}s3cr3t${c}}`, `{${c}${name}${c}${colon}"s3cr3t","n":1}`);
+  }
+  return inputs;
+}
+
+test('flags a secret name whose quote is spelled through an escape chain of any depth (#339, review on a7a1eef)', () => {
+  // Review on a7a1eef: {"password\u0022: then a plain-quoted value was accepted, because a quote counted only with a
+  // backslash right before its u0022. Owner decision (2026-11-09): a quote, a colon or a name character spelled through
+  // a chain of \ escapes counts at any depth, decoded at most 16 times; past that the name is read by no strict
+  // reading and still flags. Unmasked, every text is flagged, but valid JSON whose names are not secret ones.
+  assert.equal(findTextLeaks('{"password\\u005cu0022:"s3cr3t"}').length > 0, true);
+  const wraps = [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => `log: ${t} next line`];
+  const wrong = [];
+  for (const input of escapeChainInputs()) for (const wrap of wraps) {
+    const text = wrap(input);
+    if ((findTextLeaks(text).length > 0) === isValidWithoutSecretNames(text)) wrong.push(text);
+  }
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
+});
+
+test('accepts every output of the Redactor for the escape-chain grid (#339, review on a7a1eef)', () => {
+  // RedactorTest writes the outputs to workbench-core/target/escape-chain-grid.json; Maven verify runs before this suite.
+  const path = fileURLToPath(new URL('../../workbench-core/target/escape-chain-grid.json', import.meta.url));
+  let pairs;
+  try {
+    pairs = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new Error(`no ${path}: run ./mvnw -pl workbench-core test first`, { cause: e });
+  }
+  assert.equal(pairs.length, escapeChainInputs().length * 5);
+  const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
+  assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
+});
+
 test('reads the rest of a secret field\'s object once for all its secret fields, within the scan budget (#339, review on b00189e)', () => {
   // Automated review on b00189e: each secret field's strict reading read the rest of its object again, unbudgeted, so an
   // object of n masked secret fields cost n squared. Its work now counts against the budget and stays linear.

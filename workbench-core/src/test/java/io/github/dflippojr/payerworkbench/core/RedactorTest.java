@@ -1709,6 +1709,61 @@ class RedactorTest {
                 + wrong.subList(0, Math.min(5, wrong.size())));
     }
 
+    @Test
+    void masksASecretNameWhoseQuoteIsSpelledThroughAnEscapeChainOfAnyDepthAndWritesTheOutputsForTheScanner()
+            throws Exception {
+        // Review on a7a1eef: {"password\\u005cu0022: then a plain-quoted value was kept whole, because a quote counted only
+        // with a backslash right before its u0022, and \\u005c then u0022 is a quote two levels down. Owner decision
+        // (2026-11-09): a quote, a colon or a name character spelled through a chain of \\u005c escapes counts at any
+        // depth of the chain. The chain is decoded at most NESTED_LEVELS times: a quote it makes only deeper than that is
+        // a quote of no level the strict reading reads, so the value is masked, never kept. The outputs go to
+        // target/escape-chain-grid.json, where replay/test/leaks.test.mjs checks that the scanner accepts every one.
+        assertEquals("{\"password\\u005cu0022:\\u005cu0022[REDACTED]\\u005cu0022",
+                Redactor.redact("{\"password\\u005cu0022:\"s3cr3t\"}"));
+        List<String> chains = new ArrayList<>();
+        for (int depth = 1; depth <= Redactor.NESTED_LEVELS + 3; depth++) {
+            chains.add("~" + "u005c".repeat(depth) + "u0022");
+        }
+        chains.addAll(List.of("~~u005cu0022", "~u005c~u005cu0022", "~u005c~\"", "~u005Cu0022", "~u005cu005C~~u0022",
+                "~~~u005cu005cu0022"));
+        List<String> colons = List.of(":", "~u005cu003a", "~u005cu005cu003A");
+        List<String> names = List.of("password", "pass~u005cu0077ord", "client~u005cu005cu005fsecret");
+        List<UnaryOperator<String>> wraps = List.of(t -> t, RedactorTest::nested, t -> nested(nested(t)),
+                RedactorTest::nestedEscapingQuotes, t -> "log: " + t + " next line");
+        List<String> inputs = new ArrayList<>(List.of("{\"note\":\"password~u005cu0022: s3cr3t\"}",
+                "{\"x~u005cu0022\":\"password~u005cu0022:s3cr3t\",\"n\":1}",
+                "{\"a~u005cu005cu0022b\":1,\"note\":\"password~u005cu005cu0022:s3cr3t\"}"));
+        for (String c : chains) {
+            for (String colon : colons) {
+                for (String name : names) {
+                    inputs.add("{\"" + name + c + colon + "\"s3cr3t\"}");
+                    inputs.add("{" + c + name + "\"" + colon + "\"s3cr3t\"}");
+                    inputs.add("{" + c + name + c + colon + c + "s3cr3t" + c + "}");
+                    inputs.add("{\"" + name + c + colon + "\"s3cr3t");
+                    inputs.add("{\"" + name + "\"" + colon + c + "s3cr3t" + c + "}");
+                    inputs.add("{" + c + name + c + colon + "\"s3cr3t\",\"n\":1}");
+                }
+            }
+        }
+        List<String[]> pairs = new ArrayList<>();
+        List<String> wrong = new ArrayList<>();
+        for (String input : inputs) {
+            for (UnaryOperator<String> wrap : wraps) {
+                String text = wrap.apply(withEscapes(input));
+                String out = Redactor.redact(text);
+                pairs.add(new String[] {text, out});
+                if (isValidWithoutSecretNames(text) ? !out.equals(text) : out.contains("s3cr3t")) {
+                    wrong.add(text + " => " + out);
+                }
+            }
+        }
+        java.nio.file.Path grid = java.nio.file.Path.of("target", "escape-chain-grid.json");
+        java.nio.file.Files.createDirectories(grid.getParent());
+        java.nio.file.Files.writeString(grid, JSON.writeValueAsString(pairs));
+        assertEquals(List.of(), wrong, () -> wrong.size() + " of " + pairs.size() + " texts are wrong, first: "
+                + wrong.subList(0, Math.min(5, wrong.size())));
+    }
+
     /** Whether {@code text} is valid JSON with no member a secret name names, at any depth. */
     private static boolean isValidWithoutSecretNames(String text) {
         JsonNode tree;
