@@ -306,7 +306,7 @@ const ANY_QUOTE = String.raw`(?:\\|(?<=\\)u005[cC])*(?:"|(?<=\\)u0022)`;
  * escaped at any level, and the colon, which may be a : escape (Redactor's ANY_SECRET_NAME).
  */
 const SECRET_NAME_REST = new RegExp(String.raw`((?:[A-Za-z_-]|\\+u[0-9A-Fa-f]{4}){1,64}?)(${ANY_QUOTE})`
-  + String.raw`(?:\s|(?:\\|u005[cC])+(?:[nrt]|u00(?:20|09|0[aAdD])))*(?::|(?:\\|u005[cC])*?\\u003[aA])`, 'y');
+  + String.raw`(?:\s|(?:\\|u005[cC])+(?:[nrt]|u00(?:20|09|0[aAdD])))*(?::|(?:\\(?!u003[aA])|u005[cC])*\\u003[aA])`, 'y');
 
 /** A name with each \u escape decoded, however many backslashes come before it, as Redactor's decodeName reads it. */
 const decodedEscapedName = name => name.replace(/\\+u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));

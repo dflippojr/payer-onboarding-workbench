@@ -1,6 +1,7 @@
 // Runs the shared redaction corpus (workbench-core/src/test/resources/redaction-corpus.json,
 // also run through Redactor by RedactorCorpusTest) against the leak scanner.
-// Needs no bundle: node --test replay/test/leaks.test.mjs
+// Needs no bundle, only the Redactor grid outputs RedactorTest writes (./mvnw -pl workbench-core test first):
+// node --test replay/test/leaks.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -1931,17 +1932,15 @@ test('flags every secret name whose value the strict reading of its level does n
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
 });
 
-test('accepts every output of the Redactor for the Codex round 5 grid (#339)', t => {
+test('accepts every output of the Redactor for the Codex round 5 grid (#339)', () => {
   // RedactorTest writes the grid's outputs to workbench-core/target/fail-closed-grid.json, and ci.yml and npm run ci:local
-  // run Maven verify before this suite. Run alone, without that file, the check is skipped, never in CI.
+  // run Maven verify before this suite. Run alone, this suite needs ./mvnw -pl workbench-core test first.
   const path = fileURLToPath(new URL('../../workbench-core/target/fail-closed-grid.json', import.meta.url));
   let pairs;
   try {
     pairs = JSON.parse(readFileSync(path, 'utf8'));
   } catch (e) {
-    if (process.env.CI) throw e;
-    t.skip(`no ${path}: run ./mvnw -pl workbench-core test first`);
-    return;
+    throw new Error(`no ${path}: run ./mvnw -pl workbench-core test first`, { cause: e });
   }
   assert.ok(pairs.length > 20_000, `${pairs.length} pairs`);
   const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);

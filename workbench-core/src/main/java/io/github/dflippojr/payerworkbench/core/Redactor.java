@@ -997,7 +997,7 @@ public final class Redactor {
      */
     private static final Pattern ANY_SECRET_NAME = Pattern.compile(
             "((?:[A-Za-z_-]|\\\\++u[0-9A-Fa-f]{4}){1,64}?)(" + ANY_QUOTE + ")"
-            + "(?:\\s|(?:\\\\|u005[cC])++(?:[nrt]|u00(?:20|09|0[aAdD])))*+(?::|(?:\\\\|u005[cC])*?\\\\u003[aA])");
+            + "(?:\\s|(?:\\\\|u005[cC])++(?:[nrt]|u00(?:20|09|0[aAdD])))*+(?::|(?:\\\\(?!u003[aA])|u005[cC])*+\\\\u003[aA])");
 
     /** What a {@link Decoder} reads at the end of its level: the end of the text, or the quote closing the string. */
     private static final int END = -1;
