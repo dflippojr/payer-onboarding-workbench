@@ -1020,7 +1020,7 @@ public final class Redactor {
      * Either way it is left to the other passes, and valid JSON keeps every byte. Anywhere else, in text that is not
      * valid JSON or inside a string whose content is not, a candidate is read strictly at its level: both quotes must
      * be quotes of that level ({@link #quoteLevel}), the name a whole string there, then a colon, a whole JSON value
-     * and a comma, a close bracket or the end of the level ({@link #consumedValueEnd}). A candidate that reads so is
+     * and the rest of its object, valid up to its close bracket or the end of the text ({@link #consumedValueEnd}). A candidate that reads so is
      * left to the other passes too. Any other one has its value masked from just after its colon to the end of the
      * outermost string that holds it, or, when no valid JSON around it says where that is, to the end of the text: an
      * end found by a nested or escaped reading is never used. The mask is quoted with the name's closing quote as the
@@ -1143,11 +1143,18 @@ public final class Redactor {
         private int pos;
         private int peeked = NONE;
         private int peekedAt;
+        /** Whether the end of the level has been read. */
+        private boolean ended;
 
         Decoder(String text, int from, int level) {
             this.text = text;
             this.outer = level == 0 ? null : new Decoder(text, from, level - 1);
             this.pos = from;
+        }
+
+        /** Whether the level ended at the end of the text, not at a quote of the level above. */
+        boolean atTextEnd() {
+            return ended && at() >= text.length();
         }
 
         /** Where the next character starts in the text: the end of everything read so far. */
@@ -1162,6 +1169,7 @@ public final class Redactor {
             if (peeked == NONE) {
                 peekedAt = at();
                 peeked = read();
+                ended |= peeked == END;
             }
             return peeked;
         }
@@ -1372,7 +1380,7 @@ public final class Redactor {
     /**
      * Where the value of the name in {@code text} ends when the strict reading of the name's level consumes it, or -1;
      * its opening quote runs from {@code open} to {@code name}, and its closing one from {@code close} to {@code end}: both quotes are quotes of one level, the name is a whole string there that
-     * ends at {@code end}, and a colon, a whole JSON value and a comma, a close bracket or the end of the level follow.
+     * ends at {@code end}, and a colon, a whole JSON value and the rest of its object ({@link #readRestOfObject}) follow.
      */
     private static int consumedValueEnd(String text, int open, int name, int close, int end) {
         int level = quoteLevel(text.substring(open, name));
@@ -1388,9 +1396,26 @@ public final class Redactor {
             return -1;
         }
         int valueEnd = d.at();
-        skipSpace(d);
-        int after = d.peek();
-        return after == ',' || after == '}' || after == ']' || after == END ? valueEnd : -1;
+        return readRestOfObject(d) ? valueEnd : -1;
+    }
+
+    /**
+     * Reads the rest of the object a member's value was read in, after that value: whether it is valid JSON up to the
+     * object's close bracket, or up to the end of the text, as in a body cut at the size limit. Anything else after the
+     * value ({@code "",CR3T"}) is a reading that leaves part of the value unread, and so is a quote of the level above
+     * before the close bracket: it ends the level only where the strings above are certain, which no local reading knows.
+     */
+    private static boolean readRestOfObject(Decoder d) {
+        while (true) {
+            skipSpace(d);
+            int c = d.next();
+            if (c == '}' || c == END) {
+                return c == '}' || d.atTextEnd();
+            }
+            if (c != ',' || !readMemberName(d, null) || !readValue(d, null)) {
+                return d.ended && d.atTextEnd();
+            }
+        }
     }
 
     /**

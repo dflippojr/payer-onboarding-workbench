@@ -411,13 +411,14 @@ test('treats kty as a JWK member only in a JSON object, not in loose text or an 
 });
 test('flags member syntax inside a secret-named array (#262)', () => {
   // The automated review on 79ce506: in ["x":"LEAKED"] no list item is read ("x" is a name), so the empty list passed
-  // as masked. Redactor masks the array whole; each masked form is its output for the leaked one, also embedded.
+  // as masked. Redactor masks the array whole; each masked form is its output for the leaked one, also embedded. Since
+  // Codex round 5 on 8e6f207 a secret name's array no strict reading reads is masked to the end of the outermost string.
   const cases = [
-    ['{"client_secret":["x":"LEAKED"]}', '{"client_secret":"[REDACTED]"}'],
-    ['{"password":["a","x":"LEAKED"]}', '{"password":"[REDACTED]"}'],
+    ['{"client_secret":["x":"LEAKED"]}', '{"client_secret":"[REDACTED]"'],
+    ['{"password":["a","x":"LEAKED"]}', '{"password":"[REDACTED]"'],
     ['{"kty":"oct","k":["x":"LEAKED"]}', '{"kty":"oct","k":"[REDACTED]"}'],
   ];
-  for (const [leaked, masked] of [...cases, ...cases.map(([l, m]) => [JSON.stringify({ body: l }), JSON.stringify({ body: m })])]) {
+  for (const [leaked, masked] of [...cases, ...cases.map(([l, m]) => [JSON.stringify({ body: l }), redactedWrap(nestBody, m)])]) {
     assertFlagged(leaked);
     assertAccepted(masked);
   }
@@ -1617,9 +1618,9 @@ test('flags a secret object whose \\u0022-quoted strings hold an escaped quote, 
   // RedactorTest.masksASecretObjectWholeThroughAQuoteEscapedInsideItsUnicodeQuotedStrings's exact expected outputs.
   const u = s => s.replaceAll('Q', '\\u0022');
   const pairs = [
-    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:42}}', '{Qprivate_keyQ:Q[REDACTED]Q}'],
-    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:"PRIVOTHER"},"n":1}', '{Qprivate_keyQ:Q[REDACTED]Q,"n":1}'],
-    ['{QsecretQ:[Q\\"]Q,QPRIVOTHERQ]}', '{QsecretQ:Q[REDACTED]Q}'],
+    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:42}}', '{Qprivate_keyQ:Q[REDACTED]Q'],
+    ['{Qprivate_keyQ:{QnoteQ:Q\\"}Q,QotherQ:"PRIVOTHER"},"n":1}', '{Qprivate_keyQ:Q[REDACTED]Q'],
+    ['{QsecretQ:[Q\\"]Q,QPRIVOTHERQ]}', '{QsecretQ:Q[REDACTED]Q'],
   ];
   for (const [unmasked, masked] of pairs) {
     for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {
@@ -1669,7 +1670,7 @@ test('accepts a secret object masked to its end through a \\u0022 in a plain-quo
   for (const [unmasked, masked] of [
     ['{"private_key":{"note":"aQ{","other":42},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
     ['{"private_key":["aQ[",1],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
-    ['{QpasswordQ:{"note":"aQ}","other":"PRIVOTHER"},"n":1}', '{QpasswordQ:Q[REDACTED]Q,"n":1}'],
+    ['{QpasswordQ:{"note":"aQ}","other":"PRIVOTHER"},"n":1}', '{QpasswordQ:Q[REDACTED]Q'],
   ]) {
     for (const wrap of wraps) {
       assert.ok(findTextLeaks(wrap(u(unmasked))).length > 0, `not flagged: ${wrap(u(unmasked))}`);
@@ -1685,10 +1686,10 @@ test('flags a secret object with mixed-quoted member names or strings, and accep
   // RedactorTest.boundsASecretObjectByTheReadingWhoseBracketsClose's exact expected outputs.
   const u = s => s.replaceAll('Q', '\\u0022');
   for (const [unmasked, masked] of [
-    ['{"private_key":{"passwordQ:"}TAIL"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":{"passwordQ:"}TAIL"},"n":1}', '{"private_key":"[REDACTED]"'],
     ['{QprivateKeyQ:{"note":QxQ},"n":1}', '{QprivateKeyQ:Q[REDACTED]Q'],
     ['{"private_key":{"note":"aQ"},"n":"bQ}"}', '{"private_key":"[REDACTED]","n":"bQ}"}'],
-    ['{"private_key":[QaQ,"}TAIL"],"n":1}', '{"private_key":"[REDACTED]","n":1}'],
+    ['{"private_key":[QaQ,"}TAIL"],"n":1}', '{"private_key":"[REDACTED]"'],
     ['{"private_key":{"passQword":"x"},"n":1}', '{"private_key":"[REDACTED]","n":1}'],
   ]) {
     for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))]) {

@@ -327,6 +327,7 @@ class Decoder {
     this.pos = from;
     this.peeked = null;
     this.peekedAt = 0;
+    this.ended = false;
   }
 
   at() {
@@ -338,6 +339,7 @@ class Decoder {
     if (this.peeked === null) {
       this.peekedAt = this.at();
       this.peeked = this.read();
+      if (this.peeked === END) this.ended = true;
     }
     return this.peeked;
   }
@@ -492,9 +494,9 @@ function quoteLevelOf(spelling) {
 
 /**
  * The value of a name when the strict reading of the name's level consumes it, or null: both quotes are quotes of one
- * level, the name a whole string there, then a colon, a whole value and a comma, a close bracket or the end of the level
- * (Redactor's consumedValueEnd). Gives where the value ends, and whether it is what Redactor leaves for a secret
- * field: the mask (isMaskedValue) or null.
+ * level, the name a whole string there, then a colon, a whole value and the rest of its object (Redactor's
+ * consumedValueEnd). Gives where the value ends, and whether it is the mask Redactor leaves for a secret field
+ * (isMaskedItem: an empty value or null is left to the other readings, as before).
  */
 function strictValue(text, open, name, close, end, secretName) {
   const level = quoteLevelOf(text.slice(open, name));
@@ -508,20 +510,30 @@ function strictValue(text, open, name, close, end, secretName) {
   const strings = [];
   if (!readStrictValue(d, strings)) return null;
   const valueEnd = d.at();
-  skipJsonSpace(d);
-  const after = d.peek();
-  if (after !== 44 && after !== 125 && after !== 93 && after !== END) return null;
+  if (!readRestOfObject(d)) return null;
   let masked = false;
   if (first === 34 && strings.length === 1) {
     // The string's content, read as the content of a string of this level: it ends at the string's closing quote.
     const content = new Decoder(text, strings[0][1], level + 1);
     let value = '';
     for (let c = content.next(); c >= 0; c = content.next()) value += String.fromCharCode(c);
-    masked = isMaskedValue(secretName, value);
-  } else if (first === 110) {
-    masked = true;
+    masked = isMaskedItem(secretName, value);
   }
   return { end: valueEnd, masked };
+}
+
+/**
+ * Reads the rest of the object a member's value was read in: whether it is valid JSON up to the object's close bracket,
+ * or up to the end of the text, as in a cut body (Redactor's readRestOfObject).
+ */
+function readRestOfObject(d) {
+  const atTextEnd = () => d.ended && d.at() >= d.text.length;
+  for (;;) {
+    skipJsonSpace(d);
+    const c = d.next();
+    if (c === 125 || c === END) return c === 125 || atTextEnd();
+    if (c !== 44 || !readStrictName(d, null) || !readStrictValue(d, null)) return atTextEnd();
+  }
 }
 
 /**
@@ -542,17 +554,22 @@ class Certainty {
     this.certainEnd = valid ? d.at() : 0;
   }
 
-  /** For a candidate from `open` to `end` the strict reading does not read: where its mask ends, or -1. */
-  maskEnd(open, end) {
-    if (this.top === null || open >= this.certainEnd) return this.text.length;
+  /**
+   * For a candidate from `open` to `end` the strict reading does not read: where its mask may end, or null when Redactor
+   * leaves it alone. Redactor ends it at the end of the outermost string holding it, or of the text; a report or bundle
+   * that quotes Redactor's output in a string of its own holds that string one level down, so the end of any string
+   * holding the candidate at a level that is certain is accepted: nothing past it can be the value's.
+   */
+  maskEnds(open, end) {
+    if (this.top === null || open >= this.certainEnd) return [this.text.length];
     let strings = this.top;
-    let outermost = null;
+    const ends = [];
     for (let level = 1; ; level++) {
       const holder = Certainty.holding(strings, open, end);
-      if (holder === null) return -1;
-      if (outermost === null) outermost = holder;
+      if (holder === null) return null;
+      ends.push(holder[2]);
       strings = level >= MAX_LEVELS ? null : this.stringsInside(holder, level);
-      if (strings === null) return outermost[2];
+      if (strings === null) return ends;
     }
   }
 
@@ -605,7 +622,8 @@ const quoteRunStartAt = (text, quote) => {
  * Redactor's fail-closed rule (#339, Codex round 5): a secret name, with its quotes spelled any way at any level, whose
  * value no strict reading of its own level consumes is masked from just after its colon to the end of the outermost
  * string holding it, or to the end of the text when no valid JSON around it says where that is, quoted with the name's
- * closing quote. The scanner uses the same trigger: such a name flags unless exactly that mask follows its colon.
+ * closing quote. The scanner uses the same trigger: such a name flags unless exactly that mask follows its colon, up to
+ * the end of a string holding it at a certain level (maskEnds) or of the text.
  */
 function unconsumedSecretNames(text, ctx) {
   let certainty = null;
@@ -628,7 +646,7 @@ function unconsumedSecretNames(text, ctx) {
     const value = strictValue(text, open, name, close, close + m[2].length, decodedEscapedName(m[1]));
     ctx.work += Math.max(value?.end ?? 0, close + m[2].length) - open;
     if (value !== null) {
-      // A value the strict reading of the name's level consumes and finds masked (the mask, or null) is judged there:
+      // A value the strict reading of the name's level consumes and finds masked is judged there:
       // the looser readings, which may read the name's quotes at two levels, leave that name alone.
       // Any other value is left to them, as before.
       if (value.masked) ctx.strictNames.add(name);
@@ -636,13 +654,16 @@ function unconsumedSecretNames(text, ctx) {
       continue;
     }
     certainty ??= new Certainty(text, ctx);
-    const end = certainty.maskEnd(open, close + m[2].length);
-    if (end < 0) continue;
+    const ends = certainty.maskEnds(open, close + m[2].length);
+    if (ends === null) continue;
     const colon = name + m[0].length;
-    if (text.slice(colon, end) !== m[2] + MASK + m[2]) {
+    const mask = m[2] + MASK + m[2];
+    if (text.startsWith(mask, colon) && ends.includes(colon + mask.length)) {
+      skipTo = colon + mask.length;
+    } else {
       ctx.leaks.push({ check: 'secret field no strict reading reads', match: text.slice(open, open + 80) });
+      skipTo = ends[0];
     }
-    skipTo = end;
   }
 }
 
