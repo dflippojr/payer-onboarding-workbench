@@ -498,7 +498,7 @@ function quoteLevelOf(spelling) {
  * consumedValueEnd). Gives where the value ends, and whether it is the mask Redactor leaves for a secret field
  * (isMaskedItem: an empty value or null is left to the other readings, as before).
  */
-function strictValue(text, open, name, close, end, secretName, read = { end: 0 }) {
+function strictValue(text, open, name, close, end, secretName, read = { end: 0 }, proven = new Map()) {
   const level = quoteLevelOf(text.slice(open, name));
   if (level < 0 || level !== quoteLevelOf(text.slice(close, end))) return null;
   const d = new Decoder(text, open, level);
@@ -510,9 +510,14 @@ function strictValue(text, open, name, close, end, secretName, read = { end: 0 }
   const strings = [];
   if (!readStrictValue(d, strings)) return null;
   const valueEnd = d.at();
-  const rest = readRestOfObject(d);
-  read.end = Math.max(read.end, d.at());
-  if (!rest) return null;
+  // Redactor's ProvenObjects: a span of this level already read as the valid rest of an object is not read again.
+  const span = proven.get(level);
+  if (!(span && span[0] <= valueEnd && valueEnd <= span[1])) {
+    const rest = readRestOfObject(d);
+    read.end = Math.max(read.end, d.at());
+    if (!rest) return null;
+    proven.set(level, [valueEnd, d.at()]);
+  }
   let masked = false;
   if (first === 34 && strings.length === 1) {
     // The string's content, read as the content of a string of this level: it ends at the string's closing quote.
@@ -629,6 +634,7 @@ const quoteRunStartAt = (text, quote) => {
  */
 function unconsumedSecretNames(text, ctx) {
   let certainty = null;
+  const proven = new Map();
   let skipTo = 0;
   let plain = text.indexOf('"');
   let unicode = unicodeQuoteAt(text, 0);
@@ -646,7 +652,7 @@ function unconsumedSecretNames(text, ctx) {
     if (m === null || !isSecretKey(decodedEscapedName(m[1]))) continue;
     const close = name + m[1].length;
     const read = { end: close + m[2].length };
-    const value = strictValue(text, open, name, close, close + m[2].length, decodedEscapedName(m[1]), read);
+    const value = strictValue(text, open, name, close, close + m[2].length, decodedEscapedName(m[1]), read, proven);
     ctx.work += Math.max(read.end, value?.end ?? 0) - open;
     if (value !== null) {
       // A value the strict reading of the name's level consumes and finds masked is judged there:

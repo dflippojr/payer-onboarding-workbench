@@ -1030,6 +1030,7 @@ public final class Redactor {
     private static String maskUnconsumedSecretNames(String text) {
         Matcher m = ANY_SECRET_NAME.matcher(text);
         Certainty certainty = null;
+        ProvenObjects proven = new ProvenObjects();
         List<Mask> masks = new ArrayList<>();
         int skipTo = 0;
         // Each quote and each \\u0022 may close a name's opening quote; the pattern is tried only where a name can start.
@@ -1053,7 +1054,7 @@ public final class Redactor {
             }
             // A value the strict reading consumes is left to the other passes wherever the name is; only a name it does
             // not read needs to know where the text's strings are certain.
-            int consumed = consumedValueEnd(text, open, name, m.start(2), m.end(2));
+            int consumed = consumedValueEnd(text, open, name, m.start(2), m.end(2), proven);
             if (consumed >= 0) {
                 skipTo = Math.max(skipTo, consumed);
                 continue;
@@ -1382,7 +1383,7 @@ public final class Redactor {
      * its opening quote runs from {@code open} to {@code name}, and its closing one from {@code close} to {@code end}: both quotes are quotes of one level, the name is a whole string there that
      * ends at {@code end}, and a colon, a whole JSON value and the rest of its object ({@link #readRestOfObject}) follow.
      */
-    private static int consumedValueEnd(String text, int open, int name, int close, int end) {
+    private static int consumedValueEnd(String text, int open, int name, int close, int end, ProvenObjects proven) {
         int level = quoteLevel(text.substring(open, name));
         if (level < 0 || level != quoteLevel(text.substring(close, end))) {
             return -1;
@@ -1396,7 +1397,36 @@ public final class Redactor {
             return -1;
         }
         int valueEnd = d.at();
-        return readRestOfObject(d) ? valueEnd : -1;
+        if (proven.covers(level, valueEnd)) {
+            return valueEnd;
+        }
+        if (!readRestOfObject(d)) {
+            return -1;
+        }
+        proven.add(level, valueEnd, d.at());
+        return valueEnd;
+    }
+
+    /**
+     * Where, at each level, the rest of an object read after a secret field's value was found valid ({@link
+     * #readRestOfObject}): from that value's end to the object's close bracket or the end of the text. A later secret
+     * field of that level whose value ends in that span is in the same object, or in an object valid inside it, so the
+     * rest of its object is valid too and is not read again (automated review on b00189e: reading it for each field made
+     * an object of n secret fields cost n squared). The candidates come in order, so the last span per level is enough.
+     */
+    private static final class ProvenObjects {
+
+        private final int[] from = new int[NESTED_LEVELS + 1];
+        private final int[] to = new int[NESTED_LEVELS + 1];
+
+        boolean covers(int level, int valueEnd) {
+            return from[level] < to[level] && from[level] <= valueEnd && valueEnd <= to[level];
+        }
+
+        void add(int level, int valueEnd, int end) {
+            from[level] = valueEnd;
+            to[level] = end;
+        }
     }
 
     /**
