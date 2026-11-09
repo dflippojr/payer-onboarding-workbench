@@ -240,29 +240,18 @@ public final class Redactor {
     private static final Pattern VIEW_JSON_FIELD_STRUCTURE = Pattern.compile(
             "\"(" + NAME_CHAR + "{1,64})\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + "(?=[{\\[])");
 
-    /**
-     * A member name in a view whose quotes may each be plain or escaped once ({@code \"}), and its colon; group 1 is
-     * the name. {@link #secretFieldMasks} reads it where an escaped one is a quote the view decodes from {@code \\u0022}.
-     */
-    private static final String MIXED_NAME = BACKSLASH + "?+\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "?+\"";
-
-    /** {@link #MIXED_NAME} through its colon. */
-    private static final Pattern MIXED_FIELD_NAME = Pattern.compile(MIXED_NAME + EMBEDDED_SPACE + ":");
-
     /** The same inside JSON embedded in a JSON string, as {@link #EMBEDDED_JSON_FIELD} starts; it starts at the backslash. */
     private static final Pattern EMBEDDED_FIELD_NAME = Pattern.compile(
             BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
     /**
      * For each reading of {@link #secretFieldMasks} ({@code PLAIN_READING}, {@code EMBEDDED_READING},
-     * {@code MIXED_READING}, {@code FLAT_READING}): the pattern that finds a name, the one for a name before an object
-     * or array, and the one for a name and its string or scalar value. The mixed reading reads no value with a pattern:
-     * a name quoted two ways has no value whose end it can trust.
+     * {@code FLAT_READING}): the pattern that finds a name, the one for a name before an object or array, and the one for
+     * a name and its string or scalar value.
      */
     private static final Reading[] READINGS = {
         new Reading(FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD),
         new Reading(EMBEDDED_FIELD_NAME, EMBEDDED_JSON_FIELD_STRUCTURE, EMBEDDED_JSON_FIELD),
-        new Reading(MIXED_FIELD_NAME, null, null),
         new Reading(FIELD_NAME, VIEW_JSON_FIELD_STRUCTURE, VIEW_JSON_FIELD),
     };
 
@@ -422,6 +411,9 @@ public final class Redactor {
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         // Before the patterns read the text itself, so a secret object those would cut at a bracket inside a string quoted
         // with \\u0022 is read whole in the flattened view first (review on 9de277d); they then find its mask and keep it.
+        // Fail closed (owner decision on #339): every secret name no strict reading of its level reads is masked from its
+        // colon first, on the text as it came, and again at the end, after the passes below.
+        out = maskUnconsumedSecretNames(out);
         out = maskNestedSecretFields(out);
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true);
@@ -434,7 +426,7 @@ public final class Redactor {
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
-        return out;
+        return maskUnconsumedSecretNames(out);
     }
 
     /**
@@ -992,17 +984,509 @@ public final class Redactor {
     }
 
     /**
+     * A quote as some escape level spells it: a run of backslashes, each also spelled {@code \\u005c} by the level
+     * above, then a quote or a {@code \\u0022} escape. {@link #quoteLevel} says which level it is a quote of, if any.
+     */
+    private static final String ANY_QUOTE = "(?:\\\\|(?<=\\\\)u005[cC])*+(?:\"|(?<=\\\\)u0022)";
+
+    /**
+     * From just after a name's opening quote: the name (group 1, a secret one if {@link #isSecretKey(String)} says so
+     * of it decoded), its closing quote (group 2) spelled as {@link #ANY_QUOTE} however the opening one is, whitespace
+     * written plainly or escaped at any level, and the colon, which may be a {@code \\u003a} escape. With the opening
+     * quote ({@link #maskUnconsumedSecretNames}), every place any reading of any level may find a secret field.
+     */
+    private static final Pattern ANY_SECRET_NAME = Pattern.compile(
+            "((?:[A-Za-z_-]|\\\\++u[0-9A-Fa-f]{4}){1,64}?)(" + ANY_QUOTE + ")"
+            + "(?:\\s|(?:\\\\|u005[cC])++(?:[nrt]|u00(?:20|09|0[aAdD])))*+(?::|(?:\\\\|u005[cC])*?\\\\u003[aA])");
+
+    /** What a {@link Decoder} reads at the end of its level: the end of the text, or the quote closing the string. */
+    private static final int END = -1;
+
+    /** What a {@link Decoder} reads where its level is not JSON string content: a bad escape or a raw control character. */
+    private static final int BAD = -2;
+
+    /** No character read ahead. */
+    private static final int NONE = Integer.MIN_VALUE;
+
+    /**
+     * Masks every secret name's value that no strict reading of the name's own level consumes (owner decision on #339,
+     * fail closed; Codex round 5 on 8e6f207: a trigger per spelling missed the next spelling). It does not depend on
+     * how any other reading reads the text, and it replaces the triggers each review round added for one shape.
+     *
+     * <p>Every {@link #ANY_SECRET_NAME} match is a candidate, whatever its quotes' levels. Where the text starts with a
+     * valid JSON value its strings are certain (text after it, as a note after a cut body, is not), and so are those inside a string whose content is valid JSON in its turn, level by
+     * level. A candidate at a certain level is the member name it reads as, a whole string there with a value valid
+     * JSON gives it, or it crosses a string's quote there and is no name at all ({@code {"x\\u0022password":1}}).
+     * Either way it is left to the other passes, and valid JSON keeps every byte. Anywhere else, in text that is not
+     * valid JSON or inside a string whose content is not, a candidate is read strictly at its level: both quotes must
+     * be quotes of that level ({@link #quoteLevel}), the name a whole string there, then a colon, a whole JSON value
+     * and a comma, a close bracket or the end of the level ({@link #consumedValueEnd}). A candidate that reads so is
+     * left to the other passes too. Any other one has its value masked from just after its colon to the end of the
+     * outermost string that holds it, or, when no valid JSON around it says where that is, to the end of the text: an
+     * end found by a nested or escaped reading is never used. The mask is quoted with the name's closing quote as the
+     * text spells it, so the masked field reads strictly at that level and this pass leaves it as it is. Candidates
+     * inside a value masked or read whole are skipped, so each part of the text is read a bounded number of times.
+     */
+    private static String maskUnconsumedSecretNames(String text) {
+        Matcher m = ANY_SECRET_NAME.matcher(text);
+        Certainty certainty = null;
+        List<Mask> masks = new ArrayList<>();
+        int skipTo = 0;
+        // Each quote and each \\u0022 may close a name's opening quote; the pattern is tried only where a name can start.
+        int plain = text.indexOf('"');
+        int unicode = unicodeQuote(text, 0);
+        while (plain >= 0 || unicode >= 0) {
+            boolean isPlain = unicode < 0 || (plain >= 0 && plain < unicode);
+            int quote = isPlain ? plain : unicode;
+            int name = quote + (isPlain ? 1 : 5);
+            if (isPlain) {
+                plain = text.indexOf('"', quote + 1);
+            } else {
+                unicode = unicodeQuote(text, quote + 1);
+            }
+            if (name >= text.length() || !isNameStart(text.charAt(name))) {
+                continue;
+            }
+            int open = quoteRunStart(text, quote);
+            if (open < skipTo || !m.region(name, text.length()).lookingAt() || !isSecretKey(decodeName(m.group(1)))) {
+                continue;
+            }
+            // A value the strict reading consumes is left to the other passes wherever the name is; only a name it does
+            // not read needs to know where the text's strings are certain.
+            int consumed = consumedValueEnd(text, open, name, m.start(2), m.end(2));
+            if (consumed >= 0) {
+                skipTo = Math.max(skipTo, consumed);
+                continue;
+            }
+            if (certainty == null) {
+                certainty = new Certainty(text);
+            }
+            int end = certainty.maskEnd(open, m.end(2));
+            if (end == NONE) {
+                continue;
+            }
+            masks.add(new Mask(m.end(), end, m.group(2) + MASK + m.group(2)));
+            skipTo = end;
+        }
+        return masks.isEmpty() ? text : applyMasks(text, masks);
+    }
+
+    /** The next {@code \\u0022} escape's {@code u} in {@code text} from {@code from}, or -1. */
+    private static int unicodeQuote(String text, int from) {
+        for (int i = text.indexOf("u0022", from); i >= 0; i = text.indexOf("u0022", i + 1)) {
+            if (i > 0 && text.charAt(i - 1) == '\\') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isNameStart(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '-' || c == '\\';
+    }
+
+    /**
+     * Where the quote whose {@code "} or {@code u0022} is at {@code quote} in {@code text} starts: its whole run of
+     * backslashes before it, each also spelled {@code \\u005c}, as {@link #ANY_QUOTE} reads it.
+     */
+    private static int quoteRunStart(String text, int quote) {
+        int i = quote;
+        while (true) {
+            if (i > 0 && text.charAt(i - 1) == '\\') {
+                i--;
+            } else if (i >= 6 && text.charAt(i - 6) == '\\' && text.regionMatches(true, i - 5, "u005c", 0, 5)) {
+                i -= 6;
+            } else {
+                return i;
+            }
+        }
+    }
+
+    /**
+     * The escape level at which {@code spelling} is one quote: 0 for {@code "}, 1 for {@code \"} or {@code \\u0022}, 2
+     * for {@code \\\"}, {@code \\\\u0022} or {@code \\u005c\"}, and so on; -1 when it is a quote of no one level, as
+     * {@code \\"} (an escaped backslash, then the quote of the level above), or of one past {@link #NESTED_LEVELS}.
+     */
+    static int quoteLevel(String spelling) {
+        String s = spelling;
+        for (int level = 0; level <= NESTED_LEVELS && s != null; level++) {
+            if (s.equals("\"")) {
+                return level;
+            }
+            s = unescapedOnce(s);
+        }
+        return -1;
+    }
+
+    /** {@code s} read as the content of a JSON string, or {@code null} when it is not that: a bare quote, a bad escape. */
+    private static String unescapedOnce(String s) {
+        Decoder d = new Decoder(s + "\"", 0, 1);
+        StringBuilder out = new StringBuilder(s.length());
+        for (int c = d.next(); c != END; c = d.next()) {
+            if (c == BAD) {
+                return null;
+            }
+            out.append((char) c);
+        }
+        return d.at() == s.length() ? out.toString() : null;
+    }
+
+    /**
+     * The text at one escape level, read from a position where every level above is inside a string: level 0 is the
+     * text itself, and each level the content of a JSON string of the level above it, decoded. A quote of the level
+     * above ends it ({@link #END}); so does the end of the text. Each character it reads costs one per level.
+     */
+    private static final class Decoder {
+
+        private final String text;
+        private final Decoder outer;
+        private int pos;
+        private int peeked = NONE;
+        private int peekedAt;
+
+        Decoder(String text, int from, int level) {
+            this.text = text;
+            this.outer = level == 0 ? null : new Decoder(text, from, level - 1);
+            this.pos = from;
+        }
+
+        /** Where the next character starts in the text: the end of everything read so far. */
+        int at() {
+            if (peeked != NONE) {
+                return peekedAt;
+            }
+            return outer == null ? pos : outer.at();
+        }
+
+        int peek() {
+            if (peeked == NONE) {
+                peekedAt = at();
+                peeked = read();
+            }
+            return peeked;
+        }
+
+        /** The next character, or {@link #END} or {@link #BAD}, which it keeps returning. */
+        int next() {
+            int c = peek();
+            if (c >= 0) {
+                peeked = NONE;
+            }
+            return c;
+        }
+
+        private int read() {
+            if (outer == null) {
+                return pos < text.length() ? text.charAt(pos++) : END;
+            }
+            int c = outer.next();
+            if (c == '"' || c < 0) {
+                return c == '"' ? END : c;
+            }
+            if (isControl(c)) {
+                return BAD;
+            }
+            return c == '\\' ? escape(outer) : c;
+        }
+    }
+
+    /**
+     * Whether {@code c} is a control character JSON string content may not hold raw. A tab, line feed or carriage return
+     * is let through: text copied from pretty-printed JSON into a string keeps them raw, and the patterns read them as
+     * whitespace there too.
+     */
+    private static boolean isControl(int c) {
+        return c >= 0 && c < 0x20 && c != '\t' && c != '\n' && c != '\r';
+    }
+
+    /** The character the escape after a backslash in {@code d} stands for, or {@link #BAD}. */
+    private static int escape(Decoder d) {
+        int e = d.next();
+        switch (e) {
+            case '"', '\\', '/' -> {
+                return e;
+            }
+            case 'b' -> {
+                return '\b';
+            }
+            case 'f' -> {
+                return '\f';
+            }
+            case 'n' -> {
+                return '\n';
+            }
+            case 'r' -> {
+                return '\r';
+            }
+            case 't' -> {
+                return '\t';
+            }
+            case 'u' -> {
+                int code = 0;
+                for (int i = 0; i < 4; i++) {
+                    int h = d.next();
+                    int digit = h < 0 ? -1 : Character.digit(h, 16);
+                    if (digit < 0) {
+                        return BAD;
+                    }
+                    code = code * 16 + digit;
+                }
+                return code;
+            }
+            default -> {
+                return BAD;
+            }
+        }
+    }
+
+    /**
+     * Reads one JSON value from {@code d}, strictly, after any whitespace: whether it is whole and valid. Each string's
+     * position goes to {@code strings}, if that is not {@code null}, as {@code {open, content, close, end}} in the
+     * text. It keeps a stack of open brackets instead of recursing, so depth costs nothing more.
+     */
+    private static boolean readValue(Decoder d, List<int[]> strings) {
+        StringBuilder open = new StringBuilder();
+        boolean value = true;
+        while (true) {
+            skipSpace(d);
+            if (value) {
+                int c = d.peek();
+                if (c == '{' || c == '[') {
+                    d.next();
+                    skipSpace(d);
+                    if (d.peek() == (c == '{' ? '}' : ']')) {
+                        d.next();
+                    } else {
+                        open.append((char) c);
+                        if (c == '{' && !readMemberName(d, strings)) {
+                            return false;
+                        }
+                        continue;
+                    }
+                } else if (c == '"' ? !readString(d, strings) : !readScalar(d)) {
+                    return false;
+                }
+                value = false;
+                continue;
+            }
+            if (open.isEmpty()) {
+                return true;
+            }
+            char top = open.charAt(open.length() - 1);
+            int c = d.next();
+            if (c == ',') {
+                value = true;
+                if (top == '{' && !readMemberName(d, strings)) {
+                    return false;
+                }
+            } else if (c == (top == '{' ? '}' : ']')) {
+                open.setLength(open.length() - 1);
+            } else {
+                return false;
+            }
+        }
+    }
+
+    /** Reads a member name and its colon from {@code d}, after any whitespace: whether both are there. */
+    private static boolean readMemberName(Decoder d, List<int[]> strings) {
+        skipSpace(d);
+        if (d.peek() != '"' || !readString(d, strings)) {
+            return false;
+        }
+        skipSpace(d);
+        return d.next() == ':';
+    }
+
+    private static void skipSpace(Decoder d) {
+        for (int c = d.peek(); c == ' ' || c == '\t' || c == '\n' || c == '\r'; c = d.peek()) {
+            d.next();
+        }
+    }
+
+    /** Reads a JSON string from {@code d}, at its opening quote: whether it is whole and valid. */
+    private static boolean readString(Decoder d, List<int[]> strings) {
+        int open = d.at();
+        d.next();
+        int content = d.at();
+        while (true) {
+            int close = d.at();
+            int c = d.next();
+            if (c == '"') {
+                if (strings != null) {
+                    strings.add(new int[] {open, content, close, d.at()});
+                }
+                return true;
+            }
+            if (c < 0 || isControl(c) || (c == '\\' && escape(d) == BAD)) {
+                return false;
+            }
+        }
+    }
+
+    /** Reads a JSON number, {@code true}, {@code false} or {@code null} from {@code d}: whether it is one. */
+    private static boolean readScalar(Decoder d) {
+        int c = d.peek();
+        if (c == 't' || c == 'f' || c == 'n') {
+            String word = c == 't' ? "true" : c == 'f' ? "false" : "null";
+            for (int i = 0; i < word.length(); i++) {
+                if (d.next() != word.charAt(i)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (c == '-') {
+            d.next();
+        }
+        if (d.peek() == '0') {
+            d.next();
+        } else if (!digits(d)) {
+            return false;
+        }
+        if (d.peek() == '.') {
+            d.next();
+            if (!digits(d)) {
+                return false;
+            }
+        }
+        if (d.peek() == 'e' || d.peek() == 'E') {
+            d.next();
+            if (d.peek() == '+' || d.peek() == '-') {
+                d.next();
+            }
+            return digits(d);
+        }
+        return true;
+    }
+
+    /** Reads one or more digits from {@code d}: whether there was one. */
+    private static boolean digits(Decoder d) {
+        boolean any = false;
+        while (d.peek() >= '0' && d.peek() <= '9') {
+            d.next();
+            any = true;
+        }
+        return any;
+    }
+
+    /**
+     * Where the value of the name in {@code text} ends when the strict reading of the name's level consumes it, or -1;
+     * its opening quote runs from {@code open} to {@code name}, and its closing one from {@code close} to {@code end}: both quotes are quotes of one level, the name is a whole string there that
+     * ends at {@code end}, and a colon, a whole JSON value and a comma, a close bracket or the end of the level follow.
+     */
+    private static int consumedValueEnd(String text, int open, int name, int close, int end) {
+        int level = quoteLevel(text.substring(open, name));
+        if (level < 0 || level != quoteLevel(text.substring(close, end))) {
+            return -1;
+        }
+        Decoder d = new Decoder(text, open, level);
+        if (d.peek() != '"' || !readString(d, null) || d.at() != end) {
+            return -1;
+        }
+        skipSpace(d);
+        if (d.next() != ':' || !readValue(d, null)) {
+            return -1;
+        }
+        int valueEnd = d.at();
+        skipSpace(d);
+        int after = d.peek();
+        return after == ',' || after == '}' || after == ']' || after == END ? valueEnd : -1;
+    }
+
+    /**
+     * Where the text's strings are certain: everywhere, when the text is valid JSON, and, level by level, inside each
+     * such string whose content is valid JSON too. Each string's content is read once, when a candidate first needs it.
+     */
+    private static final class Certainty {
+
+        private final String text;
+        /** The strings of the JSON value the text starts with, when it starts with a valid one, else {@code null}. */
+        private final List<int[]> top;
+        /** Where that value ends: text after it, such as a note after a body cut at the size limit, is not certain. */
+        private final int certainEnd;
+        /** The strings inside each string read so far, by where it opens; {@link #NOT_JSON} when its content is not JSON. */
+        private final Map<Integer, List<int[]>> inside = new HashMap<>();
+        /** What {@link #stringsInside} gives for a string whose content is not valid JSON. */
+        private static final List<int[]> NOT_JSON = Collections.unmodifiableList(new ArrayList<>());
+
+        Certainty(String text) {
+            this.text = text;
+            List<int[]> strings = new ArrayList<>();
+            Decoder d = new Decoder(text, 0, 0);
+            boolean valid = readValue(d, strings);
+            this.top = valid ? strings : null;
+            this.certainEnd = valid ? d.at() : 0;
+        }
+
+        /**
+         * For a candidate from {@code open} to {@code end} that the strict reading of its level does not read: where its
+         * mask ends, or {@link #NONE} when it is left to the other passes, being no name at a level that is certain.
+         */
+        int maskEnd(int open, int end) {
+            if (top == null || open >= certainEnd) {
+                return text.length();
+            }
+            List<int[]> strings = top;
+            int[] outermost = null;
+            for (int level = 1; ; level++) {
+                int[] holder = holding(strings, open, end);
+                if (holder == null) {
+                    // A member name of a certain level, or no name at all: it crosses a string's quote there.
+                    return NONE;
+                }
+                if (outermost == null) {
+                    outermost = holder;
+                }
+                strings = level > NESTED_LEVELS ? NOT_JSON : stringsInside(holder, level);
+                if (strings == NOT_JSON) {
+                    return outermost[2];
+                }
+            }
+        }
+
+        /** The string among {@code strings} whose content holds the text from {@code from} to {@code to}, or {@code null}. */
+        private static int[] holding(List<int[]> strings, int from, int to) {
+            int low = 0;
+            int high = strings.size() - 1;
+            int[] found = null;
+            while (low <= high) {
+                int mid = (low + high) >>> 1;
+                if (strings.get(mid)[1] <= from) {
+                    found = strings.get(mid);
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            return found != null && to <= found[2] ? found : null;
+        }
+
+        /**
+         * The strings inside {@code string}, whose content is read at {@code level}, when that content is valid JSON;
+         * else {@link #NOT_JSON}.
+         */
+        private List<int[]> stringsInside(int[] string, int level) {
+            return inside.computeIfAbsent(string[0], k -> {
+                List<int[]> strings = new ArrayList<>();
+                Decoder d = new Decoder(text, string[1], level);
+                boolean valid = readValue(d, strings);
+                skipSpace(d);
+                return valid && d.peek() == END && d.at() == string[2] ? strings : NOT_JSON;
+            });
+        }
+    }
+
+    /**
      * Masks the value of every secret-named field ({@link #isSecretKey(String)}) in JSON nested in JSON strings that
      * {@link #JSON_FIELD} and {@link #EMBEDDED_JSON_FIELD} do not reach on the text itself: two or more levels deep,
      * or spelled with unicode escapes ({@code \\u0022} for a quote, also at the top level of text copied from
      * inside a string, and on only some of a field's quotes). Each level {@link #readNestedLevels} gives is read as
      * plain JSON, as JSON embedded one level deep and {@link #flattened}. A string value's content becomes the mask, so
      * each of its quotes keeps the text's spelling; a number or boolean, and an object or array through its close
-     * bracket, become the mask quoted as the field's name is. A field the text quotes two ways at one level (a name's
-     * quotes, or a name and its value, spelled differently: {@code {"client_secret":\\u0022...\\u0022}}), or whose value
-     * starts with an escape no reading reads as one, is masked from its value to the end of the string holding it
-     * (owner decision on #339, fail closed). A value already masked is masked the same way again. JSON nested deeper than {@link #NESTED_LEVELS} is masked string by
-     * string by {@link #nestedJwkMasks} before this runs.
+     * bracket, become the mask quoted as the field's name is. A field no strict reading of its own level reads (quoted
+     * two ways, or with a value no reading reads) was masked from its colon by {@link #maskUnconsumedSecretNames} before
+     * this runs. A value already masked is masked the same way again. JSON nested deeper than {@link #NESTED_LEVELS} is
+     * masked string by string by {@link #nestedJwkMasks} before this runs.
      */
     private static String maskNestedSecretFields(String text) {
         SecretMasks masks = new SecretMasks();
@@ -1015,18 +1499,12 @@ public final class Redactor {
         }
         readNestedLevels(text, (view, normal, depth, fresh) -> {
             masks.fresh = fresh;
-            // The flattened view first: the mixed reading takes a decoded quote for a name's only where it is one.
             BitSet quotes = new BitSet();
             View flat = flattened(view, quotes, fresh);
             masks.flatQuotes = quotes;
-            masks.flatQuotesAt = new BitSet();
-            if (flat != null) {
-                quotes.stream().forEach(k -> masks.flatQuotesAt.set(flat.at(k)));
-            }
             secretFieldMasks(text, normal, PLAIN_READING, masks);
             if (normal.text().contains("\\\"")) {
                 secretFieldMasks(text, normal, EMBEDDED_READING, masks);
-                secretFieldMasks(text, normal, MIXED_READING, masks);
             }
             if (flat != null) {
                 secretFieldMasks(text, flat, FLAT_READING, masks);
@@ -1056,8 +1534,6 @@ public final class Redactor {
         private final TreeMap<Integer, Span> spans = new TreeMap<>();
         /** The quotes the flattened view being read turned bare ({@link #flattened}). */
         private BitSet flatQuotes;
-        /** Where those quotes start in the text, or, before any view, {@code null}. */
-        private BitSet flatQuotesAt;
         /** Where the quotes of the view being read start in the text that its level's unescaping made, or {@code null}. */
         private BitSet fresh;
 
@@ -1136,15 +1612,6 @@ public final class Redactor {
     private static final int EMBEDDED_READING = 1;
 
     /**
-     * {@link #secretFieldMasks}: a view's names with a quote it decodes from {@code \\u0022} on either side, where the
-     * flattened view also turns that quote bare (reviews on 5b051eb and 96428f9). A name quoted two ways
-     * ({@code "client_secret\\u0022:}), or one both of whose quotes are decoded before a plain-quoted value, has its value
-     * masked to the end of the string holding it (Codex round 4 on b856d74). A name both of whose quotes are decoded is
-     * otherwise the embedded reading's, and a valid name read both ways the flattened reading's.
-     */
-    private static final int MIXED_READING = 2;
-
-    /**
      * {@link #secretFieldMasks}: a {@link #flattened} view read as plain JSON, for a value whose opening quote the text
      * spells {@code \\u0022} as its name's are (security round 2). The value keeps its own escapes there: the view of
      * {@code {\\u0022client_secret\\u0022:\\u0022\\"s3cr3t\\u0022}} is {@code {"client_secret":"\\"s3cr3t"}}, while the next
@@ -1152,14 +1619,13 @@ public final class Redactor {
      * {@code \\u0022} of its own. After a plain-quoted name such a value is quoted two ways, and is masked to the end of
      * the string holding it by the plain reading, where its quote is still an escape.
      */
-    private static final int FLAT_READING = 3;
+    private static final int FLAT_READING = 2;
 
     /**
      * Adds to {@code masks} the mask of every secret-named field's value in {@code view}, as positions in the text (see
      * {@link #maskNestedSecretFields}), as the {@code reading} reads the view: {@link #PLAIN_READING},
-     * {@link #EMBEDDED_READING}, {@link #MIXED_READING} or {@link #FLAT_READING}.
-     * The names are found first, apart from the values ({@link #FIELD_NAME}, {@link #EMBEDDED_FIELD_NAME},
-     * {@link #MIXED_FIELD_NAME}), as {@link #everyPrivateMember} finds JWK names: in malformed text a value can end at
+     * {@link #EMBEDDED_READING} or {@link #FLAT_READING}.
+     * The names are found first, apart from the values ({@link #FIELD_NAME}, {@link #EMBEDDED_FIELD_NAME}), as {@link #everyPrivateMember} finds JWK names: in malformed text a value can end at
      * the quote that opens the next name ({@code "x":""client_secret":...}), and a search for whole fields would skip
      * that name. Each secret name's value is then matched from the name. A name inside a value already masked goes
      * with it, except one that opens on the quote that closed that value; so each value is read once, and the work
@@ -1168,10 +1634,9 @@ public final class Redactor {
     private static void secretFieldMasks(String text, View view, int reading, SecretMasks masks) {
         String json = view.text();
         boolean embedded = reading == EMBEDDED_READING;
-        boolean mixed = reading == MIXED_READING;
         Matcher name = READINGS[reading].name().matcher(json);
-        Matcher structure = mixed ? null : READINGS[reading].structure().matcher(json);
-        Matcher field = mixed ? null : READINGS[reading].field().matcher(json);
+        Matcher structure = READINGS[reading].structure().matcher(json);
+        Matcher field = READINGS[reading].field().matcher(json);
         // Past depth 1, a quote neither this level's unescaping made nor its decoding is the level above's: it ends the
         // string holding this JSON, and with it any name, value or structure read here (review on 22ff6ea: read past it,
         // a cut-off object balanced on the brace of the object around that string; review on 59b603d: a value ran on
@@ -1186,47 +1651,12 @@ public final class Redactor {
             int quote = json.charAt(at) == '\\' ? 2 : 1;
             int closing = json.charAt(name.end(1)) == '\\' ? name.end(1) + 1 : name.end(1);
             if (at < copied - 2 || !isSecretKey(decodeName(name.group(1))) || outer.test(closing)
-                    || (mixed && !quotesName(view, at, masks) && !quotesName(view, name.end(1), masks))
-                    || (mixed && json.charAt(at) == '\\' && !quotesName(view, at, masks))
-                    || (!embedded && !mixed && backslashesBefore(json, at) % 2 == 1)
+                    || (!embedded && backslashesBefore(json, at) % 2 == 1)
                     || (embedded && backslashesBefore(json, at) % 4 != 0)
                     || !opensAtItsLevel(view, at, reading, masks)) {
                 continue;
             }
             String spelled = quoteOf(text, view, at, quote);
-            int value = valueStart(json, name.end());
-            // Mixed quoting at one level has no end any reading can trust (owner decision on #339, fail closed; Codex round
-            // 4 on b856d74: each fallback for one spelling missed the next, escaped whitespace before an escaped quote). A
-            // value after a name quoted two ways, and one the plain or flattened reading cannot read that starts with an
-            // escape (an escaped quote, \\u0022 decoded, a run of backslashes, whitespace escaped more than once), is
-            // masked from where it starts to the end of the string holding it, quoted as the name is, and takes the masks
-            // other readings found inside it, as an object's mask does. Valid JSON has neither: past depth 1 its names are
-            // read at their own level, and a value there opens with a quote of that level, a digit, a letter or a bracket.
-            // A name valid on its own whose part before a \\u0022 and a colon is a secret name is read both ways (review on
-            // 9f45005): its second reading's value ends inside it, at its own closing quote.
-            boolean opensEscaped = json.charAt(at) == '\\';
-            boolean twoWays = mixed && (opensEscaped != (closing > name.end(1))
-                    ? opensEscaped || !closesAsName(json, at + 1)
-                    : value < json.length() && json.charAt(value) == '"');
-            // One level deep a single escape may open the value or space it (\\", \\u0022, \\u0020); a run of two or more
-            // backslashes is the level below's.
-            boolean escaped = !mixed && value < json.length() && json.charAt(value) == '\\'
-                    && (!embedded || json.startsWith("\\\\", value));
-            if (twoWays || escaped) {
-                if (limits == null) {
-                    limits = stringEnds(json, embedded, outer);
-                }
-                int end = Math.max(value, limits[value]);
-                if (reading == FLAT_READING && masks.flatQuotes.get(closing) && !masks.flatQuotes.get(at)) {
-                    end = Math.min(end, endOfWholeName(json, closing + 1, end, masks.flatQuotes));
-                }
-                masks.add(new Mask(view.at(value), view.at(end), spelled + MASK + spelled), true, false, view.at(end));
-                copied = end;
-                continue;
-            }
-            if (mixed) {
-                continue;
-            }
             if (structure.region(at, json.length()).lookingAt()) {
                 int end = reading == FLAT_READING ? endOfFlatStructure(json, structure.end(), masks.flatQuotes, outer)
                         : endOfStructure(json, structure.end(), embedded, outer);
@@ -1280,47 +1710,6 @@ public final class Redactor {
     }
 
     /**
-     * Where a secret field's value starts in {@code json}, from {@code from} just after its colon: past the whitespace
-     * that {@link #EMBEDDED_SPACE} reads, a line break or tab written plainly or escaped once, as the value patterns read
-     * it. An escape of any other kind, or one escaped again, is where the value starts: no value pattern reads it.
-     */
-    private static int valueStart(String json, int from) {
-        int i = from;
-        while (i < json.length()) {
-            char c = json.charAt(i);
-            if (" \t\n\u000B\f\r".indexOf(c) >= 0) {
-                i++;
-            } else if (c == '\\' && i + 1 < json.length() && "nrt".indexOf(json.charAt(i + 1)) >= 0) {
-                i += 2;
-            } else {
-                break;
-            }
-        }
-        return i;
-    }
-
-    /**
-     * For a name the flattened view closes at a quote it turned bare, read from {@code from} just after that quote: where
-     * the name ends when read whole, at the next plain quote before {@code limit} that a colon follows ({@link
-     * #closesAsName}), or {@code limit} when it is not a name valid on its own. Its escapes are skipped, a turned-bare
-     * quote among them.
-     */
-    private static int endOfWholeName(String json, int from, int limit, BitSet quotes) {
-        int i = from;
-        while (i < limit) {
-            char c = json.charAt(i);
-            if (c == '\\') {
-                i += 2;
-            } else if (c == '"' && !quotes.get(i)) {
-                return beforeColon(json, i + 1) ? i : limit;
-            } else {
-                i++;
-            }
-        }
-        return limit;
-    }
-
-    /**
      * Whether the name at {@code at} in {@code view} opens with a quote of the view's own level: past depth 1, one the
      * level's unescaping made of an escaped quote, or one it decoded from {@code \\u0022}. A quote that was already
      * bare a level up opens a name of that level, read there; this view, with one more escape taken off, would read
@@ -1334,16 +1723,6 @@ public final class Redactor {
         int quote = json.charAt(at) == '\\' ? at + 1 : at;
         return masks.fresh.get(view.at(quote)) || (quote > at && decodesQuote(view, at))
                 || (reading == FLAT_READING && masks.flatQuotes.get(quote));
-    }
-
-    /**
-     * Whether the escaped quote at {@code at} in {@code view} is a quote of the view's level: one {@link #normalized}
-     * decoded from {@code \\u0022} that the flattened view also turns bare, outside every string or closing a name that
-     * is not valid on its own ({@link FlatContext}). Inside a valid name or a plain-quoted value such a quote is the
-     * string's own (review on 3c5ddac: in {@code "x\\u0022password"} the mixed reading opened a name at it).
-     */
-    private static boolean quotesName(View view, int at, SecretMasks masks) {
-        return decodesQuote(view, at) && masks.flatQuotesAt != null && masks.flatQuotesAt.get(view.at(at));
     }
 
     /**

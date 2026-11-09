@@ -337,14 +337,15 @@ class RedactorTest {
 
     @Test
     void masksSecretStringCutInsideAnEscape() {
-        // A lone backslash at the end, or before the line break that starts a note on a cut body.
+        // A lone backslash at the end, or before the line break that starts a note on a cut body. A value no strict reading
+        // reads to its end has an unknown end, so the note goes with it (Codex round 5 on 8e6f207, fail closed).
         assertEquals("{\"access_token\":\"[REDACTED]\"", Redactor.redact("{\"access_token\":\"FAKE-CREDENTIAL-1\\"));
-        assertEquals("{\"access_token\":\"[REDACTED]\"\n[note]",
+        assertEquals("{\"access_token\":\"[REDACTED]\"",
                 Redactor.redact("{\"access_token\":\"FAKE-CREDENTIAL-1\\\n[note]"));
         // Embedded JSON: one or three backslashes left, or an inner escape cut before the JSON was quoted.
         assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"",
                 Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\"));
-        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"\n[note]",
+        assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"",
                 Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\\\\\\n[note]"));
         assertEquals("{\"debug\":\"{\\\"access_token\\\":\\\"[REDACTED]\\\"\"}",
                 Redactor.redact("{\"debug\":\"{\\\"access_token\\\":\\\"FAKE-CREDENTIAL-1\\\\\"}"));
@@ -935,8 +936,8 @@ class RedactorTest {
         for (String[] pair : List.of(
                 new String[] {"{\"client_secret\":\\u0022s3cr3t\\u0022}", "{\"client_secret\":\"[REDACTED]\""},
                 new String[] {"{\\u0022client_secret\\u0022:\"s3cr3t\"}", "{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022"},
-                new String[] {"{\"client_secret\\u0022:\"s3cr3t\"}", "{\"client_secret\\u0022:\"[REDACTED]\""},
-                new String[] {"{\\u0022client_secret\":\"s3cr3t\"}", "{\\u0022client_secret\":\\u0022[REDACTED]\\u0022"},
+                new String[] {"{\"client_secret\\u0022:\"s3cr3t\"}", "{\"client_secret\\u0022:\\u0022[REDACTED]\\u0022"},
+                new String[] {"{\\u0022client_secret\":\"s3cr3t\"}", "{\\u0022client_secret\":\"[REDACTED]\""},
                 new String[] {"{\"client_secret\":\\u0022s3cr3t\"}", "{\"client_secret\":\"[REDACTED]\""},
                 new String[] {"{\"n\":1,\"clientSecret\":\\u0022s3cr3t\\u0022,\"scope\":\"x\"}",
                         "{\"n\":1,\"clientSecret\":\"[REDACTED]\""},
@@ -946,12 +947,12 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(RedactorTest::nested,
                     RedactorTest::nestedEscapingQuotes, t -> nested(nested(t)), t -> nestedEscapingQuotes(nested(t)),
                     t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+                assertEquals(wrapped(wrap, pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
             }
         }
         // A value opened with a plain quote is a JSON string, where \\u0022 is a character of it: masked through its
         // plain closing quote, as JSON_FIELD masks it on main (review on 47c938e), so no part of the value is kept.
-        assertEquals("{\"client_secret\":\"[REDACTED]\"client_id\":\"app\"}",
+        assertEquals("{\"client_secret\":\"[REDACTED]\"",
                 Redactor.redact("{\"client_secret\":\"s3cr3t\\u0022,\"client_id\":\"app\"}"));
         assertEquals("{\"password\":\"[REDACTED]\"}", Redactor.redact("{\"password\":\"ab\\u0022cd\"}"));
         // Non-secret names spelled the same way stay byte for byte.
@@ -975,7 +976,7 @@ class RedactorTest {
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
                     t -> nestedEscapingQuotes(nested(t)), t -> nested(nestedEscapingQuotes(t)),
                     t -> nested(nested(nestedEscapingQuotes(t))))) {
-                assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+                assertEquals(wrapped(wrap, pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
             }
         }
         // The same with every quote of the text spelled \\u0022.
@@ -1000,7 +1001,7 @@ class RedactorTest {
             String in = "{\"client_secret\":\"" + value + "\",\"client_id\":\"app\",\"password\":\"" + value + "\"}";
             String out = "{\"client_secret\":\"[REDACTED]\",\"client_id\":\"app\",\"password\":\"[REDACTED]\"}";
             for (UnaryOperator<String> wrap : wraps) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
         assertEquals("{QpasswordQ:Q[REDACTED]Q}".replace("Q", "\\u0022"), Redactor.redact("{QpasswordQ:QQ}".replace("Q", "\\u0022")));
@@ -1011,15 +1012,15 @@ class RedactorTest {
         // Review on 806a28c: a secret-named object whose own members a shallower reading masked first
         // ({\\u0022private_key\\u0022:{"password":"",...}}) lost its whole-object mask, keeping its other members.
         for (String[] pair : List.of(
-                new String[] {"{QprivateKeyQ:{\"password\":\"\",\"other\":42}}", "{QprivateKeyQ:Q[REDACTED]Q}"},
+                new String[] {"{QprivateKeyQ:{\"password\":\"\",\"other\":42}}", "{QprivateKeyQ:Q[REDACTED]Q"},
                 new String[] {"{Qprivate_keyQ:{\"password\":\"pw\",\"other\":\"PRIVOTHER\"},\"kid\":\"k1\"}",
-                        "{Qprivate_keyQ:Q[REDACTED]Q,\"kid\":\"k1\"}"},
-                new String[] {"{Qclient_secretQ:[\"a\",{\"access_token\":\"t\"},\"PRIVITEM\"]}", "{Qclient_secretQ:Q[REDACTED]Q}"})) {
+                        "{Qprivate_keyQ:Q[REDACTED]Q"},
+                new String[] {"{Qclient_secretQ:[\"a\",{\"access_token\":\"t\"},\"PRIVITEM\"]}", "{Qclient_secretQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1031,21 +1032,21 @@ class RedactorTest {
         // where an earlier one does is a competing reading of the same value, and still loses: a view unescaped past
         // the JSON's own level must not run an object on past its close bracket.
         for (String[] pair : List.of(
-                new String[] {"{Qprivate_keyQ:{Qpassword\":{},\"other\":42}}", "{Qprivate_keyQ:Q[REDACTED]Q}"},
+                new String[] {"{Qprivate_keyQ:{Qpassword\":{},\"other\":42}}", "{Qprivate_keyQ:Q[REDACTED]Q"},
                 new String[] {"{QprivateKeyQ:{\"a\":1,Qclient_secret\":[1,2],\"other\":\"PRIVOTHER\"},\"kid\":\"k1\"}",
-                        "{QprivateKeyQ:Q[REDACTED]Q,\"kid\":\"k1\"}"})) {
+                        "{QprivateKeyQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
         String in = "{\"private_key\":{\"a\":\"x\\\\\",\"b\":[\"]\\\\\"]},\"client_id\":\"app\",\"n\":[1]}";
         String out = "{\"private_key\":\"[REDACTED]\",\"client_id\":\"app\",\"n\":[1]}";
         UnaryOperator<String> wrap = UnaryOperator.identity();
         for (int depth = 0; depth <= 4; depth++, wrap = compose(wrap)) {
-            assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+            assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
         }
     }
 
@@ -1056,13 +1057,13 @@ class RedactorTest {
         // brace. It is read in its own view instead, its strings at their own level.
         for (String[] pair : List.of(
                 new String[] {"{Qprivate_keyQ:{\"note\":\"a\\\"}b\",\"other\":\"PRIVOTHER\"},\"kid\":\"k1\"}",
-                        "{Qprivate_keyQ:Q[REDACTED]Q,\"kid\":\"k1\"}"},
-                new String[] {"{Qclient_secretQ:[\"x\\\"]\",\"PRIVITEM\"],\"n\":1}", "{Qclient_secretQ:Q[REDACTED]Q,\"n\":1}"})) {
+                        "{Qprivate_keyQ:Q[REDACTED]Q"},
+                new String[] {"{Qclient_secretQ:[\"x\\\"]\",\"PRIVITEM\"],\"n\":1}", "{Qclient_secretQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1077,15 +1078,15 @@ class RedactorTest {
         for (String[] pair : List.of(
                 new String[] {"{Qclient_secretQ:\"s3\\\"cr3t\",\"n\":1}", "{Qclient_secretQ:Q[REDACTED]Q"},
                 new String[] {"{Qclient_secretQ:\"s3cr3t\\\\\",\"n\":1}", "{Qclient_secretQ:Q[REDACTED]Q"},
-                new String[] {"{Qpassword\":\"a\\\\\\\"b\",\"n\":1}", "{Qpassword\":Q[REDACTED]Q"},
-                new String[] {"{\"client_secretQ:\"s3\\\"cr3t\"}", "{\"client_secretQ:\"[REDACTED]\""},
+                new String[] {"{Qpassword\":\"a\\\\\\\"b\",\"n\":1}", "{Qpassword\":\"[REDACTED]\""},
+                new String[] {"{\"client_secretQ:\"s3\\\"cr3t\"}", "{\"client_secretQ:Q[REDACTED]Q"},
                 new String[] {"{Qprivate_key\":{\"note\":\"a\\\"}b\",\"other\":\"PRIVOTHER\"},\"n\":1}",
-                        "{Qprivate_key\":Q[REDACTED]Q"})) {
+                        "{Qprivate_key\":\"[REDACTED]\""})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1106,13 +1107,13 @@ class RedactorTest {
                 new String[] {"{\"client_secret\":Qs3cr3t\\\\Q,\"n\":1}", "{\"client_secret\":\"[REDACTED]\""},
                 new String[] {"{\"password\":Qs3\\\"cr3t\\\\\\\\Q,\"client_id\":\"app\"}",
                         "{\"password\":\"[REDACTED]\""},
-                new String[] {"{Qclient_secretQ:Q\\\"s3cr3tQ}", "{Qclient_secretQ:Q[REDACTED]Q}"},
-                new String[] {"{Qclient_secret\":Qs3\\\"cr3t\"}", "{Qclient_secret\":Q[REDACTED]Q"})) {
+                new String[] {"{Qclient_secretQ:Q\\\"s3cr3tQ}", "{Qclient_secretQ:Q[REDACTED]Q"},
+                new String[] {"{Qclient_secret\":Qs3\\\"cr3t\"}", "{Qclient_secret\":\"[REDACTED]\""})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
         // A non-secret value so quoted keeps every byte.
@@ -1132,15 +1133,15 @@ class RedactorTest {
         for (String[] pair : List.of(
                 new String[] {"{Qclient_secretQ:\"preQTAIL\"}", "{Qclient_secretQ:Q[REDACTED]Q"},
                 new String[] {"{Qclient_secretQ:\"Q,TAIL\"}", "{Qclient_secretQ:Q[REDACTED]Q"},
-                new String[] {"{\"client_secretQ:\"preQ,TAIL\"}", "{\"client_secretQ:\"[REDACTED]\""},
-                new String[] {"{Qclient_secret\":\"preQTAIL\",\"n\":1}", "{Qclient_secret\":Q[REDACTED]Q"},
+                new String[] {"{\"client_secretQ:\"preQ,TAIL\"}", "{\"client_secretQ:Q[REDACTED]Q"},
+                new String[] {"{Qclient_secret\":\"preQTAIL\",\"n\":1}", "{Qclient_secret\":\"[REDACTED]\""},
                 new String[] {"{QpasswordQ:\"a\\\"bQ\\\\c\",\"client_id\":\"app\"}",
                         "{QpasswordQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1152,16 +1153,16 @@ class RedactorTest {
         // keeping the members after it. The flattened view reads the object whole, and its mask takes the shorter one.
         for (String[] pair : List.of(
                 new String[] {"{Qprivate_keyQ:{QnoteQ:Q\\\"}Q,QotherQ:42}}",
-                        "{Qprivate_keyQ:Q[REDACTED]Q}"},
+                        "{Qprivate_keyQ:Q[REDACTED]Q"},
                 new String[] {"{Qprivate_keyQ:{QnoteQ:Q\\\"}Q,QotherQ:\"PRIVOTHER\"},\"n\":1}",
-                        "{Qprivate_keyQ:Q[REDACTED]Q,\"n\":1}"},
+                        "{Qprivate_keyQ:Q[REDACTED]Q"},
                 new String[] {"{QsecretQ:[Q\\\"]Q,QPRIVOTHERQ]}",
-                        "{QsecretQ:Q[REDACTED]Q}"})) {
+                        "{QsecretQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1183,7 +1184,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1197,14 +1198,14 @@ class RedactorTest {
         // masked only to the next member's quote, the output read as a mask that stops short).
         for (String[] pair : List.of(
                 new String[] {"{QpasswordQ:Qx\\\\Q,\"n\":1}",
-                        "{QpasswordQ:Q[REDACTED]"},
+                        "{QpasswordQ:Q[REDACTED]Q"},
                 new String[] {"{Qclient_secretQ:Qs3\\\\Q,\"client_id\":\"app\"}",
-                        "{Qclient_secretQ:Q[REDACTED]"})) {
+                        "{Qclient_secretQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1219,12 +1220,12 @@ class RedactorTest {
                 new String[] {"{\"private_key\":[\"aQ[\",1],\"n\":1}",
                         "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
                 new String[] {"{QpasswordQ:{\"note\":\"aQ}\",\"other\":\"PRIVOTHER\"},\"n\":1}",
-                        "{QpasswordQ:Q[REDACTED]Q,\"n\":1}"})) {
+                        "{QpasswordQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1255,20 +1256,20 @@ class RedactorTest {
         // to the end of the text, is masked.
         for (String[] pair : List.of(
                 new String[] {"{\"private_key\":{\"passwordQ:\"}TAIL\"},\"n\":1}",
-                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                        "{\"private_key\":\"[REDACTED]\""},
                 new String[] {"{QprivateKeyQ:{\"note\":QxQ},\"n\":1}",
                         "{QprivateKeyQ:Q[REDACTED]Q"},
                 new String[] {"{\"private_key\":{\"note\":\"aQ\"},\"n\":\"bQ}\"}",
                         "{\"private_key\":\"[REDACTED]\",\"n\":\"bQ}\"}"},
                 new String[] {"{\"private_key\":[QaQ,\"}TAIL\"],\"n\":1}",
-                        "{\"private_key\":\"[REDACTED]\",\"n\":1}"},
+                        "{\"private_key\":\"[REDACTED]\""},
                 new String[] {"{\"private_key\":{\"passQword\":\"x\"},\"n\":1}",
                         "{\"private_key\":\"[REDACTED]\",\"n\":1}"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1310,7 +1311,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
                     t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+                assertEquals(wrapped(wrap, pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
             }
         }
     }
@@ -1337,7 +1338,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
                     t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1369,7 +1370,7 @@ class RedactorTest {
         // name is kept whole, as before.
         for (String[] pair : List.of(
                 new String[] {"{\"private_keyQ:{Qx\":42}}",
-                        "{\"private_keyQ:\"[REDACTED]\"}"},
+                        "{\"private_keyQ:Q[REDACTED]Q"},
                 new String[] {"{\"client_secretQ:Qs3cr3t\":1}",
                         "{\"client_secretQ:Q[REDACTED]\":1}"},
                 new String[] {"{\"noteQ:{Qx\":42}}",
@@ -1379,7 +1380,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
                     t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1419,7 +1420,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1434,14 +1435,14 @@ class RedactorTest {
         // decision on #339, fail closed).
         for (String[] pair : List.of(
                 new String[] {"{\"client_secretQ:\\\"s3cr3t\\\"}",
-                        "{\"client_secretQ:\"[REDACTED]\""},
+                        "{\"client_secretQ:Q[REDACTED]Q"},
                 new String[] {"{\"passwordQ:\\\"s3cr3t\\\",\"n\":1}",
-                        "{\"passwordQ:\"[REDACTED]\""})) {
+                        "{\"passwordQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1484,7 +1485,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1496,14 +1497,14 @@ class RedactorTest {
         // keeping that rest (TAIL, S3CR3T). With no end of its own the value is masked to the end of its string.
         for (String[] pair : List.of(
                 new String[] {"{\"client_secretQ:\\\"S3\\\\Q,TAIL\"}",
-                        "{\"client_secretQ:\"[REDACTED]\""},
+                        "{\"client_secretQ:Q[REDACTED]Q"},
                 new String[] {"{\"client_secretQ:\\\"\\\"S3CR3T\"}",
-                        "{\"client_secretQ:\"[REDACTED]\""})) {
+                        "{\"client_secretQ:Q[REDACTED]Q"})) {
             String in = pair[0].replace("Q", "\\u0022");
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrap.apply(out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
             }
         }
     }
@@ -1517,12 +1518,12 @@ class RedactorTest {
         // decision on #339, fail closed), with \\t, \\n or \\r, after a plain or \\u0022-closed name, at every depth.
         for (String space : List.of("~t", "~n", "~r")) {
             for (String[] pair : List.of(
-                    new String[] {"{\"client_secret\":S~\"s3cr3tQ}", "{\"client_secret\":S\"[REDACTED]\""},
-                    new String[] {"{\"client_secret\":S~\"s3cr3tQ,\"n\":1}", "{\"client_secret\":S\"[REDACTED]\""},
-                    new String[] {"{\"client_secret\":S~\"s3cr3t~\",\"n\":1}", "{\"client_secret\":S\"[REDACTED]\""},
-                    new String[] {"{\"passwordQ:S~\"s3cr3t~\"}", "{\"passwordQ:S\"[REDACTED]\""},
-                    new String[] {"{\"passwordQ:S~\"s3cr3tQ,\"n\":1}", "{\"passwordQ:S\"[REDACTED]\""},
-                    new String[] {"{\"client_secretQ:SQs3cr3tQ}", "{\"client_secretQ:S\"[REDACTED]\""})) {
+                    new String[] {"{\"client_secret\":S~\"s3cr3tQ}", "{\"client_secret\":\"[REDACTED]\""},
+                    new String[] {"{\"client_secret\":S~\"s3cr3tQ,\"n\":1}", "{\"client_secret\":\"[REDACTED]\""},
+                    new String[] {"{\"client_secret\":S~\"s3cr3t~\",\"n\":1}", "{\"client_secret\":\"[REDACTED]\""},
+                    new String[] {"{\"passwordQ:S~\"s3cr3t~\"}", "{\"passwordQ:Q[REDACTED]Q"},
+                    new String[] {"{\"passwordQ:S~\"s3cr3tQ,\"n\":1}", "{\"passwordQ:Q[REDACTED]Q"},
+                    new String[] {"{\"client_secretQ:SQs3cr3tQ}", "{\"client_secretQ:Q[REDACTED]Q"})) {
                 String in = withEscapes(pair[0].replace("S", space));
                 assertEquals(withEscapes(pair[1].replace("S", space)), Redactor.redact(in), in);
                 // Nested, the embedded reading masks from the escaped whitespace on, which the text escapes again there;
@@ -1677,8 +1678,8 @@ class RedactorTest {
                 new String[] {"{\"password\":\"abQcd\"}", "ab", "cd"},
                 new String[] {"{\"private_key\":{\"passwordQ:\"}TAIL\"},\"n\":1}", "TAIL"},
                 new String[] {"{Qclient_secret\":\"s3Q,\"n\":1}", "s3"},
-                new String[] {"{Qclient_secretQ:\"preQTAIL\"}", "pre", "TAIL"},
-                new String[] {"{Qclient_secretQ:\"Q,TAIL\"}", "TAIL"},
+                new String[] {"{Qclient_secretQ:\"preQTAIL\"}", "{Qclient_secretQ:Q[REDACTED]Q", "TAIL"},
+                new String[] {"{Qclient_secretQ:\"Q,TAIL\"}", "{Qclient_secretQ:Q[REDACTED]Q"},
                 new String[] {"{QpasswordQ:QXSEC~~~Q,\"n\":1}", "XSEC"},
                 new String[] {"{Qprivate_keyQ:{Qpassword\":{},\"other\":\"OTHERSEC\"}}", "OTHERSEC"},
                 new String[] {"{\"x\":\"\"client_secret\":\"s3cr3t\"}", "s3cr3t"},
@@ -1725,6 +1726,21 @@ class RedactorTest {
             node.forEach(nodes::push);
         }
         return true;
+    }
+
+    /**
+     * What {@code wrap} makes of a text whose output is {@code out}. A field no strict reading reads is masked to the end of
+     * the text bare (Codex round 5 on 8e6f207), and, wrapped in JSON strings, to the end of the outermost one: the strings
+     * and objects the wraps open inside it lose their closing quotes and braces with the rest of the value. Any other
+     * output is wrapped as it is.
+     */
+    private static String wrapped(UnaryOperator<String> wrap, String out) {
+        if (!out.matches("(?s).*\\[REDACTED]\\\\*+(?:\"|u0022)")) {
+            return wrap.apply(out);
+        }
+        String text = wrap.apply(out + "@END@");
+        int end = text.indexOf("@END@");
+        return end + "@END@".length() == text.length() ? out : text.substring(0, end) + "\"}";
     }
 
     /** {@code text} with each {@code ~} a backslash and each {@code Q} a quote spelled {@code \\u0022}. */
@@ -2359,7 +2375,9 @@ class RedactorTest {
     @Test
     void masksACopiedSecretValueCutOffInHalfAUnicodeEscape() {
         // #342 (Codex security round 2 at 8a06f7e): the leak scanner's test of the same form relies on these outputs.
-        // Half an escape inside a value still open at the end is masked with it; after a closed value it is kept.
+        // Half an escape inside a value still open at the end is masked with it. After a closed secret value it is masked
+        // too, as no strict reading reads past it (Codex round 5 on 8e6f207); after a JWK member's value it is kept, and
+        // after a close brace it is kept everywhere.
         String q = "\\\"";
         for (String tail : List.of("\\u", "\\u0", "\\u00", "\\u005")) {
             for (String lb : List.of("\n", "\r\n")) {
@@ -2367,7 +2385,7 @@ class RedactorTest {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + q;
                     assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
                     assertEquals(masked, Redactor.redact("he said \"" + lb + head + tail));
-                    assertEquals(masked + tail, Redactor.redact(masked + tail));
+                    assertEquals(head.contains("password") ? masked : masked + tail, Redactor.redact(masked + tail));
                     assertEquals(masked + "}" + tail, Redactor.redact(masked + "}" + tail));
                 }
             }
@@ -2381,16 +2399,20 @@ class RedactorTest {
     @Test
     void keepsACopiedValueCutOffInHalfAUnicodeEscapeAfterAnEscapedBackslash() {
         // #342 (automated review on b9d6038): the leak scanner's test of the same form relies on these outputs. An
-        // escaped backslash before half an escape at the end leaves the cut value unmatched, so the text is kept.
+        // escaped backslash before half an escape at the end leaves the cut value unmatched, so the text is kept after a JWK
+        // member's name. After a secret name no strict reading reads the value, so it is masked from the colon to the
+        // end (Codex round 5 on 8e6f207, fail closed).
         String q = "\\\"";
         String b = "\\\\";
         for (String tail : List.of("\\u", "\\u0", "\\u005")) {
             for (String lb : List.of("\n", "\r\n")) {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + b + tail;
-                    assertEquals(masked, Redactor.redact(masked));
+                    String closed = "he said \"" + lb + head + "[REDACTED]" + q;
+                    boolean secret = head.contains("password");
+                    assertEquals(secret ? closed : masked, Redactor.redact(masked));
                     String empty = "he said \"" + lb + head + b + tail;
-                    assertEquals(empty, Redactor.redact(empty));
+                    assertEquals(secret ? closed : empty, Redactor.redact(empty));
                 }
             }
         }

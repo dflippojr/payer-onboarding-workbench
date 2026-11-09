@@ -296,10 +296,364 @@ function jwtStart(text, start, end, ctx) {
 }
 
 /**
+ * A quote as some escape level spells it: a run of backslashes, each also spelled \ by the level above, then a
+ * quote or a " escape, as Redactor's ANY_QUOTE reads it (#339, Codex round 5).
+ */
+const ANY_QUOTE = String.raw`(?:\\|(?<=\\)u005[cC])*(?:"|(?<=\\)u0022)`;
+
+/**
+ * From just after a name's opening quote: the name, its closing quote spelled any way, whitespace written plainly or
+ * escaped at any level, and the colon, which may be a : escape (Redactor's ANY_SECRET_NAME).
+ */
+const SECRET_NAME_REST = new RegExp(String.raw`((?:[A-Za-z_-]|\\+u[0-9A-Fa-f]{4}){1,64}?)(${ANY_QUOTE})`
+  + String.raw`(?:\s|(?:\\|u005[cC])+(?:[nrt]|u00(?:20|09|0[aAdD])))*(?::|(?:\\|u005[cC])*?\\u003[aA])`, 'y');
+
+/** A name with each \u escape decoded, however many backslashes come before it, as Redactor's decodeName reads it. */
+const decodedEscapedName = name => name.replace(/\\+u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+
+/** What a Decoder reads at the end of its level, and where its level is not JSON string content. */
+const END = -1;
+const BAD = -2;
+
+/**
+ * The text at one escape level, read from a position where every level above is inside a string: level 0 is the text,
+ * each level the content of a JSON string of the level above, decoded; a quote of the level above ends it (Redactor's
+ * Decoder).
+ */
+class Decoder {
+  constructor(text, from, level) {
+    this.text = text;
+    this.outer = level === 0 ? null : new Decoder(text, from, level - 1);
+    this.pos = from;
+    this.peeked = null;
+    this.peekedAt = 0;
+  }
+
+  at() {
+    if (this.peeked !== null) return this.peekedAt;
+    return this.outer === null ? this.pos : this.outer.at();
+  }
+
+  peek() {
+    if (this.peeked === null) {
+      this.peekedAt = this.at();
+      this.peeked = this.read();
+    }
+    return this.peeked;
+  }
+
+  next() {
+    const c = this.peek();
+    if (c >= 0) this.peeked = null;
+    return c;
+  }
+
+  read() {
+    if (this.outer === null) return this.pos < this.text.length ? this.text.charCodeAt(this.pos++) : END;
+    const c = this.outer.next();
+    if (c === 34 || c < 0) return c === 34 ? END : c;
+    if (isRawControl(c)) return BAD;
+    return c === 92 ? escapeAfterBackslash(this.outer) : c;
+  }
+}
+
+/** A control character a JSON string may not hold raw; a tab, line feed or carriage return is let through, as in Redactor. */
+const isRawControl = c => c >= 0 && c < 0x20 && c !== 9 && c !== 10 && c !== 13;
+
+const SINGLE_ESCAPES = new Map([[34, 34], [92, 92], [47, 47], [98, 8], [102, 12], [110, 10], [114, 13], [116, 9]]);
+
+/** The character the escape after a backslash in `d` stands for, or BAD. */
+function escapeAfterBackslash(d) {
+  const e = d.next();
+  if (SINGLE_ESCAPES.has(e)) return SINGLE_ESCAPES.get(e);
+  if (e !== 117) return BAD;
+  let code = 0;
+  for (let i = 0; i < 4; i++) {
+    const h = d.next();
+    const digit = h < 0 ? -1 : Number.parseInt(String.fromCharCode(h), 16);
+    if (Number.isNaN(digit) || digit < 0) return BAD;
+    code = code * 16 + digit;
+  }
+  return code;
+}
+
+const skipJsonSpace = d => {
+  for (let c = d.peek(); c === 32 || c === 9 || c === 10 || c === 13; c = d.peek()) d.next();
+};
+
+/** Reads a JSON string from `d` at its opening quote: whether it is whole; its place goes to `strings`, if given. */
+function readStrictString(d, strings) {
+  const open = d.at();
+  d.next();
+  const content = d.at();
+  for (;;) {
+    const close = d.at();
+    const c = d.next();
+    if (c === 34) {
+      if (strings) strings.push([open, content, close, d.at()]);
+      return true;
+    }
+    if (c < 0 || isRawControl(c) || (c === 92 && escapeAfterBackslash(d) === BAD)) return false;
+  }
+}
+
+function readStrictScalar(d) {
+  const c = d.peek();
+  if (c === 116 || c === 102 || c === 110) {
+    for (const ch of c === 116 ? 'true' : c === 102 ? 'false' : 'null') if (d.next() !== ch.charCodeAt(0)) return false;
+    return true;
+  }
+  const digits = () => {
+    let any = false;
+    while (d.peek() >= 48 && d.peek() <= 57) {
+      d.next();
+      any = true;
+    }
+    return any;
+  };
+  if (c === 45) d.next();
+  if (d.peek() === 48) d.next();
+  else if (!digits()) return false;
+  if (d.peek() === 46) {
+    d.next();
+    if (!digits()) return false;
+  }
+  if (d.peek() === 101 || d.peek() === 69) {
+    d.next();
+    if (d.peek() === 43 || d.peek() === 45) d.next();
+    return digits();
+  }
+  return true;
+}
+
+const readStrictName = (d, strings) => {
+  skipJsonSpace(d);
+  if (d.peek() !== 34 || !readStrictString(d, strings)) return false;
+  skipJsonSpace(d);
+  return d.next() === 58;
+};
+
+/** Reads one JSON value from `d`, strictly, with a stack of open brackets instead of recursion (Redactor's readValue). */
+function readStrictValue(d, strings) {
+  const open = [];
+  let value = true;
+  for (;;) {
+    skipJsonSpace(d);
+    if (value) {
+      const c = d.peek();
+      if (c === 123 || c === 91) {
+        d.next();
+        skipJsonSpace(d);
+        if (d.peek() === (c === 123 ? 125 : 93)) {
+          d.next();
+        } else {
+          open.push(c);
+          if (c === 123 && !readStrictName(d, strings)) return false;
+          continue;
+        }
+      } else if (c === 34 ? !readStrictString(d, strings) : !readStrictScalar(d)) {
+        return false;
+      }
+      value = false;
+      continue;
+    }
+    if (open.length === 0) return true;
+    const top = open[open.length - 1];
+    const c = d.next();
+    if (c === 44) {
+      value = true;
+      if (top === 123 && !readStrictName(d, strings)) return false;
+    } else if (c === (top === 123 ? 125 : 93)) {
+      open.pop();
+    } else {
+      return false;
+    }
+  }
+}
+
+/** The escape level at which `spelling` is one quote, or -1 (Redactor's quoteLevel). */
+function quoteLevelOf(spelling) {
+  let s = spelling;
+  for (let level = 0; level <= MAX_LEVELS - 1 && s !== null; level++) {
+    if (s === '"') return level;
+    const d = new Decoder(`${s}"`, 0, 1);
+    let out = '';
+    for (let c = d.next(); c !== END; c = d.next()) {
+      if (c === BAD) {
+        out = null;
+        break;
+      }
+      out += String.fromCharCode(c);
+    }
+    s = out !== null && d.at() === s.length ? out : null;
+  }
+  return -1;
+}
+
+/**
+ * The value of a name when the strict reading of the name's level consumes it, or null: both quotes are quotes of one
+ * level, the name a whole string there, then a colon, a whole value and a comma, a close bracket or the end of the level
+ * (Redactor's consumedValueEnd). Gives where the value ends, and whether it is what Redactor leaves for a secret
+ * field: the mask (isMaskedValue) or null.
+ */
+function strictValue(text, open, name, close, end, secretName) {
+  const level = quoteLevelOf(text.slice(open, name));
+  if (level < 0 || level !== quoteLevelOf(text.slice(close, end))) return null;
+  const d = new Decoder(text, open, level);
+  if (d.peek() !== 34 || !readStrictString(d, null) || d.at() !== end) return null;
+  skipJsonSpace(d);
+  if (d.next() !== 58) return null;
+  skipJsonSpace(d);
+  const first = d.peek();
+  const strings = [];
+  if (!readStrictValue(d, strings)) return null;
+  const valueEnd = d.at();
+  skipJsonSpace(d);
+  const after = d.peek();
+  if (after !== 44 && after !== 125 && after !== 93 && after !== END) return null;
+  let masked = false;
+  if (first === 34 && strings.length === 1) {
+    // The string's content, read as the content of a string of this level: it ends at the string's closing quote.
+    const content = new Decoder(text, strings[0][1], level + 1);
+    let value = '';
+    for (let c = content.next(); c >= 0; c = content.next()) value += String.fromCharCode(c);
+    masked = isMaskedValue(secretName, value);
+  } else if (first === 110) {
+    masked = true;
+  }
+  return { end: valueEnd, masked };
+}
+
+/**
+ * Where the text's strings are certain: in the JSON value the text starts with, when it is valid, and, level by level,
+ * inside each such string whose content is valid JSON too (Redactor's Certainty). maskEnd gives where Redactor's mask of
+ * a candidate ends, or -1 when it leaves the candidate to its other passes.
+ */
+class Certainty {
+  constructor(text, ctx) {
+    this.text = text;
+    this.ctx = ctx;
+    this.inside = new Map();
+    const strings = [];
+    const d = new Decoder(text, 0, 0);
+    const valid = readStrictValue(d, strings);
+    ctx.work += text.length;
+    this.top = valid ? strings : null;
+    this.certainEnd = valid ? d.at() : 0;
+  }
+
+  /** For a candidate from `open` to `end` the strict reading does not read: where its mask ends, or -1. */
+  maskEnd(open, end) {
+    if (this.top === null || open >= this.certainEnd) return this.text.length;
+    let strings = this.top;
+    let outermost = null;
+    for (let level = 1; ; level++) {
+      const holder = Certainty.holding(strings, open, end);
+      if (holder === null) return -1;
+      if (outermost === null) outermost = holder;
+      strings = level >= MAX_LEVELS ? null : this.stringsInside(holder, level);
+      if (strings === null) return outermost[2];
+    }
+  }
+
+  static holding(strings, from, to) {
+    let low = 0;
+    let high = strings.length - 1;
+    let found = null;
+    while (low <= high) {
+      const mid = (low + high) >>> 1;
+      if (strings[mid][1] <= from) {
+        found = strings[mid];
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return found !== null && to <= found[2] ? found : null;
+  }
+
+  stringsInside(string, level) {
+    if (!this.inside.has(string[0])) {
+      const strings = [];
+      const d = new Decoder(this.text, string[1], level);
+      const valid = readStrictValue(d, strings);
+      skipJsonSpace(d);
+      this.ctx.work += string[2] - string[1];
+      this.inside.set(string[0], valid && d.peek() === END && d.at() === string[2] ? strings : null);
+    }
+    return this.inside.get(string[0]);
+  }
+}
+
+/** The next " escape's u in `text` from `from`, or -1. */
+const unicodeQuoteAt = (text, from) => {
+  for (let i = text.indexOf('u0022', from); i >= 0; i = text.indexOf('u0022', i + 1)) if (i > 0 && text[i - 1] === '\\') return i;
+  return -1;
+};
+
+/** Where the quote whose " or u0022 is at `quote` starts: its whole run of backslashes, each also \. */
+const quoteRunStartAt = (text, quote) => {
+  let i = quote;
+  for (;;) {
+    if (i > 0 && text[i - 1] === '\\') i--;
+    else if (i >= 6 && text[i - 6] === '\\' && text.slice(i - 5, i).toLowerCase() === 'u005c') i -= 6;
+    else return i;
+  }
+};
+
+/**
+ * Redactor's fail-closed rule (#339, Codex round 5): a secret name, with its quotes spelled any way at any level, whose
+ * value no strict reading of its own level consumes is masked from just after its colon to the end of the outermost
+ * string holding it, or to the end of the text when no valid JSON around it says where that is, quoted with the name's
+ * closing quote. The scanner uses the same trigger: such a name flags unless exactly that mask follows its colon.
+ */
+function unconsumedSecretNames(text, ctx) {
+  let certainty = null;
+  let skipTo = 0;
+  let plain = text.indexOf('"');
+  let unicode = unicodeQuoteAt(text, 0);
+  while (plain >= 0 || unicode >= 0) {
+    const isPlain = unicode < 0 || (plain >= 0 && plain < unicode);
+    const quote = isPlain ? plain : unicode;
+    const name = quote + (isPlain ? 1 : 5);
+    if (isPlain) plain = text.indexOf('"', quote + 1);
+    else unicode = unicodeQuoteAt(text, quote + 1);
+    if (name >= text.length || !/[A-Za-z_\\-]/.test(text[name])) continue;
+    const open = quoteRunStartAt(text, quote);
+    if (open < skipTo) continue;
+    SECRET_NAME_REST.lastIndex = name;
+    const m = SECRET_NAME_REST.exec(text);
+    if (m === null || !isSecretKey(decodedEscapedName(m[1]))) continue;
+    const close = name + m[1].length;
+    const value = strictValue(text, open, name, close, close + m[2].length, decodedEscapedName(m[1]));
+    ctx.work += Math.max(value?.end ?? 0, close + m[2].length) - open;
+    if (value !== null) {
+      // A value the strict reading of the name's level consumes and finds masked (the mask, or null) is judged there:
+      // the looser readings, which may read the name's quotes at two levels, leave that name alone.
+      // Any other value is left to them, as before.
+      if (value.masked) ctx.strictNames.add(name);
+      skipTo = Math.max(skipTo, value.end);
+      continue;
+    }
+    certainty ??= new Certainty(text, ctx);
+    const end = certainty.maskEnd(open, close + m[2].length);
+    if (end < 0) continue;
+    const colon = name + m[0].length;
+    if (text.slice(colon, end) !== m[2] + MASK + m[2]) {
+      ctx.leaks.push({ check: 'secret field no strict reading reads', match: text.slice(open, open + 80) });
+    }
+    skipTo = end;
+  }
+}
+
+/**
  * Checks over raw text: a regex whose `ok(match)` returning true means the hit is a masked or harmless value, or
  * a `scan(text, ctx)` that reads the text procedurally, in linear work, and records its own leaks.
  */
 const TEXT_CHECKS = [
+  // Redactor masks a secret field no strict reading of its level reads from its colon to the end of the outermost
+  // string, or of the text (#339, Codex round 5); anything else after such a name's colon is a leak.
+  { name: 'secret field no strict reading reads', scan: unconsumedSecretNames },
   // Redactor replaces whole PEM blocks, so any PEM header left over is a leak.
   { name: 'PEM block', re: /-----BEGIN [A-Z0-9 ]*-----/g },
   // The credential, which may be URL-encoded, runs to the next whitespace, quote, comma, semicolon or
@@ -1299,6 +1653,10 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         // In a view main does not read, jwkLeaks decides the JWKs.
         if (name === 'kty' && o.object && mode === MAIN) o.kty = true;
         member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
+        // A secret name whose value the strict reading of its level consumed and found masked (unconsumedSecretNames)
+        // is judged there: here its quotes may be read at two levels.
+        // Mapping a position back builds offset maps, charged to the work, so only a secret name is looked up.
+        if (ctx.strictNames?.size > 0 && isSecretKey(name) && ctx.strictNames.has(toRoot(literal.start + 1))) member = null;
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
         i = next + 1;
@@ -1395,7 +1753,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
 function textLeaks(text, level) {
   // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
   // read: the views readNested has read, by level and span in the text.
-  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text };
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text, strictNames: new Set() };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {
