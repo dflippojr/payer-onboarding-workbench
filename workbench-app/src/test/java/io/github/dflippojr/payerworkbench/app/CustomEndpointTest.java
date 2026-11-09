@@ -850,9 +850,10 @@ class CustomEndpointTest {
         assertEquals(200, posted.statusCode(), posted.body());
         var run = mapper.readTree(posted.body());
         String recorded = run.path("steps").get(3).path("details").path("exchanges").get(0).path("responseBody").asText();
-        assertEquals("{\"access_token\":\"[REDACTED]\"\n[not parsed: more than "
-                + WorkbenchProperties.DEFAULT_MAX_RESPONSE_JSON_VALUES + " JSON values; kept the first "
-                + ResponseTooLargeException.JSON_VALUES_PREFIX_CHARS + " characters]", recorded);
+        // The recorder masks the cut value to the end of the prefix and adds the note; the exchange redacts the body
+        // again, where no strict reading reads past the masked value, so the note goes with it (Codex round 5 on
+        // 8e6f207, fail closed).
+        assertEquals("{\"access_token\":\"[REDACTED]\"", recorded);
         String runId = run.path("runId").asText();
         List<String> surfaces = new ArrayList<>(List.of(posted.body(), send("GET", "/api/runs/" + runId, null).body()));
         for (String format : List.of("md", "html", "json")) {
