@@ -931,7 +931,7 @@ class RedactorTest {
     void masksSecretFieldsWhoseNameAndValueQuotesAreSpelledDifferently() {
         // #339 security round 1, finding 1: \\u0022 on only the name's quotes, only the value's, or on single
         // delimiters. Quoted two ways at one level, the value has no end a reading can trust: since Codex round 4 on
-        // b856d74 it is masked from where it starts to the end of the string holding it, quoted as the name is (owner
+        // b856d74 it is masked from its colon to the end of the outermost string or text, quoted as the name is (owner
         // decision on #339, fail closed). Quoted one way, as {\\u0022password\\u0022:123456}, it is masked alone.
         for (String[] pair : List.of(
                 new String[] {"{\"client_secret\":\\u0022s3cr3t\\u0022}", "{\"client_secret\":\"[REDACTED]\""},
@@ -1073,7 +1073,7 @@ class RedactorTest {
         // Review on 5b051eb: after a name whose quotes are spelled \\u0022 (one or both), a plain-quoted string value was
         // read only in the next view, which takes an escape off it: an escaped quote in it closed it early, keeping the
         // rest, and an escaped backslash at its end ran it through the next member. It is read in its own view. Since Codex round 4 on b856d74 a
-        // value quoted two ways at one level is masked from where it starts to the end of the string holding it (owner
+        // value quoted two ways at one level is masked from its colon to the end of the outermost string or text (owner
         // decision on #339, fail closed).
         for (String[] pair : List.of(
                 new String[] {"{Qclient_secretQ:\"s3\\\"cr3t\",\"n\":1}", "{Qclient_secretQ:Q[REDACTED]Q"},
@@ -1128,7 +1128,7 @@ class RedactorTest {
         // Review on 96428f9: the flattened view reads every quote a level decodes from \\u0022 as a bare one, so a
         // plain-quoted value after a name so quoted closed at a \\u0022 of its own and kept the rest. A plain-quoted
         // value is read in the decoded view, where such a quote stays an escape, as a7a971d read it. Since Codex round 4 on b856d74 a
-        // value quoted two ways at one level is masked from where it starts to the end of the string holding it (owner
+        // value quoted two ways at one level is masked from its colon to the end of the outermost string or text (owner
         // decision on #339, fail closed).
         for (String[] pair : List.of(
                 new String[] {"{Qclient_secretQ:\"preQTAIL\"}", "{Qclient_secretQ:Q[REDACTED]Q"},
@@ -1194,8 +1194,8 @@ class RedactorTest {
         // Review on 9de277d, P2: the embedded reading reads the value's escaped backslash and closing \\u0022 as an
         // escaped quote and runs it on to the next bare quote; the flattened reading closes it at that \\u0022. By the
         // owner's decision on #339 (fail closed) the union is masked, and as the longer reading found no closing quote of
-        // its own, the value's end is unknown and it is masked to the end of the string holding it (review on 9593177:
-        // masked only to the next member's quote, the output read as a mask that stops short).
+        // its own, the value's end is unknown and it is masked to the end of the outermost string or text (review on
+        // 9593177: masked only to the next member's quote, the output read as a mask that stops short).
         for (String[] pair : List.of(
                 new String[] {"{QpasswordQ:Qx\\\\Q,\"n\":1}",
                         "{QpasswordQ:Q[REDACTED]Q"},
@@ -1407,7 +1407,7 @@ class RedactorTest {
         // string, those decode to an escaped quote, and the value runs on to the last \\u0022: both readings are taken
         // and their union masked (owner decision on #339, fail closed). Five backslashes are an escaped backslash and a
         // closing quote either way. Since Codex round 4 on b856d74 a
-        // value quoted two ways at one level is masked from where it starts to the end of the string holding it (owner
+        // value quoted two ways at one level is masked from its colon to the end of the outermost string or text (owner
         // decision on #339, fail closed).
         for (String[] pair : List.of(
                 new String[] {"{\"client_secret\":QS3\\\\Q,TAILQ}",
@@ -1431,7 +1431,7 @@ class RedactorTest {
         // plain-quoted value, the flattened one a value opened by \\u0022, and the deeper views read the name as the level
         // above's. After a name the flattened view closes with a quote it turned bare, a value opened by an escaped quote
         // is masked whole, escaped quotes included, quoted as the name is. Since Codex round 4 on b856d74 a
-        // value quoted two ways at one level is masked from where it starts to the end of the string holding it (owner
+        // value quoted two ways at one level is masked from its colon to the end of the outermost string or text (owner
         // decision on #339, fail closed).
         for (String[] pair : List.of(
                 new String[] {"{\"client_secretQ:\\\"s3cr3t\\\"}",
@@ -1473,7 +1473,8 @@ class RedactorTest {
     void masksAValueOpenedByAnEscapedQuoteThatNoReadingBoundsToTheEndOfItsString() {
         // Review on f94fa05: {"client_secret":\\"s3cr3t\\u0022} was kept whole: no reading reads a value an escaped quote
         // opens after a plain-quoted name, whatever closes it. Such a value has no end any reading finds, so it is masked
-        // to the end of the string holding it (owner decision on #339, fail closed); valid JSON has no such value.
+        // to the end of the outermost string or text (owner decision on #339, fail closed; Codex round 5 on 8e6f207);
+        // valid JSON has no such value.
         for (String[] pair : List.of(
                 new String[] {"{\"client_secret\":\\\"s3cr3tQ}",
                         "{\"client_secret\":\"[REDACTED]\""},
@@ -1494,7 +1495,8 @@ class RedactorTest {
     void masksAnEscapedQuoteValueAfterAUnicodeClosedNameToTheEndOfItsStringWhenItsEndIsUnsure() {
         // Found with the review on f94fa05: after a name closed by \\u0022, a value an escaped quote opens was read as an
         // embedded string, which closed at a bare quote or at an escaped quote with more of the value right after it,
-        // keeping that rest (TAIL, S3CR3T). With no end of its own the value is masked to the end of its string.
+        // keeping that rest (TAIL, S3CR3T). With no end of its own the value is masked to the end of the outermost string or
+        // text (Codex round 5 on 8e6f207).
         for (String[] pair : List.of(
                 new String[] {"{\"client_secretQ:\\\"S3\\\\Q,TAIL\"}",
                         "{\"client_secretQ:Q[REDACTED]Q"},
@@ -1514,7 +1516,7 @@ class RedactorTest {
         // Codex round 4 on b856d74: {"client_secret":\\t\\"s3cr3t\\u0022} (\\t written as two characters) was kept whole.
         // The fallback for a value an escaped quote opens skipped only real whitespace, so escaped whitespace before that
         // quote, which EMBEDDED_SPACE reads as whitespace, hid the value from every reading. Quoted two ways, the value
-        // has no end a reading can trust: it is masked from where it starts to the end of the string holding it (owner
+        // has no end a reading can trust: it is masked from its colon to the end of the outermost string or text (owner
         // decision on #339, fail closed), with \\t, \\n or \\r, after a plain or \\u0022-closed name, at every depth.
         for (String space : List.of("~t", "~n", "~r")) {
             for (String[] pair : List.of(

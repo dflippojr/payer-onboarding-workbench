@@ -1641,8 +1641,8 @@ public final class Redactor {
      * spells {@code \\u0022} as its name's are (security round 2). The value keeps its own escapes there: the view of
      * {@code {\\u0022client_secret\\u0022:\\u0022\\"s3cr3t\\u0022}} is {@code {"client_secret":"\\"s3cr3t"}}, while the next
      * view would take an escape off it. A plain-quoted value is the other readings': this view would close it at a
-     * {@code \\u0022} of its own. After a plain-quoted name such a value is quoted two ways, and is masked to the end of
-     * the string holding it by the plain reading, where its quote is still an escape.
+     * {@code \\u0022} of its own. After a plain-quoted name no strict reading reads such a value, and it is masked from
+     * the colon by {@link #maskUnconsumedSecretNames}.
      */
     private static final int FLAT_READING = 2;
 

@@ -1862,7 +1862,7 @@ test('flags a deferred mask followed by an escaped continuation, which main flag
 });
 
 test('flags every secret value quoted two ways or opened after escaped whitespace, at every depth (#339, Codex round 4)', () => {
-  // The Redactor masks such a value from where it starts to the end of the string holding it (owner decision on #339,
+  // The Redactor masks such a value from its colon to the end of the outermost string or text (owner decision on #339,
   // fail closed); unmasked, the scanner flags it however the name, the gap after its colon and the value are quoted,
   // bare and nested every way: {"client_secret":\t\"s3cr3t"} with \t written as two characters, and its kin.
   const B = '\\';
