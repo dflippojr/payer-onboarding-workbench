@@ -1595,6 +1595,138 @@ class RedactorTest {
         }
     }
 
+    @Test
+    void masksAValueAnyEscapeOpensFromTheColonToTheEndOfTheOutermostString() {
+        // Codex round 5 on 8e6f207. F1: {\"client_secret\":\/\"s3cr3t\"} kept the secret, because only a run of two or more
+        // backslashes counted as an escaped value one level deep. F2: {\"client_secret\":\\"s3cr3t\"} masked only the two
+        // backslashes, because the quote after them was taken for the end of the string holding the value. No strict
+        // reading of the name's level reads either value, so it is masked from just after the colon to the end of the
+        // outermost string holding it, or, with no valid JSON around it to say where that is, to the end of the text.
+        String masked = "{\\\"client_secret\\\":\\\"[REDACTED]\\\"";
+        for (String in : List.of("{\\\"client_secret\\\":\\/\\\"s3cr3t\\\"}", "{\\\"client_secret\\\":\\\\\"s3cr3t\\\"}",
+                "{\\\"client_secret\\\":\\f\\\"s3cr3t\\\"}", "{\\\"client_secret\\\":\\/\\\"s3cr3t",
+                "{\\\"client_secret\\\":\\\\\"s3cr3t")) {
+            assertEquals(masked, Redactor.redact(in), in);
+            assertEquals("log: " + masked, Redactor.redact("log: " + in + " next line"), in);
+            // In a string of valid JSON the mask stops at that string's end: the members after it are kept.
+            assertEquals("{\"body\":" + JSON.writeValueAsString(masked) + ",\"n\":1}",
+                    Redactor.redact("{\"body\":" + JSON.writeValueAsString(in) + ",\"n\":1}"), in);
+            // Two levels down that is the outer string's end: the inner string and object around the name go with it.
+            String twice = nested(nested(masked));
+            assertEquals(twice.substring(0, twice.length() - "\\\"}\"}".length()) + "\"}",
+                    Redactor.redact(nested(nested(in))), in);
+        }
+    }
+
+    @Test
+    void masksEverySecretValueTheStrictReadingDoesNotConsumeAndWritesTheOutputsForTheScanner() throws Exception {
+        // Codex round 5 on 8e6f207: one rule for every spelling instead of a trigger per shape. Every quote spelling of the
+        // name's quotes (plain or \\u0022 after 0 to 3 backslashes), every single-character JSON escape or a space before
+        // the value, every quote spelling of the value's quotes, closed plainly or as it opened or cut off by the end of
+        // the text, bare and nested: no secret is kept unless the text is valid JSON whose name is not a secret one (a
+        // backslash closes "client_secret\\" inside the name), which is kept whole. With the earlier rounds' inputs,
+        // the outputs go to target/fail-closed-grid.json, where replay/test/leaks.test.mjs checks that the scanner
+        // accepts every one of them.
+        List<String> quotes = List.of("\"", "~\"", "~~\"", "~~~\"", "Q", "~Q", "~~Q");
+        List<String> gaps = List.of("", " ", "~\"", "~~", "~/", "~b", "~f", "~n", "~r", "~t");
+        List<String> values = new ArrayList<>(List.of(""));
+        for (String open : quotes) {
+            values.add(open + "s3cr3t" + open + "}");
+            if (!open.equals("\"")) {
+                values.add(open + "s3cr3t\"}");
+            }
+            values.add(open + "s3cr3t");
+        }
+        List<UnaryOperator<String>> wraps = List.of(RedactorTest::nested, t -> nested(nested(t)),
+                RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)));
+        List<String[]> pairs = new ArrayList<>();
+        List<String> wrong = new ArrayList<>();
+        int texts = 0;
+        int inputs = 0;
+        for (String open : quotes) {
+            for (String close : quotes) {
+                for (String gap : gaps) {
+                    for (String value : values) {
+                        String in = withEscapes("{" + open + "client_secret" + close + ":" + gap + value);
+                        boolean kept = isValidWithoutSecretNames(in);
+                        for (String text : List.of(in, wraps.get(inputs++ % wraps.size()).apply(in))) {
+                            texts++;
+                            String out = Redactor.redact(text);
+                            pairs.add(new String[] {text, out});
+                            if (kept ? !out.equals(text) : out.contains("s3cr3t")) {
+                                wrong.add(text + " => " + out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The earlier rounds' inputs (#339), each with the parts of its secret that must not be kept.
+        for (String[] round : List.of(
+                new String[] {"{\"client_secret\":\"~\"s3cr3t\"}", "s3cr3t"},
+                new String[] {"{\"client_secret\":~\"s3cr3tQ}", "s3cr3t"},
+                new String[] {"{\"client_secret\":\"s3cr3tQ,\"client_id\":\"app\"}", "s3cr3t"},
+                new String[] {"{\"client_secret\":~t~\"s3cr3tQ}", "s3cr3t"},
+                new String[] {"{\"client_secretQ:~\"s3cr3t~\"}", "s3cr3t"},
+                new String[] {"{\"client_secretQ:~\"~\"S3CR3T\"}", "S3CR3T"},
+                new String[] {"{\"client_secret\":Q~\"s3cr3tQ}", "s3cr3t"},
+                new String[] {"{\"client_secret\":Qs3cr3t~~~Q,\"n\":1}", "s3cr3t"},
+                new String[] {"{\"client_secret\":Qs3cr3tQ,\"n\":1}", "s3cr3t"},
+                new String[] {"{\"client_secretQ:~\"S3~~~Q,TAIL\"}", "S3", "TAIL"},
+                new String[] {"{\"client_secret\":QS3~~~Q,TAILQ}", "S3", "TAIL"},
+                new String[] {"{\"password\":\"abQcd\"}", "ab", "cd"},
+                new String[] {"{\"private_key\":{\"passwordQ:\"}TAIL\"},\"n\":1}", "TAIL"},
+                new String[] {"{Qclient_secret\":\"s3Q,\"n\":1}", "s3"},
+                new String[] {"{Qclient_secretQ:\"preQTAIL\"}", "pre", "TAIL"},
+                new String[] {"{Qclient_secretQ:\"Q,TAIL\"}", "TAIL"},
+                new String[] {"{QpasswordQ:QXSEC~~~Q,\"n\":1}", "XSEC"},
+                new String[] {"{Qprivate_keyQ:{Qpassword\":{},\"other\":\"OTHERSEC\"}}", "OTHERSEC"},
+                new String[] {"{\"x\":\"\"client_secret\":\"s3cr3t\"}", "s3cr3t"},
+                new String[] {"{Qclient_secretQ:QS3QCR3T\"}", "S3", "CR3T"},
+                new String[] {"{\\\"client_secret\\\":\\/\\\"s3cr3t\\\"}", "s3cr3t"},
+                new String[] {"{\\\"client_secret\\\":\\\\\"s3cr3t\\\"}", "s3cr3t"})) {
+            String in = withEscapes(round[0]);
+            for (String text : List.of(in, nested(in), nested(nested(in)), nestedEscapingQuotes(in),
+                    nested(nestedEscapingQuotes(in)))) {
+                texts++;
+                String out = Redactor.redact(text);
+                pairs.add(new String[] {text, out});
+                for (int i = 1; i < round.length; i++) {
+                    if (out.contains(round[i])) {
+                        wrong.add(text + " => " + out);
+                    }
+                }
+            }
+        }
+        java.nio.file.Path grid = java.nio.file.Path.of("target", "fail-closed-grid.json");
+        java.nio.file.Files.createDirectories(grid.getParent());
+        java.nio.file.Files.writeString(grid, JSON.writeValueAsString(pairs));
+        int total = texts;
+        assertEquals(List.of(), wrong, () -> wrong.size() + " of " + total + " texts are wrong, first: "
+                + wrong.subList(0, Math.min(5, wrong.size())));
+    }
+
+    /** Whether {@code text} is valid JSON with no member a secret name names, at any depth. */
+    private static boolean isValidWithoutSecretNames(String text) {
+        JsonNode tree;
+        try {
+            tree = JSON.readTree(text);
+        } catch (RuntimeException notJson) {
+            return false;
+        }
+        ArrayDeque<JsonNode> nodes = new ArrayDeque<>(List.of(tree));
+        while (!nodes.isEmpty()) {
+            JsonNode node = nodes.pop();
+            for (String name : node.propertyNames()) {
+                if (Redactor.isSecretField(name) || Redactor.isSensitiveHeader(name)) {
+                    return false;
+                }
+            }
+            node.forEach(nodes::push);
+        }
+        return true;
+    }
+
     /** {@code text} with each {@code ~} a backslash and each {@code Q} a quote spelled {@code \\u0022}. */
     private static String withEscapes(String text) {
         return text.replace("~", "\\").replace("Q", "\\u0022");

@@ -1848,3 +1848,69 @@ test('flags every secret value quoted two ways or opened after escaped whitespac
   }
   assert.deepEqual(missed, []);
 });
+
+/** Whether `text` is valid JSON with no member a secret name names, at any depth: the Redactor keeps it whole. */
+const isValidWithoutSecretNames = text => {
+  let tree;
+  try {
+    tree = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const secret = name => ['clientsecret', 'accesstoken', 'refreshtoken', 'idtoken', 'password', 'apikey', 'privatekey',
+    'secret', 'clientassertion', 'assertion'].includes(name.toLowerCase().replace(/[_-]/g, ''))
+    || ['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key', 'api-key', 'apikey', 'x-auth-token',
+      'x-access-token', 'x-client-secret'].includes(name.toLowerCase());
+  const nodes = [tree];
+  while (nodes.length > 0) {
+    const node = nodes.pop();
+    if (node === null || typeof node !== 'object') continue;
+    if (!Array.isArray(node) && Object.keys(node).some(secret)) return false;
+    nodes.push(...Object.values(node));
+  }
+  return true;
+};
+
+test('flags every secret name whose value the strict reading of its level does not consume (#339, Codex round 5)', () => {
+  // The grid of RedactorTest.masksEverySecretValueTheStrictReadingDoesNotConsumeAndWritesTheOutputsForTheScanner, in its
+  // order: the name's quotes, the value's quotes and the escape or space before the value, each spelled every way, closed
+  // or cut off, bare and nested. Unmasked, every text is flagged, but valid JSON whose names are not secret ones.
+  const B = '\\';
+  const U = B + 'u0022';
+  const quotes = ['"', `${B}"`, `${B}${B}"`, `${B}${B}${B}"`, U, B + U, B + B + U];
+  const gaps = ['', ' ', `${B}"`, `${B}${B}`, `${B}/`, `${B}b`, `${B}f`, `${B}n`, `${B}r`, `${B}t`];
+  const values = [''];
+  for (const open of quotes) {
+    values.push(`${open}s3cr3t${open}}`);
+    if (open !== '"') values.push(`${open}s3cr3t"}`);
+    values.push(`${open}s3cr3t`);
+  }
+  const wraps = [nestBody, t => nestBody(nestBody(t)), nestQuotes, t => nestBody(nestQuotes(t))];
+  const wrong = [];
+  let inputs = 0;
+  for (const open of quotes) for (const close of quotes) for (const gap of gaps) for (const value of values) {
+    const text = `{${open}client_secret${close}:${gap}${value}`;
+    const kept = isValidWithoutSecretNames(text);
+    for (const t of [text, wraps[inputs++ % wraps.length](text)]) {
+      if ((findTextLeaks(t).length > 0) === kept) wrong.push(t);
+    }
+  }
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
+});
+
+test('accepts every output of the Redactor for the Codex round 5 grid (#339)', t => {
+  // RedactorTest writes the grid's outputs to workbench-core/target/fail-closed-grid.json, and ci.yml and npm run ci:local
+  // run Maven verify before this suite. Run alone, without that file, the check is skipped, never in CI.
+  const path = fileURLToPath(new URL('../../workbench-core/target/fail-closed-grid.json', import.meta.url));
+  let pairs;
+  try {
+    pairs = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    if (process.env.CI) throw e;
+    t.skip(`no ${path}: run ./mvnw -pl workbench-core test first`);
+    return;
+  }
+  assert.ok(pairs.length > 20_000, `${pairs.length} pairs`);
+  const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
+  assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
+});
