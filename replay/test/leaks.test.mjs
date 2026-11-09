@@ -1946,3 +1946,14 @@ test('accepts every output of the Redactor for the Codex round 5 grid (#339)', (
   const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
 });
+
+test('reads the rest of a secret field\'s object once for all its secret fields, within the scan budget (#339, review on b00189e)', () => {
+  // Automated review on b00189e: each secret field's strict reading read the rest of its object again, unbudgeted, so an
+  // object of n masked secret fields cost n squared. Its work now counts against the budget and stays linear.
+  const body = `{${'"password":"[REDACTED]",'.repeat(4_000)}"n":1}`;
+  for (const text of [body, JSON.stringify({ responseBody: body })]) {
+    scanWork.characters = 0;
+    assert.deepEqual(findTextLeaks(text), []);
+    assert.ok(scanWork.characters <= 40 * text.length, `read ${scanWork.characters} characters of a ${text.length}-character text`);
+  }
+});

@@ -498,7 +498,7 @@ function quoteLevelOf(spelling) {
  * consumedValueEnd). Gives where the value ends, and whether it is the mask Redactor leaves for a secret field
  * (isMaskedItem: an empty value or null is left to the other readings, as before).
  */
-function strictValue(text, open, name, close, end, secretName) {
+function strictValue(text, open, name, close, end, secretName, read = { end: 0 }) {
   const level = quoteLevelOf(text.slice(open, name));
   if (level < 0 || level !== quoteLevelOf(text.slice(close, end))) return null;
   const d = new Decoder(text, open, level);
@@ -510,7 +510,9 @@ function strictValue(text, open, name, close, end, secretName) {
   const strings = [];
   if (!readStrictValue(d, strings)) return null;
   const valueEnd = d.at();
-  if (!readRestOfObject(d)) return null;
+  const rest = readRestOfObject(d);
+  read.end = Math.max(read.end, d.at());
+  if (!rest) return null;
   let masked = false;
   if (first === 34 && strings.length === 1) {
     // The string's content, read as the content of a string of this level: it ends at the string's closing quote.
@@ -643,8 +645,9 @@ function unconsumedSecretNames(text, ctx) {
     const m = SECRET_NAME_REST.exec(text);
     if (m === null || !isSecretKey(decodedEscapedName(m[1]))) continue;
     const close = name + m[1].length;
-    const value = strictValue(text, open, name, close, close + m[2].length, decodedEscapedName(m[1]));
-    ctx.work += Math.max(value?.end ?? 0, close + m[2].length) - open;
+    const read = { end: close + m[2].length };
+    const value = strictValue(text, open, name, close, close + m[2].length, decodedEscapedName(m[1]), read);
+    ctx.work += Math.max(read.end, value?.end ?? 0) - open;
     if (value !== null) {
       // A value the strict reading of the name's level consumes and finds masked is judged there:
       // the looser readings, which may read the name's quotes at two levels, leave that name alone.

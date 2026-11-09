@@ -1796,6 +1796,20 @@ class RedactorTest {
         }));
     }
 
+    @Test
+    void readsTheRestOfASecretFieldsObjectOnceForAllItsSecretFieldsInLinearTime() {
+        // Automated review on b00189e: each secret field's strict reading read the rest of its object again, so an object
+        // of n secret fields cost n squared (8,000 fields took 4.8 s). About 1 MB of them, bare and nested, valid JSON:
+        // each value masked, every other byte kept, in time that grows with the text.
+        int n = 60_000;
+        String fields = "{" + "\"password\":\"s3cr3t\",".repeat(n) + "\"n\":1}";
+        String masked = "{" + "\"password\":\"[REDACTED]\",".repeat(n) + "\"n\":1}";
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> {
+            assertEquals(masked, Redactor.redact(fields));
+            assertEquals(nested(masked), Redactor.redact(nested(fields)));
+        });
+    }
+
     /** {@link #nested}, with each quote in the string escaped as {@code \\u0022}. */
     private static String nestedEscapingQuotes(String text) {
         return "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\u0022") + "\"}";
