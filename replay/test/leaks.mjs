@@ -1917,10 +1917,9 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       // an Authorization-style value's scheme in front of it, review on 3c5ddac) is Redactor's output, a string the flattened copy of a MAIN view reads and judges whole (readFlattened), as
       // Redactor reads it (#339). Any other value so opened, an empty one included, is judged here as main judges it
       // (security round 3: deferring every such value accepted {"client_secret":\u0022\u0022}, which main flags). Any
-      // other member's value, a JWK private member's included, is judged here: the copy judges secret-named fields
-      // only (review on 47c938e).
-      // A JWK private member's value so opened and masked is left to readFlatJwks, which judges it as Redactor's JWK
-      // search finds it in the flattened view (#352).
+      // other member's value is judged here: the FLAT copies judge secret-named fields only (review on 47c938e). A JWK
+      // private member's value opened the same way and masked is left to readFlatJwks, which judges it as Redactor's
+      // JWK search finds it in the flattened view (#352); unmasked, it is judged here.
       if ((isSecretKey(member.name) || (mode === MAIN && isPrivateName(member.name, member.malformed)))
         && ((mode === MAIN && opensLoneUnicodeQuote(text, i) && opensMask(member.name, text, i + 6))
         || (mode === FLAT && BACKSLASHED_UNICODE_QUOTE.test(text.slice(i, i + 64))))) {
