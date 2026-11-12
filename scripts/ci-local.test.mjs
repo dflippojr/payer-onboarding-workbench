@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -354,4 +354,38 @@ test('the trusted gate guard runs from the default branch and runs no pull reque
     `      guard-ref: ${guardSha}`,
     '',
   ].join('\n'), 'the only job calls the pinned trusted guard with the same SHA as ci.yml');
+});
+
+test("the publisher's checks pass on what the publish job has: the committed files and the exported bundle (#357)", t => {
+  // The publish job checks out main and downloads site-dist, but runs no Maven and installs no npm packages, so a check
+  // that reads a build output (workbench-core/target/...) passes in ci and fails only there, after the merge (#357).
+  // This runs each of its node --test steps in a copy of the files git tracks (or would add) plus site-dist.
+  // ci.yml and npm run ci:local run this suite after the export, so site-dist is there.
+  const checks = publisher.publish.steps.filter(step => /^node --test /.test(step.run ?? ''));
+  assert.deepEqual(checks.map(step => step.run),
+    ['node --test replay/test/leaks.test.mjs', 'node --test replay/test/bundle.test.mjs']);
+  assert.ok(existsSync(join(root, 'site-dist', 'manifest.json')),
+    'no site-dist: run EXPORT_SKIP_BUILD=1 node scripts/export-replays.mjs first');
+  const dir = mkdtempSync(join(tmpdir(), 'pw-publish-checks-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const files = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(files.status, 0, files.stderr);
+  for (const file of files.stdout.split('\0').filter(Boolean)) {
+    if (existsSync(join(root, file))) cpSync(join(root, file), join(dir, file), { recursive: true });
+  }
+  cpSync(join(root, 'site-dist'), join(dir, 'site-dist'), { recursive: true });
+  for (const step of checks) {
+    // Without NODE_TEST_CONTEXT, which this runner sets and which makes a child node --test exit 0 without running.
+    const { NODE_TEST_CONTEXT, ...env } = process.env;
+    const result = spawnSync('bash', ['-e', '-c', step.run],
+      { cwd: dir, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const out = result.stdout ?? '';
+    const failures = out.split('\n').filter(line => /^\s*(not ok |✖ |error: )/.test(line));
+    assert.equal(result.status, 0, `${step.name}: ${step.run} failed in the publish job's tree:\n${failures.join('\n')}`
+      + `\n${(result.stderr ?? '').slice(-2000)}`);
+    // Node 22 reports TAP to a pipe (# pass), Node 24 the spec reporter (ℹ pass).
+    assert.match(out, /^(#|ℹ) pass [1-9]\d*$/m, `${step.run} ran no tests:\n${out.slice(-2000)}`);
+    assert.match(out, /^(#|ℹ) fail 0$/m, `${step.run}:\n${out.slice(-2000)}`);
+  }
 });

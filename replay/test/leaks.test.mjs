@@ -1,10 +1,11 @@
 // Runs the shared redaction corpus (workbench-core/src/test/resources/redaction-corpus.json,
 // also run through Redactor by RedactorCorpusTest) against the leak scanner.
-// Needs no bundle, only the Redactor grid outputs RedactorTest writes (./mvnw -pl workbench-core test first):
+// Needs no bundle and no build: the Redactor grids it checks are committed under workbench-core/src/test/resources/scanner-grids:
 // node --test replay/test/leaks.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
@@ -1932,16 +1933,19 @@ test('flags every secret name whose value the strict reading of its level does n
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
 });
 
+/**
+ * The [input, output] pairs of a RedactorTest grid, from the committed workbench-core/src/test/resources/scanner-grids.
+ * The publish job runs this suite with no Maven build, so it reads committed files, never target/ (#357); RedactorTest
+ * fails when a file no longer matches the Redactor, and -Dredactor.grids.update=true rewrites it.
+ */
+function redactorGrid(name) {
+  const url = new URL(`../../workbench-core/src/test/resources/scanner-grids/${name}.json.gz`, import.meta.url);
+  return JSON.parse(gunzipSync(readFileSync(fileURLToPath(url))).toString('utf8'));
+}
+
 test('accepts every output of the Redactor for the Codex round 5 grid (#339)', () => {
-  // RedactorTest writes the grid's outputs to workbench-core/target/fail-closed-grid.json, and ci.yml and npm run ci:local
-  // run Maven verify before this suite. Run alone, this suite needs ./mvnw -pl workbench-core test first.
-  const path = fileURLToPath(new URL('../../workbench-core/target/fail-closed-grid.json', import.meta.url));
-  let pairs;
-  try {
-    pairs = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    throw new Error(`no ${path}: run ./mvnw -pl workbench-core test first`, { cause: e });
-  }
+  // RedactorTest checks that the committed grid holds the Redactor's outputs for these inputs; see redactorGrid.
+  const pairs = redactorGrid('fail-closed-grid');
   assert.ok(pairs.length > 20_000, `${pairs.length} pairs`);
   const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
@@ -1984,14 +1988,8 @@ test('flags a secret name whose quote is spelled through an escape chain of any 
 });
 
 test('accepts every output of the Redactor for the escape-chain grid (#339, review on a7a1eef)', () => {
-  // RedactorTest writes the outputs to workbench-core/target/escape-chain-grid.json; Maven verify runs before this suite.
-  const path = fileURLToPath(new URL('../../workbench-core/target/escape-chain-grid.json', import.meta.url));
-  let pairs;
-  try {
-    pairs = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    throw new Error(`no ${path}: run ./mvnw -pl workbench-core test first`, { cause: e });
-  }
+  // RedactorTest checks that the committed grid holds the Redactor's outputs for these inputs; see redactorGrid.
+  const pairs = redactorGrid('escape-chain-grid');
   assert.equal(pairs.length, escapeChainInputs().length * 5);
   const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
