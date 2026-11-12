@@ -1225,6 +1225,7 @@ const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 
  */
 function readFlattened(text, level, ctx, toRoot, cut) {
   if (!text.includes('\\')) return;
+  readFlatJwks(text, ctx, toRoot, cut);
   // matchAll copies lastIndex, so the test must leave it at 0.
   LONE_UNICODE_QUOTE.lastIndex = 0;
   const found = LONE_UNICODE_QUOTE.test(text);
@@ -1307,6 +1308,152 @@ const LOOSE = 2;
 
 /** The most a FLAT copy may spend reading, per character of the view it was copied from (readFlattened). */
 const FLAT_ALLOWANCE = 8;
+
+/**
+ * Java's Character.isWhitespace, as Redactor reads the space before a colon: ASCII whitespace, U+001C to U+001F, and the
+ * Unicode space, line and paragraph separators but the no-break ones.
+ */
+const isJavaSpace = c => c !== undefined && /[ \t\n\x0B\f\r\x1C-\x1F\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]/.test(c);
+
+/** flatJwkCopy's states: outside any string, in a plain-quoted value, in a plain-quoted name, in a \u0022-quoted string. */
+const F_OUTSIDE = 0;
+const F_VALUE = 1;
+const F_NAME = 2;
+const F_STRING = 3;
+
+/** A \u0022 escape (either hex case) after an odd run of backslashes: one flatJwkCopy may write as a bare quote. */
+const ODD_UNICODE_QUOTE = /(?<!\\)(?:\\\\)*\\u0022/i;
+
+/** A unicode escape after a run of backslashes, as a name's escapes are decoded to compare it. */
+const RUN_ESCAPE = /\\+u([0-9A-Fa-f]{4})/g;
+
+/**
+ * The view Redactor's JWK search reads a level in when the level spells some of a JWK's quotes \u0022 and the rest plain
+ * ({"kty":"oct",\u0022d\u0022:"..."}, #352), written apart from Redactor's code: each unicode escape an odd run of
+ * backslashes ends is decoded, a quote or backslash to its escaped form, and a quote is written bare where it is one of
+ * the level's own quotes. That is outside every string (opening one, which a quote of either spelling then closes),
+ * closing a string a \u0022 opened, or closing a name a plain quote opened when a colon follows, unless that name closes
+ * as a name with a plain quote and colon of its own and its part before the \u0022 is no secret name. Inside a value a
+ * plain quote opens (after a colon, or an item of an array) a \u0022 is the string's own. Returns the copy and, for each
+ * of its characters, where it starts in text, or null when no quote is written bare. Its work is charged: one pass, and
+ * each plain-quoted name read to its closing quote once.
+ */
+function flatJwkCopy(text, ctx) {
+  const out = [];
+  const at = [];
+  const arrays = [false];
+  let state = F_OUTSIDE;
+  let depth = 0;
+  let before = '';
+  let validName = false;
+  let nameStart = 0;
+  let flattened = false;
+  let escaped = -1;
+  const beforeColon = from => {
+    let i = from;
+    while (i < text.length && isJavaSpace(text[i])) i++;
+    ctx.work += i - from;
+    return text[i] === ':';
+  };
+  const closesAsName = from => {
+    for (let i = from; i < text.length; i++) {
+      if (text[i] === '\\') {
+        i++;
+      } else if (text[i] === '"') {
+        ctx.work += i - from;
+        return beforeColon(i + 1);
+      }
+    }
+    ctx.work += text.length - from;
+    return false;
+  };
+  const secretBefore = after => {
+    const escape = after - 6;
+    return escape >= nameStart && escape - nameStart <= 6 * 64
+      && isSecretKey(text.slice(nameStart, escape).replace(RUN_ESCAPE, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16))));
+  };
+  const read = (c, i) => {
+    if (c === '"') {
+      const value = before === ':' || (arrays[depth] === true && (before === '[' || before === ','));
+      state = state !== F_OUTSIDE ? F_OUTSIDE : value ? F_VALUE : F_NAME;
+      validName = state === F_NAME && closesAsName(i + 1);
+      nameStart = i + 1;
+      before = c;
+    } else if (state === F_OUTSIDE) {
+      if (c === '{' || c === '[') {
+        arrays[++depth] = c === '[';
+      } else if ((c === '}' || c === ']') && depth > 0) {
+        depth--;
+      }
+      if (!isJavaSpace(c)) before = c;
+    }
+  };
+  const flattens = after => {
+    const bare = state === F_OUTSIDE || state === F_STRING
+      || (state === F_NAME && beforeColon(after) && (!validName || secretBefore(after)));
+    if (bare) {
+      state = state === F_OUTSIDE ? F_STRING : F_OUTSIDE;
+      before = '"';
+    }
+    return bare;
+  };
+  ctx.work += text.length;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '\\') {
+      if (i !== escaped) read(text[i], i);
+      at.push(i);
+      out.push(text[i++]);
+      continue;
+    }
+    let run = i;
+    while (run < text.length && text[run] === '\\') run++;
+    const odd = (run - i) % 2 === 1;
+    const m = odd ? /^u([0-9A-Fa-f]{4})/.exec(text.slice(run, run + 5)) : null;
+    for (let k = i; k < (m ? run - 1 : run); k++) {
+      at.push(k);
+      out.push('\\');
+    }
+    if (odd && !m) escaped = run;
+    if (m) {
+      const c = String.fromCharCode(Number.parseInt(m[1], 16));
+      const bare = c === '"' && flattens(run + 5);
+      if (bare) flattened = true;
+      else if (c !== '"' && c !== '\\') read(c, run - 1);
+      if (c === '\\' || (c === '"' && !bare)) {
+        at.push(run - 1);
+        out.push('\\');
+      }
+      at.push(run - 1);
+      out.push(c);
+      run += 5;
+    }
+    i = run;
+  }
+  at.push(text.length);
+  return flattened ? { copy: out.join(''), at } : null;
+}
+
+/**
+ * Judges the JWKs of a MAIN view in flatJwkCopy's copy of it, as Redactor's JWK search finds them there (jwkLeaks): a
+ * private member whose name or value quotes are spelled \u0022 in a JWK whose others are plain (#352). A view with no kty
+ * spelling holds no JWK, and one with no \u0022 after an odd run of backslashes has no quote to write bare, so neither
+ * is copied. The copy is read on top of what the other views may spend: the budget
+ * grows by what it spends, up to FLAT_ALLOWANCE times the view's length and the JWK search's 1024, so the work stays
+ * linear in the text.
+ */
+function readFlatJwks(text, ctx, toRoot, cut) {
+  KTY_SPELLING.lastIndex = 0;
+  const kty = KTY_SPELLING.test(text);
+  KTY_SPELLING.lastIndex = 0;
+  if (!kty || !ODD_UNICODE_QUOTE.test(text)) return;
+  const allowance = FLAT_ALLOWANCE * text.length + 1024;
+  ctx.budget += allowance;
+  const before = ctx.work;
+  const flat = flatJwkCopy(text, ctx);
+  if (flat) jwkLeaks(flat.copy, ctx, j => toRoot(flat.at[Math.min(j, flat.at.length - 1)]), cut);
+  ctx.budget -= Math.max(0, allowance - (ctx.work - before));
+}
 
 /**
  * Reads a decoded string as the JSON it may hold, `level` levels down. A string with a quote is read as JSON. A
@@ -1772,7 +1919,10 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       // (security round 3: deferring every such value accepted {"client_secret":\u0022\u0022}, which main flags). Any
       // other member's value, a JWK private member's included, is judged here: the copy judges secret-named fields
       // only (review on 47c938e).
-      if (isSecretKey(member.name) && ((mode === MAIN && opensLoneUnicodeQuote(text, i) && opensMask(member.name, text, i + 6))
+      // A JWK private member's value so opened and masked is left to readFlatJwks, which judges it as Redactor's JWK
+      // search finds it in the flattened view (#352).
+      if ((isSecretKey(member.name) || (mode === MAIN && isPrivateName(member.name, member.malformed)))
+        && ((mode === MAIN && opensLoneUnicodeQuote(text, i) && opensMask(member.name, text, i + 6))
         || (mode === FLAT && BACKSLASHED_UNICODE_QUOTE.test(text.slice(i, i + 64))))) {
         member = null;
         i++;

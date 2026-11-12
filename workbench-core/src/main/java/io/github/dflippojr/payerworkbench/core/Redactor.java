@@ -909,16 +909,16 @@ public final class Redactor {
         View deepest = readNestedLevels(text, (view, normal, depth, fresh) -> {
             String json = normal.text();
             // With no quote one level deep, the view holds no JWK maskJwks would find in embedded JSON.
-            if (!json.contains("\\\"")) {
-                return;
+            if (json.contains("\\\"")) {
+                List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, true,
+                        discovery.nested(depth, json.length()))
+                        : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
+                for (JwkValue value : values) {
+                    String quote = quoteOf(text, normal, value.name(), 2);
+                    masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
+                }
             }
-            List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, true,
-                    discovery.nested(depth, json.length()))
-                    : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
-            for (JwkValue value : values) {
-                String quote = quoteOf(text, normal, value.name(), 2);
-                masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
-            }
+            flatJwkMasks(text, view, depth, fresh, characters, discovery, masks);
         });
         if (deepest != null) {
             List<Mask> strings = stringsHoldingEscapes(text);
@@ -931,6 +931,34 @@ public final class Redactor {
             }
         }
         return masks;
+    }
+
+    /**
+     * Adds to {@code masks} the JWK private members no other read finds because the text spells some of a JWK's quotes
+     * {@code \\u0022} and the rest plain ({@code {"kty":"oct",\\u0022d\\u0022:"x"}}, #352): the normalized view decodes
+     * them to {@code \\"}, a level below the plain {@code "kty"}, so no reading of it holds both. The level's
+     * {@link #flattened} view turns them bare, at the level of the view's own quotes, and is read here as plain JSON,
+     * spending the level's nested budget. A string value's mask keeps the text's spelling of its quotes; an object, array
+     * or scalar's is quoted as the member's name is.
+     */
+    private static void flatJwkMasks(String text, View view, int depth, BitSet fresh, int characters, Discovery discovery,
+            List<Mask> masks) {
+        View flat = flattened(view, new BitSet(), fresh);
+        if (flat == null) {
+            return;
+        }
+        String json = flat.text();
+        List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, false,
+                discovery.nested(depth, json.length()))
+                : jwkValues(json, false, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
+        for (JwkValue value : values) {
+            int start = value.start();
+            int end = value.end();
+            boolean string = json.charAt(start) == '"';
+            String open = quoteOf(text, flat, string ? start : value.name(), 1);
+            String close = string && end - 1 > start && json.charAt(end - 1) == '"' ? quoteOf(text, flat, end - 1, 1) : open;
+            masks.add(new Mask(flat.at(start), flat.at(end), open + MASK + close));
+        }
     }
 
     /**

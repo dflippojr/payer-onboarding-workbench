@@ -2160,6 +2160,43 @@ class RedactorTest {
     }
 
     @Test
+    void readsJwksWithUnicodeQuotedMembersInLinearTimeWithinTheNestedBudget() {
+        // #352: the flattened view is read in the same walk of the levels as the other views, and spends its level's
+        // nested budget, so each level's reads continue one budget and the work stays linear. About 1 MB each: JWKs with a
+        // "-quoted member, names and values opening and closing on such quotes, and both nested once.
+        String u = "\\u0022";
+        String jwks = "[" + ("{\"kty\":\"oct\"," + u + "k" + u + ":\"PRIVK352\"},").repeat(30_000) + "{}]";
+        List<String> texts = List.of(jwks, nested(jwks), ("{\"kty\":\"oct\"," + u + "d" + u + ":[" + u).repeat(40_000),
+                (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(60_000));
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
+            List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+            String out = Redactor.redact(text, reads);
+            assertFalse(out.contains("PRIVK352"), () -> text.substring(0, 60));
+            Map<String, Integer> left = new LinkedHashMap<>();
+            for (Redactor.DiscoveryRead read : reads) {
+                Integer before = left.put(read.level(), read.after());
+                assertTrue(before == null || before == read.before(), () -> "a fresh budget for " + read + " in " + reads);
+                assertTrue(read.before() <= 4 * text.length() + 1024, () -> read + " in " + reads);
+            }
+        }));
+        assertEquals(jwks.replace("PRIVK352", "[REDACTED]"), Redactor.redact(jwks));
+    }
+
+    @Test
+    void masksEveryUnicodeQuotedPrivateMemberOnceTheFlattenedViewSpendsItsBudget() {
+        // #352: repeated kty syntax spends the JWK search's budget, as in readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft,
+        // and then every private member name in the flattened view is masked, in a JWK or not: this d is in none.
+        String u = "\\u0022";
+        String text = "\"kty\":\"".repeat(200) + u + "d" + u + ":\"PRIVD352\"";
+        List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+        String out = Redactor.redact(text, reads);
+        assertFalse(out.contains("PRIVD352"), () -> out.substring(out.length() - 80));
+        assertTrue(out.endsWith(u + "d" + u + ":\"[REDACTED]\""), () -> out.substring(out.length() - 80));
+        // The plain read spends its budget too, but finds no plain-quoted d; the flattened view's read masks it.
+        assertTrue(reads.stream().anyMatch(read -> read.level().equals("nested 1") && read.after() < 0), reads::toString);
+    }
+
+    @Test
     void keepsAPrivateMemberQuotedWithUnicodeEscapesOutsideAJwk() {
         // #352: with no kty in its object, a d quoted with " is an ordinary name and is kept.
         String u = "\\u0022";
