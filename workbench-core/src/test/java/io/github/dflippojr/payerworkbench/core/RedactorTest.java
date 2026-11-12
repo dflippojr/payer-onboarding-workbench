@@ -2133,6 +2133,44 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkPrivateMemberWhoseNameIsQuotedWithUnicodeEscapesInAPlainQuotedJwk() {
+        // #352: the name's quotes spelled ", the rest of the JWK plain-quoted; also the value's quotes only. Each is
+        // masked with every other byte kept, bare and nested once and twice. The leak scanner's test of the same name
+        // uses these outputs as its masked forms.
+        String u = "\\u0022";
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put("{\"kty\":\"oct\"," + u + "d" + u + ":\"PRIVD352\"}",
+                "{\"kty\":\"oct\"," + u + "d" + u + ":\"[REDACTED]\"}");
+        cases.put("{\"kty\":\"oct\"," + u + "d" + u + ":[\"PRIVD352\"]}",
+                "{\"kty\":\"oct\"," + u + "d" + u + ":" + u + "[REDACTED]" + u + "}");
+        cases.put("{\"kty\":\"oct\",\"d\":" + u + "PRIVD352" + u + "}",
+                "{\"kty\":\"oct\",\"d\":" + u + "[REDACTED]" + u + "}");
+        cases.put("{\"kty\":\"RSA\",\"n\":\"N1\"," + u + "d" + u + ":\"PRIVD352\"," + u + "p" + u + ":\"PRIVP352\",\"e\":\"AQAB\"}",
+                "{\"kty\":\"RSA\",\"n\":\"N1\"," + u + "d" + u + ":\"[REDACTED]\"," + u + "p" + u + ":\"[REDACTED]\",\"e\":\"AQAB\"}");
+        for (Map.Entry<String, String> c : cases.entrySet()) {
+            String leaked = c.getKey();
+            String masked = c.getValue();
+            for (int depth = 0; depth < 3; depth++) {
+                assertEquals(masked, Redactor.redact(leaked), "depth " + depth);
+                assertEquals(masked, Redactor.redact(masked), "depth " + depth);
+                leaked = nested(leaked);
+                masked = nested(masked);
+            }
+        }
+    }
+
+    @Test
+    void keepsAPrivateMemberQuotedWithUnicodeEscapesOutsideAJwk() {
+        // #352: with no kty in its object, a d quoted with " is an ordinary name and is kept.
+        String u = "\\u0022";
+        for (String text : List.of("{\"kid\":\"oct\"," + u + "d" + u + ":\"dimension\"}",
+                "{\"a\":{\"kty\":\"oct\"},\"b\":{" + u + "d" + u + ":\"dimension\"}}")) {
+            assertEquals(text, Redactor.redact(text));
+            assertEquals(nested(text), Redactor.redact(nested(text)));
+        }
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
         // #342 (automated review on 925a782): kty quoted with \u0022 and k with \" (or the other way round). The leak
         // scanner's test of the same name uses this output as its masked form.

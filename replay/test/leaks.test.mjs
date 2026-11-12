@@ -2022,3 +2022,32 @@ test('reads the rest of a secret field\'s object once for all its secret fields,
     assert.ok(scanWork.characters <= 40 * text.length, `read ${scanWork.characters} characters of a ${text.length}-character text`);
   }
 });
+
+test('flags a JWK private member whose name is quoted with \\u0022 in a plain-quoted JWK, and accepts it masked (#352)', () => {
+  // The masked forms are RedactorTest.masksAJwkPrivateMemberWhoseNameIsQuotedWithUnicodeEscapesInAPlainQuotedJwk's
+  // outputs, bare and nested once and twice.
+  const u = '\\u0022';
+  const cases = [
+    [`{"kty":"oct",${u}d${u}:"PRIVD352"}`, `{"kty":"oct",${u}d${u}:"[REDACTED]"}`],
+    [`{"kty":"oct",${u}d${u}:["PRIVD352"]}`, `{"kty":"oct",${u}d${u}:${u}[REDACTED]${u}}`],
+    [`{"kty":"oct","d":${u}PRIVD352${u}}`, `{"kty":"oct","d":${u}[REDACTED]${u}}`],
+    [`{"kty":"RSA","n":"N1",${u}d${u}:"PRIVD352",${u}p${u}:"PRIVP352","e":"AQAB"}`,
+      `{"kty":"RSA","n":"N1",${u}d${u}:"[REDACTED]",${u}p${u}:"[REDACTED]","e":"AQAB"}`],
+  ];
+  const wrong = [];
+  for (const [leaked, masked] of cases) {
+    for (const wrap of [t => t, nestBody, t => nestBody(nestBody(t))]) {
+      if (findTextLeaks(wrap(leaked)).length === 0) wrong.push(`not flagged: ${wrap(leaked)}`);
+      const flagged = findTextLeaks(wrap(masked));
+      if (flagged.length > 0) wrong.push(`flagged: ${wrap(masked)} ${JSON.stringify(flagged)}`);
+    }
+  }
+  // With no kty in its object, such a d is an ordinary name.
+  for (const kept of [`{"kid":"oct",${u}d${u}:"dimension"}`, `{"a":{"kty":"oct"},"b":{${u}d${u}:"dimension"}}`]) {
+    for (const wrap of [t => t, nestBody]) {
+      const flagged = findTextLeaks(wrap(kept));
+      if (flagged.length > 0) wrong.push(`flagged: ${wrap(kept)} ${JSON.stringify(flagged)}`);
+    }
+  }
+  assert.deepEqual(wrong, []);
+});
