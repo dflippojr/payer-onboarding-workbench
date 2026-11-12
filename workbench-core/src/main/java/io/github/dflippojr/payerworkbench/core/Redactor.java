@@ -266,8 +266,24 @@ public final class Redactor {
     /** {@link #JWK_TYPE} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_JWK_TYPE = Pattern.compile(EMBEDDED_KTY_NAME.pattern() + EMBEDDED_SPACE + ":");
 
+    /**
+     * {@link #JWK_TYPE} in a {@link #flattened} view, whose whitespace may be escaped as in {@link #FIELD_NAME}: a view keeps
+     * every escape but a quote's and a backslash's (#352, security round 1).
+     */
+    private static final Pattern VIEW_JWK_TYPE = Pattern.compile(KTY_NAME.pattern() + EMBEDDED_SPACE + ":");
+
     /** The name of a {@link #JWK_PRIVATE_MEMBERS} field, each letter also as a {@code \\u} escape, through its colon. */
     private static final Pattern JWK_PRIVATE_NAME = Pattern.compile("\"" + privateNames(false) + "\"\\s*:");
+
+    /** {@link #JWK_PRIVATE_NAME} in a {@link #flattened} view, with whitespace as in {@link #VIEW_JWK_TYPE}. */
+    private static final Pattern VIEW_JWK_PRIVATE_NAME = Pattern.compile(
+            "\"" + privateNames(false) + "\"" + EMBEDDED_SPACE + ":");
+
+    /** {@link #JSON_SCALAR} as a pattern of its own. */
+    private static final Pattern SCALAR = Pattern.compile(JSON_SCALAR);
+
+    /** Whitespace in a view or in JSON embedded in a JSON string ({@link #EMBEDDED_SPACE}), as a pattern of its own. */
+    private static final Pattern SPACE_RUN = Pattern.compile(EMBEDDED_SPACE);
 
     /** {@link #JWK_PRIVATE_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_JWK_PRIVATE_NAME = Pattern.compile(
@@ -774,6 +790,19 @@ public final class Redactor {
         return false;
     }
 
+    /**
+     * {@link #beforeColon}, with an escaped line break or tab ({@code \\n}, {@code \\r}, {@code \\t}) also read as
+     * whitespace, as a view keeps it (#352, security round 1).
+     */
+    private static boolean beforeViewColon(String json, int from) {
+        int i = from;
+        while (i < json.length() && (Character.isWhitespace(json.charAt(i))
+                || (json.charAt(i) == '\\' && i + 1 < json.length() && "nrt".indexOf(json.charAt(i + 1)) >= 0))) {
+            i += json.charAt(i) == '\\' ? 2 : 1;
+        }
+        return i < json.length() && json.charAt(i) == ':';
+    }
+
     /** Whether the next character from {@code from} in {@code json} that is not whitespace is a colon. */
     private static boolean beforeColon(String json, int from) {
         int i = from;
@@ -812,10 +841,58 @@ public final class Redactor {
      * ends, in order and apart: the opening quote (or bracket) through the closing quote (or bracket), and
      * where the member's name starts (its opening quote, or in embedded JSON the backslash before it). The
      * searches spend {@code budget[0]}, one character a step, and leave in it what is left (below 0 once spent).
+     * A private member whose value this reading does not consume and that opens with a quote of another level
+     * ({@link #opensOtherQuote}) comes {@link JwkValue#unread}, from its value to the end of the string holding it or of
+     * the text: fail closed (#352, security round 1), as {@link #maskUnconsumedSecretNames} masks a secret name's value.
      */
     private static List<JwkValue> jwkValues(String text, boolean embedded, int[] budget) {
-        Matcher type = (embedded ? EMBEDDED_JWK_TYPE : JWK_TYPE).matcher(text);
+        TreeSet<Integer> names = jwkNames(text, embedded, false, budget);
+        List<JwkValue> values = new ArrayList<>();
+        Matcher field = (embedded ? EMBEDDED_JSON_FIELD : JSON_FIELD).matcher(text);
+        Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : JSON_FIELD_STRUCTURE).matcher(text);
+        Matcher member = (embedded ? EMBEDDED_JWK_PRIVATE_NAME : JWK_PRIVATE_NAME).matcher(text);
+        int[] limits = null;
+        int copied = 0;
+        // The length of a quote: an embedded one has a backslash before it.
+        int quote = embedded ? 2 : 1;
+        for (int name : names) {
+            // A name inside a value already masked goes with it, except one that opens on the quote that closed
+            // that value (malformed: {"d":""p":...}), whose own value still comes after it.
+            if (name < copied - quote) {
+                continue;
+            }
+            if (structure.region(name, text.length()).lookingAt() && structure.end() >= copied
+                    && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
+                copied = endOfStructure(text, structure.end(), embedded);
+                values.add(new JwkValue(structure.end(), copied, name, false));
+            } else if (field.region(name, text.length()).lookingAt() && field.end(2) >= copied
+                    && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
+                copied = field.end();
+                values.add(new JwkValue(field.end(2), copied, name, false));
+            } else if (member.region(name, text.length()).lookingAt() && member.end() >= copied) {
+                int start = embedded ? afterSpace(text, member.end()) : afterJavaSpace(text, member.end());
+                if (limits == null) {
+                    limits = stringEnds(text, embedded, k -> false);
+                }
+                int limit = limits[start];
+                if (start < limit && opensOtherQuote(text, start, embedded)) {
+                    copied = limit;
+                    values.add(new JwkValue(start, limit, name, true));
+                }
+            }
+        }
+        return values;
+    }
+
+    /**
+     * Where the name of each {@link #JWK_PRIVATE_MEMBERS} member of a JWK in {@code text} starts, as {@link #jwkValues}
+     * finds them; {@code view}: a {@link #flattened} view read as plain JSON, whose whitespace may be escaped
+     * ({@link #VIEW_JWK_TYPE}). Once the budget is spent, every private member name in the text, in a JWK or not.
+     */
+    private static TreeSet<Integer> jwkNames(String text, boolean embedded, boolean view, int[] budget) {
+        Matcher type = (embedded ? EMBEDDED_JWK_TYPE : view ? VIEW_JWK_TYPE : JWK_TYPE).matcher(text);
         Matcher kty = (embedded ? EMBEDDED_KTY_NAME : KTY_NAME).matcher(text);
+        Pattern every = embedded ? EMBEDDED_JWK_PRIVATE_NAME : view ? VIEW_JWK_PRIVATE_NAME : JWK_PRIVATE_NAME;
         // Where the text read by objects() so far ends: every object before it is known.
         int readEnd = 0;
         Map<Integer, Integer> matching = new HashMap<>();
@@ -830,8 +907,7 @@ public final class Redactor {
             }
             int start = startOfObject(text, member, embedded, matching, outside, outsideResult, budget);
             if (start == OUT_OF_TIME) {
-                names = everyPrivateMember(text, embedded);
-                break;
+                return everyPrivateMember(text, every);
             }
             if (start < 0) {
                 outside = member;
@@ -841,8 +917,7 @@ public final class Redactor {
             List<JsonObject> objects = new ArrayList<>();
             int end = objects(text, start, embedded, matching, objects, budget);
             if (end == OUT_OF_TIME) {
-                names = everyPrivateMember(text, embedded);
-                break;
+                return everyPrivateMember(text, every);
             }
             readEnd = end;
             for (JsonObject object : objects) {
@@ -851,33 +926,53 @@ public final class Redactor {
                 }
             }
         }
-        List<JwkValue> values = new ArrayList<>();
-        Matcher field = (embedded ? EMBEDDED_JSON_FIELD : JSON_FIELD).matcher(text);
-        Matcher structure = (embedded ? EMBEDDED_JSON_FIELD_STRUCTURE : JSON_FIELD_STRUCTURE).matcher(text);
-        int copied = 0;
-        // The length of a quote: an embedded one has a backslash before it.
-        int quote = embedded ? 2 : 1;
-        for (int name : names) {
-            // A name inside a value already masked goes with it, except one that opens on the quote that closed
-            // that value (malformed: {"d":""p":...}), whose own value still comes after it.
-            if (name < copied - quote) {
-                continue;
-            }
-            if (structure.region(name, text.length()).lookingAt() && structure.end() >= copied
-                    && JWK_PRIVATE_MEMBERS.contains(decodeName(structure.group(1)))) {
-                copied = endOfStructure(text, structure.end(), embedded);
-                values.add(new JwkValue(structure.end(), copied, name));
-            } else if (field.region(name, text.length()).lookingAt() && field.end(2) >= copied
-                    && JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
-                copied = field.end();
-                values.add(new JwkValue(field.end(2), copied, name));
-            }
-        }
-        return values;
+        return names;
     }
 
-    /** A JWK private member's value found by {@link #jwkValues}: where it starts and ends, and where its name starts. */
-    private record JwkValue(int start, int end, int name) {
+    /** Where whitespace as {@link #EMBEDDED_SPACE} reads it, from {@code from} in {@code text}, ends. */
+    private static int afterSpace(String text, int from) {
+        Matcher space = SPACE_RUN.matcher(text);
+        return space.region(from, text.length()).lookingAt() ? space.end() : from;
+    }
+
+    /** Where Java's whitespace ({@code \s}, as {@link #JSON_FIELD} reads it), from {@code from} in {@code text}, ends. */
+    private static int afterJavaSpace(String text, int from) {
+        int i = from;
+        while (i < text.length() && " \t\n\013\f\r".indexOf(text.charAt(i)) >= 0) {
+            i++;
+        }
+        return i;
+    }
+
+    /**
+     * Whether a member's value from {@code at} in {@code text} opens with a quote of another escape level than the
+     * reading's own ({@code "} in plain JSON, {@code \"} in {@code embedded} JSON): a quote after another number of
+     * backslashes, or a unicode escape of one after an odd number (in embedded JSON, three or more). No reading of this
+     * level consumes such a value, and it may be the member's own value quoted as the level below spells it, so it is
+     * masked (#352, security round 1). Any other value no reading consumes (a bare word, a second colon, a string cut
+     * short) is kept, as the leak scanner keeps it.
+     */
+    private static boolean opensOtherQuote(String text, int at, boolean embedded) {
+        int i = at;
+        while (i < text.length() && text.charAt(i) == '\\') {
+            i++;
+        }
+        int run = i - at;
+        if (i >= text.length()) {
+            return false;
+        }
+        if (text.charAt(i) == '"') {
+            return run != (embedded ? 1 : 0);
+        }
+        return run % 2 == 1 && run >= (embedded ? 3 : 1) && text.regionMatches(true, i, "u0022", 0, 5);
+    }
+
+    /**
+     * A JWK private member's value found by {@link #jwkValues}: where it starts and ends, and where its name starts.
+     * {@code unread}: a value the reading does not consume, from its start to the end of the string holding it; it is
+     * masked only where no other reading masks a value from there ({@link #withUnread}).
+     */
+    private record JwkValue(int start, int end, int name, boolean unread) {
     }
 
     /** The most levels of JSON nested in JSON strings that {@link #maskNestedJwks(String, int)} reads one by one. */
@@ -897,14 +992,17 @@ public final class Redactor {
      * of length {@code m} if it is negative, as {@link #redact(String)} reads.
      */
     static String maskNestedJwks(String text, int characters) {
-        return applyMasks(text, nestedJwkMasks(text, characters, null));
+        List<Mask> unread = new ArrayList<>();
+        List<Mask> masks = nestedJwkMasks(text, characters, null, unread);
+        return applyMasks(text, withUnread(masks, unread));
     }
 
     /**
      * What {@link #maskNestedJwks(String, int)} masks, as masks on the text. With a {@code discovery}, each round
-     * spends that level's budget there instead of {@code characters}.
+     * spends that level's budget there instead of {@code characters}. The masks of values no reading consumes go to
+     * {@code unread} ({@link #withUnread}).
      */
-    private static List<Mask> nestedJwkMasks(String text, int characters, Discovery discovery) {
+    private static List<Mask> nestedJwkMasks(String text, int characters, Discovery discovery, List<Mask> unread) {
         List<Mask> masks = new ArrayList<>();
         View deepest = readNestedLevels(text, (view, normal, depth, fresh) -> {
             String json = normal.text();
@@ -915,10 +1013,11 @@ public final class Redactor {
                         : jwkValues(json, true, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
                 for (JwkValue value : values) {
                     String quote = quoteOf(text, normal, value.name(), 2);
-                    masks.add(new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
+                    (value.unread() ? unread : masks).add(
+                            new Mask(normal.at(value.start()), normal.at(value.end()), quote + MASK + quote));
                 }
             }
-            flatJwkMasks(text, view, depth, fresh, characters, discovery, masks);
+            flatJwkMasks(text, view, depth, fresh, characters, discovery, masks, unread);
         });
         if (deepest != null) {
             List<Mask> strings = stringsHoldingEscapes(text);
@@ -935,30 +1034,140 @@ public final class Redactor {
 
     /**
      * Adds to {@code masks} the JWK private members no other read finds because the text spells some of a JWK's quotes
-     * {@code \\u0022} and the rest plain ({@code {"kty":"oct",\\u0022d\\u0022:"x"}}, #352): the normalized view decodes
-     * them to {@code \\"}, a level below the plain {@code "kty"}, so no reading of it holds both. The level's
-     * {@link #flattened} view turns them bare, at the level of the view's own quotes, and is read here as plain JSON,
-     * spending the level's nested budget. A string value's mask keeps the text's spelling of its quotes; an object, array
-     * or scalar's is quoted as the member's name is.
+     * as unicode escapes and the rest plain (#352): the normalized view decodes them to {@code \"}, a level below the
+     * plain {@code "kty"}, so no reading of it holds both. The level's {@link #flattened} view turns them bare, at the
+     * level of the view's own quotes, where the JWKs are found as {@link #jwkValues} finds them, spending the level's
+     * nested budget, with whitespace as the view spells it ({@link #VIEW_JWK_TYPE}).
+     *
+     * <p>Each private member's value is then read in the view as the secret-field reading of it reads a secret one
+     * (security round 1): through whitespace escaped or not; an object or array as {@link #endOfFlatStructure} bounds it;
+     * a string to its closing quote, and past a closing quote that reads as an escaped one a level down
+     * ({@link #escapedQuoteEnd}) to the quote that closes it there. A string with no closing quote that ends it
+     * ({@link #endsValue}) and a value no reading consumes, such as one quoted a level down, are masked to the end of
+     * the string holding the view's JSON (fail closed); the latter goes to {@code unread}. A string value's mask keeps
+     * the text's spelling of its quotes; any other is quoted as the member's name is.
      */
     private static void flatJwkMasks(String text, View view, int depth, BitSet fresh, int characters, Discovery discovery,
-            List<Mask> masks) {
-        View flat = flattened(view, new BitSet(), fresh);
-        if (flat == null) {
+            List<Mask> masks, List<Mask> unread) {
+        int[] budget = null;
+        View first = null;
+        // The view read both ways a quote after an escaped backslash in a unicode-quoted string may be read (decoded):
+        // read one way, the members after such a value may fall out of step with their names (security round 1).
+        for (boolean keepEscaped : new boolean[] {false, true}) {
+            BitSet quotes = new BitSet();
+            View flat = decoded(view, quotes, fresh, true, keepEscaped);
+            if (flat == null || flat.equals(first)) {
+                return;
+            }
+            if (budget == null) {
+                budget = discovery != null ? discovery.nested(depth, flat.text().length())
+                        : new int[] {characters < 0 ? 4 * flat.text().length() + 1024 : characters};
+            }
+            first = flat;
+            flatJwkMasks(text, flat, quotes, fresh, depth, budget, discovery, masks, unread);
+        }
+    }
+
+    /** {@link #flatJwkMasks} in one flattened view, {@code flat}, whose bare quotes are set in {@code quotes}. */
+    private static void flatJwkMasks(String text, View flat, BitSet quotes, BitSet fresh, int depth, int[] budget,
+            Discovery discovery, List<Mask> masks, List<Mask> unread) {
+        String json = flat.text();
+        TreeSet<Integer> names = discovery != null ? discovery.readNames("nested " + depth, json, budget)
+                : jwkNames(json, false, true, budget);
+        if (names.isEmpty()) {
             return;
         }
-        String json = flat.text();
-        List<JwkValue> values = discovery != null ? discovery.read("nested " + depth, json, false,
-                discovery.nested(depth, json.length()))
-                : jwkValues(json, false, new int[] {characters < 0 ? 4 * json.length() + 1024 : characters});
-        for (JwkValue value : values) {
-            int start = value.start();
-            int end = value.end();
-            boolean string = json.charAt(start) == '"';
-            String open = quoteOf(text, flat, string ? start : value.name(), 1);
-            String close = string && end - 1 > start && json.charAt(end - 1) == '"' ? quoteOf(text, flat, end - 1, 1) : open;
-            masks.add(new Mask(flat.at(start), flat.at(end), open + MASK + close));
+        // Past depth 1, a quote neither this level's unescaping made, nor its decoding, nor the flattening is the level
+        // above's: it ends the string holding this JSON, as in secretFieldMasks.
+        IntPredicate outer = fresh == null ? k -> false : k -> !fresh.get(flat.at(k))
+                && !(k > 0 && decodesQuote(flat, k - 1)) && !quotes.get(k);
+        int[] limits = stringEnds(json, false, outer);
+        Matcher field = FIELD_NAME.matcher(json);
+        Matcher scalar = SCALAR.matcher(json);
+        int copied = 0;
+        for (int name : names) {
+            if (name < copied - 1 || !field.region(name, json.length()).lookingAt()
+                    || !JWK_PRIVATE_MEMBERS.contains(decodeName(field.group(1)))) {
+                continue;
+            }
+            int start = afterSpace(json, field.end());
+            int limit = limits[start];
+            if (start >= limit || (json.charAt(start) == '"' && outer.test(start))) {
+                continue;
+            }
+            String quote = quoteOf(text, flat, name, 1);
+            char c = json.charAt(start);
+            if (c == '{' || c == '[') {
+                copied = Math.max(start + 1, endOfFlatStructure(json, start, quotes, outer));
+                masks.add(new Mask(flat.at(start), flat.at(copied), quote + MASK + quote));
+            } else if (c == '"') {
+                String open = quoteOf(text, flat, start, 1);
+                int close = closingQuote(json, start + 1, limit);
+                int escaped = escapedQuoteEnd(json, close, limit, quotes);
+                if (escaped > close) {
+                    close = escaped;
+                }
+                if (close < limit && json.charAt(close) == '"' && endsValue(json, close + 1)) {
+                    copied = close + 1;
+                    masks.add(new Mask(flat.at(start), flat.at(copied), open + MASK + quoteOf(text, flat, close, 1)));
+                } else {
+                    copied = limit;
+                    masks.add(new Mask(flat.at(start), flat.at(copied), open + MASK + open));
+                }
+            } else if (scalar.region(start, limit).lookingAt()) {
+                copied = scalar.end();
+                masks.add(new Mask(flat.at(start), flat.at(copied), quote + MASK + quote));
+            } else if (opensOtherQuote(json, start, false)) {
+                copied = limit;
+                unread.add(new Mask(flat.at(start), flat.at(copied), quote + MASK + quote));
+            }
         }
+    }
+
+    /**
+     * The first quote in {@code json} from {@code from}, an escape's character skipped, before {@code limit}; else
+     * {@code limit}.
+     */
+    private static int closingQuote(String json, int from, int limit) {
+        int i = from;
+        while (i < limit && json.charAt(i) != '"') {
+            i += json.charAt(i) == '\\' ? 2 : 1;
+        }
+        return Math.min(i, limit);
+    }
+
+    /**
+     * {@code masks} and each of the {@code unread} masks that starts where no mask in {@code masks} covers: a value one
+     * reading does not consume and another reads whole is masked as that one reads it, so a value quoted with unicode
+     * escapes in plain JSON keeps the rest of the text; a value no reading consumes is masked to the end of the string
+     * holding it.
+     */
+    private static List<Mask> withUnread(List<Mask> masks, List<Mask> unread) {
+        if (unread.isEmpty()) {
+            return masks;
+        }
+        List<Mask> sorted = new ArrayList<>(masks);
+        sorted.sort((a, b) -> Integer.compare(a.start(), b.start()));
+        int[] starts = new int[sorted.size()];
+        // The furthest any mask up to each one in start order reaches.
+        int[] reach = new int[sorted.size()];
+        for (int i = 0; i < sorted.size(); i++) {
+            starts[i] = sorted.get(i).start();
+            reach[i] = Math.max(i > 0 ? reach[i - 1] : 0, sorted.get(i).end());
+        }
+        List<Mask> all = new ArrayList<>(masks);
+        for (Mask mask : unread) {
+            int at = Arrays.binarySearch(starts, mask.start());
+            if (at < 0) {
+                at = -at - 2;
+            } else {
+                continue;
+            }
+            if (at < 0 || reach[at] <= mask.start()) {
+                all.add(mask);
+            }
+        }
+        return all;
     }
 
     /**
@@ -1898,17 +2107,18 @@ public final class Redactor {
      */
     private static List<Mask> jwkMasks(String text, Discovery discovery) {
         List<Mask> masks = new ArrayList<>();
+        List<Mask> unread = new ArrayList<>();
         for (JwkValue value : discovery.read("plain", text, false, discovery.plain)) {
-            masks.add(new Mask(value.start(), value.end(), "\"" + MASK + "\""));
+            (value.unread() ? unread : masks).add(new Mask(value.start(), value.end(), "\"" + MASK + "\""));
         }
         // With a unicode escape, a quote may be spelled two ways; nestedJwkMasks reads that level decoded.
         if (!UNICODE_ESCAPE.matcher(text).find()) {
             for (JwkValue value : discovery.read("embedded", text, true, discovery.embedded)) {
-                masks.add(new Mask(value.start(), value.end(), "\\\"" + MASK + "\\\""));
+                (value.unread() ? unread : masks).add(new Mask(value.start(), value.end(), "\\\"" + MASK + "\\\""));
             }
         }
-        masks.addAll(nestedJwkMasks(text, -1, discovery));
-        return masks;
+        masks.addAll(nestedJwkMasks(text, -1, discovery, unread));
+        return withUnread(masks, unread);
     }
 
     /** A read JWK discovery made at an escape level: how much of that level's budget was left before and after it. */
@@ -1958,15 +2168,24 @@ public final class Redactor {
          * read, of a text masking its key blocks has shortened, gets no more than a first read of that text would.
          */
         List<JwkValue> read(String level, String text, boolean embedded, int[] budget) {
+            return spend(level, text, budget, left -> jwkValues(text, embedded, left));
+        }
+
+        /** {@link #jwkNames} in a {@link #flattened} view at {@code level}, spending {@code budget} as {@link #read} does. */
+        TreeSet<Integer> readNames(String level, String text, int[] budget) {
+            return spend(level, text, budget, left -> jwkNames(text, false, true, left));
+        }
+
+        private <T> T spend(String level, String text, int[] budget, java.util.function.Function<int[], T> search) {
             int before = budget[0];
             int allowance = Math.min(before, 4 * text.length() + 1024);
             int[] left = {allowance};
-            List<JwkValue> values = jwkValues(text, embedded, left);
+            T found = search.apply(left);
             budget[0] = left[0] < 0 ? left[0] : before - (allowance - left[0]);
             if (reads != null) {
                 reads.add(new DiscoveryRead(level, before, budget[0]));
             }
-            return values;
+            return found;
         }
     }
 
@@ -2115,7 +2334,7 @@ public final class Redactor {
      * returned.
      */
     private static View normalized(View view) {
-        return decoded(view, null, null);
+        return decoded(view, null, null, false, false);
     }
 
     /**
@@ -2125,11 +2344,18 @@ public final class Redactor {
      * LevelReader}), or {@code null} at depth 1.
      */
     private static View flattened(View view, BitSet quotes, BitSet fresh) {
-        return decoded(view, quotes, fresh);
+        return decoded(view, quotes, fresh, false, false);
     }
 
-    /** {@link #normalized} or, with {@code quotes} to set, {@link #flattened}. */
-    private static View decoded(View view, BitSet quotes, BitSet fresh) {
+    /**
+     * {@link #normalized} or, with {@code quotes} to set, {@link #flattened}. {@code viewSpace}: a quote closing a name a
+     * plain quote opens is followed by its colon through whitespace the view escapes too ({@link #EMBEDDED_SPACE}), as
+     * the JWK reading of the view reads a name ({@link #VIEW_JWK_PRIVATE_NAME}; #352, security round 1).
+     * {@code keepEscaped}: inside a string a quote turned bare opened, a quote spelled as a unicode escape after a number
+     * of backslashes 2 more than a multiple of 4 in the view (an escaped backslash, then the quote) stays an escaped
+     * quote, the other way {@link #escapedQuoteEnd} reads it, so the string goes on through it.
+     */
+    private static View decoded(View view, BitSet quotes, BitSet fresh, boolean viewSpace, boolean keepEscaped) {
         boolean flat = quotes != null;
         String text = view.text();
         Matcher escape = UNICODE_ESCAPE.matcher(text);
@@ -2137,7 +2363,7 @@ public final class Redactor {
             return flat ? null : view;
         }
         boolean flattenedAny = false;
-        FlatContext context = flat ? new FlatContext() : null;
+        FlatContext context = flat ? new FlatContext(viewSpace) : null;
         int escaped = -1;
         StringBuilder out = new StringBuilder(text.length());
         int[] to = new int[text.length() + 1];
@@ -2168,7 +2394,8 @@ public final class Redactor {
             }
             if (unicode) {
                 char c = (char) Integer.parseInt(escape.group(1), 16);
-                boolean flattens = flat && c == '"' && context.flattens(text, escape.end());
+                boolean flattens = flat && c == '"' && !(keepEscaped && context.inFlatString() && (run - 1 - i) % 4 == 2)
+                        && context.flattens(text, escape.end());
                 if (flattens) {
                     flattenedAny = true;
                     quotes.set(out.length());
@@ -2216,6 +2443,12 @@ public final class Redactor {
         private boolean validName;
         /** Where the plain-quoted name being read starts, after its opening quote. */
         private int nameStart;
+        /** Whether a name's colon may follow whitespace the view escapes ({@link #decoded}). */
+        private final boolean viewSpace;
+
+        FlatContext(boolean viewSpace) {
+            this.viewSpace = viewSpace;
+        }
 
         /**
          * Reads one character that is not an escape, at {@code at} in {@code text}; {@code outer} for a quote of the level
@@ -2258,10 +2491,16 @@ public final class Redactor {
                     && isSecretKey(decodeName(text.substring(nameStart, escape)));
         }
 
+        /** Whether the character read last is inside a string a quote turned bare opened. */
+        boolean inFlatString() {
+            return state == FLAT_STRING;
+        }
+
         /** Whether the quote spelled {@code \\u0022} that ends at {@code after} in {@code text} is turned bare. */
         boolean flattens(String text, int after) {
             boolean flattens = state == OUTSIDE || state == FLAT_STRING
-                    || (state == PLAIN_NAME && beforeColon(text, after) && (!validName || secretBefore(text, after)));
+                    || (state == PLAIN_NAME && (viewSpace ? beforeViewColon(text, after) : beforeColon(text, after))
+                    && (!validName || secretBefore(text, after)));
             if (flattens) {
                 state = state == OUTSIDE ? FLAT_STRING : OUTSIDE;
                 before = '"';
@@ -2323,13 +2562,13 @@ public final class Redactor {
      * the names are matched, not the values before them: in malformed text a value can end at the quote
      * that opens the next name ({@code "x":""d":}), and a search for whole fields would skip that name.
      */
-    private static TreeSet<Integer> everyPrivateMember(String text, boolean embedded) {
-        TreeSet<Integer> names = new TreeSet<>();
-        Matcher m = (embedded ? EMBEDDED_JWK_PRIVATE_NAME : JWK_PRIVATE_NAME).matcher(text);
+    private static TreeSet<Integer> everyPrivateMember(String text, Pattern names) {
+        TreeSet<Integer> found = new TreeSet<>();
+        Matcher m = names.matcher(text);
         while (m.find()) {
-            names.add(m.start());
+            found.add(m.start());
         }
-        return names;
+        return found;
     }
 
     /**

@@ -2195,8 +2195,14 @@ class RedactorTest {
         // "-quoted member, names and values opening and closing on such quotes, and both nested once.
         String u = "\\u0022";
         String jwks = "[" + ("{\"kty\":\"oct\"," + u + "k" + u + ":\"PRIVK352\"},").repeat(30_000) + "{}]";
+        // Security round 1: values read past an escaped quote, or quoted a level down, with whitespace escaped a level down.
+        String b = String.valueOf((char) 92);
+        String escapedQuotes = "{\"kty\":\"oct\"," + ("" + u + "k" + u + ":" + u + "PRIVK352" + b + b + u + "x" + u + ",").repeat(25_000)
+                + "\"e\":1}";
         List<String> texts = List.of(jwks, nested(jwks), ("{\"kty\":\"oct\"," + u + "d" + u + ":[" + u).repeat(40_000),
-                (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(60_000));
+                (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(60_000), escapedQuotes, nested(escapedQuotes),
+                ("{\"kty\":\"oct\"," + u + "d" + u + ":" + b + "\"").repeat(40_000),
+                nested(("{\"kty\":\"oct\"," + u + "d" + u + "\n:" + u).repeat(30_000)));
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
             String out = Redactor.redact(text, reads);
@@ -2209,6 +2215,27 @@ class RedactorTest {
             }
         }));
         assertEquals(jwks.replace("PRIVK352", "[REDACTED]"), Redactor.redact(jwks));
+    }
+
+    @Test
+    void masksAJwkValueThroughAnEscapedQuoteQuotedALevelDownOrAfterEscapedWhitespace() {
+        // Security round 1 on #352, one of each shape the matrix covers (jwkSpellingInputs). A quote spelled as a unicode
+        // escape after an escaped backslash, inside a unicode-quoted value, is an escaped quote a level down: the value
+        // goes on to the quote that closes it there, and is masked whole.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String head = "{\"kty\":\"oct\"," + u + "d" + u + ":";
+        assertEquals(head + u + "[REDACTED]" + u + "}", Redactor.redact(head + u + "PRIVSTART" + b + b + u + "PRIVTAIL" + u + "}"));
+        // A value quoted a level down, which no reading of the JWK's level reads: masked to the end of the string holding
+        // it (fail closed), quoted as the member's name is.
+        assertEquals(head + u + "[REDACTED]" + u, Redactor.redact(head + b + "\"PRIVSTART" + b + "\"}"));
+        assertEquals(head + u + "[REDACTED]" + u, Redactor.redact(head + b + "\"PRIVSTART" + b + "\",\"e\":\"AQAB\"}"));
+        // Whitespace a level down, escaped there: a string keeps the text's quotes, an object is quoted as the name is.
+        String nestedHead = "{\"body\":\"{" + b + "\"kty" + b + "\":" + b + "\"oct" + b + "\"," + b + u + "d" + b + u + ":";
+        assertEquals(nestedHead + b + "n" + b + "\"[REDACTED]" + b + "\"}\"}",
+                Redactor.redact(nestedHead + b + "n" + b + "\"PRIVSTART" + b + "\"}\"}"));
+        assertEquals(nestedHead + b + "t" + b + u + "[REDACTED]" + b + u + "}\"}",
+                Redactor.redact(nestedHead + b + "t{" + b + "\"x" + b + "\":" + b + "\"PRIVSTART" + b + "\"}}\"}"));
     }
 
     @Test

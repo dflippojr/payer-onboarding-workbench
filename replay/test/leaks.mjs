@@ -1388,9 +1388,17 @@ function flatJwkCopy(text, ctx) {
       if (!isJavaSpace(c)) before = c;
     }
   };
+  // A name's closing quote is followed by its colon through whitespace raw or escaped, as Redactor's JWK reading of
+  // the view reads a name (security round 1).
+  const beforeViewColon = from => {
+    let i = from;
+    while (i < text.length && (isJavaSpace(text[i]) || (text[i] === '\\' && /^[nrt]$/.test(text[i + 1] ?? '')))) i += text[i] === '\\' ? 2 : 1;
+    ctx.work += i - from;
+    return text[i] === ':';
+  };
   const flattens = after => {
     const bare = state === F_OUTSIDE || state === F_STRING
-      || (state === F_NAME && beforeColon(after) && (!validName || secretBefore(after)));
+      || (state === F_NAME && beforeViewColon(after) && (!validName || secretBefore(after)));
     if (bare) {
       state = state === F_OUTSIDE ? F_STRING : F_OUTSIDE;
       before = '"';
@@ -1451,7 +1459,7 @@ function readFlatJwks(text, ctx, toRoot, cut) {
   ctx.budget += allowance;
   const before = ctx.work;
   const flat = flatJwkCopy(text, ctx);
-  if (flat) jwkLeaks(flat.copy, ctx, j => toRoot(flat.at[Math.min(j, flat.at.length - 1)]), cut);
+  if (flat) jwkLeaks(flat.copy, ctx, j => toRoot(flat.at[Math.min(j, flat.at.length - 1)]), cut, true);
   ctx.budget -= Math.max(0, allowance - (ctx.work - before));
 }
 
@@ -1514,6 +1522,24 @@ const PRIVATE_FIELD = /"((?:[A-Za-z_-]|\\u[0-9A-Fa-f]{4}){1,64})"[ \t\n\x0B\f\r]
 
 /** A kty name and colon, as Redactor finds a JWK's type member, with Java's whitespace. */
 const KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"[ \t\n\x0B\f\r]*:/g;
+
+/**
+ * PRIVATE_FIELD and KTY_TYPE in flatJwkCopy's copy, whose whitespace may also be an escaped line break or tab, as
+ * Redactor reads a view (security round 1: a nested JWK's colon after an escaped line break).
+ */
+const VIEW_PRIVATE_FIELD = /"((?:[A-Za-z_-]|\\u[0-9A-Fa-f]{4}){1,64})"(?:[ \t\n\x0B\f\r]|\\[nrt])*:(?:[ \t\n\x0B\f\r]|\\[nrt])*/y;
+const VIEW_KTY_TYPE = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"(?:[ \t\n\x0B\f\r]|\\[nrt])*:/g;
+
+/**
+ * Whether a value from `v` in `text` opens with a quote of a level below the copy's: backslashes, then a quote, or an
+ * odd run of them and a u0022 (as Redactor's opensOtherQuote reads a plain reading's value). No reading of the copy's level reads such a value whole, so a private member's is a leak unless masked
+ * (security round 1: a unicode-quoted name with a value quoted \" a level down).
+ */
+const opensDeeperQuote = (text, v) => {
+  let i = v;
+  while (text[i] === '\\') i++;
+  return i > v && (text[i] === '"' || ((i - v) % 2 === 1 && /^u0022/i.test(text.slice(i, i + 5))));
+};
 
 /** A kty name at a member's name, as Redactor checks each name of an object it read. */
 const KTY_AT = /"(?:k|\\u006[bB])(?:t|\\u0074)(?:y|\\u0079)"/y;
@@ -1583,19 +1609,23 @@ const backslashesBefore = (text, i) => {
  * (one no backslash escapes), the name and colon, then an object or array, a number, true or false, or a string that is
  * neither the mask nor empty: to its closing quote through any line break, or to the end of the text or a backslash
  * before a line break no raw line break in the scanned text spells, where it was cut, as Redactor reads a field (automated review on 7050fef: a value that starts with
- * a line break read as empty). Each comes as [where its name starts, text to report, check].
+ * a line break read as empty). A mask or empty string followed by something no value is followed by is a value masked
+ * only in part. With `flat` (flatJwkCopy's copy), whitespace may be escaped as in a view, and a value that opens with a
+ * quote of a level below is unmasked too (security round 1). Each comes as [where its name starts, text to report,
+ * check].
  */
-function unmaskedPrivateFields(text, ctx, toRoot, cut) {
+function unmaskedPrivateFields(text, ctx, toRoot, cut, flat = false) {
   const fields = [];
+  const field = flat ? VIEW_PRIVATE_FIELD : PRIVATE_FIELD;
   ctx.work += text.length;
   for (let at = text.indexOf('"'); at >= 0; at = text.indexOf('"', at + 1)) {
-    PRIVATE_FIELD.lastIndex = at;
-    const m = PRIVATE_FIELD.exec(text);
+    field.lastIndex = at;
+    const m = field.exec(text);
     // A backslash before the name's opening quote does not stop it: Redactor matches an escaped copy's field from the
     // last backslash before its quote, so a quote escaped one level more than the copy's others still opens a member,
     // and whether it is one of a JWK is jwkLeaks' to decide (automated review on 32194d8).
     if (m === null || !JWK_PRIVATE_MEMBERS.has(decodedName(m[1]))) continue;
-    const v = PRIVATE_FIELD.lastIndex;
+    const v = field.lastIndex;
     if (escapedFormFeed(text, at, v, ctx, toRoot)) continue;
     if (text[v] === '{' || text[v] === '[') {
       fields.push([at, text.slice(at, v + 40), 'JSON secret structure']);
@@ -1627,8 +1657,13 @@ function unmaskedPrivateFields(text, ctx, toRoot, cut) {
       // In a view cut inside a value (readNested), a value open at its end lost bytes there. One that ends in a lone
       // backslash Redactor does not match (automated review on b9d6038), so the loop above stops before it, at a mask.
       const open = cut && end >= text.length;
-      if (open || (value !== MASK && value !== '')) fields.push([at, text.slice(at, end + 1), 'JSON secret field']);
+      // A mask whose closing quote something other than what may follow a value follows ("[REDACTED]"TAIL") stops
+      // short of the value, which goes on past it (security round 1), as main reads a value (cutShort).
+      const short = end < text.length && !endsValue(text[end + 1]);
+      if (open || short || (value !== MASK && value !== '')) fields.push([at, text.slice(at, end + 1), 'JSON secret field']);
     } else if (/^(?:-?\d|true\b|false\b)/.test(text.slice(v, v + 6))) {
+      fields.push([at, text.slice(at, v + 40), 'JSON secret field']);
+    } else if (flat && opensDeeperQuote(text, v)) {
       fields.push([at, text.slice(at, v + 40), 'JSON secret field']);
     }
   }
@@ -1648,10 +1683,11 @@ const OUT_OF_TIME = -3;
  * turning in and out of strings at each quote no backslash escapes and skipping bracket pairs matched before; it then
  * reads that object forward, and every object in it, taking as an object's member names the first string after its open
  * bracket or after a comma in it. An object one of whose names is kty is a JWK, and all its names are its members. It
- * runs only when the view has an unmasked private member field, so it costs a pass over the view otherwise.
+ * runs only when the view has an unmasked private member field, so it costs a pass over the view otherwise. With `flat`,
+ * the view is flatJwkCopy's copy, read as unmaskedPrivateFields reads one, its kty's whitespace too.
  */
-function jwkLeaks(text, ctx, toRoot, cut) {
-  const fields = unmaskedPrivateFields(text, ctx, toRoot, cut);
+function jwkLeaks(text, ctx, toRoot, cut, flat = false) {
+  const fields = unmaskedPrivateFields(text, ctx, toRoot, cut, flat);
   if (fields.length === 0) return;
   let budget = 4 * text.length + 1024;
   const spentAt = budget;
@@ -1724,7 +1760,7 @@ function jwkLeaks(text, ctx, toRoot, cut) {
   const names = new Set();
   let readEnd = 0;
   let spent = false;
-  for (const m of text.matchAll(KTY_TYPE)) {
+  for (const m of text.matchAll(flat ? VIEW_KTY_TYPE : KTY_TYPE)) {
     const member = m.index;
     if (member < readEnd || escapedFormFeed(text, member, member + m[0].length, ctx, toRoot)) continue;
     const run = backslashesBefore(text, member);
