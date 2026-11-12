@@ -1,6 +1,6 @@
 // Runs the shared redaction corpus (workbench-core/src/test/resources/redaction-corpus.json,
 // also run through Redactor by RedactorCorpusTest) against the leak scanner.
-// Needs no bundle, only the Redactor grid outputs RedactorTest writes (./mvnw -pl workbench-core test first):
+// Needs no bundle and no build: the Redactor grids it checks are committed under workbench-core/src/test/resources/scanner-grids:
 // node --test replay/test/leaks.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
