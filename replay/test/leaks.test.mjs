@@ -2087,7 +2087,7 @@ test('flags a JWK value read past an escaped quote a level down when the kty com
   const b = '\\';
   const u = `${b}u0022`;
   for (const member of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
-    for (const head of [`{${u}${member}${u}:${u}`, `{${u}${b}u005c${u.slice(1)}${member}${u}:${u}`]) {
+    for (const head of [`{${u}${member}${u}:${u}`, `{${b}u005c${u.slice(1)}${member}${u}:${u}`]) {
       for (const start of ['PRIVSTART', '[REDACTED]']) {
         const raw = `${head}${start}${b}${b}${u}PRIVTAIL${u},"kty":"oct"}`;
         for (const text of [raw, JSON.stringify({ body: raw }), JSON.stringify({ body: JSON.stringify({ body: raw }) })]) {

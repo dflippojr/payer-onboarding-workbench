@@ -2246,7 +2246,7 @@ class RedactorTest {
     @Test
     void masksAJwkValueAfterANameQuotedThroughAnEscapeChainOrBeforeTheJwksKty() {
         // Security round 2 on #352, one of each shape the matrix adds (jwkSpellingInputs). A name quoted through an escape
-        // chain: the value is masked whole, a structure quoted as the name is.
+        // chain: the value is masked whole, quoted as the name opens.
         String b = String.valueOf((char) 92);
         String u = b + "u0022";
         String chainHead = "{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "d" + u + ":";
@@ -2254,10 +2254,10 @@ class RedactorTest {
         assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}", Redactor.redact(chainHead + "[\"PRIVSTART\"]}"));
         assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}",
                 Redactor.redact(chainHead + "{\"x\":\"PRIVSTART\"}}"));
-        assertEquals(chainHead + "\"[REDACTED]\"}", Redactor.redact(chainHead + "\"PRIVSTART\"}"));
-        // The JWK's kty after a value quoted a level down, with or without a space before it.
+        assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}", Redactor.redact(chainHead + "\"PRIVSTART\"}"));
+        // The JWK's kty after a value quoted a level down, with or without a space before it: quoted as the name is.
         for (String tail : List.of(", \"kty\":\"oct\"}", ",\"kty\":\"oct\"}")) {
-            assertEquals("{" + u + "d" + u + ":" + b + "\"[REDACTED]" + b + "\"" + tail,
+            assertEquals("{" + u + "d" + u + ":" + u + "[REDACTED]" + u + tail,
                     Redactor.redact("{" + u + "d" + u + ":" + b + "\"PRIVSTART" + b + "\"" + tail));
         }
         // ...and after a value holding an escaped backslash and a unicode quote.
@@ -2321,9 +2321,10 @@ class RedactorTest {
                 u + "PRIVSTART\"",
                 "{\"x\":\"PRIVSTART\"}",
                 "[\"PRIVSTART\"]");
-        // Before the colon, after it, and after the value: a form feed, a vertical tab and an em space are whitespace too.
-        List<String[]> spaces = List.of(new String[] {"", "", ""}, new String[] {"\n", "", "\f"},
-                new String[] {"", "\t", String.valueOf((char) 0x0B)}, new String[] {"\r", " ", String.valueOf((char) 0x2003)});
+        // Before the colon, after it, and after the value (every other kind of whitespace Java reads there:
+        // masksAJwkValueAfterANameQuotedThroughAnEscapeChainOrBeforeTheJwksKty).
+        List<String[]> spaces = List.of(new String[] {"", "", ""}, new String[] {"\n", "", "\n"},
+                new String[] {"", "\t", " "}, new String[] {"\r", " ", "\t"});
         List<String> inputs = new ArrayList<>();
         for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
             for (String[] quote : nameQuotes) {

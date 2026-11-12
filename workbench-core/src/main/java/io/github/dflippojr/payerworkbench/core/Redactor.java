@@ -446,7 +446,7 @@ public final class Redactor {
         out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
-        return maskUnconsumedSecretNames(out);
+        return maskCanonicalJwks(maskUnconsumedSecretNames(out));
     }
 
     /**
@@ -1407,7 +1407,7 @@ public final class Redactor {
     }
 
     /** {@code s} read as the content of a JSON string, or {@code null} when it is not that: a bare quote, a bad escape. */
-    private static String unescapedOnce(String s) {
+    static String unescapedOnce(String s) {
         Decoder d = new Decoder(s + "\"", 0, 1);
         StringBuilder out = new StringBuilder(s.length());
         for (int c = d.next(); c != END; c = d.next()) {
@@ -2118,7 +2118,59 @@ public final class Redactor {
             }
         }
         masks.addAll(nestedJwkMasks(text, -1, discovery, unread));
-        return withUnread(masks, unread);
+        return withCanonical(withUnread(masks, unread), text);
+    }
+
+    /**
+     * {@code masks} and each JWK private member's value the canonical reading masks ({@link CanonicalJwks}) that no mask
+     * in {@code masks} covers whole, a string's quotes aside (#352, security round 2): a value the exact readings leave whole or in part, however
+     * its quotes, its whitespace or its name's letters are spelled, is masked as that reading bounds it. A value one of
+     * them covers keeps that mask, so the canonical reading never shortens a mask, and changes no output they mask whole.
+     */
+    private static List<Mask> withCanonical(List<Mask> masks, String text) {
+        List<CanonicalJwks.Value> values = CanonicalJwks.privateValues(text);
+        if (values.isEmpty()) {
+            return masks;
+        }
+        List<Mask> sorted = new ArrayList<>(masks);
+        sorted.sort((a, b) -> Integer.compare(a.start(), b.start()));
+        int[] starts = new int[sorted.size()];
+        // The furthest any mask up to each one in start order reaches.
+        int[] reach = new int[sorted.size()];
+        for (int i = 0; i < sorted.size(); i++) {
+            starts[i] = sorted.get(i).start();
+            reach[i] = Math.max(i > 0 ? reach[i - 1] : 0, sorted.get(i).end());
+        }
+        List<Mask> all = new ArrayList<>(masks);
+        for (CanonicalJwks.Value value : values) {
+            // The last mask starting at or before the value's content; the masks up to it cover the content whole if one
+            // reaches its end (a string's quotes may be masked or kept).
+            int at = Arrays.binarySearch(starts, value.contentStart());
+            if (at < 0) {
+                at = -at - 2;
+            } else {
+                while (at + 1 < starts.length && starts[at + 1] == value.contentStart()) {
+                    at++;
+                }
+            }
+            if (at < 0 || reach[at] < value.contentEnd()) {
+                all.add(new Mask(value.start(), value.end(), value.replacement()));
+            }
+        }
+        return all;
+    }
+
+    /**
+     * {@code text} with each JWK private member's value the canonical reading still finds unmasked masked
+     * ({@link CanonicalJwks}): the last pass of {@link #redact(String)}, so no output holds one, whatever the passes
+     * before it masked (#352, security round 2).
+     */
+    private static String maskCanonicalJwks(String text) {
+        List<Mask> masks = new ArrayList<>();
+        for (CanonicalJwks.Value value : CanonicalJwks.privateValues(text)) {
+            masks.add(new Mask(value.start(), value.end(), value.replacement()));
+        }
+        return applyMasks(text, masks);
     }
 
     /** A read JWK discovery made at an escape level: how much of that level's budget was left before and after it. */
