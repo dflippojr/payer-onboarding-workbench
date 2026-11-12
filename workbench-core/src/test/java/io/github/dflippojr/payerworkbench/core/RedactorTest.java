@@ -1628,8 +1628,8 @@ class RedactorTest {
         // the value, every quote spelling of the value's quotes, closed plainly or as it opened or cut off by the end of
         // the text, bare and nested: no secret is kept unless the text is valid JSON whose name is not a secret one (a
         // backslash closes "client_secret\\" inside the name), which is kept whole. With the earlier rounds' inputs,
-        // the outputs go to target/fail-closed-grid.json, where replay/test/leaks.test.mjs checks that the scanner
-        // accepts every one of them.
+        // the outputs must match the committed scanner-grids/fail-closed-grid.json.gz, where replay/test/leaks.test.mjs
+        // checks that the scanner accepts every one of them.
         List<String> quotes = List.of("\"", "~\"", "~~\"", "~~~\"", "Q", "~Q", "~~Q");
         List<String> gaps = List.of("", " ", "~\"", "~~", "~/", "~b", "~f", "~n", "~r", "~t");
         List<String> values = new ArrayList<>(List.of(""));
@@ -1701,12 +1701,10 @@ class RedactorTest {
                 }
             }
         }
-        java.nio.file.Path grid = java.nio.file.Path.of("target", "fail-closed-grid.json");
-        java.nio.file.Files.createDirectories(grid.getParent());
-        java.nio.file.Files.writeString(grid, JSON.writeValueAsString(pairs));
         int total = texts;
         assertEquals(List.of(), wrong, () -> wrong.size() + " of " + total + " texts are wrong, first: "
                 + wrong.subList(0, Math.min(5, wrong.size())));
+        assertScannerGrid("fail-closed-grid", pairs);
     }
 
     @Test
@@ -1716,8 +1714,9 @@ class RedactorTest {
         // with a backslash right before its u0022, and \\u005c then u0022 is a quote two levels down. Owner decision
         // (2026-11-09): a quote, a colon or a name character spelled through a chain of \\u005c escapes counts at any
         // depth of the chain. The chain is decoded at most NESTED_LEVELS times: a quote it makes only deeper than that is
-        // a quote of no level the strict reading reads, so the value is masked, never kept. The outputs go to
-        // target/escape-chain-grid.json, where replay/test/leaks.test.mjs checks that the scanner accepts every one.
+        // a quote of no level the strict reading reads, so the value is masked, never kept. The outputs must match the
+        // committed scanner-grids/escape-chain-grid.json.gz, where replay/test/leaks.test.mjs checks that the scanner
+        // accepts every one.
         assertEquals("{\"password\\u005cu0022:\\u005cu0022[REDACTED]\\u005cu0022",
                 Redactor.redact("{\"password\\u005cu0022:\"s3cr3t\"}"));
         // The bound: a chain that makes a quote NESTED_LEVELS levels down is read; one level more is a quote of no level,
@@ -1770,11 +1769,41 @@ class RedactorTest {
                 }
             }
         }
-        java.nio.file.Path grid = java.nio.file.Path.of("target", "escape-chain-grid.json");
-        java.nio.file.Files.createDirectories(grid.getParent());
-        java.nio.file.Files.writeString(grid, JSON.writeValueAsString(pairs));
         assertEquals(List.of(), wrong, () -> wrong.size() + " of " + pairs.size() + " texts are wrong, first: "
                 + wrong.subList(0, Math.min(5, wrong.size())));
+        assertScannerGrid("escape-chain-grid", pairs);
+    }
+
+    /**
+     * Checks that the committed {@code src/test/resources/scanner-grids/<name>.json.gz} holds exactly these input and
+     * output pairs. replay/test/leaks.test.mjs checks that the scanner accepts every output; it reads the committed file
+     * because the publish job runs that suite without Maven, where a build output under target/ does not exist (#357).
+     * After a change to the Redactor, rewrite the files with
+     * {@code ./mvnw -pl workbench-core test -Dtest=RedactorTest -Dredactor.grids.update=true} and commit them.
+     */
+    private static void assertScannerGrid(String name, List<String[]> pairs) throws java.io.IOException {
+        java.nio.file.Path grid = java.nio.file.Path.of("src", "test", "resources", "scanner-grids", name + ".json.gz");
+        String json = JSON.writeValueAsString(pairs);
+        if (Boolean.getBoolean("redactor.grids.update")) {
+            java.nio.file.Files.createDirectories(grid.getParent());
+            try (var out = new java.util.zip.GZIPOutputStream(java.nio.file.Files.newOutputStream(grid))) {
+                out.write(json.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        String committed;
+        try (var in = new java.util.zip.GZIPInputStream(java.nio.file.Files.newInputStream(grid))) {
+            committed = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        List<List<String>> expected = pairs.stream().map(List::of).toList();
+        List<List<String>> actual = JSON.readValue(committed, new tools.jackson.core.type.TypeReference<>() { });
+        int first = 0;
+        while (first < Math.min(expected.size(), actual.size()) && expected.get(first).equals(actual.get(first))) {
+            first++;
+        }
+        int at = first;
+        assertTrue(expected.equals(actual), () -> grid + " is stale (" + actual.size() + " pairs, the Redactor gives "
+                + expected.size() + "; first difference at " + at + "): rewrite it with ./mvnw -pl workbench-core test"
+                + " -Dtest=RedactorTest -Dredactor.grids.update=true and commit it");
     }
 
     /** Whether {@code text} is valid JSON with no member a secret name names, at any depth. */
