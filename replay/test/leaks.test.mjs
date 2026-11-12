@@ -2049,3 +2049,35 @@ test('flags a JWK private member whose name is quoted with \\u0022 in a plain-qu
   }
   assert.deepEqual(wrong, []);
 });
+
+/**
+ * Where an output of the Redactor would leak more of a value if the mask had stopped short of it: the output with a
+ * secret word and the mask's own closing quote written again right after that quote, as a mask that ends at a quote
+ * inside the value leaves it. Null when the output holds no mask.
+ */
+function withContinuation(out) {
+  const at = out.indexOf('[REDACTED]');
+  if (at < 0) return null;
+  const end = at + '[REDACTED]'.length;
+  const quote = /^(?:\\*u0022|\\*")/i.exec(out.slice(end, end + 40));
+  const q = quote ? quote[0] : '';
+  return `${out.slice(0, end + q.length)}PRIVTAIL${q}${out.slice(end + q.length)}`;
+}
+
+test('flags every JWK private member however its quotes and whitespace are spelled, and accepts the Redactor output (#352, security round 1)', () => {
+  // RedactorTest.jwkSpellingInputs: every private member, its name's and value's quotes spelled plain, as a unicode
+  // escape or escaped a level down, whitespace around its colon, bare and nested once and twice, in a plain-quoted JWK.
+  // RedactorTest checks that the committed grid holds the Redactor's outputs for them; see redactorGrid.
+  const pairs = redactorGrid('jwk-spelling-grid');
+  assert.equal(pairs.length, 8 * 3 * 7 * 4 * 3);
+  const wrong = [];
+  for (const [input, out] of pairs) {
+    if (findTextLeaks(input).length === 0) wrong.push(`not flagged: ${input}`);
+    const flagged = findTextLeaks(out);
+    if (flagged.length > 0) wrong.push(`flagged: ${input} => ${out} ${JSON.stringify(flagged)}`);
+    // A mask with a secret continuation after it is a value masked only in part, whatever the Redactor gives.
+    const partial = withContinuation(out);
+    if (partial !== null && findTextLeaks(partial).length === 0) wrong.push(`partial mask accepted: ${partial}`);
+  }
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong of ${pairs.length}`);
+});

@@ -2236,6 +2236,67 @@ class RedactorTest {
         }
     }
 
+    /**
+     * The JWK spelling matrix (#352, security round 1): every private member, with its name's and its value's quotes
+     * each spelled plain, as a unicode escape or escaped one level down, whitespace around its colon, bare and nested
+     * once and twice, in a JWK whose kty is plain-quoted. The inputs, in order; the scanner's test reads them from the
+     * grid this test writes.
+     */
+    private static List<String> jwkSpellingInputs() {
+        String bs = String.valueOf((char) 92);
+        String u = bs + "u0022";
+        List<String[]> nameQuotes = List.of(new String[] {"\"", "\""}, new String[] {u, u}, new String[] {"\"", u});
+        List<String> values = List.of(
+                "\"PRIVSTART\"",
+                u + "PRIVSTART" + u,
+                bs + "\"PRIVSTART" + bs + "\"",
+                // An escaped backslash and a unicode quote inside a unicode-quoted value: the flattened view reads that
+                // quote as an escaped one a level down, so the value goes on to PRIVTAIL.
+                u + "PRIVSTART" + bs + bs + u + "PRIVTAIL" + u,
+                "\"PRIVSTART" + u + "PRIVTAIL\"",
+                u + "PRIVSTART\"",
+                "{\"x\":\"PRIVSTART\"}");
+        List<String[]> spaces = List.of(new String[] {"", ""}, new String[] {"\n", ""}, new String[] {"", "\t"},
+                new String[] {"\r", " "});
+        List<String> inputs = new ArrayList<>();
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
+            for (String[] quote : nameQuotes) {
+                for (String value : values) {
+                    for (String[] space : spaces) {
+                        String raw = "{\"kty\":\"oct\"," + quote[0] + member + quote[1] + space[0] + ":" + space[1] + value
+                                + "}";
+                        inputs.add(raw);
+                        inputs.add(nested(raw));
+                        inputs.add(nested(nested(raw)));
+                    }
+                }
+            }
+        }
+        return inputs;
+    }
+
+    @Test
+    void masksEveryJwkPrivateMemberHoweverItsQuotesAndWhitespaceAreSpelledAndWritesTheOutputsForTheScanner()
+            throws Exception {
+        // Security round 1 on #352: a unicode-quoted name with a value quoted \" one level down, escaped whitespace around
+        // the colon a level down, and an escaped quote inside a unicode-quoted value each left the value, or the part of
+        // it after that quote, unmasked. No byte of any value may survive; the outputs must match the committed
+        // scanner-grids/jwk-spelling-grid.json.gz, where replay/test/leaks.test.mjs checks that the scanner flags every
+        // input, accepts every output, and rejects each output with a secret continuation after its mask.
+        List<String[]> pairs = new ArrayList<>();
+        List<String> wrong = new ArrayList<>();
+        for (String input : jwkSpellingInputs()) {
+            String out = Redactor.redact(input);
+            pairs.add(new String[] {input, out});
+            if (out.contains("PRIVSTART") || out.contains("PRIVTAIL") || !out.contains(Redactor.MASK)) {
+                wrong.add(input + " => " + out);
+            }
+        }
+        assertEquals(List.of(), wrong, () -> wrong.size() + " of " + pairs.size() + " texts are wrong, first: "
+                + wrong.subList(0, Math.min(5, wrong.size())));
+        assertScannerGrid("jwk-spelling-grid", pairs);
+    }
+
     @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
         // #342 (automated review on 925a782): kty quoted with \u0022 and k with \" (or the other way round). The leak
