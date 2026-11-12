@@ -4,21 +4,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
-import java.text.ParseException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -76,6 +71,32 @@ public final class FabrikamPayer extends MockPayer {
      */
     private static final Duration MAX_ISSUED_AHEAD = Duration.ofHours(1);
 
+    /**
+     * Fabrikam's client-JWT rules. Each replay-cache entry is kept until its exp: at most five minutes after iat, and
+     * iat is at most an hour ahead of now, so an entry lives at most about 65 minutes past the current time. The
+     * sweeper removes expired entries even when no request arrives.
+     */
+    private static final ClientJwtValidator.Policy POLICY = new ClientJwtValidator.Policy(
+            ALLOWED_ALGORITHMS, false,
+            new ClientJwtValidator.Messages(
+                    "CDS Hooks client JWT required in Authorization: Bearer",
+                    "Bearer token is not a signed JWT",
+                    algorithm -> "JWT alg " + algorithm + " is not accepted; use RS384 or ES384",
+                    issuer -> "Unknown iss '" + issuer + "'; register the client with Fabrikam first",
+                    "JWT header has no kid",
+                    "JWT has no exp",
+                    "JWT expired",
+                    expiry -> "JWT expired at " + expiry,
+                    "JWT has no jti",
+                    jti -> "jti '" + jti + "' was already used (replay)"),
+            null,
+            new ClientJwtValidator.IssuedAtRule(MAX_ASSERTION_LIFETIME, MAX_ISSUED_AHEAD, "JWT has no iat",
+                    lifetime -> "JWT lifetime (exp minus iat) must be positive and at most 5 minutes, got "
+                            + lifetime.toSeconds() + " seconds",
+                    // The matrix's one-hour-behind payer clock needs an iat an hour ahead: the largest lead accepted.
+                    ahead -> "JWT iat is ahead of the payer's clock by more than 1 hour, got "
+                            + ahead.toSeconds() + " seconds"));
+
     private static final Map<String, CoverageDetermination> RULES = Map.of(
             "E0250", new CoverageDetermination("conditional", "auth-needed", List.of("clinical"),
                     "Prior authorization and clinical documentation required"),
@@ -94,14 +115,13 @@ public final class FabrikamPayer extends MockPayer {
     static final Duration SWEEP_INTERVAL = Duration.ofSeconds(1);
 
     private final Map<String, URI> jwksUrls;
-    private final RegisteredJwks verifier;
-    private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
+    private final ClientJwtValidator validator;
     private volatile ScheduledExecutorService sweeper;
 
     private FabrikamPayer(Builder builder) {
         super(builder);
         this.jwksUrls = Map.copyOf(builder.jwksUrls);
-        this.verifier = new RegisteredJwks(jwksUrls, FabrikamPayer::unauthorized);
+        this.validator = new ClientJwtValidator(jwksUrls, FabrikamPayer::unauthorized, clock, POLICY);
     }
 
     public static Builder builder() {
@@ -132,8 +152,7 @@ public final class FabrikamPayer extends MockPayer {
 
     /** Drops every jti whose exp has passed on the payer's clock. */
     void sweepExpiredJtis() {
-        Instant now = clock.instant();
-        usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
+        validator.sweepExpired();
     }
 
     @Override
@@ -153,7 +172,7 @@ public final class FabrikamPayer extends MockPayer {
 
     /** The jtis this payer is holding against replay, for tests. */
     int replayCacheSize() {
-        return usedJtis.size();
+        return validator.replayCacheSize();
     }
 
     private static Map<String, String> riPrefetch() {
@@ -169,79 +188,10 @@ public final class FabrikamPayer extends MockPayer {
 
     @Override
     protected void authenticate(Request request) {
-        String token = request.bearerToken();
-        if (token == null) {
-            throw unauthorized("CDS Hooks client JWT required in Authorization: Bearer");
-        }
-        SignedJWT jwt;
-        JWTClaimsSet claims;
-        try {
-            jwt = SignedJWT.parse(token);
-            claims = jwt.getJWTClaimsSet();
-        } catch (ParseException e) {
-            throw unauthorized("Bearer token is not a signed JWT");
-        }
-        JWSAlgorithm algorithm = jwt.getHeader().getAlgorithm();
-        if (!ALLOWED_ALGORITHMS.contains(algorithm)) {
-            throw unauthorized("JWT alg " + algorithm + " is not accepted; use RS384 or ES384");
-        }
-        String issuer = claims.getIssuer();
-        if (issuer == null || !jwksUrls.containsKey(issuer)) {
-            throw unauthorized("Unknown iss '" + issuer + "'; register the client with Fabrikam first");
-        }
-        String keyId = jwt.getHeader().getKeyID();
-        if (keyId == null) {
-            throw unauthorized("JWT header has no kid");
-        }
-        verifier.verify(jwt, issuer, keyId);
-
-        String expectedAudience = (faults().isEnabled(Fault.WRONG_AUDIENCE_REJECT)
-                ? WRONG_AUDIENCE_BASE : publicBaseUrl()) + request.path();
-        if (!List.of(expectedAudience).equals(claims.getAudience())) {
-            HttpError error = unauthorized("aud must be exactly '" + expectedAudience + "', got " + claims.getAudience());
-            throw faults().isEnabled(Fault.WRONG_AUDIENCE_REJECT) ? error.fault(Fault.WRONG_AUDIENCE_REJECT) : error;
-        }
-
-        Instant now = clock.instant();
-        if (claims.getExpirationTime() == null) {
-            throw unauthorized("JWT has no exp");
-        }
-        if (claims.getIssueTime() == null) {
-            throw unauthorized("JWT has no iat");
-        }
-        Instant expiry = claims.getExpirationTime().toInstant();
-        if (faults().isEnabled(Fault.EXPIRED_TOKEN_401)) {
-            throw unauthorized("JWT expired").fault(Fault.EXPIRED_TOKEN_401);
-        }
-        if (!now.isBefore(expiry)) {
-            throw unauthorized("JWT expired at " + expiry);
-        }
-        // Checked before the jti is recorded, so a refused assertion never occupies the replay cache.
-        Duration lifetime = Duration.between(claims.getIssueTime().toInstant(), expiry);
-        if (lifetime.isNegative() || lifetime.isZero() || lifetime.compareTo(MAX_ASSERTION_LIFETIME) > 0) {
-            throw unauthorized("JWT lifetime (exp minus iat) must be positive and at most 5 minutes, got "
-                    + lifetime.toSeconds() + " seconds");
-        }
-        // Without this bound a future iat keeps the five-minute lifetime but moves the whole window far ahead
-        // of the payer's clock, and its jti would stay cached for as long as that. The matrix's one-hour-behind
-        // payer clock needs an iat an hour ahead, so that is the largest lead accepted.
-        Duration ahead = Duration.between(now, claims.getIssueTime().toInstant());
-        if (ahead.compareTo(MAX_ISSUED_AHEAD) > 0) {
-            throw unauthorized("JWT iat is ahead of the payer's clock by more than 1 hour, got "
-                    + ahead.toSeconds() + " seconds");
-        }
-
-        String jti = claims.getJWTID();
-        if (jti == null || jti.isBlank()) {
-            throw unauthorized("JWT has no jti");
-        }
-        // Each entry is kept until its exp: at most five minutes after iat, and iat is at most an hour ahead of
-        // now, so an entry lives at most about 65 minutes past the current time. The sweeper removes expired
-        // entries even when no request arrives; this sweep keeps the map tidy on every authenticated request too.
-        sweepExpiredJtis();
-        if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
-            throw unauthorized("jti '" + jti + "' was already used (replay)");
-        }
+        boolean wrongAudience = faults().isEnabled(Fault.WRONG_AUDIENCE_REJECT);
+        String expectedAudience = (wrongAudience ? WRONG_AUDIENCE_BASE : publicBaseUrl()) + request.path();
+        validator.validate(request.bearerToken(), expectedAudience, wrongAudience,
+                faults().isEnabled(Fault.EXPIRED_TOKEN_401), (issuer, claims) -> { });
     }
 
     private static HttpError unauthorized(String description) {
