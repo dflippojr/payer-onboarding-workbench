@@ -2064,12 +2064,13 @@ function withContinuation(out) {
   return `${out.slice(0, end + q.length)}PRIVTAIL${q}${out.slice(end + q.length)}`;
 }
 
-test('flags every JWK private member however its quotes and whitespace are spelled, and accepts the Redactor output (#352, security round 1)', () => {
+test('flags every JWK private member however its quotes and whitespace are spelled, and accepts the Redactor output (#352, security rounds 1 and 2)', () => {
   // RedactorTest.jwkSpellingInputs: every private member, its name's and value's quotes spelled plain, as a unicode
-  // escape or escaped a level down, whitespace around its colon, bare and nested once and twice, in a plain-quoted JWK.
+  // escape, escaped a level down or through an escape chain, whitespace around its colon and after its value, the
+  // JWK's plain-quoted kty before or after it, bare and nested once and twice.
   // RedactorTest checks that the committed grid holds the Redactor's outputs for them; see redactorGrid.
   const pairs = redactorGrid('jwk-spelling-grid');
-  assert.equal(pairs.length, 8 * 3 * 7 * 4 * 3);
+  assert.equal(pairs.length, 8 * 4 * 8 * 4 * 2 * 3);
   const wrong = [];
   for (const [input, out] of pairs) {
     if (findTextLeaks(input).length === 0) wrong.push(`not flagged: ${input}`);
@@ -2080,4 +2081,35 @@ test('flags every JWK private member however its quotes and whitespace are spell
     if (partial !== null && findTextLeaks(partial).length === 0) wrong.push(`partial mask accepted: ${partial}`);
   }
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong of ${pairs.length}`);
+});
+
+test('flags a JWK value read past an escaped quote a level down when the kty comes after it, masked in part or not (#352, security round 2)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const member of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
+    for (const head of [`{${u}${member}${u}:${u}`, `{${u}${b}u005c${u.slice(1)}${member}${u}:${u}`]) {
+      for (const start of ['PRIVSTART', '[REDACTED]']) {
+        const raw = `${head}${start}${b}${b}${u}PRIVTAIL${u},"kty":"oct"}`;
+        for (const text of [raw, JSON.stringify({ body: raw }), JSON.stringify({ body: JSON.stringify({ body: raw }) })]) {
+          assertFlagged(text);
+        }
+      }
+    }
+  }
+  // What the Redactor gives for it.
+  assertAccepted(`{${u}d${u}:${u}[REDACTED]${u},"kty":"oct"}`);
+});
+
+test('accepts a masked JWK value followed by any whitespace the Redactor reads after a value, and flags it with a continuation (#352, security round 2)', () => {
+  // Java's Character.isWhitespace, as the Redactor's value reader reads it.
+  const spaces = [' ', '\t', '\n', '\x0B', '\f', '\r', '\x1C', '\x1F', '\u1680', '\u2000', '\u2006', '\u2008', '\u200A',
+    '\u2028', '\u2029', '\u205F', '\u3000'];
+  const u = '\\u0022';
+  for (const space of spaces) {
+    const raw = `{"kty":"oct",${u}d${u}:"[REDACTED]"${space}}`;
+    for (const text of [raw, JSON.stringify({ body: raw }), JSON.stringify({ body: JSON.stringify({ body: raw }) })]) {
+      assert.deepEqual(findTextLeaks(text), [], JSON.stringify(text));
+    }
+    assertFlagged(`{"kty":"oct",${u}d${u}:"[REDACTED]"PRIVTAIL"${space}}`);
+  }
 });

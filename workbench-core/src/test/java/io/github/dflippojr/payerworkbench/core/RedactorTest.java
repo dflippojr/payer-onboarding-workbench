@@ -2202,7 +2202,12 @@ class RedactorTest {
         List<String> texts = List.of(jwks, nested(jwks), ("{\"kty\":\"oct\"," + u + "d" + u + ":[" + u).repeat(40_000),
                 (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(60_000), escapedQuotes, nested(escapedQuotes),
                 ("{\"kty\":\"oct\"," + u + "d" + u + ":" + b + "\"").repeat(40_000),
-                nested(("{\"kty\":\"oct\"," + u + "d" + u + "\n:" + u).repeat(30_000)));
+                nested(("{\"kty\":\"oct\"," + u + "d" + u + "\n:" + u).repeat(30_000)),
+                // Security round 2: kty after a value quoted a level down, names quoted through an escape chain, and
+                // values and structures that never close, read in the canonical form.
+                ("{" + u + "d" + u + ":" + b + "\"PRIVK352" + b + "\",\"kty\":\"oct\"},").repeat(30_000),
+                nested(("{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "k" + u + ":[\"PRIVK352\"]},").repeat(20_000)),
+                ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(40_000), ("\"kty\":\"d\":\"PRIVK352").repeat(50_000));
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
             String out = Redactor.redact(text, reads);
@@ -2239,6 +2244,35 @@ class RedactorTest {
     }
 
     @Test
+    void masksAJwkValueAfterANameQuotedThroughAnEscapeChainOrBeforeTheJwksKty() {
+        // Security round 2 on #352, one of each shape the matrix adds (jwkSpellingInputs). A name quoted through an escape
+        // chain: the value is masked whole, a structure quoted as the name is.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String chainHead = "{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "d" + u + ":";
+        String chainQuote = b + "u005c" + u.substring(1);
+        assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}", Redactor.redact(chainHead + "[\"PRIVSTART\"]}"));
+        assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}",
+                Redactor.redact(chainHead + "{\"x\":\"PRIVSTART\"}}"));
+        assertEquals(chainHead + "\"[REDACTED]\"}", Redactor.redact(chainHead + "\"PRIVSTART\"}"));
+        // The JWK's kty after a value quoted a level down, with or without a space before it.
+        for (String tail : List.of(", \"kty\":\"oct\"}", ",\"kty\":\"oct\"}")) {
+            assertEquals("{" + u + "d" + u + ":" + b + "\"[REDACTED]" + b + "\"" + tail,
+                    Redactor.redact("{" + u + "d" + u + ":" + b + "\"PRIVSTART" + b + "\"" + tail));
+        }
+        // ...and after a value holding an escaped backslash and a unicode quote.
+        assertEquals("{" + u + "d" + u + ":" + u + "[REDACTED]" + u + ",\"kty\":\"oct\"}",
+                Redactor.redact("{" + u + "d" + u + ":" + u + "PRIVSTART" + b + b + u + "PRIVTAIL" + u + ",\"kty\":\"oct\"}"));
+        // Every kind of whitespace Java reads after a value is kept after its mask.
+        for (char space : new char[] {' ', '\t', '\n', 0x0B, '\f', '\r', 0x1C, 0x1F, 0x1680, 0x2000, 0x2006, 0x2008, 0x200A,
+                0x2028, 0x2029, 0x205F, 0x3000}) {
+            String head = "{\"kty\":\"oct\"," + u + "d" + u + ":";
+            assertEquals(head + "\"[REDACTED]\"" + space + "}", Redactor.redact(head + "\"PRIVSTART\"" + space + "}"),
+                    () -> Integer.toHexString(space));
+        }
+    }
+
+    @Test
     void masksEveryUnicodeQuotedPrivateMemberOnceTheFlattenedViewSpendsItsBudget() {
         // #352: repeated kty syntax spends the JWK search's budget, as in readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft,
         // and then every private member name in the flattened view is masked, in a JWK or not: this d is in none.
@@ -2264,15 +2298,18 @@ class RedactorTest {
     }
 
     /**
-     * The JWK spelling matrix (#352, security round 1): every private member, with its name's and its value's quotes
-     * each spelled plain, as a unicode escape or escaped one level down, whitespace around its colon, bare and nested
-     * once and twice, in a JWK whose kty is plain-quoted. The inputs, in order; the scanner's test reads them from the
-     * grid this test writes.
+     * The JWK spelling matrix (#352, security rounds 1 and 2): every private member, with its name's and its value's
+     * quotes each spelled plain, as a unicode escape, escaped one level down or through an escape chain, whitespace
+     * around its colon and after its value, the JWK's plain-quoted kty before or after it, bare and nested once and
+     * twice. The inputs, in order; the scanner's test reads them from the grid this test writes.
      */
     private static List<String> jwkSpellingInputs() {
         String bs = String.valueOf((char) 92);
         String u = bs + "u0022";
-        List<String[]> nameQuotes = List.of(new String[] {"\"", "\""}, new String[] {u, u}, new String[] {"\"", u});
+        // A quote escaped through a chain: an escaped backslash spelled as a unicode escape, then a unicode quote.
+        String chain = bs + "u005c" + u.substring(1);
+        List<String[]> nameQuotes = List.of(new String[] {"\"", "\""}, new String[] {u, u}, new String[] {"\"", u},
+                new String[] {chain, u});
         List<String> values = List.of(
                 "\"PRIVSTART\"",
                 u + "PRIVSTART" + u,
@@ -2282,19 +2319,22 @@ class RedactorTest {
                 u + "PRIVSTART" + bs + bs + u + "PRIVTAIL" + u,
                 "\"PRIVSTART" + u + "PRIVTAIL\"",
                 u + "PRIVSTART\"",
-                "{\"x\":\"PRIVSTART\"}");
-        List<String[]> spaces = List.of(new String[] {"", ""}, new String[] {"\n", ""}, new String[] {"", "\t"},
-                new String[] {"\r", " "});
+                "{\"x\":\"PRIVSTART\"}",
+                "[\"PRIVSTART\"]");
+        // Before the colon, after it, and after the value: a form feed, a vertical tab and an em space are whitespace too.
+        List<String[]> spaces = List.of(new String[] {"", "", ""}, new String[] {"\n", "", "\f"},
+                new String[] {"", "\t", String.valueOf((char) 0x0B)}, new String[] {"\r", " ", String.valueOf((char) 0x2003)});
         List<String> inputs = new ArrayList<>();
         for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
             for (String[] quote : nameQuotes) {
                 for (String value : values) {
                     for (String[] space : spaces) {
-                        String raw = "{\"kty\":\"oct\"," + quote[0] + member + quote[1] + space[0] + ":" + space[1] + value
-                                + "}";
-                        inputs.add(raw);
-                        inputs.add(nested(raw));
-                        inputs.add(nested(nested(raw)));
+                        String field = quote[0] + member + quote[1] + space[0] + ":" + space[1] + value + space[2];
+                        for (String raw : List.of("{\"kty\":\"oct\"," + field + "}", "{" + field + ",\"kty\":\"oct\"}")) {
+                            inputs.add(raw);
+                            inputs.add(nested(raw));
+                            inputs.add(nested(nested(raw)));
+                        }
                     }
                 }
             }
@@ -2307,7 +2347,7 @@ class RedactorTest {
             throws Exception {
         // Security round 1 on #352: a unicode-quoted name with a value quoted \" one level down, escaped whitespace around
         // the colon a level down, and an escaped quote inside a unicode-quoted value each left the value, or the part of
-        // it after that quote, unmasked. No byte of any value may survive; the outputs must match the committed
+        // it after that quote, unmasked. Round 2: so did a name quoted through an escape chain, and a kty after the value. No byte of any value may survive; the outputs must match the committed
         // scanner-grids/jwk-spelling-grid.json.gz, where replay/test/leaks.test.mjs checks that the scanner flags every
         // input, accepts every output, and rejects each output with a secret continuation after its mask.
         List<String[]> pairs = new ArrayList<>();
