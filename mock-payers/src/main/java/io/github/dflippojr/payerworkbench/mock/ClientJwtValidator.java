@@ -159,7 +159,10 @@ final class ClientJwtValidator {
             throw audienceFault ? error.fault(Fault.WRONG_AUDIENCE_REJECT) : error;
         }
 
-        Instant expiry = checkTimes(claims, expiredFault);
+        // One clock read per assertion: the times are checked and the cache is swept at the same instant, so a
+        // replay that passes the exp check cannot then be swept away by a later read at exp and accepted as new.
+        Instant now = clock.instant();
+        Instant expiry = checkTimes(claims, now, expiredFault);
 
         String jti = claims.getJWTID();
         if (jti == null || jti.isBlank()) {
@@ -167,7 +170,7 @@ final class ClientJwtValidator {
         }
         // Times are checked before the jti is recorded, so a refused assertion never occupies the cache. This sweep
         // keeps the map tidy on every accepted assertion; a payer may also call sweepExpired on a timer.
-        sweepExpired();
+        sweepExpired(now);
         if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
             throw rejected.apply(messages.replay().apply(jti));
         }
@@ -175,8 +178,7 @@ final class ClientJwtValidator {
     }
 
     /** @return the assertion's exp, once every time rule passed */
-    private Instant checkTimes(JWTClaimsSet claims, boolean expiredFault) {
-        Instant now = clock.instant();
+    private Instant checkTimes(JWTClaimsSet claims, Instant now, boolean expiredFault) {
         if (claims.getExpirationTime() == null) {
             throw rejected.apply(messages.missingExp());
         }
@@ -213,7 +215,10 @@ final class ClientJwtValidator {
 
     /** Drops every jti whose exp has passed on the payer's clock. */
     void sweepExpired() {
-        Instant now = clock.instant();
+        sweepExpired(clock.instant());
+    }
+
+    private void sweepExpired(Instant now) {
         usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
     }
 
