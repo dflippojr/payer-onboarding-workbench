@@ -31,8 +31,9 @@ import java.util.regex.Pattern;
  * escape counts only if it is that letter at the level of the name's quotes ({@code "\\u0064"} in plain JSON is not
  * d). A kty counts only with a string value.</li>
  * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object holds a kty,
- * the brackets read two ways: every bracket counted, or those inside strings skipped, a string closing at the first
- * quote that spaces and then a comma, a closing bracket, a colon or the end follow. Either way is enough, with a kty
+ * the brackets read three ways: every bracket counted, or those inside strings skipped, a string closing at the first
+ * quote that spaces and then a comma, a closing bracket, a colon or the end follow, or at the first such quote no deeper
+ * than its opening one. Any way is enough, with a kty
  * whose quote is at the member's level ({@link #memberLevel}), or for a private member at its quote's level as
  * written.</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
@@ -285,8 +286,11 @@ final class CanonicalJwks {
             valuesTo = close + 1;
         }
         boolean[] jwk = new boolean[names.size()];
-        int[] counted = brackets(t, names, jwk, null, inValue);
-        int[] lexed = brackets(t, names, jwk, nextLexClose, null);
+        int[] counted = brackets(t, names, jwk, null, inValue, null);
+        int[] lexed = brackets(t, names, jwk, nextLexClose, null, null);
+        // ...and with each string closed at its own quote level, so an escaped quote in an ordinary string does not end
+        // it (only this reading cannot see JSON nested in a string, which the others read).
+        int[] leveled = brackets(t, names, jwk, nextLexClose, null, deeper);
         List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, inStrings, names);
         if (!wholesale.isEmpty()) {
             return wholesale;
@@ -322,7 +326,8 @@ final class CanonicalJwks {
                 }
             } else if (c == '{' || c == '[') {
                 // Unclosed in either reading: masked to the end (fail closed).
-                int end = counted[v] == -1 || lexed[v] == -1 ? -1 : Math.max(counted[v], lexed[v]);
+                int end = counted[v] == -1 || lexed[v] == -1 || leveled[v] == -1 ? -1
+                        : Math.max(counted[v], Math.max(lexed[v], leveled[v]));
                 int stop = end < 0 ? raw.length() : rawEnd(toRaw, canonical.at(end + 1));
                 values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
                         stop));
@@ -341,7 +346,8 @@ final class CanonicalJwks {
      * each private member whose object holds a kty name in this reading, and returns where the bracket closing each
      * opening bracket is (-1: none, or not read as a bracket).
      */
-    private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose, boolean[] skip) {
+    private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose, boolean[] skip,
+            IntBinaryOperator deeper) {
         int n = t.length();
         int[] match = new int[n];
         Arrays.fill(match, -2);
@@ -371,7 +377,11 @@ final class CanonicalJwks {
             } else if ((c == '}' || c == ']') && !stack.isEmpty()) {
                 match[stack.pop()] = i;
             } else if (c == '"' && nextClose != null) {
-                i = nextClose[i + 1] + 1;
+                int close = nextClose[i + 1];
+                while (deeper != null && close < n && deeper.applyAsInt(close, i) == 1) {
+                    close = nextClose[close + 1];
+                }
+                i = close + 1;
                 continue;
             }
             i++;
@@ -686,10 +696,15 @@ final class CanonicalJwks {
                 while (k < read.length() && read.charAt(k) == BACKSLASH) {
                     k++;
                 }
-                if (k >= read.length() || "nrt".indexOf(read.charAt(k)) < 0) {
+                // Whitespace escaped as the canonical form reads it: n, r, t, f, or a unicode escape of a space.
+                if (k < read.length() && "nrtf".indexOf(read.charAt(k)) >= 0) {
+                    i = k + 1;
+                } else if (k < read.length() && read.charAt(k) == 'u' && isHex(read, k + 1)
+                        && Character.isWhitespace((char) Integer.parseInt(read.substring(k + 1, k + 5), 16))) {
+                    i = k + 5;
+                } else {
                     return false;
                 }
-                i = k + 1;
             } else {
                 return c == ':';
             }

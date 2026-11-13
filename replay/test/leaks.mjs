@@ -996,8 +996,15 @@ function canonicalColonAfter(raw, from) {
     else if (raw[i] === '\\') {
       let k = i;
       while (raw[k] === '\\') k++;
-      if (!'nrt'.includes(raw[k] ?? 'x')) return false;
-      i = k + 1;
+      // Whitespace escaped as the canonical form reads it: n, r, t, f, or a unicode escape of a space.
+      if ('nrtf'.includes(raw[k] ?? 'x')) {
+        i = k + 1;
+      } else if (raw[k] === 'u' && /^[0-9A-Fa-f]{4}$/.test(raw.slice(k + 1, k + 5))
+          && isJavaSpace(String.fromCharCode(Number.parseInt(raw.slice(k + 1, k + 5), 16)))) {
+        i = k + 5;
+      } else {
+        return false;
+      }
     }
     else return raw[i] === ':';
   }
@@ -1076,9 +1083,9 @@ function canonicalJwkLeaks(text, ctx) {
   const { t, origin } = canonicalForm(raw);
   const inStrings = canonicalOpenLevels(raw, ctx);
   const n = t.length;
-  // The kept text is read three times (copied, decoded, its string levels); the canonical form four times (the closes,
-  // the names, the two readings of the brackets).
-  ctx.work += 3 * raw.length + 4 * n;
+  // The kept text is read three times (copied, decoded, its string levels); the canonical form five times (the closes,
+  // the names, the three readings of the brackets).
+  ctx.work += 3 * raw.length + 5 * n;
   const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = [];
   for (let q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
@@ -1152,7 +1159,10 @@ function canonicalJwkLeaks(text, ctx) {
     ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
     return;
   }
-  for (const skipStrings of [false, true]) {
+  // Every bracket counted (0), brackets inside strings skipped (1), and the same with each string closed at its own quote
+  // level (2), so an escaped quote in an ordinary string does not end it; any reading is enough.
+  for (const mode of [0, 1, 2]) {
+    const skipStrings = mode > 0;
     const stack = [];
     const owner = new Map();
     // The levels of the kty names in each object.
@@ -1173,7 +1183,13 @@ function canonicalJwkLeaks(text, ctx) {
       if (c === '{' || c === '[') stack.push(i);
       else if ((c === '}' || c === ']') && stack.length > 0) stack.pop();
       else if (c === '"' && skipStrings) {
-        i = lexClose[i + 1] + 1;
+        let close = lexClose[i + 1];
+        if (mode === 2) {
+          const openLevel = canonicalCloseLevel(spelling(i));
+          const openFlat = canonicalFlatLevel(spelling(i));
+          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat)) close = lexClose[close + 1];
+        }
+        i = close + 1;
         continue;
       }
       i++;
