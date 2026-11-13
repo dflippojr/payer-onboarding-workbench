@@ -11,6 +11,9 @@ import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -23,6 +26,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -96,6 +100,79 @@ class ClientJwtClockStepBackTest {
         TestKeys.MutableClock clock = new TestKeys.MutableClock();
         clock.advance(Duration.ofNanos(-clock.instant().getNano()));
         return clock;
+    }
+
+    /** Where the clock goes after the first accepted assertion. */
+    enum Movement {
+        STEADY(Duration.ZERO), BACK(Duration.ofMinutes(-2)), FORWARD(Duration.ofMinutes(90));
+
+        final Duration step;
+
+        Movement(Duration step) {
+            this.step = step;
+        }
+    }
+
+    /** JWT times are whole seconds, so one tick is one second. */
+    private static final Duration TICK = Duration.ofSeconds(1);
+
+    static Stream<Arguments> futureLimitBoundaries() {
+        Stream.Builder<Arguments> cases = Stream.builder();
+        for (String payer : new String[] {"tailspin", "fabrikam"}) {
+            for (Movement movement : Movement.values()) {
+                cases.add(Arguments.of(payer, movement, "one tick inside", TICK.negated()));
+                cases.add(Arguments.of(payer, movement, "exactly at", Duration.ZERO));
+                cases.add(Arguments.of(payer, movement, "one tick outside", TICK));
+            }
+        }
+        return cases.build();
+    }
+
+    /**
+     * Tailspin caps exp at 5 minutes ahead of its clock; Fabrikam caps iat at 1 hour ahead. Each limit is inclusive
+     * and is judged by the clock as it reads now, whether it held steady, stepped back or stepped forward since the
+     * payer's last accepted assertion.
+     */
+    @ParameterizedTest(name = "{0}: clock {1}, {2} the limit")
+    @MethodSource("futureLimitBoundaries")
+    void futureLimitIsJudgedByTheClockAsItReadsNow(String payer, Movement movement, String where, Duration offset)
+            throws Exception {
+        TestKeys.MutableClock clock = wholeSecondClock();
+        boolean outside = offset.isPositive();
+        if (payer.equals("tailspin")) {
+            try (TailspinPayer tailspin = TailspinPayer.builder().clock(clock).client(CLIENT, jwks.url()).build()
+                    .start(0)) {
+                String audience = tailspin.publicBaseUrl() + TailspinPayer.TOKEN_PATH;
+                Instant before = clock.instant();
+                assertEquals(200, tailspinCall(tailspin, sign(audience, before, before.plusSeconds(300))).statusCode());
+                clock.advance(movement.step);
+                Instant now = clock.instant();
+                HttpResponse<String> response = tailspinCall(tailspin,
+                        sign(audience, now, now.plus(Duration.ofMinutes(5)).plus(offset)));
+                if (outside) {
+                    assertRejected(response, "invalid_client",
+                            "exp must be in the future and no more than 5 minutes ahead");
+                } else {
+                    assertEquals(200, response.statusCode(), response::body);
+                }
+            }
+        } else {
+            try (FabrikamPayer fabrikam = FabrikamPayer.builder().clock(clock).client(CLIENT, jwks.url()).build()
+                    .start(0)) {
+                String audience = fabrikam.publicBaseUrl() + HOOK_PATH;
+                Instant before = clock.instant();
+                assertEquals(200, fabrikamCall(fabrikam, sign(audience, before, before.plusSeconds(300))).statusCode());
+                clock.advance(movement.step);
+                Instant issued = clock.instant().plus(Duration.ofHours(1)).plus(offset);
+                HttpResponse<String> response = fabrikamCall(fabrikam, sign(audience, issued, issued.plusSeconds(60)));
+                if (outside) {
+                    assertRejected(response, "unauthorized",
+                            "JWT iat is ahead of the payer's clock by more than 1 hour, got 3601 seconds");
+                } else {
+                    assertEquals(200, response.statusCode(), response::body);
+                }
+            }
+        }
     }
 
     private static void assertRejected(HttpResponse<String> response, String error, String description)
