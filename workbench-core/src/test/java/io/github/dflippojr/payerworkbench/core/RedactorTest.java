@@ -2273,6 +2273,18 @@ class RedactorTest {
     }
 
     @Test
+    void readsAPrivateMembersValueThroughARawLineBreakToTheKtyAfterIt() {
+        // Automated review on 4ca9093: a string opening right after a private member's colon is its value, not prose
+        // quoting a copy, so a raw line break in it does not end the reading before the JWK's kty.
+        String b = String.valueOf((char) 92);
+        String text = "{" + b + "u005cu0022d" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
+        }
+    }
+
+    @Test
     void boundsAValueByItsOpeningQuotesSpellingAndAStructureByItsUnclosedReading() {
         // Automated review on 253416a: an escaped quote inside a value quoted with a unicode escape is a level deeper read
         // flattened, so it does not close it; and a structure one reading leaves unclosed is masked to the end.

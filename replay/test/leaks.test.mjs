@@ -2182,3 +2182,9 @@ test('bounds a value by its opening quote and a structure by its unclosed readin
     for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
   }
 });
+
+test('reads a private member value through a raw line break to the kty after it (#352, automated review on 4ca9093)', () => {
+  const b = '\\';
+  const raw = `{${b}u005cu0022d${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`;
+  for (const text of [raw, nestedIn(raw, 1)]) assert.ok(findTextLeaks(text).length > 0, JSON.stringify(text));
+});
