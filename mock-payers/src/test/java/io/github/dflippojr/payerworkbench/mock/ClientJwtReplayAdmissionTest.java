@@ -259,7 +259,7 @@ class ClientJwtReplayAdmissionTest {
      * blocked waiting for the validator: so the rival's eviction either completes inside the held thread's window or
      * is shown to be excluded from it.
      */
-    private static final class GatedClock extends Clock {
+    static final class GatedClock extends Clock {
         volatile Instant now;
         private final Map<Thread, Instant> instants = new ConcurrentHashMap<>();
         private final Map<Thread, Runnable> holds = new ConcurrentHashMap<>();
