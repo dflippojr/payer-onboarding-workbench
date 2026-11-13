@@ -16,8 +16,9 @@ import java.util.regex.Pattern;
  *
  * <p>The canonical form, which replay/test/leaks.mjs implements separately to the same rules:
  * <ul>
- * <li>The text is read up to the first line break inside a string of its level that opens where prose or a value starts
- * at that level, and not in a member's place ({@link #readable}).</li>
+ * <li>A line break inside a string of its level that opens where prose or a value starts at that level, and not in a
+ * member's place, is skipped from, to the string holding that level's close, or at level 0 to the end
+ * ({@link #skipped}).</li>
  * <li>A backslash starts an escape. Its backslash may be spelled as a run of backslashes and unicode escapes of a
  * backslash ({@code u005c} after a backslash), so an escape of any level, or chained through such escapes, is one
  * escape. After that run: {@code u} and four hex digits is that character; {@code n}, {@code r}, {@code t} or
@@ -161,11 +162,25 @@ final class CanonicalJwks {
     /** Every JWK private member's value in {@code raw} that the canonical reading masks, as stretches of the text. */
     static List<Value> privateValues(String raw) {
         List<Value> values = new ArrayList<>();
-        String read = raw.substring(0, readable(raw));
-        if (read.indexOf('"') < 0 && !read.toLowerCase(java.util.Locale.ROOT).contains("u0022")
-                || !KTY.matcher(read).find()) {
+        if (raw.indexOf('"') < 0 && !raw.toLowerCase(java.util.Locale.ROOT).contains("u0022")
+                || !KTY.matcher(raw).find()) {
             return values;
         }
+        // The text without what the reading skips (skipped), and where each of its places is in the text.
+        int[] skips = skipped(raw);
+        StringBuilder kept = new StringBuilder(raw.length());
+        int[] toRaw = new int[raw.length() + 1];
+        int from = 0;
+        for (int r = 0; r <= skips.length; r += 2) {
+            int to = r < skips.length ? skips[r] : raw.length();
+            for (int k = from; k < to; k++) {
+                toRaw[kept.length()] = k;
+                kept.append(raw.charAt(k));
+            }
+            from = r < skips.length ? skips[r + 1] : raw.length();
+        }
+        toRaw[kept.length()] = raw.length();
+        String read = kept.toString();
         Canonical canonical = canonical(read);
         int[] inStrings = openLevels(read);
         String t = canonical.text();
@@ -181,7 +196,7 @@ final class CanonicalJwks {
             }
             String name = t.substring(q + 1, k);
             boolean kty = name.equals("kty");
-            if (!kty && !Redactor.JWK_PRIVATE_MEMBERS.contains(name) || !lettersAtItsLevel(raw, canonical, q, k)) {
+            if (!kty && !Redactor.JWK_PRIVATE_MEMBERS.contains(name) || !lettersAtItsLevel(read, canonical, q, k)) {
                 continue;
             }
             int colon = afterSpace(t, k + 1);
@@ -190,7 +205,7 @@ final class CanonicalJwks {
             }
             int value = afterSpace(t, colon + 1);
             if (!kty || value < n && t.charAt(value) == '"') {
-                String spelling = canonical.spelling(raw, q);
+                String spelling = canonical.spelling(read, q);
                 names.add(new Name(q, value, kty, memberLevel(spelling, inStrings[canonical.at(q)]), flatLevel(spelling)));
             }
         }
@@ -231,33 +246,36 @@ final class CanonicalJwks {
             if (!jwk[j] || name.kty() || v >= n || name.quote() < readTo) {
                 continue;
             }
-            String quote = canonical.spelling(raw, name.quote());
+            String quote = canonical.spelling(read, name.quote());
             char c = t.charAt(v);
             if (c == '"') {
                 // A quote deeper than the opening one is an escaped quote inside the value, which goes on past it.
-                int open = closeLevel(canonical.spelling(raw, v));
+                int open = closeLevel(canonical.spelling(read, v));
                 int close = nextValueClose[v + 1];
-                while (close < n && closeLevel(canonical.spelling(raw, close)) > open) {
+                while (close < n && closeLevel(canonical.spelling(read, close)) > open) {
                     close = nextValueClose[close + 1];
                 }
                 readTo = close + 1;
                 if (close >= n) {
-                    values.add(new Value(canonical.at(v), raw.length(), quote + Redactor.MASK + quote,
-                            canonical.at(v + 1), raw.length()));
+                    values.add(new Value(toRaw[canonical.at(v)], raw.length(), quote + Redactor.MASK + quote,
+                            toRaw[canonical.at(v + 1)], raw.length()));
                 } else {
                     String content = t.substring(v + 1, close);
                     if (!content.isEmpty() && !content.equals(Redactor.MASK)) {
-                        values.add(new Value(canonical.at(v), canonical.at(close + 1), quote + Redactor.MASK + quote,
-                                canonical.at(v + 1), canonical.at(close)));
+                        values.add(new Value(toRaw[canonical.at(v)], rawEnd(toRaw, canonical.at(close + 1)),
+                                quote + Redactor.MASK + quote, toRaw[canonical.at(v + 1)],
+                                rawEnd(toRaw, canonical.at(close))));
                     }
                 }
             } else if (c == '{' || c == '[') {
                 int end = Math.max(counted[v], lexed[v]);
-                int stop = end < 0 ? raw.length() : canonical.at(end + 1);
-                values.add(new Value(canonical.at(v), stop, quote + Redactor.MASK + quote, canonical.at(v), stop));
+                int stop = end < 0 ? raw.length() : rawEnd(toRaw, canonical.at(end + 1));
+                values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
+                        stop));
             } else if (scalar.region(v, n).lookingAt()) {
-                int stop = canonical.at(scalar.end());
-                values.add(new Value(canonical.at(v), stop, quote + Redactor.MASK + quote, canonical.at(v), stop));
+                int stop = rawEnd(toRaw, canonical.at(scalar.end()));
+                values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
+                        stop));
             }
         }
         return values;
@@ -317,8 +335,9 @@ final class CanonicalJwks {
     }
 
     /**
-     * How much of {@code raw} the canonical reading reads: up to the first line break inside a string, at any level,
-     * that a quote of that level opens, or all of it (#342). A level is the run of backslashes before its quotes: none
+     * What the canonical reading skips of {@code raw}, as start and end pairs, in order: from each line break inside a
+     * string, at any level, that a quote of that level opens, to the quote closing the string that holds that level (a
+     * quote after fewer backslashes), where reading goes on; at level 0, to the end (#342). A level is the run of backslashes before its quotes: none
      * for plain JSON, one for JSON embedded in a JSON string, three below that; its line break is a raw one at level 0
      * and an {@code n} or {@code r} after that run below it. Each level's strings open and close at its own quotes, a
      * run of any other length being content. JSON holds no line break in a string, so what follows one is prose quoting
@@ -329,7 +348,8 @@ final class CanonicalJwks {
      * comma) is a name, closed by a quote of another spelling, whose line break is whitespace before its colon; one
      * opening right after other text is the rest of a value.
      */
-    private static int readable(String raw) {
+    private static int[] skipped(String raw) {
+        List<Integer> skips = new ArrayList<>();
         // For each level (run) a string is open at: whether its line breaks are read past.
         java.util.Map<Integer, Boolean> open = new java.util.HashMap<>();
         // The last character before here that is no whitespace at any level, and no backslash.
@@ -359,11 +379,19 @@ final class CanonicalJwks {
                     boolean prose = starts || quoteRun >= 0 && quoteRun < run;
                     open.put(run, !prose || last == '{' || last == ',');
                 }
-            } else if (run == 0 ? c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029
-                    : run % 2 == 1 && (c == 'n' || c == 'r')) {
-                if (Boolean.FALSE.equals(open.get(run))) {
-                    return i;
-                }
+            } else if ((run == 0 ? c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029
+                    : run % 2 == 1 && (c == 'n' || c == 'r')) && Boolean.FALSE.equals(open.get(run))) {
+                // Skipped to the quote closing the string that holds this level (a quote of a shorter run), or at level
+                // 0 to the end.
+                int end = run == 0 ? raw.length() : closingShallower(raw, i + run + 1, run);
+                skips.add(i);
+                skips.add(end);
+                int skippedRun = run;
+                open.keySet().removeIf(level -> level >= skippedRun);
+                starts = false;
+                quoteRun = -1;
+                i = end;
+                continue;
             }
             if (!space && (run == 0 || c == '"')) {
                 last = c;
@@ -371,6 +399,27 @@ final class CanonicalJwks {
             starts = space || run == 0 && (c == ':' || c == '[');
             quoteRun = c == '"' ? run : -1;
             i += run + 1;
+        }
+        return skips.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** Where in the text the stretch of the kept text ending at {@code end} ends: just after its last character. */
+    private static int rawEnd(int[] toRaw, int end) {
+        return end == 0 ? toRaw[0] : toRaw[end - 1] + 1;
+    }
+
+    /** Where the first quote after fewer than {@code run} backslashes starts, from {@code from} in {@code raw}, or its end. */
+    private static int closingShallower(String raw, int from, int run) {
+        int i = from;
+        while (i < raw.length()) {
+            int k = 0;
+            while (i + k < raw.length() && raw.charAt(i + k) == BACKSLASH) {
+                k++;
+            }
+            if (i + k < raw.length() && raw.charAt(i + k) == '"' && k < run) {
+                return i;
+            }
+            i += k + 1;
         }
         return raw.length();
     }
@@ -456,11 +505,15 @@ final class CanonicalJwks {
     /**
      * For each place in {@code read}, the levels at which a string is open there, one bit each: a level's strings open
      * and close at its plain quotes, after {@code 2^L - 1} backslashes, a run of any other length being content; a
-     * unicode escape of a quote of that level ({@link #flatLevel}) that a colon follows closes one too.
+     * unicode escape of a quote of that level ({@link #flatLevel}) that a colon follows closes one too, when it opened in
+     * a member's place (a name).
      */
     private static int[] openLevels(String read) {
         int[] open = new int[read.length() + 1];
         int levels = 0;
+        // The levels whose open string opened in a member's place, and the last character no whitespace nor backslash.
+        int names = 0;
+        char last = 0;
         int i = 0;
         while (i < read.length()) {
             int run = 0;
@@ -481,10 +534,24 @@ final class CanonicalJwks {
             if (level >= 0 && level < 31) {
                 int bit = 1 << level;
                 // A plain quote opens or closes a string of its level; a unicode escape of one closes a string of its
-                // level that a plain quote opened when a colon follows it: a name spelled with both ("note\\u0022:).
-                if (!unicode || (levels & bit) != 0 && colonAfter(read, stop)) {
+                // level that a plain quote opened in a member's place when a colon follows it: a name spelled with both
+                // ("note\\u0022:), never a value.
+                if (!unicode) {
+                    if ((levels & bit) == 0 && (last == '{' || last == ',')) {
+                        names |= bit;
+                    } else {
+                        names &= ~bit;
+                    }
                     levels ^= bit;
+                } else if ((levels & bit) != 0 && (names & bit) != 0 && colonAfter(read, stop)) {
+                    levels ^= bit;
+                    names &= ~bit;
                 }
+            }
+            if (level >= 0 || unicode) {
+                last = '"';
+            } else if (run == 0 && i < read.length() && !Character.isWhitespace(read.charAt(i))) {
+                last = read.charAt(i);
             }
             i = stop;
         }

@@ -710,10 +710,11 @@ function unconsumedSecretNames(text, ctx) {
  * The canonical reading of the JWK private members (#352, security round 2), written here apart from Redactor's
  * CanonicalJwks to the same specified rules, which RedactorTest's jwk-spelling-grid cross-checks: every escape decoded
  * once, so a member is read however its quotes, its whitespace and its name's letters are spelled.
- * - The text is read up to the first line break inside a string of its level (a raw one at level 0, n or r after an odd
+ * - Skipped: from a line break inside a string of its level (a raw one at level 0, n or r after an odd
  *   backslash run below; the level's quotes have that run) that opens where prose or a value starts at that level (the
  *   start, whitespace at any level, `:`, `[`, or a shallower quote opening the string holding it), and not in a member's
- *   place (after `{` or `,`, whitespace aside): what follows is prose quoting a copy (#342).
+ *   place (after `{` or `,`, whitespace aside), to the quote closing the string that holds that level (one after
+ *   fewer backslashes), or at level 0 to the end: what it skips is prose quoting a copy (#342).
  * - A backslash run, its backslashes plain or `u005c` escapes after a backslash, then `u` and four hex digits is that
  *   character; then n, r, t or f is whitespace; then any other character is itself; at the end, nothing.
  * - Every quote is a quote; every character Java's Character.isWhitespace reads, raw or escaped, is a space.
@@ -732,7 +733,10 @@ function unconsumedSecretNames(text, ctx) {
  */
 const CANONICAL_LINE_BREAKS = '\n\r\u0085  ';
 
-function canonicalReadable(text) {
+function canonicalSkipped(text) {
+  // Start and end pairs skipped, and how many characters the scan read (a skip to the end reads nothing).
+  const skips = [];
+  let scanned = 0;
   // For each level (its quotes' backslash run) a string is open at: whether its line breaks are read past.
   const open = new Map();
   let last = '';
@@ -756,15 +760,35 @@ function canonicalReadable(text) {
         const prose = starts || (quoteRun >= 0 && quoteRun < run);
         open.set(run, !prose || last === '{' || last === ',');
       }
-    } else if (run === 0 ? CANONICAL_LINE_BREAKS.includes(c) : run % 2 === 1 && (c === 'n' || c === 'r')) {
-      if (open.get(run) === false) return i;
+    } else if ((run === 0 ? CANONICAL_LINE_BREAKS.includes(c) : run % 2 === 1 && (c === 'n' || c === 'r'))
+        && open.get(run) === false) {
+      // Skipped to the quote closing the string that holds this level (one after fewer backslashes), at level 0 to the end.
+      let end = text.length;
+      if (run > 0) {
+        let j = i + run + 1;
+        while (j < text.length) {
+          let k = 0;
+          while (text[j + k] === '\\') k++;
+          if (text[j + k] === '"' && k < run) break;
+          j += k + 1;
+        }
+        end = Math.min(j, text.length);
+        scanned += end - i;
+      }
+      skips.push(i, end);
+      for (const level of [...open.keys()]) if (level >= run) open.delete(level);
+      starts = false;
+      quoteRun = -1;
+      i = end;
+      continue;
     }
     if (!space && (run === 0 || c === '"')) last = c;
     starts = space || (run === 0 && (c === ':' || c === '['));
     quoteRun = c === '"' ? run : -1;
+    scanned += run + 1;
     i += run + 1;
   }
-  return text.length;
+  return { skips, scanned };
 }
 
 function canonicalForm(raw) {
@@ -870,11 +894,14 @@ function canonicalMemberLevel(spelling, open) {
 /**
  * For each place, the levels a string is open at, one bit each: level L's strings open and close at plain quotes after
  * 2^L - 1 backslashes; a unicode escape of a quote of level L (canonicalFlatLevel) closes one that a plain quote opened
- * when a colon follows it, as in a name spelled with both ("note\\u0022:).
+ * in a member's place when a colon follows it, as in a name spelled with both ("note\\u0022:), never a value.
  */
 function canonicalOpenLevels(raw) {
   const open = new Int32Array(raw.length + 1);
   let levels = 0;
+  // The levels whose open string opened in a member's place, and the last character no whitespace nor backslash.
+  let names = 0;
+  let last = '';
   let i = 0;
   while (i < raw.length) {
     let run = 0;
@@ -893,8 +920,17 @@ function canonicalOpenLevels(raw) {
     open.fill(levels, i, stop);
     if (level >= 0 && level < 31) {
       const bit = 1 << level;
-      if (!unicode || ((levels & bit) !== 0 && canonicalColonAfter(raw, stop))) levels ^= bit;
+      if (!unicode) {
+        if ((levels & bit) === 0 && (last === '{' || last === ',')) names |= bit;
+        else names &= ~bit;
+        levels ^= bit;
+      } else if ((levels & bit) !== 0 && (names & bit) !== 0 && canonicalColonAfter(raw, stop)) {
+        levels ^= bit;
+        names &= ~bit;
+      }
     }
+    if (level >= 0 || unicode) last = '"';
+    else if (run === 0 && i < raw.length && !isJavaSpace(raw[i])) last = raw[i];
     i = stop;
   }
   open[raw.length] = levels;
@@ -918,16 +954,27 @@ const canonicalCloseLevel = spelling => canonicalQuoteLevel(spelling) ?? 0;
 function canonicalJwkLeaks(text, ctx) {
   // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
   if (!CANONICAL_KTY.test(text)) return;
-  const readable = canonicalReadable(text);
-  ctx.work += readable;
-  const raw = text.slice(0, readable);
+  const { skips, scanned } = canonicalSkipped(text);
+  ctx.work += scanned;
+  // The text without what is skipped (raw), and where each of its places is in the text.
+  const parts = [];
+  const toRaw = [];
+  let from = 0;
+  for (let r = 0; r <= skips.length; r += 2) {
+    const to = r < skips.length ? skips[r] : text.length;
+    parts.push(text.slice(from, to));
+    for (let k = from; k < to; k++) toRaw.push(k);
+    from = r < skips.length ? skips[r + 1] : text.length;
+  }
+  toRaw.push(text.length);
+  const raw = parts.join('');
   if ((!raw.includes('"') && !/u0022/i.test(raw)) || !CANONICAL_KTY.test(raw)) return;
   const { t, origin } = canonicalForm(raw);
   const inStrings = canonicalOpenLevels(raw);
   const n = t.length;
-  // The decoding and the string levels read the readable part twice more; the canonical form is read four times (the closes, the names, the
-  // two readings of the brackets).
-  ctx.work += 2 * readable + 4 * n;
+  // The kept text is read three times (copied, decoded, its string levels); the canonical form four times (the closes,
+  // the names, the two readings of the brackets).
+  ctx.work += 3 * raw.length + 4 * n;
   const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = [];
   for (let q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
@@ -1024,7 +1071,7 @@ function canonicalJwkLeaks(text, ctx) {
     } else if (c === '{' || c === '[' || /^(?:-?\d|true\b|false\b)/.test(t.slice(v, v + 6))) {
       leak = true;
     }
-    if (leak) ctx.leaks.push({ check: 'JWK private member (canonical reading)', match: text.slice(origin[q], origin[q] + 80) });
+    if (leak) ctx.leaks.push({ check: 'JWK private member (canonical reading)', match: text.slice(toRaw[origin[q]], toRaw[origin[q]] + 80) });
   }
 }
 
