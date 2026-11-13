@@ -2053,11 +2053,13 @@ test('flags a JWK private member whose name is quoted with \\u0022 in a plain-qu
 /**
  * Where an output of the Redactor would leak more of a value if the mask had stopped short of it: the output with a
  * secret word and the mask's own closing quote written again right after that quote, as a mask that ends at a quote
- * inside the value leaves it. Null when the output holds no mask.
+ * inside the value leaves it. Null when the output holds no mask, or no kty (masked whole with the JWK).
  */
 function withContinuation(out) {
   const at = out.indexOf('[REDACTED]');
-  if (at < 0) return null;
+  // Text masked whole, or a string masked whole with the JWK and its kty in it (at the bound and past it), keeps no JWK
+  // member that a value could go on in.
+  if (at < 0 || !/kty|u006b/i.test(out)) return null;
   const end = at + '[REDACTED]'.length;
   const quote = /^(?:\\*u0022|\\*")/i.exec(out.slice(end, end + 40));
   const q = quote ? quote[0] : '';

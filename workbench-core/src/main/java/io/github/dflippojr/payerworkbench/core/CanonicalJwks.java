@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.core;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.IntBinaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,6 +44,16 @@ import java.util.regex.Pattern;
  * as the member's name opens, so it reads as a string at the name's level however the value was quoted.</li>
  * </ul>
  * Each step reads each character a fixed number of times, so the work is linear in the text's length.
+ *
+ * <p>The bound (#352): this reading applies within {@link Redactor#NESTED_LEVELS} levels of JSON nested in strings and
+ * of escaping (a quote chain decoding within that many levels), the levels the Redactor's readers read; at the last
+ * level and past it the string holding the JWK, or the text, is masked whole, and the leak scanner flags it. Where the
+ * quote reading is ambiguous it fails closed, never guesses: a quote deeper than a value's opening one is escaped inside
+ * the value, both in its bounds and in the reading that counts every bracket, which skips the brackets after such a
+ * quote; a value or structure that never closes is masked to the end; and a comma, brace or bracket spelled as an escape
+ * that decodes deeper than the strings open around it is no delimiter of its level, so the string holding it, or the
+ * text, is masked whole ({@link #ambiguous}). The scanner flags each of these, and flags a text whose reading spends its
+ * scan budget.
  */
 final class CanonicalJwks {
 
@@ -239,9 +250,47 @@ final class CanonicalJwks {
             nextLexClose[i] = quote && lexEnd[i + 1] ? i : nextLexClose[i + 1];
             nextValueClose[i] = quote && valueEnd[i + 1] ? i : nextValueClose[i + 1];
         }
+        // Each quote's levels, read once: decoded (closeLevel) and as a copied JWK reads it (flatLevel). A quote deeper
+        // than a string's opening one is escaped inside it, in the structural reading as in a value's bounds.
+        int[] strict = new int[n];
+        int[] flat = new int[n];
+        for (int k = 0; k < n; k++) {
+            if (t.charAt(k) == '"') {
+                String spelling = canonical.spelling(read, k);
+                strict[k] = closeLevel(spelling);
+                flat[k] = flatLevel(spelling);
+            }
+        }
+        IntBinaryOperator deeper = (quote, opening) -> strict[quote] > strict[opening]
+                || flat[quote] != ANY_LEVEL && flat[opening] != ANY_LEVEL && flat[quote] > flat[opening] ? 1 : 0;
+        // Each private member's string value, bounded by its own quote level: the reading that counts every bracket
+        // skips the brackets inside one past a quote escaped in it, so such a brace does not move the members after it.
+        boolean[] inValue = new boolean[n];
+        int valuesTo = 0;
+        for (Name name : names) {
+            int v = name.value();
+            if (name.kty() || v >= n || v < valuesTo || t.charAt(v) != '"') {
+                continue;
+            }
+            // Only past a quote read as escaped inside it (deeper than its opening one), where the reading is ambiguous.
+            int close = nextValueClose[v + 1];
+            int stepped = -1;
+            while (close < n && deeper.applyAsInt(close, v) == 1) {
+                stepped = stepped < 0 ? close : stepped;
+                close = nextValueClose[close + 1];
+            }
+            if (stepped >= 0) {
+                Arrays.fill(inValue, stepped, Math.min(close + 1, n), true);
+            }
+            valuesTo = close + 1;
+        }
         boolean[] jwk = new boolean[names.size()];
-        int[] counted = brackets(t, names, jwk, null);
-        int[] lexed = brackets(t, names, jwk, nextLexClose);
+        int[] counted = brackets(t, names, jwk, null, inValue);
+        int[] lexed = brackets(t, names, jwk, nextLexClose, null);
+        List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, inStrings, names);
+        if (!wholesale.isEmpty()) {
+            return wholesale;
+        }
         Matcher scalar = SCALAR.matcher(t);
         // Where the last string value read ends: a name before it is inside that value, which is masked or the mask.
         int readTo = 0;
@@ -255,12 +304,8 @@ final class CanonicalJwks {
             char c = t.charAt(v);
             if (c == '"') {
                 // A quote deeper than the opening one is an escaped quote inside the value, which goes on past it.
-                // The opening quote's levels, read once: a candidate close is read against them.
-                String opening = canonical.spelling(read, v);
-                int openLevel = closeLevel(opening);
-                int openFlat = flatLevel(opening);
                 int close = nextValueClose[v + 1];
-                while (close < n && deeper(canonical.spelling(read, close), openLevel, openFlat)) {
+                while (close < n && deeper.applyAsInt(close, v) == 1) {
                     close = nextValueClose[close + 1];
                 }
                 readTo = close + 1;
@@ -296,7 +341,7 @@ final class CanonicalJwks {
      * each private member whose object holds a kty name in this reading, and returns where the bracket closing each
      * opening bracket is (-1: none, or not read as a bracket).
      */
-    private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose) {
+    private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose, boolean[] skip) {
         int n = t.length();
         int[] match = new int[n];
         Arrays.fill(match, -2);
@@ -319,7 +364,7 @@ final class CanonicalJwks {
                 }
                 next++;
             }
-            char c = t.charAt(i);
+            char c = skip != null && skip[i] ? ' ' : t.charAt(i);
             if (c == '{' || c == '[') {
                 stack.push(i);
                 match[i] = -1;
@@ -421,7 +466,7 @@ final class CanonicalJwks {
     /**
      * Whether the string opening at {@code at} in {@code raw} opens right after a private member's name and colon, so it
      * is that member's value, read through, never prose quoting a copy: the text back to the comma or opening brace
-     * before it, read in the canonical form ({@link #canonical}), is that name and colon, so every spelling of its
+     * before it, read in the canonical form ({@link #canonical}) from its last comma or brace there, is that name and colon, so every spelling of its
      * quotes, letters and whitespace reads as it does there. The read goes back no further than {@code floor[0]}, where
      * the last one began, and sets it to {@code at}, so each stretch is read once.
      */
@@ -432,7 +477,10 @@ final class CanonicalJwks {
         }
         int from = Math.max(k + 1, floor[0]);
         floor[0] = at;
-        return PRIVATE_NAME_COLON.matcher(canonical(raw.substring(from, at)).text()).matches();
+        // Delimiters are read once decoded: the name is what follows the last comma or brace of the canonical form.
+        String name = canonical(raw.substring(from, at)).text();
+        name = name.substring(Math.max(name.lastIndexOf(','), name.lastIndexOf('{')) + 1);
+        return PRIVATE_NAME_COLON.matcher(name).matches();
     }
 
     /** Where in the text the stretch of the kept text ending at {@code end} ends: just after its last character. */
@@ -650,17 +698,100 @@ final class CanonicalJwks {
     }
 
     /**
-     * Whether a value's quote spelled {@code quote} is deeper than its opening quote, whose levels are
-     * {@code openLevel} and {@code openFlat}, so it is escaped inside the value: deeper decoded ({@link #closeLevel}),
-     * or deeper as a copied JWK reads it ({@link #flatLevel}), where an escaped quote inside a value quoted with a
-     * unicode escape is a level down. Either is enough (fail closed: the value goes on).
+     * The fail-closed reading where a delimiter reads ambiguously: a comma, brace or bracket the text spells as an escape
+     * that decodes at a level deeper than the strings open around it is no delimiter of the level it is at, so where the
+     * text holds both a kty and a private member name, the string holding such a delimiter at level 0 is masked whole, or
+     * the text when no string holds it. Empty when nothing reads ambiguously.
      */
-    private static boolean deeper(String quote, int openLevel, int openFlat) {
-        if (closeLevel(quote) > openLevel) {
-            return true;
+    private static List<Value> ambiguous(String raw, String read, Canonical canonical, int[] toRaw, int[] inStrings,
+            List<Name> names) {
+        List<Value> wholesale = new ArrayList<>();
+        if (names.stream().noneMatch(Name::kty) || names.stream().allMatch(Name::kty)) {
+            return wholesale;
         }
-        int flat = flatLevel(quote);
-        return flat != ANY_LEVEL && openFlat != ANY_LEVEL && flat > openFlat;
+        String t = canonical.text();
+        int[] strings = null;
+        int masked = -1;
+        // The last quote before here, and its level once read.
+        int quote = -1;
+        int quoteLevel = 0;
+        int quoteRead = -1;
+        for (int k = 0; k < t.length(); k++) {
+            if (t.charAt(k) == '"') {
+                quote = k;
+                continue;
+            }
+            if (",{}[]".indexOf(t.charAt(k)) < 0 || canonical.at(k + 1) - canonical.at(k) == 1) {
+                continue;
+            }
+            // The strings open around it: as the plain quotes read them, or as deep as the last quote before it decodes.
+            int depth = Integer.bitCount(inStrings[canonical.at(k)]);
+            if (quote >= 0) {
+                if (quoteRead != quote) {
+                    // A quote that opens a string adds its level; one that closes a string (a comma, a closing bracket or
+                    // a colon follows it, spaces aside) leaves its level.
+                    int after = quote + 1;
+                    while (after < t.length() && t.charAt(after) == ' ') {
+                        after++;
+                    }
+                    boolean closes = after >= t.length() || ",}]:".indexOf(t.charAt(after)) >= 0;
+                    int level = nameQuoteLevel(canonical.spelling(read, quote));
+                    quoteLevel = level == Integer.MAX_VALUE ? level : Math.max(0, level) + (closes ? 0 : 1);
+                    quoteRead = quote;
+                }
+                depth = Math.max(depth, quoteLevel);
+            }
+            if (letterLevel(canonical.spelling(read, k)) <= depth) {
+                continue;
+            }
+            int at = toRaw[canonical.at(k)];
+            if (at < masked) {
+                continue;
+            }
+            if (strings == null) {
+                strings = plainStrings(raw);
+            }
+            int open = -1;
+            for (int s = 0; s < strings.length; s += 2) {
+                if (strings[s] < at && at < strings[s + 1]) {
+                    open = s;
+                    break;
+                }
+            }
+            if (open < 0) {
+                wholesale.clear();
+                wholesale.add(new Value(0, raw.length(), Redactor.MASK, 0, raw.length()));
+                return wholesale;
+            }
+            wholesale.add(new Value(strings[open] + 1, strings[open + 1], Redactor.MASK, strings[open] + 1,
+                    strings[open + 1]));
+            masked = strings[open + 1];
+        }
+        return wholesale;
+    }
+
+    /**
+     * The strings of {@code raw} at level 0, as pairs of where each opening quote and closing quote (or the end) is: a
+     * plain quote opens or closes one, and inside one a backslash escapes the character after it.
+     */
+    private static int[] plainStrings(String raw) {
+        List<Integer> spans = new ArrayList<>();
+        int i = 0;
+        while (i < raw.length()) {
+            if (raw.charAt(i) != '"') {
+                i++;
+                continue;
+            }
+            int close = i + 1;
+            while (close < raw.length() && raw.charAt(close) != '"') {
+                close += raw.charAt(close) == BACKSLASH ? 2 : 1;
+            }
+            close = Math.min(close, raw.length());
+            spans.add(i);
+            spans.add(close);
+            i = close + 1;
+        }
+        return spans.stream().mapToInt(Integer::intValue).toArray();
     }
 
     private static long levelBit(int level) {

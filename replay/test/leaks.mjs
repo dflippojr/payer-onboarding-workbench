@@ -731,6 +731,12 @@ function unconsumedSecretNames(text, ctx) {
  *   false is a leak; anything else is no value.
  * A text whose readable part spells no kty, as CANONICAL_KTY reads it, holds no JWK there and is read no further.
  * Each step reads each character a fixed number of times, so the work is linear.
+ *
+ * The bound (#352): within 16 levels of nesting and of escaping, the levels Redactor reads (past them the text holds
+ * JSON nested past the levels read, which fails closed). Where the quote reading is ambiguous it flags, never guesses:
+ * a quote deeper than a value's opening one is escaped inside it, also for the brackets counted after it; and a comma,
+ * brace or bracket spelled as an escape that decodes deeper than the strings open around it (canonicalAmbiguous) flags
+ * the text, which Redactor masks whole. Spending the scan budget flags too.
  */
 const CANONICAL_LINE_BREAKS = '\n\r\u0085  ';
 
@@ -810,7 +816,10 @@ function canonicalAfterPrivateName(text, at, floor) {
   while (k >= floor.at && text[k] !== ',' && text[k] !== '{') k--;
   const from = Math.max(k + 1, floor.at);
   floor.at = at;
-  return /^ *"(?:d|p|q|dp|dq|qi|oth|k)" *: *$/.test(canonicalForm(text.slice(from, at)).t);
+  // Delimiters are read once decoded: the name is what follows the last comma or brace of the canonical form.
+  const decoded = canonicalForm(text.slice(from, at)).t;
+  const name = decoded.slice(Math.max(decoded.lastIndexOf(','), decoded.lastIndexOf('{')) + 1);
+  return /^ *"(?:d|p|q|dp|dq|qi|oth|k)" *: *$/.test(name);
 }
 
 function canonicalForm(raw) {
@@ -1008,6 +1017,44 @@ function canonicalDeeper(quote, openLevel, openFlat) {
   return flat !== -1 && openFlat !== -1 && flat > openFlat;
 }
 
+/**
+ * Whether the canonical reading is ambiguous where it holds both a kty and a private member name: a comma, brace or
+ * bracket spelled as an escape that decodes deeper than the strings open around it (as the plain quotes read them, or the
+ * last quote before it: its level, one more if it opens a string) is no delimiter of the level it is at. Redactor masks
+ * the string holding it whole; the scanner flags the text.
+ */
+function canonicalAmbiguous(t, origin, raw, inStrings, names, spelling) {
+  if (!names.some(name => name.kty) || names.every(name => name.kty)) return false;
+  let quote = -1;
+  let quoteRead = -1;
+  let quoteLevel = 0;
+  for (let k = 0; k < t.length; k++) {
+    if (t[k] === '"') {
+      quote = k;
+      continue;
+    }
+    if (!',{}[]'.includes(t[k]) || origin[k + 1] - origin[k] === 1) continue;
+    let open = inStrings[origin[k]];
+    let depth = 0;
+    while (open !== 0) {
+      open &= open - 1;
+      depth++;
+    }
+    if (quote >= 0) {
+      if (quoteRead !== quote) {
+        let after = quote + 1;
+        while (t[after] === ' ') after++;
+        const closes = after >= t.length || ',}]:'.includes(t[after]);
+        quoteLevel = Math.max(0, canonicalQuoteLevel(spelling(quote)) ?? 0) + (closes ? 0 : 1);
+        quoteRead = quote;
+      }
+      depth = Math.max(depth, quoteLevel);
+    }
+    if (canonicalLetterLevel(spelling(k)) > depth) return true;
+  }
+  return false;
+}
+
 function canonicalJwkLeaks(text, ctx) {
   // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
   if (!CANONICAL_KTY.test(text)) return;
@@ -1081,6 +1128,30 @@ function canonicalJwkLeaks(text, ctx) {
     lexEnd = c === ' ' ? lexEnd : ',}]:'.includes(c);
     valueEnd = c === ' ' || c === '"' ? valueEnd : ',}]:'.includes(c);
   }
+  // Each private member's string value, bounded by its own quote level: counting every bracket skips those inside one
+  // past a quote escaped in it.
+  const inValue = new Uint8Array(n);
+  let valuesTo = 0;
+  for (const { v, kty } of names) {
+    if (kty || v >= n || v < valuesTo || t[v] !== '"') continue;
+    const openLevel = canonicalCloseLevel(spelling(v));
+    const openFlat = canonicalFlatLevel(spelling(v));
+    // Only past a quote read as escaped inside it (deeper than its opening one), where the reading is ambiguous.
+    let close = valueClose[v + 1];
+    let stepped = -1;
+    while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat)) {
+      if (stepped < 0) stepped = close;
+      close = valueClose[close + 1];
+    }
+    if (stepped >= 0) inValue.fill(1, stepped, Math.min(close + 1, n));
+    valuesTo = close + 1;
+    ctx.work += close - v;
+  }
+  ctx.work += n;
+  if (canonicalAmbiguous(t, origin, raw, inStrings, names, spelling)) {
+    ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
+    return;
+  }
   for (const skipStrings of [false, true]) {
     const stack = [];
     const owner = new Map();
@@ -1098,7 +1169,7 @@ function canonicalJwkLeaks(text, ctx) {
         }
         next++;
       }
-      const c = t[i];
+      const c = !skipStrings && inValue[i] ? ' ' : t[i];
       if (c === '{' || c === '[') stack.push(i);
       else if ((c === '}' || c === ']') && stack.length > 0) stack.pop();
       else if (c === '"' && skipStrings) {
