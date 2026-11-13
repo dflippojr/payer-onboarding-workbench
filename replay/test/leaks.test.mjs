@@ -2070,7 +2070,9 @@ test('flags every JWK private member however its quotes and whitespace are spell
   // JWK's plain-quoted kty before or after it, bare and nested once and twice.
   // RedactorTest checks that the committed grid holds the Redactor's outputs for them; see redactorGrid.
   const pairs = redactorGrid('jwk-spelling-grid');
-  assert.equal(pairs.length, 8 * 4 * 9 * 4 * 2 * 3);
+  // ...and the rows at the bound and past it: chain-quoted names at the last escape level read and past it, and a JWK
+  // nested at the last level read and past it.
+  assert.equal(pairs.length, 8 * 4 * 9 * 4 * 2 * 3 + 8 * 2 * 2 + 2);
   const wrong = [];
   for (const [input, out] of pairs) {
     if (findTextLeaks(input).length === 0) wrong.push(`not flagged: ${input}`);
@@ -2205,4 +2207,26 @@ test('bounds a value opening on a long escape chain in linear time (#352, automa
   const started = Date.now();
   findTextLeaks(text);
   assert.ok(Date.now() - started < 10000, `took ${Date.now() - started} ms`);
+});
+
+test('flags a JWK whose quotes or delimiters read ambiguously, and accepts it masked whole (#352, liaison decision on the bound)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  const chain = `${b}u005c${u.slice(1)}`;
+  // A value holding an escaped quote and a brace, then the kty: the structural reading bounds the value by its own quote.
+  const quoteDepth = `{${chain}d${u}:"PRIVA${b}",{PRIVB","kty":"oct"}`;
+  for (const text of [quoteDepth, nestedIn(quoteDepth, 1), nestedIn(quoteDepth, 2)]) assertFlagged(text);
+  // A delimiter spelled as an escape where no string is open to decode it.
+  const delimiter = `{"x":1${b}u002c${chain}d${u}:"PRIVA\nPRIVB","kty":"oct"}`;
+  for (const text of [delimiter, nestedIn(delimiter, 1)]) assert.ok(findTextLeaks(text).length > 0, JSON.stringify(text));
+  assertAccepted('[REDACTED]');
+  assertAccepted('{"body":"[REDACTED]"}');
+});
+
+test('fails closed on a masked JWK nested seven levels deep with a long pad: spending the scan budget flags (#352, liaison decision on the bound)', () => {
+  // Past what the scanner reads within its budget, it fails closed: the masked output is flagged, never passed, and
+  // its leaked form is flagged too.
+  const nest = k => nestedIn(JSON.stringify({ kty: 'oct', d: k, n: 'x'.repeat(30000) }), 7);
+  assert.ok(findTextLeaks(nest(MASK)).some(leak => leak.check === 'scan budget spent'));
+  assert.ok(findTextLeaks(nest('PRIVD352')).length > 0);
 });

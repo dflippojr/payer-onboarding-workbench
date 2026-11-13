@@ -2275,6 +2275,25 @@ class RedactorTest {
     }
 
     @Test
+    void masksWholeTheStringHoldingAJwkWhoseQuotesOrDelimitersReadAmbiguously() {
+        // The bound (#352, liaison decision): where the quote reading is ambiguous, fail closed. A value holding an escaped
+        // quote and a brace is bounded by its own quote level in the structural reading too, so the kty after it stays a
+        // member of the JWK; and a delimiter spelled as an escape where no string is open to decode it is no delimiter of
+        // that level, so the string holding it, or the text, is masked whole.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String chain = b + "u005c" + u.substring(1);
+        String quoteDepth = "{" + chain + "d" + u + ":\"PRIVA" + b + "\",{PRIVB\",\"kty\":\"oct\"}";
+        for (String form : List.of(quoteDepth, nested(quoteDepth), nested(nested(quoteDepth)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
+        }
+        String delimiter = "{\"x\":1" + b + "u002c" + chain + "d" + u + ":\"PRIVA\nPRIVB\",\"kty\":\"oct\"}";
+        assertEquals(Redactor.MASK, Redactor.redact(delimiter));
+        assertEquals("{\"body\":\"" + Redactor.MASK + "\"}", Redactor.redact(nested(delimiter)));
+    }
+
+    @Test
     void readsAPrivateMembersValueThroughARawLineBreakToTheKtyAfterIt() {
         // Automated review on 4ca9093: a string opening right after a private member's colon is its value, not prose
         // quoting a copy, so a raw line break in it does not end the reading before the JWK's kty.
@@ -2451,6 +2470,25 @@ class RedactorTest {
                         }
                     }
                 }
+            }
+        }
+        // The bound (#352, liaison decision): a name quoted through an escape chain that decodes at the last level read
+        // (NESTED_LEVELS) and one past it, and a JWK nested NESTED_LEVELS levels deep and one past it. Inside the bound
+        // the value is masked where it is; past it the string holding it is masked whole.
+        String atBound = bs + "u005c".repeat(Redactor.NESTED_LEVELS - 1) + "u0022";
+        String pastBound = bs + "u005c".repeat(Redactor.NESTED_LEVELS) + "u0022";
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
+            for (String boundChain : List.of(atBound, pastBound)) {
+                String field = boundChain + member + u + ":\"PRIVSTART\"";
+                inputs.add("{\"kty\":\"oct\"," + field + "}");
+                inputs.add("{" + field + ",\"kty\":\"oct\"}");
+            }
+        }
+        String deep = "{\"kty\":\"oct\",\"d\":\"PRIVSTART\"}";
+        for (int depth = 0; depth < Redactor.NESTED_LEVELS + 1; depth++) {
+            deep = nested(deep);
+            if (depth >= Redactor.NESTED_LEVELS - 1) {
+                inputs.add(deep);
             }
         }
         return inputs;
