@@ -1216,8 +1216,22 @@ function canonicalValueLeaks(text, t, spelling, origin, names, at, ctx, check) {
   // The first quote from i that spaces and quotes and then a comma, a closing bracket, a colon or the end follow (a
   // value's close), or n. Each run of spaces and quotes is read once, so a scan is linear in what it reads, and is
   // charged so.
+  // The last run of spaces and quotes read, [runFrom, runTo), and whether a value's close follows it: a scan that starts
+  // inside it reads none of it again (automated review on 063cefd: stepping past each deeper quote of a long run read
+  // the rest of the run each time).
+  let runFrom = -1;
+  let runTo = -1;
+  let runCloses = false;
   const valueClose = i => {
     let k = i;
+    if (k >= runFrom && k < runTo) {
+      // Every quote in the run closes a value or none does; past its last quote, reading goes on from its end.
+      while (runCloses && k < runTo && t[k] !== '"') k++;
+      ctx.work += Math.min(k + 1, runTo) - i;
+      if (runCloses && k < runTo) return k;
+      k = runTo;
+    }
+    let charged = k;
     while (k < n) {
       if (t[k] !== '"') {
         k++;
@@ -1225,12 +1239,15 @@ function canonicalValueLeaks(text, t, spelling, origin, names, at, ctx, check) {
       }
       let e = k + 1;
       while (e < n && (t[e] === ' ' || t[e] === '"')) e++;
-      ctx.work += e - i;
-      if (e >= n || ',}]:'.includes(t[e])) return k;
-      i = e;
+      ctx.work += e - charged;
+      charged = e;
+      runFrom = k;
+      runTo = e;
+      runCloses = e >= n || ',}]:'.includes(t[e]);
+      if (runCloses) return k;
       k = e;
     }
-    ctx.work += n - i;
+    ctx.work += n - charged;
     return n;
   };
   // Where the last string value read ends: a name before it is inside that value.
@@ -1284,29 +1301,42 @@ const SPAN_PRIVATE = new RegExp(String.raw`${SPAN_QUOTE}(?:${['oth', 'dp', 'dq',
 const SPAN_KTY = new RegExp(String.raw`${SPAN_QUOTE}${spanWord('kty')}${ANY_QUOTE}${SPAN_SPACE}${SPAN_COLON}${SPAN_SPACE}${ANY_QUOTE}`, 'g');
 
 /**
- * Where a unicode escape ending at k in text starts (its backslash run, raw backslashes and u005c escapes after one,
- * included), and the character it decodes to; null if none ends there within [from, k).
+ * Where the backslash run ending at j in text starts, as the canonical form reads one (raw backslashes, and u005c
+ * escapes after one, beginning with a raw backslash), within [from, j); null if no such run ends at j.
  */
-function unicodeEscapeBefore(text, from, k) {
-  if (k - 5 < from || text[k - 5] !== 'u' || !/^[0-9A-Fa-f]{4}$/.test(text.slice(k - 4, k))) return null;
-  let j = k - 5;
-  let raw = false;
+function backslashRunBefore(text, from, j) {
+  let k = j;
   for (;;) {
-    if (j - 1 >= from && text[j - 1] === '\\') {
-      j--;
-      raw = true;
-    } else if (raw && j - 5 >= from && /^u005c$/i.test(text.slice(j - 5, j)) && j - 6 >= from && (text[j - 6] === '\\' || /^005c$/i.test(text.slice(j - 9, j - 5)))) {
-      j -= 5;
-    } else {
-      break;
-    }
+    if (k - 1 >= from && text[k - 1] === '\\') k--;
+    else if (k - 5 >= from && /^u005c$/i.test(text.slice(k - 5, k))) k -= 5;
+    else break;
   }
-  return raw ? { start: j, c: String.fromCharCode(Number.parseInt(text.slice(k - 4, k), 16)) } : null;
+  // Back past u005c spellings that no raw backslash starts: they are text, not part of a run.
+  while (k < j && text[k] !== '\\') k += 5;
+  return k < j ? k : null;
+}
+
+/**
+ * The escape ending at k in text, read back as the canonical form reads it: a backslash run (backslashRunBefore), then
+ * n, r, t or f (whitespace) or a unicode escape other than a backslash's. Where it starts and the character it is
+ * (whitespace as a space); null if none ends there within [from, k).
+ */
+function escapeBefore(text, from, k) {
+  if (k - 1 >= from && 'nrtf'.includes(text[k - 1])) {
+    const start = backslashRunBefore(text, from, k - 1);
+    if (start !== null) return { start, c: ' ' };
+  }
+  if (k - 5 >= from && text[k - 5] === 'u' && /^[0-9A-Fa-f]{4}$/.test(text.slice(k - 4, k))
+      && text.slice(k - 4, k).toLowerCase() !== '005c') {
+    const start = backslashRunBefore(text, from, k - 5);
+    if (start !== null) return { start, c: String.fromCharCode(Number.parseInt(text.slice(k - 4, k), 16)) };
+  }
+  return null;
 }
 
 /**
  * Whether the name at q in text opens in a member's place within [from, ...): after { or , and whitespace, each read
- * back as the canonical form reads it, raw or escaped (an escaped n, r, t or f, or a unicode escape of any of them).
+ * back as the canonical form reads it, raw or escaped, whatever spelling the escape's backslash run has.
  */
 function spanMemberPlace(text, from, q) {
   let k = q;
@@ -1315,18 +1345,10 @@ function spanMemberPlace(text, from, q) {
       k--;
       continue;
     }
-    if (k - 2 >= from && 'nrtf'.includes(text[k - 1]) && text[k - 2] === '\\') {
-      k -= 2;
-      while (k > from && text[k - 1] === '\\') k--;
-      continue;
-    }
-    const escape = unicodeEscapeBefore(text, from, k);
-    if (escape !== null && isJavaSpace(escape.c)) {
-      k = escape.start;
-      continue;
-    }
-    if (escape !== null) return escape.c === '{' || escape.c === ',';
-    return k > from && (text[k - 1] === '{' || text[k - 1] === ',');
+    const escape = escapeBefore(text, from, k);
+    if (escape === null) return k > from && (text[k - 1] === '{' || text[k - 1] === ',');
+    if (escape.c !== ' ' && !isJavaSpace(escape.c)) return escape.c === '{' || escape.c === ',';
+    k = escape.start;
   }
 }
 
