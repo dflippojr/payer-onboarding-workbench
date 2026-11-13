@@ -745,6 +745,8 @@ function canonicalSkipped(text) {
   // [), and the run of the quote it was, if it was one.
   let starts = true;
   let quoteRun = -1;
+  // Where the last read for a private member's name began (canonicalAfterPrivateName).
+  const floor = { at: 0 };
   let i = 0;
   while (i < text.length) {
     let run = 0;
@@ -759,7 +761,7 @@ function canonicalSkipped(text) {
         // Only one opening where prose or a value starts at its level may be prose quoting a copy, never one right after
         // other text or in a member's place.
         const prose = starts || (quoteRun >= 0 && quoteRun < run);
-        open.set(run, !prose || last === '{' || last === ',' || canonicalAfterPrivateName(text, i));
+        open.set(run, !prose || last === '{' || last === ',' || canonicalAfterPrivateName(text, i, floor));
       }
     } else if ((run === 0 ? CANONICAL_LINE_BREAKS.includes(c) : run % 2 === 1 && (c === 'n' || c === 'r'))
         && open.get(run) === false) {
@@ -797,33 +799,18 @@ function canonicalSkipped(text) {
   return { skips, scanned };
 }
 
-const canonicalLetters = name => [...name].map(c => `(?:${c}|\\\\+u00${c.charCodeAt(0).toString(16)})`).join('');
-const CANONICAL_PRIVATE_NAME_END = new RegExp(
-  `(?:"|u0022)(?:${['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'].map(canonicalLetters).join('|')})\\\\*(?:"|u0022)$`, 'i');
-
 /**
- * Whether the string opening at `at` opens right after a private member's name (its quotes and letters plain or unicode
- * escapes, read in the 80 characters before) and colon, whitespace around it raw or escaped: that member's value, read through, never prose quoting a copy.
+ * Whether the string opening at `at` opens right after a private member's name and colon: the text back to the comma or
+ * opening brace before it, read in the canonical form (canonicalForm), is that name and colon, so every spelling of its
+ * quotes, letters and whitespace reads as it does there. The read goes back no further than `floor.at`, where the last one
+ * began, and sets it to `at`, so each stretch is read once.
  */
-function canonicalAfterPrivateName(text, at) {
-  // Back over whitespace, raw or escaped at any level.
-  const back = from => {
-    let k = from;
-    for (;;) {
-      if (k >= 0 && isJavaSpace(text[k])) {
-        k--;
-      } else if (k > 0 && 'nrt'.includes(text[k]) && text[k - 1] === '\\') {
-        k -= 2;
-        while (k >= 0 && text[k] === '\\') k--;
-      } else {
-        return k;
-      }
-    }
-  };
-  let i = back(at - 1);
-  if (i < 0 || text[i] !== ':') return false;
-  i = back(i - 1);
-  return CANONICAL_PRIVATE_NAME_END.test(text.slice(Math.max(0, i - 79), i + 1));
+function canonicalAfterPrivateName(text, at, floor) {
+  let k = at - 1;
+  while (k >= floor.at && text[k] !== ',' && text[k] !== '{') k--;
+  const from = Math.max(k + 1, floor.at);
+  floor.at = at;
+  return /^ *"(?:d|p|q|dp|dq|qi|oth|k)" *: *$/.test(canonicalForm(text.slice(from, at)).t);
 }
 
 function canonicalForm(raw) {
