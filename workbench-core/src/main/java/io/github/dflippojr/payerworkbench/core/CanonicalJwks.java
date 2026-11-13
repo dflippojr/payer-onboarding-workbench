@@ -429,21 +429,34 @@ final class CanonicalJwks {
 
     /**
      * Whether the string opening at {@code at} in {@code raw} opens right after a private member's name and colon, so it
-     * is that member's value, read through, never prose quoting a copy. The name is read in the 80 characters before.
+     * is that member's value, read through, never prose quoting a copy; whitespace around the colon may be escaped. The
+     * name is read in the 80 characters before.
      */
     private static boolean afterPrivateName(String raw, int at) {
-        int i = at - 1;
-        while (i >= 0 && Character.isWhitespace(raw.charAt(i))) {
-            i--;
-        }
+        int i = spaceBefore(raw, at - 1);
         if (i < 0 || raw.charAt(i) != ':') {
             return false;
         }
-        i--;
-        while (i >= 0 && Character.isWhitespace(raw.charAt(i))) {
-            i--;
-        }
+        i = spaceBefore(raw, i - 1);
         return PRIVATE_NAME_END.matcher(raw.substring(Math.max(0, i - 79), i + 1)).find();
+    }
+
+    /** Where, from {@code i} back, the last character before whitespace (raw, or escaped at any level) is, or -1. */
+    private static int spaceBefore(String raw, int i) {
+        int k = i;
+        while (k >= 0) {
+            if (Character.isWhitespace(raw.charAt(k))) {
+                k--;
+            } else if (k > 0 && "nrt".indexOf(raw.charAt(k)) >= 0 && raw.charAt(k - 1) == BACKSLASH) {
+                k -= 2;
+                while (k >= 0 && raw.charAt(k) == BACKSLASH) {
+                    k--;
+                }
+            } else {
+                break;
+            }
+        }
+        return k;
     }
 
     /** Where in the text the stretch of the kept text ending at {@code end} ends: just after its last character. */
