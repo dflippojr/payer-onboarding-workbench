@@ -7,12 +7,16 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import com.sun.net.httpserver.HttpServer;
 import io.github.dflippojr.fhircrdrouter.client.CdsHookRequest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -49,20 +53,39 @@ class ClientJwtRejectionTableTest {
     private static final String HOOK_PATH = "/cds-services/order-sign-crd";
     private static final String TAILSPIN_EXP = "exp must be in the future and no more than 5 minutes ahead";
 
+    /** A P-384 key published under this kid, so an RS384 JWT naming it cannot be checked. */
+    private static final String EC_KID = "ec-kid";
+
     private static KeyPair key;
     private static TestKeys.JwksServer jwks;
+    /** Serves a broken JWK Set: {@code /unavailable} answers 503, {@code /garbage} answers 200 with a non-JWKS body. */
+    private static HttpServer brokenJwks;
     private static HttpClient http;
 
     @BeforeAll
     static void startJwks() throws Exception {
         key = TestKeys.rsa();
-        jwks = new TestKeys.JwksServer().publish(KID, key);
+        jwks = new TestKeys.JwksServer().publish(KID, key).publish(EC_KID, TestKeys.ecP384());
+        brokenJwks = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        brokenJwks.createContext("/unavailable", exchange -> {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        brokenJwks.createContext("/garbage", exchange -> {
+            byte[] body = "not a jwks".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(body);
+            }
+        });
+        brokenJwks.start();
         http = HttpClient.newHttpClient();
     }
 
     @AfterAll
     static void stopJwks() {
         jwks.close();
+        brokenJwks.stop(0);
         http.close();
     }
 
@@ -78,6 +101,8 @@ class ClientJwtRejectionTableTest {
         Fault[] faults = {};
         /** Sends the same assertion twice and checks the second answer. */
         boolean replay;
+        /** Registers the client with this path on the broken JWKS server instead of the healthy one. */
+        String brokenJwksPath;
 
         static final String ABSENT = "\u0000absent";
 
@@ -89,6 +114,7 @@ class ClientJwtRejectionTableTest {
         Spec clientId(String value) { clientId = value; return this; }
         Spec faults(Fault... value) { faults = value; return this; }
         Spec replay() { replay = true; return this; }
+        Spec brokenJwks(String path) { brokenJwksPath = path; return this; }
     }
 
     /**
@@ -100,6 +126,25 @@ class ClientJwtRejectionTableTest {
         public String toString() {
             return reason;
         }
+    }
+
+    private static URI jwksUrl(Spec spec) {
+        return spec.brokenJwksPath == null ? jwks.url()
+                : URI.create("http://localhost:" + brokenJwks.getAddress().getPort() + spec.brokenJwksPath);
+    }
+
+    /** The RegisteredJwks rejections; each payer reports them through its own error factory. */
+    private static List<Row> jwksRows() {
+        return List.of(
+                new Row("JWKS answers 503", send().brokenJwks("/unavailable"),
+                        base -> "Could not fetch JWKS for iss 'client' from " + jwksUrl(send().brokenJwks("/unavailable"))
+                                + ": HTTP 503", null),
+                new Row("JWKS body is not a JWK Set", send().brokenJwks("/garbage"),
+                        base -> "Could not fetch JWKS for iss 'client' from " + jwksUrl(send().brokenJwks("/garbage"))
+                                + ": Invalid JSON object", null),
+                row("signature cannot be checked with the kid's key", send().kid(EC_KID),
+                        "JWT signature could not be checked with kid 'ec-kid': "
+                                + "Invalid key: Must be an instance of interface java.security.interfaces.RSAPublicKey"));
     }
 
     private static Spec send() {
@@ -155,6 +200,7 @@ class ClientJwtRejectionTableTest {
                 base -> "JWT expired", Fault.EXPIRED_TOKEN_401));
         rows.add(row("fault expired-token-401 after missing iat",
                 send().faults(Fault.EXPIRED_TOKEN_401).claims(c -> c.issueTime(null)), "JWT has no iat"));
+        rows.addAll(jwksRows());
         return rows.stream();
     }
 
@@ -185,6 +231,7 @@ class ClientJwtRejectionTableTest {
         rows.add(new Row("fault wrong-audience-reject", send().faults(Fault.WRONG_AUDIENCE_REJECT),
                 base -> "aud must be exactly '" + TailspinPayer.WRONG_AUDIENCE + "', got ["
                         + base + TailspinPayer.TOKEN_PATH + "]", Fault.WRONG_AUDIENCE_REJECT));
+        rows.addAll(jwksRows());
         return rows.stream();
     }
 
@@ -192,7 +239,7 @@ class ClientJwtRejectionTableTest {
     @MethodSource("fabrikamRows")
     void fabrikamRejection(Row row) throws Exception {
         try (FabrikamPayer payer = FabrikamPayer.builder().clock(Clock.fixed(NOW, ZoneOffset.UTC))
-                .client(CLIENT, jwks.url()).build().start(0)) {
+                .client(CLIENT, jwksUrl(row.spec)).build().start(0)) {
             for (Fault fault : row.spec.faults) {
                 payer.faults().enable(fault);
             }
@@ -214,7 +261,7 @@ class ClientJwtRejectionTableTest {
     @MethodSource("tailspinRows")
     void tailspinRejection(Row row) throws Exception {
         try (TailspinPayer payer = TailspinPayer.builder().clock(Clock.fixed(NOW, ZoneOffset.UTC))
-                .client(CLIENT, jwks.url()).build().start(0)) {
+                .client(CLIENT, jwksUrl(row.spec)).build().start(0)) {
             for (Fault fault : row.spec.faults) {
                 payer.faults().enable(fault);
             }
