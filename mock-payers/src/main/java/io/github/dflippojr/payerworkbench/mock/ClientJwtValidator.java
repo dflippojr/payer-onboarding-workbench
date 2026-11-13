@@ -97,6 +97,14 @@ final class ClientJwtValidator {
     private final Policy policy;
     private final Messages messages;
     private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
+    /**
+     * Guards replay admission. Reading the clock, checking the times, evicting expired jtis and recording this jti
+     * happen under it as one decision, and the timer sweep takes it too, so no eviction can land between another
+     * request's time check and its admission.
+     */
+    private final Object admission = new Object();
+    /** The latest instant a decision has used; guarded by {@link #admission}. */
+    private Instant decidedThrough = Instant.MIN;
 
     /**
      * @param issuers  each registered {@code iss} and the URL its public JWK Set is served from
@@ -159,22 +167,37 @@ final class ClientJwtValidator {
             throw audienceFault ? error.fault(Fault.WRONG_AUDIENCE_REJECT) : error;
         }
 
-        // One clock read per assertion: the times are checked and the cache is swept at the same instant, so a
-        // replay that passes the exp check cannot then be swept away by a later read at exp and accepted as new.
-        Instant now = clock.instant();
-        Instant expiry = checkTimes(claims, now, expiredFault);
+        synchronized (admission) {
+            // One instant per decision, read under the lock: the times are checked, expired jtis evicted and this jti
+            // recorded at that instant, and no other eviction can run in between.
+            Instant now = decisionInstant();
+            Instant expiry = checkTimes(claims, now, expiredFault);
 
-        String jti = claims.getJWTID();
-        if (jti == null || jti.isBlank()) {
-            throw rejected.apply(messages.missingJti());
-        }
-        // Times are checked before the jti is recorded, so a refused assertion never occupies the cache. This sweep
-        // keeps the map tidy on every accepted assertion; a payer may also call sweepExpired on a timer.
-        sweepExpired(now);
-        if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
-            throw rejected.apply(messages.replay().apply(jti));
+            String jti = claims.getJWTID();
+            if (jti == null || jti.isBlank()) {
+                throw rejected.apply(messages.missingJti());
+            }
+            // Times are checked before the jti is recorded, so a refused assertion never occupies the cache. This
+            // eviction keeps the map tidy on every accepted assertion; a payer may also call sweepExpired on a timer.
+            evictExpired(now);
+            if (usedJtis.putIfAbsent(issuer + "|" + jti, expiry) != null) {
+                throw rejected.apply(messages.replay().apply(jti));
+            }
         }
         return issuer;
+    }
+
+    /**
+     * The payer's clock, never earlier than an instant an earlier decision used. An entry evicted at some instant has
+     * an exp at or before it, so a later decision must not judge a jti by an earlier instant, even if the clock steps
+     * back, or it could admit again a jti whose entry was evicted while its assertion still looks valid.
+     */
+    private Instant decisionInstant() {
+        Instant read = clock.instant();
+        if (read.isAfter(decidedThrough)) {
+            decidedThrough = read;
+        }
+        return decidedThrough;
     }
 
     /** @return the assertion's exp, once every time rule passed */
@@ -215,10 +238,12 @@ final class ClientJwtValidator {
 
     /** Drops every jti whose exp has passed on the payer's clock. */
     void sweepExpired() {
-        sweepExpired(clock.instant());
+        synchronized (admission) {
+            evictExpired(decisionInstant());
+        }
     }
 
-    private void sweepExpired(Instant now) {
+    private void evictExpired(Instant now) {
         usedJtis.values().removeIf(seenExpiry -> !now.isBefore(seenExpiry));
     }
 
