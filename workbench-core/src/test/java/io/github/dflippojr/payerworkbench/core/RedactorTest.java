@@ -2273,6 +2273,26 @@ class RedactorTest {
     }
 
     @Test
+    void boundsAValueByItsOpeningQuotesSpellingAndAStructureByItsUnclosedReadingAndKeepsARootMemberOutOfAChildJwk() {
+        // Automated review on 253416a: an escaped quote inside a value quoted with a unicode escape is a level deeper read
+        // flattened, so it does not close it; a structure one reading leaves unclosed is masked to the end; and a brace
+        // inside a string value does not move a root member into a child JWK.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String chain = b + "u005c" + u.substring(1);
+        for (String text : List.of("{\"kty\":\"oct\"," + chain + "d" + u + ":" + u + "PRIVSTART" + b + "\",PRIVTAIL" + u + "}",
+                "{\"kty\":\"oct\"," + chain + "d" + u + ":{\"x\":\"},PRIVTAIL\"")) {
+            for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                String out = Redactor.redact(form);
+                assertFalse(out.contains("PRIVSTART") || out.contains("PRIVTAIL"), out);
+            }
+        }
+        String kept = "{\"left\":{\"kty\":\"oct\",\"note\":\"{\"},\"d\":\"dimension\"}";
+        assertEquals(kept, Redactor.redact(kept));
+        assertEquals(nested(kept), Redactor.redact(nested(kept)));
+    }
+
+    @Test
     void readsTheMembersAfterProseInAStringClosedWithAUnicodeQuoteAndKeepsAnOddlySpelledKtyInAString() {
         // Automated review on 6ec18ce: the string holding the prose may close with a unicode escape of a quote, and a kty
         // whose quote no rule places is still no member while a string is open around it.
