@@ -2134,11 +2134,17 @@ test('flags a JWK value whose escaped quote a level further down is followed by 
       assertFlagged(text);
     }
   }
+  // A kty quoted a level down inside a string value is no member of the object as JSON reads it, but in a copy those
+  // quotes may be the object's own, so the d fails closed (#352, security round 3: over-flags accepted); Redactor's mask
+  // is accepted, and with no kty in the text the d is kept.
   for (const text of [`{"note":"x,${b}"kty${b}":${b}"oct${b}"","d":"dimension"}`,
     `{"note":"x, ${b}"kty${b}": ${b}"oct${b}"", "d": "dimension"}`,
     `{"note":"x,${b}u0022kty${b}u0022:${b}u0022oct${b}u0022","d":"dimension"}`]) {
-    assertAccepted(text);
-    assertAccepted(JSON.stringify({ body: text }));
+    for (const form of [text, JSON.stringify({ body: text })]) {
+      assertFlagged(form);
+      assertAccepted(form.replace('dimension', '[REDACTED]'));
+      assertAccepted(form.replace('kty', 'kid'));
+    }
   }
 });
 
@@ -2150,9 +2156,12 @@ test('flags a private member after a name closed with a unicode escape, and keep
     for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
   }
   assertAccepted(`{"note${u}:${b}"text${b}",${u}d${u}:"[REDACTED]","kty":"oct"}`);
+  // A kty spelled with quotes a level down inside a note may be the object's own in a copy, so the d after it fails
+  // closed at any depth (#352, security round 3: over-flags accepted); Redactor's mask is accepted.
   for (let depth = 0; depth <= 6; depth++) {
     const text = nestedIn(`{"note":"x,${u}kty${u}:${u}oct${u}","d":"dimension"}`, depth);
-    assert.deepEqual(findTextLeaks(text), [], `depth ${depth}`);
+    assert.ok(findTextLeaks(text).length > 0, `depth ${depth}`);
+    assert.deepEqual(findTextLeaks(text.replace('dimension', '[REDACTED]')), [], `masked, depth ${depth}`);
   }
 });
 
@@ -2267,7 +2276,9 @@ test('flags every private member whose name and value mix quote spellings after 
     for (const text of [
       `${note}"${member}${u}:${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`,
       `${note}${b}"${member}${u}:"PRIVA352PRIVB${u},"kty":"oct"}`,
-      `${note}"${member}${b}":${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`]) {
+      `${note}"${member}${b}":${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`,
+      // ...and escaped quotes in an ordinary string that, in a copy, close its object before the member.
+      `{"kty":"oct","a":{"note":"x${b}"},${b}"y${b}":${b}"z","${member}":"PRIVA352PRIVB"}}`]) {
       for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
     }
   }
@@ -2276,9 +2287,10 @@ test('flags every private member whose name and value mix quote spellings after 
 test('accepts a private member of an object without a kty whose ordinary string holds a brace (#352, automated review on e05c98c)', () => {
   // Plain JSON reads exactly: a brace in an ordinary string closes no object, so a d in an object without a kty is no
   // JWK's, inside a JWK or not.
-  for (const text of ['{"kty":"oct","a":{"note":"}","d":"dimension"}}', '{"kty":"oct","a":{"note":"x\\"}","d":"dimension"}}']) {
-    for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertAccepted(form);
-  }
+  const text = '{"kty":"oct","a":{"note":"}","d":"dimension"}}';
+  for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertAccepted(form);
+  // An escaped quote in that string may be the object's own in a copy, closing it early: that fails closed.
+  assertFlagged('{"kty":"oct","a":{"note":"x\\"}","d":"dimension"}}');
 });
 
 test('fails closed on a masked JWK nested seven levels deep with a long pad: spending the scan budget flags (#352, liaison decision on the bound)', () => {

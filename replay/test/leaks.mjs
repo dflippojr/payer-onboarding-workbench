@@ -1081,14 +1081,18 @@ function canonicalExactQuote(spelling) {
  * strings open around it, and a name to the object open at its level. The exact reading stops where a quote decodes to
  * no quote or past the levels read, opens a string deeper than the level it is at, or opens one after backslashes at
  * its level; where a bracket spelled as an escape decodes deeper than the strings open around it, or closes a bracket of
- * the other kind; and where a name does not open and close a string of its level. Past where it stops, a private member
- * whose object was not read to its close is a JWK's whenever the text holds a kty (fail closed): no reading of the
- * quotes can establish which object it is in.
+ * the other kind; and where a name does not open and close a string of its level. A private member whose object was
+ * not read to its close before the reading stops, or whose object holds a quote deeper than its own, is a JWK's
+ * whenever the text holds a kty (fail closed): no reading of the quotes can establish which object it is in.
  */
 function canonicalOwners(t, spelling, names) {
   const n = t.length;
+  // The open brackets: where each is, its level, and the deepest quote read inside it so far.
   const stack = [];
   const typed = new Set();
+  // For each object, the deepest quote inside it; and the objects read to their close (a string closing around one cuts
+  // it off unread).
+  const deepest = new Map();
   const closed = new Set();
   const owner = [];
   let depth = 0;
@@ -1096,6 +1100,12 @@ function canonicalOwners(t, spelling, names) {
   let nameClose = -1;
   let next = 0;
   let exact = true;
+  const pop = close => {
+    const top = stack.pop();
+    if (close) closed.add(top.at);
+    deepest.set(top.at, top.deepest);
+    if (stack.length > 0) stack[stack.length - 1].deepest = Math.max(stack[stack.length - 1].deepest, top.deepest);
+  };
   for (let k = 0; k < n && exact; k++) {
     const c = t[k];
     if (c === '"') {
@@ -1104,10 +1114,11 @@ function canonicalOwners(t, spelling, names) {
       exact = quote !== null && quote.level <= depth && (quote.level < depth || quote.bare)
         && (!opensName || quote.level === depth) && (k !== nameClose || quote.level === nameLevel);
       if (!exact) break;
+      const top = stack.length > 0 ? stack[stack.length - 1] : null;
+      if (top !== null) top.deepest = Math.max(top.deepest, quote.level);
       if (opensName) {
-        const top = stack.length > 0 ? stack[stack.length - 1] : null;
-        owner.push(top !== null && top.level === depth && t[top.at] === '{' ? top.at : -1);
-        if (names[next].kty && owner[next] >= 0) typed.add(owner[next]);
+        owner.push({ at: top !== null && top.level === depth && t[top.at] === '{' ? top.at : -1, level: depth });
+        if (names[next].kty && owner[next].at >= 0) typed.add(owner[next].at);
         nameLevel = quote.level;
         nameClose = t.indexOf('"', k + 1);
         next++;
@@ -1115,8 +1126,9 @@ function canonicalOwners(t, spelling, names) {
       if (quote.level === depth) {
         depth++;
       } else {
+        // A string closing ends the brackets of the levels below it.
         depth = quote.level;
-        while (stack.length > 0 && stack[stack.length - 1].level > depth) stack.pop();
+        while (stack.length > 0 && stack[stack.length - 1].level > depth) pop(false);
       }
     } else if ('{}[]'.includes(c)) {
       const spelled = spelling(k);
@@ -1126,15 +1138,21 @@ function canonicalOwners(t, spelling, names) {
       exact = (spelled.length === 1 || canonicalLetterLevel(spelled) <= depth)
         && (!closes || t[top.at] === (c === '}' ? '{' : '['));
       if (!exact) break;
-      if (opens) stack.push({ at: k, level: depth });
-      else if (closes) closed.add(stack.pop().at);
+      if (opens) stack.push({ at: k, level: depth, deepest: 0 });
+      else if (closes) pop(true);
     }
   }
+  // Read to the end: the objects still open hold what was read inside them.
+  while (exact && stack.length > 0) pop(true);
   const anyKty = names.some(name => name.kty);
   names.forEach((name, j) => {
     if (name.kty) return;
-    if (j >= next) name.jwk = anyKty;
-    else if (owner[j] >= 0) name.jwk = exact || closed.has(owner[j]) ? typed.has(owner[j]) : anyKty;
+    const object = j < next ? owner[j] : null;
+    if (object === null || (object.at >= 0 && !closed.has(object.at))) name.jwk = anyKty;
+    else if (object.at >= 0 && typed.has(object.at)) name.jwk = true;
+    // A quote deeper than its object's own inside it may be one of that object's quotes in a copy, closing a string or
+    // the object early or quoting a kty, so which object the member is in is not established.
+    else if (object.at >= 0 && deepest.get(object.at) > object.level) name.jwk = anyKty;
   });
 }
 

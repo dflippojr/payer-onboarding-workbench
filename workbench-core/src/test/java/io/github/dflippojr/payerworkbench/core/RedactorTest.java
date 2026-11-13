@@ -2325,7 +2325,10 @@ class RedactorTest {
             for (String text : List.of(
                     note + "\"" + member + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
                     note + b + "\"" + member + u + ":\"PRIVA352PRIVB" + u + ",\"kty\":\"oct\"}",
-                    note + "\"" + member + b + "\":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}")) {
+                    note + "\"" + member + b + "\":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
+                    // ...and escaped quotes in an ordinary string that, in a copy, close its object before the member.
+                    "{\"kty\":\"oct\",\"a\":{\"note\":\"x" + b + "\"}," + b + "\"y" + b + "\":" + b + "\"z\",\"" + member
+                            + "\":\"PRIVA352PRIVB\"}}")) {
                 for (String form : List.of(text, nested(text), nested(nested(text)))) {
                     String out = Redactor.redact(form);
                     assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"), out);
@@ -2338,12 +2341,13 @@ class RedactorTest {
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.
-        for (String text : List.of("{\"kty\":\"oct\",\"a\":{\"note\":\"}\",\"d\":\"dimension\"}}",
-                "{\"kty\":\"oct\",\"a\":{\"note\":\"x\\\"}\",\"d\":\"dimension\"}}")) {
-            for (String form : List.of(text, nested(text), nested(nested(text)))) {
-                assertEquals(form, Redactor.redact(form));
-            }
+        String text = "{\"kty\":\"oct\",\"a\":{\"note\":\"}\",\"d\":\"dimension\"}}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            assertEquals(form, Redactor.redact(form));
         }
+        // An escaped quote in that string may be the object's own in a copy, closing it early: that fails closed.
+        String escaped = "{\"kty\":\"oct\",\"a\":{\"note\":\"x\\\"}\",\"d\":\"dimension\"}}";
+        assertEquals(escaped.replace("dimension", Redactor.MASK), Redactor.redact(escaped));
     }
 
     @Test
@@ -2435,24 +2439,30 @@ class RedactorTest {
             assertFalse(out.contains("PRIVD352"), out);
             assertTrue(out.contains("[REDACTED]"), out);
         }
-        String kept = "{\"note\":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        // A kty spelled with quotes a level down inside a note may be the object's own in a copy, so the d after it fails
+        // closed however deep the text is nested (#352, security round 3: over-flags accepted).
+        String copied = "{\"note\":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
         for (int depth = 0; depth <= 6; depth++) {
-            assertEquals(kept, Redactor.redact(kept), "depth " + depth);
-            kept = nested(kept);
+            assertEquals(copied.replace("dimension", Redactor.MASK), Redactor.redact(copied), "depth " + depth);
+            copied = nested(copied);
         }
     }
 
     @Test
     void keepsAPrivateMemberWhoseObjectHoldsAKtyOnlyInsideAString() {
         // Automated review on 469b848 and 84fe061: a kty quoted a level down inside a string value is no member of the
-        // object, however a comma before it reads in the canonical form.
+        // object as JSON reads it, but in a copy those quotes may be the object's own, so which object the d is in is not
+        // established and it fails closed (#352, security round 3: over-flags accepted). With no kty in the text, it is kept.
         String b = String.valueOf((char) 92);
         for (String text : List.of("{\"note\":\"x," + b + "\"kty" + b + "\":" + b + "\"oct" + b + "\"\",\"d\":\"dimension\"}",
                 "{\"note\":\"x, " + b + "\"kty" + b + "\": " + b + "\"oct" + b + "\"\", \"d\": \"dimension\"}",
                 // ...also spelled with unicode escapes, a quote of the level below inside the note.
                 "{\"note\":\"x," + b + "u0022kty" + b + "u0022:" + b + "u0022oct" + b + "u0022\",\"d\":\"dimension\"}")) {
-            assertEquals(text, Redactor.redact(text));
-            assertEquals(nested(text), Redactor.redact(nested(text)));
+            assertEquals(text.replace("dimension", Redactor.MASK), Redactor.redact(text));
+            assertEquals(nested(text).replace("dimension", Redactor.MASK), Redactor.redact(nested(text)));
+            String noKty = text.replace("kty", "kid");
+            assertEquals(noKty, Redactor.redact(noKty));
+            assertEquals(nested(noKty), Redactor.redact(nested(noKty)));
         }
     }
 

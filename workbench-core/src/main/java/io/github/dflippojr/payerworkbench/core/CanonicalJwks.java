@@ -32,8 +32,8 @@ import java.util.regex.Pattern;
  * d). A kty counts only with a string value.</li>
  * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object, at its own
  * level, holds a kty, with the quotes read exactly, each at the level it decodes to; and where the quotes stop reading
- * exactly before its object closes, so no reading can establish which object it is in, whenever the text holds a kty
- * (fail closed, #352 security round 3: {@link #owned}).</li>
+ * exactly before its object closes, or its object holds a quote deeper than its own, so no reading can establish which
+ * object it is in, whenever the text holds a kty (fail closed, #352 security round 3: {@link #owned}).</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
  * a closing bracket, a colon or the end follow; it is masked unless it reads {@link Redactor#MASK} or nothing, and one
  * that never closes is masked to the end of the text. An object or array is masked to the bracket closing it, the
@@ -334,9 +334,8 @@ final class CanonicalJwks {
 
     /**
      * Which private members are a JWK's (#352, security round 3): with the quotes read exactly ({@link #exactOwners}),
-     * each private member whose object, at its own level, holds a kty; where the quotes stop reading exactly before a
-     * member's object is read to its end, so no reading can establish which object it is in, every private member, when
-     * the text holds a kty (fail closed).
+     * each private member whose object, at its own level, holds a kty; and wherever the quotes leave which object a member
+     * is in unestablished, every private member, when the text holds a kty (fail closed).
      */
     private static boolean[] owned(String t, String read, Canonical canonical, List<Name> names) {
         boolean[] jwk = new boolean[names.size()];
@@ -355,8 +354,10 @@ final class CanonicalJwks {
 
     /**
      * The exact reading of {@link #owned}, for each name: {@link #JWK} when it is in an object that, at its level, holds a
-     * kty, {@link #NOT_JWK} when it is in none, and {@link #UNREAD} when the quotes stop reading exactly before it, or
-     * before its object closes.
+     * kty; {@link #NOT_JWK} when it is in no object, or in one without a kty that holds no quote deeper than its own; and
+     * {@link #UNREAD} when the quotes stop reading exactly before it or before its object closes, or when its object
+     * holds a deeper quote, which in a copy may be one of that object's own quotes (closing a string or the object early,
+     * or quoting a kty), so which object it is in is not established.
      *
      * <p>A quote of level L ({@link #exactQuote}) opens a string where L strings are open (each level's text being the
      * content of a string of the level above), and closes the string of its level, and every deeper one, where more are
@@ -368,14 +369,18 @@ final class CanonicalJwks {
      */
     private static int[] exactOwners(String t, String read, Canonical canonical, List<Name> names) {
         int n = t.length();
-        // The open brackets, each with the level it is at: a string closing ends the brackets of the levels below it.
+        // The open brackets, each with the level it is at and the deepest quote read inside it so far.
         int[] stack = new int[n];
         int[] stackLevel = new int[n];
+        int[] stackDeepest = new int[n];
         int top = 0;
         int depth = 0;
         int[] owner = new int[names.size()];
+        int[] ownerLevel = new int[names.size()];
         boolean[] typed = new boolean[n];
         boolean[] closed = new boolean[n];
+        // For each object read to its close, the deepest quote inside it.
+        int[] deepest = new int[n];
         // The name being read: its quote's level, and where its closing quote is.
         int nameLevel = 0;
         int nameClose = -1;
@@ -389,9 +394,13 @@ final class CanonicalJwks {
                 boolean opensName = next < names.size() && names.get(next).quote() == k;
                 exact = quote >= 0 && level <= depth && (level < depth || (quote & 1) == 1)
                         && (!opensName || level == depth) && (k != nameClose || level == nameLevel);
+                if (exact && top > 0) {
+                    stackDeepest[top - 1] = Math.max(stackDeepest[top - 1], level);
+                }
                 if (exact && opensName) {
                     owner[next] = top > 0 && stackLevel[top - 1] == depth && t.charAt(stack[top - 1]) == '{'
                             ? stack[top - 1] : -1;
+                    ownerLevel[next] = depth;
                     if (names.get(next).kty() && owner[next] >= 0) {
                         typed[owner[next]] = true;
                     }
@@ -405,7 +414,7 @@ final class CanonicalJwks {
                     // A string closing ends the brackets of the levels below it.
                     depth = level;
                     while (top > 0 && stackLevel[top - 1] > depth) {
-                        top--;
+                        top = popped(stack, stackDeepest, top, deepest);
                     }
                 }
             } else if ("{}[]".indexOf(c) >= 0) {
@@ -416,25 +425,48 @@ final class CanonicalJwks {
                         && (!closes || t.charAt(stack[top - 1]) == (c == '}' ? '{' : '['));
                 if (exact && opens) {
                     stack[top] = k;
+                    stackDeepest[top] = 0;
                     stackLevel[top++] = depth;
                 } else if (exact && closes) {
-                    closed[stack[--top]] = true;
+                    closed[stack[top - 1]] = true;
+                    top = popped(stack, stackDeepest, top, deepest);
                 }
             }
         }
+        // Read to the end: the objects still open hold what was read inside them.
+        while (exact && top > 0) {
+            closed[stack[top - 1]] = true;
+            top = popped(stack, stackDeepest, top, deepest);
+        }
         int[] state = new int[names.size()];
         for (int j = 0; j < names.size(); j++) {
-            if (j >= next) {
+            int object = j < next ? owner[j] : -1;
+            if (j >= next || object >= 0 && !closed[object]) {
                 state[j] = UNREAD;
-            } else if (owner[j] < 0) {
+            } else if (object < 0) {
                 state[j] = NOT_JWK;
-            } else if (exact || closed[owner[j]]) {
-                state[j] = typed[owner[j]] ? JWK : NOT_JWK;
+            } else if (typed[object]) {
+                state[j] = JWK;
             } else {
-                state[j] = UNREAD;
+                // A quote deeper than its object's own inside it may be one of that object's quotes in a copy, closing
+                // a string or the object early or holding a kty, so which object a member is in is not established.
+                state[j] = deepest[object] > ownerLevel[j] ? UNREAD : NOT_JWK;
             }
         }
         return state;
+    }
+
+    /**
+     * Pops the top of the bracket stack, which is {@code top} high: records the deepest quote read inside it in {@code
+     * deepest} at its place, and passes that on to the bracket it is inside. Returns the new height.
+     */
+    private static int popped(int[] stack, int[] stackDeepest, int top, int[] deepest) {
+        int at = top - 1;
+        deepest[stack[at]] = stackDeepest[at];
+        if (at > 0) {
+            stackDeepest[at - 1] = Math.max(stackDeepest[at - 1], stackDeepest[at]);
+        }
+        return at;
     }
 
     /**
