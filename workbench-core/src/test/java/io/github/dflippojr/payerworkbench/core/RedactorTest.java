@@ -2207,7 +2207,9 @@ class RedactorTest {
                 // values and structures that never close, read in the canonical form.
                 ("{" + u + "d" + u + ":" + b + "\"PRIVK352" + b + "\",\"kty\":\"oct\"},").repeat(30_000),
                 nested(("{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "k" + u + ":[\"PRIVK352\"]},").repeat(20_000)),
-                ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(40_000), ("\"kty\":\"d\":\"PRIVK352").repeat(50_000));
+                ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(40_000), ("\"kty\":\"d\":\"PRIVK352").repeat(50_000),
+                // Automated review on 697c3c9: a value opening on a long escape chain, then many quotes that might close it.
+                "{\"kty\":\"oct\",\"d\":" + b + "u005c".repeat(60_000) + "u0022PRIVK352" + (b + "\",").repeat(60_000) + "\"}");
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
             String out = Redactor.redact(text, reads);
@@ -2277,10 +2279,13 @@ class RedactorTest {
         // Automated review on 4ca9093: a string opening right after a private member's colon is its value, not prose
         // quoting a copy, so a raw line break in it does not end the reading before the JWK's kty.
         String b = String.valueOf((char) 92);
-        String text = "{" + b + "u005cu0022d" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}";
-        for (String form : List.of(text, nested(text))) {
-            String out = Redactor.redact(form);
-            assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
+        // Automated review on 697c3c9: also with the name's letter spelled as a unicode escape.
+        for (String text : List.of("{" + b + "u005cu0022d" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}",
+                "{" + b + "u005cu0022" + b + "u0064" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}")) {
+            for (String form : List.of(text, nested(text))) {
+                String out = Redactor.redact(form);
+                assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
+            }
         }
     }
 

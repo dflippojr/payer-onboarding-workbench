@@ -2185,6 +2185,21 @@ test('bounds a value by its opening quote and a structure by its unclosed readin
 
 test('reads a private member value through a raw line break to the kty after it (#352, automated review on 4ca9093)', () => {
   const b = '\\';
-  const raw = `{${b}u005cu0022d${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`;
-  for (const text of [raw, nestedIn(raw, 1)]) assert.ok(findTextLeaks(text).length > 0, JSON.stringify(text));
+  // Automated review on 697c3c9: also with the name's letter spelled as a unicode escape.
+  for (const raw of [`{${b}u005cu0022d${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`,
+    `{${b}u005cu0022${b}u0064${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`]) {
+    for (const text of [raw, nestedIn(raw, 1)]) assert.ok(findTextLeaks(text).length > 0, JSON.stringify(text));
+  }
+});
+
+test('bounds a value opening on a long escape chain in linear time (#352, automated review on 697c3c9)', () => {
+  // About 160 KB: linear time takes well under a second; reading the opening quote again for each candidate close took
+  // over 20 s. The canonical reading's own reads are charged too.
+  const b = '\\';
+  const text = `{"kty":"oct","d":${b}${'u005c'.repeat(20000)}u0022[REDACTED]${`${b}",`.repeat(20000)}"}`;
+  scanWork.characters = 0;
+  const started = Date.now();
+  findTextLeaks(text);
+  assert.ok(Date.now() - started < 10000, `took ${Date.now() - started} ms`);
+  assert.ok(scanWork.characters <= 40 * text.length + 4096, `read ${scanWork.characters} of ${text.length}`);
 });
