@@ -31,7 +31,8 @@ import java.util.regex.Pattern;
  * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object holds a kty,
  * the brackets read two ways: every bracket counted, or those inside strings skipped, a string closing at the first
  * quote that spaces and then a comma, a closing bracket, a colon or the end follow. Either way is enough, with a kty
- * whose quote is at the member's level ({@link #memberLevel}).</li>
+ * whose quote is at the member's level ({@link #memberLevel}), or for a private member at its quote's level as
+ * written.</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
  * a closing bracket, a colon or the end follow; it is masked unless it reads {@link Redactor#MASK} or nothing, and one
  * that never closes is masked to the end of the text. An object or array is masked to the bracket closing it, the
@@ -94,9 +95,9 @@ final class CanonicalJwks {
 
     /**
      * A name the canonical reading finds: where its opening quote is and its value starts in the canonical form, whether
-     * it is a kty, and its quote's level as {@link #flatLevel} reads it.
+     * it is a kty, its level ({@link #memberLevel}) and its quote's level as written ({@link #flatLevel}).
      */
-    private record Name(int quote, int value, boolean kty, int level) {
+    private record Name(int quote, int value, boolean kty, int level, int written) {
     }
 
     /** What {@link #flatLevel} gives for a quote of a spelling it does not place: it goes with a name of any level. */
@@ -189,7 +190,8 @@ final class CanonicalJwks {
             }
             int value = afterSpace(t, colon + 1);
             if (!kty || value < n && t.charAt(value) == '"') {
-                names.add(new Name(q, value, kty, memberLevel(canonical.spelling(raw, q), inStrings[canonical.at(q)])));
+                String spelling = canonical.spelling(raw, q);
+                names.add(new Name(q, value, kty, memberLevel(spelling, inStrings[canonical.at(q)]), flatLevel(spelling)));
             }
         }
         if (names.isEmpty()) {
@@ -301,10 +303,13 @@ final class CanonicalJwks {
             }
             i++;
         }
+        // A private member goes with a kty at its level, or at its quote's level as written (fail closed: which strings
+        // are open is read from plain quotes, which a text mixing spellings may set out of step).
         for (int j = 0; j < names.size(); j++) {
             long levels = owner[j] >= 0 ? typed.getOrDefault(owner[j], 0L) : 0L;
-            int level = names.get(j).level();
-            if ((levels & (levelBit(level) | levelBit(ANY_LEVEL))) != 0 || level == ANY_LEVEL && levels != 0) {
+            Name name = names.get(j);
+            if ((levels & (levelBit(name.level()) | levelBit(name.written()) | levelBit(ANY_LEVEL))) != 0
+                    || (name.level() == ANY_LEVEL || name.written() == ANY_LEVEL) && levels != 0) {
                 jwk[j] = true;
             }
         }
@@ -450,7 +455,8 @@ final class CanonicalJwks {
 
     /**
      * For each place in {@code read}, the levels at which a string is open there, one bit each: a level's strings open
-     * and close at its plain quotes, after {@code 2^L - 1} backslashes, a run of any other length being content.
+     * and close at its plain quotes, after {@code 2^L - 1} backslashes, a run of any other length being content; a
+     * unicode escape of a quote of that level ({@link #flatLevel}) that a colon follows closes one too.
      */
     private static int[] openLevels(String read) {
         int[] open = new int[read.length() + 1];
@@ -462,14 +468,44 @@ final class CanonicalJwks {
                 run++;
             }
             int stop = Math.min(i + run + 1, read.length());
+            int level = -1;
+            boolean unicode = false;
+            if (i + run < read.length() && read.charAt(i + run) == '"') {
+                level = Integer.bitCount(run + 1) == 1 ? Integer.numberOfTrailingZeros(run + 1) : -1;
+            } else if (run > 0 && read.regionMatches(true, i + run, "u0022", 0, 5)) {
+                stop = i + run + 5;
+                level = flatLevel(read.substring(i, stop));
+                unicode = true;
+            }
             Arrays.fill(open, i, stop, levels);
-            if (i + run < read.length() && read.charAt(i + run) == '"' && Integer.bitCount(run + 1) == 1 && run < 31) {
-                levels ^= 1 << Integer.numberOfTrailingZeros(run + 1);
+            if (level >= 0 && level < 31) {
+                int bit = 1 << level;
+                // A plain quote opens or closes a string of its level; a unicode escape of one closes a string of its
+                // level that a plain quote opened when a colon follows it: a name spelled with both ("note\\u0022:).
+                if (!unicode || (levels & bit) != 0 && colonAfter(read, stop)) {
+                    levels ^= bit;
+                }
             }
             i = stop;
         }
         open[read.length()] = levels;
         return open;
+    }
+
+    /** Whether a colon comes next from {@code from} in {@code read}, after whitespace, raw or escaped. */
+    private static boolean colonAfter(String read, int from) {
+        int i = from;
+        while (i < read.length()) {
+            char c = read.charAt(i);
+            if (Character.isWhitespace(c)) {
+                i++;
+            } else if (c == BACKSLASH && i + 1 < read.length() && "nrt".indexOf(read.charAt(i + 1)) >= 0) {
+                i += 2;
+            } else {
+                return c == ':';
+            }
+        }
+        return false;
     }
 
     private static long levelBit(int level) {

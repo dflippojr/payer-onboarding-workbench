@@ -720,7 +720,8 @@ function unconsumedSecretNames(text, ctx) {
  * - A name: a quote in a member's place, 1-64 of [A-Za-z_-], a quote, spaces, a colon; an escaped letter counts only if
  *   decoded by the level of the name's deeper quote reads its content; a quote decoding to no quote opens no name. A kty
  *   counts only with a string value.
- * - A private member is a JWK's when its object holds a kty at the member's quote level (canonicalMemberLevel), brackets
+ * - A private member is a JWK's when its object holds a kty at the member's level (canonicalMemberLevel) or at its quote's
+ *   level as written, brackets
  *   counted all, or those in strings skipped (a string closing at the first quote that spaces then `,` `}` `]` `:` or
  *   the end follow); either is enough.
  * - Its value: a string closing at the first quote that spaces and quotes then `,` `}` `]` `:` or the end follow must read
@@ -866,7 +867,11 @@ function canonicalMemberLevel(spelling, open) {
   return unicode && level >= 0 && level < 31 && (open & (1 << level)) !== 0 ? level + 1 : level;
 }
 
-/** For each place, the levels a string is open at, one bit each: level L's strings open and close at quotes after 2^L - 1 backslashes. */
+/**
+ * For each place, the levels a string is open at, one bit each: level L's strings open and close at plain quotes after
+ * 2^L - 1 backslashes; a unicode escape of a quote of level L (canonicalFlatLevel) closes one that a plain quote opened
+ * when a colon follows it, as in a name spelled with both ("note\\u0022:).
+ */
 function canonicalOpenLevels(raw) {
   const open = new Int32Array(raw.length + 1);
   let levels = 0;
@@ -874,14 +879,37 @@ function canonicalOpenLevels(raw) {
   while (i < raw.length) {
     let run = 0;
     while (raw[i + run] === '\\') run++;
-    const stop = Math.min(i + run + 1, raw.length);
+    let stop = Math.min(i + run + 1, raw.length);
+    let level = -1;
+    let unicode = false;
+    if (raw[i + run] === '"') {
+      const l = Math.log2(run + 1);
+      level = Number.isInteger(l) ? l : -1;
+    } else if (run > 0 && raw.slice(i + run, i + run + 5).toLowerCase() === 'u0022') {
+      stop = i + run + 5;
+      level = canonicalFlatLevel(raw.slice(i, stop));
+      unicode = true;
+    }
     open.fill(levels, i, stop);
-    const l = Math.log2(run + 1);
-    if (raw[i + run] === '"' && Number.isInteger(l) && l < 31) levels ^= 1 << l;
+    if (level >= 0 && level < 31) {
+      const bit = 1 << level;
+      if (!unicode || ((levels & bit) !== 0 && canonicalColonAfter(raw, stop))) levels ^= bit;
+    }
     i = stop;
   }
   open[raw.length] = levels;
   return open;
+}
+
+/** Whether a colon comes next from `from`, after whitespace, raw or escaped. */
+function canonicalColonAfter(raw, from) {
+  let i = from;
+  while (i < raw.length) {
+    if (isJavaSpace(raw[i])) i++;
+    else if (raw[i] === '\\' && 'nrt'.includes(raw[i + 1] ?? 'x')) i += 2;
+    else return raw[i] === ':';
+  }
+  return false;
 }
 
 /** The level at which a value's quote is a quote, for bounding the value: one decoding to no quote is level 0. */
@@ -928,7 +956,8 @@ function canonicalJwkLeaks(text, ctx) {
     let v = colon + 1;
     while (t[v] === ' ') v++;
     if (kty && t[v] !== '"') continue;
-    names.push({ q, v, kty, level: canonicalMemberLevel(spelling(q), inStrings[origin[q]]), jwk: false });
+    const spelled = spelling(q);
+    names.push({ q, v, kty, level: canonicalMemberLevel(spelled, inStrings[origin[q]]), written: canonicalFlatLevel(spelled), jwk: false });
   }
   if (names.length === 0) return;
   // From each place, the first quote closing a string in the reading that skips strings, and the first closing a value.
@@ -973,8 +1002,9 @@ function canonicalJwkLeaks(text, ctx) {
     for (const [j, top] of owner) {
       const levels = typed.get(top);
       if (levels === undefined) continue;
-      const level = names[j].level;
-      if (levels.has(level) || levels.has(-1) || level === -1) names[j].jwk = true;
+      // A private member goes with a kty at its level or at its quote's level as written (fail closed).
+      const { level, written } = names[j];
+      if (levels.has(level) || levels.has(written) || levels.has(-1) || level === -1 || written === -1) names[j].jwk = true;
     }
   }
   // Where the last string value read ends: a name before it is inside that value.
