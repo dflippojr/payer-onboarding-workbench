@@ -168,10 +168,11 @@ final class ClientJwtValidator {
         }
 
         synchronized (admission) {
-            // One instant per decision, read under the lock: the times are checked, expired jtis evicted and this jti
-            // recorded at that instant, and no other eviction can run in between.
-            Instant now = decisionInstant();
-            Instant expiry = checkTimes(claims, now, expiredFault);
+            // One clock read per decision, under the lock: the times are checked, expired jtis evicted and this jti
+            // recorded at that read, and no other eviction can run in between.
+            Instant read = clock.instant();
+            Instant now = decisionInstant(read);
+            Instant expiry = checkTimes(claims, read, now, expiredFault);
 
             String jti = claims.getJWTID();
             if (jti == null || jti.isBlank()) {
@@ -188,20 +189,25 @@ final class ClientJwtValidator {
     }
 
     /**
-     * The payer's clock, never earlier than an instant an earlier decision used. An entry evicted at some instant has
-     * an exp at or before it, so a later decision must not judge a jti by an earlier instant, even if the clock steps
-     * back, or it could admit again a jti whose entry was evicted while its assertion still looks valid.
+     * The replay instant for a clock read: the read, never earlier than an instant an earlier decision used. An entry
+     * evicted at some instant has an exp at or before it, so a later decision must not judge whether a jti has expired
+     * by an earlier instant, even if the clock steps back, or it could admit again a jti whose entry was evicted while
+     * its assertion still looks valid.
      */
-    private Instant decisionInstant() {
-        Instant read = clock.instant();
+    private Instant decisionInstant(Instant read) {
         if (read.isAfter(decidedThrough)) {
             decidedThrough = read;
         }
         return decidedThrough;
     }
 
-    /** @return the assertion's exp, once every time rule passed */
-    private Instant checkTimes(JWTClaimsSet claims, Instant now, boolean expiredFault) {
+    /**
+     * @param read the payer's clock as read for this decision; the limits on how far ahead an assertion may reach are
+     *             judged by it, so a clock that steps back never widens them
+     * @param now  the replay instant ({@link #decisionInstant}); whether exp has passed is judged by it, as eviction is
+     * @return the assertion's exp, once every time rule passed
+     */
+    private Instant checkTimes(JWTClaimsSet claims, Instant read, Instant now, boolean expiredFault) {
         if (claims.getExpirationTime() == null) {
             throw rejected.apply(messages.missingExp());
         }
@@ -217,7 +223,7 @@ final class ClientJwtValidator {
             throw rejected.apply(messages.expired().apply(expiry));
         }
         ExpiryCap cap = policy.expiryCap();
-        if (cap != null && expiry.isAfter(now.plus(cap.max()))) {
+        if (cap != null && expiry.isAfter(read.plus(cap.max()))) {
             throw rejected.apply(cap.message());
         }
         if (issuedAt != null) {
@@ -228,7 +234,7 @@ final class ClientJwtValidator {
             }
             // Without this bound a future iat keeps the lifetime short but moves the whole window far ahead of the
             // payer's clock, and its jti would stay cached for as long as that.
-            Duration ahead = Duration.between(now, issued);
+            Duration ahead = Duration.between(read, issued);
             if (ahead.compareTo(issuedAt.maxAhead()) > 0) {
                 throw rejected.apply(issuedAt.ahead().apply(ahead));
             }
@@ -239,7 +245,7 @@ final class ClientJwtValidator {
     /** Drops every jti whose exp has passed on the payer's clock. */
     void sweepExpired() {
         synchronized (admission) {
-            evictExpired(decisionInstant());
+            evictExpired(decisionInstant(clock.instant()));
         }
     }
 
