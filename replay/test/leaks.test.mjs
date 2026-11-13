@@ -2241,6 +2241,30 @@ test('flags a JWK whose quotes or delimiters read ambiguously, and accepts it ma
   assertAccepted('{"body":"[REDACTED]"}');
 });
 
+test('flags every private member whose name and value mix quote spellings after an ordinary string holding a quote, a colon and a brace (#352, security round 3)', () => {
+  // Where the quotes do not read exactly, no reading may drop a private member's object: each such member in a text
+  // holding a kty is flagged, bare, nested once and twice, in a report and as a field.
+  const b = '\\';
+  const u = `${b}u0022`;
+  const note = `{"note":"x${b}":}",`;
+  for (const member of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
+    for (const text of [
+      `${note}"${member}${u}:${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`,
+      `${note}${b}"${member}${u}:"PRIVA352PRIVB${u},"kty":"oct"}`,
+      `${note}"${member}${b}":${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`]) {
+      for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+    }
+  }
+});
+
+test('accepts a private member of an object without a kty whose ordinary string holds a brace (#352, automated review on e05c98c)', () => {
+  // Plain JSON reads exactly: a brace in an ordinary string closes no object, so a d in an object without a kty is no
+  // JWK's, inside a JWK or not.
+  for (const text of ['{"kty":"oct","a":{"note":"}","d":"dimension"}}', '{"kty":"oct","a":{"note":"x\\"}","d":"dimension"}}']) {
+    for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertAccepted(form);
+  }
+});
+
 test('fails closed on a masked JWK nested seven levels deep with a long pad: spending the scan budget flags (#352, liaison decision on the bound)', () => {
   // Past what the scanner reads within its budget, it fails closed: the masked output is flagged, never passed, and
   // its leaked form is flagged too.

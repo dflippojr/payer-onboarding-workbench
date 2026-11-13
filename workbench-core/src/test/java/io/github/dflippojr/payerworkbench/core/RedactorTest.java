@@ -2314,6 +2314,38 @@ class RedactorTest {
     }
 
     @Test
+    void masksEveryPrivateMemberWhoseNameAndValueMixQuoteSpellingsAfterAnOrdinaryStringHoldingAQuoteAColonAndABrace() {
+        // Security round 3 (#352): where the quotes do not read exactly, no reading may drop a private member's object,
+        // so each such member in a text holding a kty is masked whole (fail closed), bare and nested once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String note = "{\"note\":\"x" + b + "\":}\",";
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
+            for (String text : List.of(
+                    note + "\"" + member + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
+                    note + b + "\"" + member + u + ":\"PRIVA352PRIVB" + u + ",\"kty\":\"oct\"}",
+                    note + "\"" + member + b + "\":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}")) {
+                for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                    String out = Redactor.redact(form);
+                    assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"), out);
+                }
+            }
+        }
+    }
+
+    @Test
+    void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
+        // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
+        // d in an object without a kty is kept, inside a JWK or not, bare and nested.
+        for (String text : List.of("{\"kty\":\"oct\",\"a\":{\"note\":\"}\",\"d\":\"dimension\"}}",
+                "{\"kty\":\"oct\",\"a\":{\"note\":\"x\\\"}\",\"d\":\"dimension\"}}")) {
+            for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                assertEquals(form, Redactor.redact(form));
+            }
+        }
+    }
+
+    @Test
     void readsAPrivateMembersValueThroughARawLineBreakToTheKtyAfterIt() {
         // Automated review on 4ca9093: a string opening right after a private member's colon is its value, not prose
         // quoting a copy, so a raw line break in it does not end the reading before the JWK's kty.
