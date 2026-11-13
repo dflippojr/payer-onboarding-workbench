@@ -377,8 +377,10 @@ final class CanonicalJwks {
             } else if ((c == '}' || c == ']') && !stack.isEmpty()) {
                 match[stack.pop()] = i;
             } else if (c == '"' && nextClose != null) {
+                // At its own quote level; a deeper quote that a colon follows still closes it, as a name spelled with both
+                // quotes closes (fail closed: the members after it are read).
                 int close = nextClose[i + 1];
-                while (deeper != null && close < n && deeper.applyAsInt(close, i) == 1) {
+                while (deeper != null && close < n && deeper.applyAsInt(close, i) == 1 && !colonNext(t, close + 1)) {
                     close = nextClose[close + 1];
                 }
                 i = close + 1;
@@ -848,6 +850,15 @@ final class CanonicalJwks {
     private static int closeLevel(String spelling) {
         int level = nameQuoteLevel(spelling);
         return level == NO_QUOTE ? 0 : level;
+    }
+
+    /** Whether a colon comes next in the canonical text {@code t} from {@code from}, after spaces. */
+    private static boolean colonNext(String t, int from) {
+        int i = from;
+        while (i < t.length() && t.charAt(i) == ' ') {
+            i++;
+        }
+        return i < t.length() && t.charAt(i) == ':';
     }
 
     private static boolean isNameChar(char c) {

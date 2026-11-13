@@ -1187,7 +1187,15 @@ function canonicalJwkLeaks(text, ctx) {
         if (mode === 2) {
           const openLevel = canonicalCloseLevel(spelling(i));
           const openFlat = canonicalFlatLevel(spelling(i));
-          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat)) close = lexClose[close + 1];
+          // A deeper quote that a colon follows still closes it, as a name spelled with both quotes closes.
+          const colonNext = from => {
+            let k = from;
+            while (t[k] === ' ') k++;
+            return t[k] === ':';
+          };
+          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat) && !colonNext(close + 1)) {
+            close = lexClose[close + 1];
+          }
         }
         i = close + 1;
         continue;
