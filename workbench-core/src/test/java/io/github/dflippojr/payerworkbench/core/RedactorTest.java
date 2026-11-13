@@ -2209,7 +2209,9 @@ class RedactorTest {
                 nested(("{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "k" + u + ":[\"PRIVK352\"]},").repeat(20_000)),
                 ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(40_000), ("\"kty\":\"d\":\"PRIVK352").repeat(50_000),
                 // Automated review on 697c3c9: a value opening on a long escape chain, then many quotes that might close it.
-                "{\"kty\":\"oct\",\"d\":" + b + "u005c".repeat(60_000) + "u0022PRIVK352" + (b + "\",").repeat(60_000) + "\"}");
+                "{\"kty\":\"oct\",\"d\":" + b + "u005c".repeat(60_000) + "u0022PRIVK352" + (b + "\",").repeat(60_000) + "\"}",
+                // Automated review on 418139a: a JWK, then many strings each holding a delimiter that reads ambiguously.
+                "[{\"kty\":\"oct\",\"d\":\"PRIVK352\"}," + ("\"" + b + b + "u002c\",").repeat(250_000) + "1]");
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
             List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
             String out = Redactor.redact(text, reads);
