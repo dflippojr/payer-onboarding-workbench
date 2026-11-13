@@ -2167,4 +2167,8 @@ test('reads the members after prose in a string closed with a unicode quote, and
   const kept = `{"note":"x,${b}u005c${u}kty${u}:${u}oct${u}","d":"dimension"}`;
   assertAccepted(kept);
   assertAccepted(nestedIn(kept, 1));
+  // Automated review on 472d442: a name that closes with its own plain quote holds its unicode quotes and colons.
+  const name = `{"note${u}: x,${u}kty${u}:${u}oct${u}":1,"d":"dimension"}`;
+  assertAccepted(name);
+  assertAccepted(nestedIn(name, 1));
 });

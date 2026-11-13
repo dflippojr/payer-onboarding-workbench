@@ -2287,6 +2287,10 @@ class RedactorTest {
         String kept = "{\"note\":\"x," + b + "u005c" + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
         assertEquals(kept, Redactor.redact(kept));
         assertEquals(nested(kept), Redactor.redact(nested(kept)));
+        // Automated review on 472d442: a name that closes with its own plain quote holds its unicode quotes and colons.
+        String name = "{\"note" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\":1,\"d\":\"dimension\"}";
+        assertEquals(name, Redactor.redact(name));
+        assertEquals(nested(name), Redactor.redact(nested(name)));
     }
 
     @Test
