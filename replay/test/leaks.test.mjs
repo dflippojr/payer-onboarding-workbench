@@ -2130,3 +2130,17 @@ test('flags a JWK value whose escaped quote a level further down is followed by 
     assertAccepted(JSON.stringify({ body: text }));
   }
 });
+
+test('flags a private member after a name closed with a unicode escape, and keeps a kty inside a string out at any depth (#352, automated review on 45b52d4)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const value of ['PRIVD352', '[REDACTED]PRIVTAIL']) {
+    const raw = `{"note${u}:${b}"text${b}",${u}d${u}:"${value}","kty":"oct"}`;
+    for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
+  }
+  assertAccepted(`{"note${u}:${b}"text${b}",${u}d${u}:"[REDACTED]","kty":"oct"}`);
+  for (let depth = 0; depth <= 6; depth++) {
+    const text = nestedIn(`{"note":"x,${u}kty${u}:${u}oct${u}","d":"dimension"}`, depth);
+    assert.deepEqual(findTextLeaks(text), [], `depth ${depth}`);
+  }
+});

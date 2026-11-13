@@ -2273,6 +2273,26 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateMemberAfterANameClosedWithAUnicodeEscapeAndKeepsAKtyInsideAStringAtAnyDepth() {
+        // Automated review on 45b52d4: a name opened plain and closed with a unicode escape closes the string its opening
+        // quote opened, so a unicode-quoted d after it is a member of the JWK; and a kty inside a note is no member however
+        // deep the text is nested.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String text = "{\"note" + u + ":" + b + "\"text" + b + "\"," + u + "d" + u + ":\"PRIVD352\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVD352"), out);
+            assertTrue(out.contains("[REDACTED]"), out);
+        }
+        String kept = "{\"note\":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        for (int depth = 0; depth <= 6; depth++) {
+            assertEquals(kept, Redactor.redact(kept), "depth " + depth);
+            kept = nested(kept);
+        }
+    }
+
+    @Test
     void keepsAPrivateMemberWhoseObjectHoldsAKtyOnlyInsideAString() {
         // Automated review on 469b848 and 84fe061: a kty quoted a level down inside a string value is no member of the
         // object, however a comma before it reads in the canonical form.
