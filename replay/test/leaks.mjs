@@ -715,21 +715,23 @@ function unconsumedSecretNames(text, ctx) {
  *   start, whitespace at any level, `:`, `[`, or a shallower quote opening the string holding it), not a private member's
  *   value (right after its name and colon), and not in a member's
  *   place (after `{` or `,`, whitespace aside), to the quote closing the string that holds that level (one after
- *   fewer backslashes), or at level 0 to the end: what it skips is prose quoting a copy (#342).
+ *   fewer backslashes), or at level 0 to the end: what it skips is prose quoting a copy (#342). Skipped is never unread
+ *   (#352, security round 4): in each skipped stretch every private member name, found by an uncharged regex that
+ *   reads no fewer names than the canonical form, is flagged whenever the text holds a kty, unless its value, read token
+ *   by token and charged so, is the mask or nothing (skippedPrivateLeaks).
  * - A backslash run, its backslashes plain or `u005c` escapes after a backslash, then `u` and four hex digits is that
  *   character; then n, r, t or f is whitespace; then any other character is itself; at the end, nothing.
  * - Every quote is a quote; every character Java's Character.isWhitespace reads, raw or escaped, is a space.
  * - A name: a quote in a member's place, 1-64 of [A-Za-z_-], a quote, spaces, a colon; an escaped letter counts only if
  *   decoded by the level of the name's deeper quote reads its content; a quote decoding to no quote opens no name. A kty
  *   counts only with a string value.
- * - A private member is a JWK's when its object holds a kty at the member's level (canonicalMemberLevel) or at its quote's
- *   level as written, brackets
- *   counted all, or those in strings skipped (a string closing at the first quote that spaces then `,` `}` `]` `:` or
- *   the end follow); either is enough.
+ * - A private member is a JWK's when its object, at its own level, holds a kty, with the quotes read exactly
+ *   (canonicalOwners, #352 security round 3); where the quotes stop reading exactly before its object closes, or its
+ *   object holds a quote deeper than its own, it is a JWK's whenever the text holds a kty (fail closed).
  * - Its value: a string closing at the first quote that spaces and quotes then `,` `}` `]` `:` or the end follow must read
  *   the mask or nothing, a quote deeper than its opening one closing nothing; an object, an array, a number, true or
  *   false is a leak; anything else is no value.
- * A text whose readable part spells no kty, as CANONICAL_KTY reads it, holds no JWK there and is read no further.
+ * A text that spells no kty, as CANONICAL_KTY reads it, holds no JWK and is read no further.
  * Each step reads each character a fixed number of times, so the work is linear.
  *
  * The bound (#352): within 16 levels of nesting and of escaping, the levels Redactor reads (past them the text holds
@@ -822,35 +824,45 @@ function canonicalAfterPrivateName(text, at, floor) {
   return /^ *"(?:d|p|q|dp|dq|qi|oth|k)" *: *$/.test(name);
 }
 
-function canonicalForm(raw) {
+/**
+ * One character of the canonical form, read at raw[i] within [i, to): what it decodes to (whitespace as a space) and
+ * where the next one starts; null where a backslash run reaches to (nothing).
+ */
+function canonicalToken(raw, i, to) {
+  let c = raw[i];
+  let next = i + 1;
+  if (c === '\\') {
+    let j = i + 1;
+    for (;;) {
+      if (j < to && raw[j] === '\\') j++;
+      else if (j + 5 <= to && raw[j] === 'u' && raw.slice(j + 1, j + 5).toLowerCase() === '005c') j += 5;
+      else break;
+    }
+    if (j >= to) return null;
+    if (raw[j] === 'u' && j + 5 <= to && /^[0-9A-Fa-f]{4}$/.test(raw.slice(j + 1, j + 5))) {
+      c = String.fromCharCode(Number.parseInt(raw.slice(j + 1, j + 5), 16));
+      next = j + 5;
+    } else {
+      c = 'nrtf'.includes(raw[j]) ? ' ' : raw[j];
+      next = j + 1;
+    }
+  }
+  return { c: isJavaSpace(c) ? ' ' : c, next };
+}
+
+/** The canonical form of raw within [from, to), as that stretch read on its own, and where each character starts. */
+function canonicalForm(raw, from = 0, to = raw.length) {
   const out = [];
   const origin = [];
-  let i = 0;
-  while (i < raw.length) {
-    const start = i;
-    let c = raw[i];
-    if (c === '\\') {
-      let j = i + 1;
-      for (;;) {
-        if (raw[j] === '\\') j++;
-        else if (raw[j] === 'u' && raw.slice(j + 1, j + 5).toLowerCase() === '005c') j += 5;
-        else break;
-      }
-      if (j >= raw.length) break;
-      if (raw[j] === 'u' && /^[0-9A-Fa-f]{4}$/.test(raw.slice(j + 1, j + 5))) {
-        c = String.fromCharCode(Number.parseInt(raw.slice(j + 1, j + 5), 16));
-        i = j + 5;
-      } else {
-        c = 'nrtf'.includes(raw[j]) ? ' ' : raw[j];
-        i = j + 1;
-      }
-    } else {
-      i++;
-    }
-    origin.push(start);
-    out.push(isJavaSpace(c) ? ' ' : c);
+  let i = from;
+  while (i < to) {
+    const token = canonicalToken(raw, i, to);
+    if (token === null) break;
+    origin.push(i);
+    out.push(token.c);
+    i = token.next;
   }
-  origin.push(raw.length);
+  origin.push(to);
   return { t: out.join(''), origin };
 }
 
@@ -1085,7 +1097,7 @@ function canonicalExactQuote(spelling) {
  * not read to its close before the reading stops, or whose object holds a quote deeper than its own, is a JWK's
  * whenever the text holds a kty (fail closed): no reading of the quotes can establish which object it is in.
  */
-function canonicalOwners(t, spelling, names) {
+function canonicalOwners(t, spelling, names, anyKty) {
   const n = t.length;
   // The open brackets: where each is, its level, and the deepest quote read inside it so far.
   const stack = [];
@@ -1144,7 +1156,6 @@ function canonicalOwners(t, spelling, names) {
   }
   // Read to the end: the objects still open hold what was read inside them.
   while (exact && stack.length > 0) pop(true);
-  const anyKty = names.some(name => name.kty);
   names.forEach((name, j) => {
     if (name.kty) return;
     const object = j < next ? owner[j] : null;
@@ -1156,31 +1167,13 @@ function canonicalOwners(t, spelling, names) {
   });
 }
 
-function canonicalJwkLeaks(text, ctx) {
-  // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
-  if (!CANONICAL_KTY.test(text)) return;
-  const { skips, scanned } = canonicalSkipped(text);
-  ctx.work += scanned;
-  // The text without what is skipped (raw), and where each of its places is in the text.
-  const parts = [];
-  const toRaw = [];
-  let from = 0;
-  for (let r = 0; r <= skips.length; r += 2) {
-    const to = r < skips.length ? skips[r] : text.length;
-    parts.push(text.slice(from, to));
-    for (let k = from; k < to; k++) toRaw.push(k);
-    from = r < skips.length ? skips[r + 1] : text.length;
-  }
-  toRaw.push(text.length);
-  const raw = parts.join('');
-  if ((!raw.includes('"') && !/u0022/i.test(raw)) || !CANONICAL_KTY.test(raw)) return;
-  const { t, origin } = canonicalForm(raw);
-  const inStrings = canonicalOpenLevels(raw, ctx);
+/**
+ * The kty and private member names in a canonical form t (spelling(k): how the stretch spells place k): a quote in a
+ * member's place, 1 to 64 name characters, a quote, spaces and a colon, each letter at its name's level; a kty only
+ * with a string value.
+ */
+function canonicalNames(t, spelling) {
   const n = t.length;
-  // The kept text is read three times (copied, decoded, its string levels); the canonical form at most six times (the
-  // closes, the names, the delimiters, the exact reading of the objects).
-  ctx.work += 3 * raw.length + 6 * n;
-  const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = [];
   for (let q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
     let k = q + 1;
@@ -1210,21 +1203,36 @@ function canonicalJwkLeaks(text, ctx) {
     if (kty && t[v] !== '"') continue;
     names.push({ q, v, kty, jwk: false });
   }
-  if (names.length === 0) return;
-  // From each place, the first quote closing a value.
-  const valueClose = new Int32Array(n + 1).fill(n);
-  let valueEnd = true;
-  for (let i = n - 1; i >= 0; i--) {
-    const c = t[i];
-    valueClose[i] = c === '"' && valueEnd ? i : valueClose[i + 1];
-    valueEnd = c === ' ' || c === '"' ? valueEnd : ',}]:'.includes(c);
-  }
-  ctx.work += n;
-  if (canonicalAmbiguous(t, origin, raw, inStrings, names, spelling)) {
-    ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
-    return;
-  }
-  canonicalOwners(t, spelling, names);
+  return names;
+}
+
+/**
+ * Flags each private member in names marked jwk whose value in t is not masked: a string that never closes, or holds
+ * anything but the mask or nothing; an object, an array, a number, true or false. A quote deeper than a string's opening
+ * one is escaped inside it. at(k) is where place k of t is in the text.
+ */
+function canonicalValueLeaks(text, t, spelling, origin, names, at, ctx, check) {
+  const n = t.length;
+  // The first quote from i that spaces and quotes and then a comma, a closing bracket, a colon or the end follow (a
+  // value's close), or n. Each run of spaces and quotes is read once, so a scan is linear in what it reads, and is
+  // charged so.
+  const valueClose = i => {
+    let k = i;
+    while (k < n) {
+      if (t[k] !== '"') {
+        k++;
+        continue;
+      }
+      let e = k + 1;
+      while (e < n && (t[e] === ' ' || t[e] === '"')) e++;
+      ctx.work += e - i;
+      if (e >= n || ',}]:'.includes(t[e])) return k;
+      i = e;
+      k = e;
+    }
+    ctx.work += n - i;
+    return n;
+  };
   // Where the last string value read ends: a name before it is inside that value.
   let read = 0;
   for (const { q, v, kty, jwk } of names) {
@@ -1232,16 +1240,15 @@ function canonicalJwkLeaks(text, ctx) {
     const c = t[v];
     let leak = false;
     if (c === '"') {
-      // A quote deeper than the opening one is escaped inside the value, which goes on past it.
       // The opening quote's levels, read once: each candidate close is read against them.
       const opening = spelling(v);
       const openLevel = canonicalCloseLevel(opening);
       const openFlat = canonicalFlatLevel(opening);
       ctx.work += opening.length;
-      let close = valueClose[v + 1];
+      let close = valueClose(v + 1);
       while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat)) {
         ctx.work += origin[close + 1] - origin[close];
-        close = valueClose[close + 1];
+        close = valueClose(close + 1);
       }
       read = close + 1;
       const content = t.slice(v + 1, close);
@@ -1249,8 +1256,158 @@ function canonicalJwkLeaks(text, ctx) {
     } else if (c === '{' || c === '[' || /^(?:-?\d|true\b|false\b)/.test(t.slice(v, v + 6))) {
       leak = true;
     }
-    if (leak) ctx.leaks.push({ check: 'JWK private member (canonical reading)', match: text.slice(toRaw[origin[q]], toRaw[origin[q]] + 80) });
+    if (leak) ctx.leaks.push({ check, match: text.slice(at(origin[q]), at(origin[q]) + 80) });
   }
+}
+
+/** A letter as the canonical form reads it: itself, or a unicode escape of it after any backslash run. */
+const spanLetter = c => {
+  const hex = c.charCodeAt(0).toString(16).padStart(4, '0');
+  return String.raw`(?:${c}|${ANY_BACKSLASH}u${hex.slice(0, 3)}[${hex[3]}${hex[3].toUpperCase()}])`;
+};
+const spanWord = word => [...word].map(spanLetter).join('');
+/**
+ * Whitespace as the canonical form may read it between a name and its colon: what Java reads as whitespace (isJavaSpace),
+ * or any escape that may decode to it (every unicode escape counted, so it reads no less); and a colon.
+ */
+const SPAN_SPACE = String.raw`(?:[ \t\n\x0B\f\r\x1C-\x1F  -  -    　]|${ANY_BACKSLASH}(?:[nrtf]|u[0-9A-Fa-f]{4}))*`;
+const SPAN_COLON = String.raw`(?::|${ANY_BACKSLASH}u003[aA])`;
+/** A quote spelling that no backslash run continues from before, so each run is tried once (linear). */
+const SPAN_QUOTE = String.raw`(?<!\\|u005[cC])${ANY_QUOTE}`;
+/**
+ * A private member's or a kty's name and colon in any spelling the canonical form reads (and more): uncharged regex
+ * pre-checks, as the scanner's other regex checks are. A match is read further only as far as its value goes.
+ */
+const SPAN_PRIVATE = new RegExp(String.raw`${SPAN_QUOTE}(?:${['oth', 'dp', 'dq', 'qi', 'd', 'p', 'q', 'k'].map(spanWord).join('|')})${ANY_QUOTE}${SPAN_SPACE}${SPAN_COLON}`, 'g');
+const SPAN_KTY = new RegExp(String.raw`${SPAN_QUOTE}${spanWord('kty')}${ANY_QUOTE}${SPAN_SPACE}${SPAN_COLON}${SPAN_SPACE}${ANY_QUOTE}`, 'g');
+
+/** Whether the name at q in text opens in a member's place within [from, ...): after { or , and whitespace. */
+function spanMemberPlace(text, from, q) {
+  let k = q;
+  for (;;) {
+    while (k > from && isJavaSpace(text[k - 1])) k--;
+    // ...or whitespace spelled as an escape: n, r, t or f after a backslash.
+    if (k - 2 >= from && 'nrtf'.includes(text[k - 1]) && text[k - 2] === '\\') {
+      k -= 2;
+      while (k > from && text[k - 1] === '\\') k--;
+      continue;
+    }
+    break;
+  }
+  if (k > from && (text[k - 1] === '{' || text[k - 1] === ',')) return true;
+  // ...or an escaped brace or comma.
+  return k - 6 >= from && /^\\u00(?:7[bB]|2[cC])$/.test(text.slice(k - 6, k));
+}
+
+/** Whether a skipped stretch holds a kty name with a string value. */
+function skippedKty(text, { from, to }) {
+  SPAN_KTY.lastIndex = from;
+  for (let m = SPAN_KTY.exec(text); m !== null && m.index < to; m = SPAN_KTY.exec(text)) {
+    if (m.index + m[0].length <= to && spanMemberPlace(text, from, m.index)) return true;
+  }
+  return false;
+}
+
+/**
+ * Flags each private member in a skipped stretch whose value is not the mask or nothing: its value is read token by
+ * token, as far as it goes, and charged so. A string is accepted only when it reads [REDACTED] or nothing, closed by a
+ * quote no deeper than its opening one that spaces and quotes and then a comma, a closing bracket, a colon or the
+ * stretch's end follow; an object, an array, a number, true or false is flagged; anything else is no value.
+ */
+function skippedPrivateLeaks(text, { from, to }, ctx) {
+  SPAN_PRIVATE.lastIndex = from;
+  for (let m = SPAN_PRIVATE.exec(text); m !== null && m.index < to; m = SPAN_PRIVATE.exec(text)) {
+    const v = m.index + m[0].length;
+    if (v > to || !spanMemberPlace(text, from, m.index)) continue;
+    const tokens = [];
+    let i = v;
+    const next = () => {
+      if (i >= to) return null;
+      const token = canonicalToken(text, i, to);
+      if (token === null) return null;
+      ctx.work += token.next - i;
+      const read = { c: token.c, at: i, end: token.next };
+      i = token.next;
+      tokens.push(read);
+      return read;
+    };
+    // The value starts after the spaces the canonical form reads.
+    let first = next();
+    while (first !== null && first.c === ' ') first = next();
+    let leak = false;
+    if (first === null) {
+      leak = false;
+    } else if (first.c === '"') {
+      let content = '';
+      let close = next();
+      while (close !== null && close.c !== '"' && content.length <= MASK.length) {
+        content += close.c;
+        close = next();
+      }
+      if (close === null || close.c !== '"' || (content !== '' && content !== MASK)) {
+        leak = true;
+      } else {
+        const opening = text.slice(first.at, first.end);
+        const deeper = canonicalDeeper(text.slice(close.at, close.end), canonicalCloseLevel(opening), canonicalFlatLevel(opening));
+        let after = next();
+        while (after !== null && (after.c === ' ' || after.c === '"')) after = next();
+        leak = deeper || (after !== null && !',}]:'.includes(after.c));
+      }
+    } else if (first.c === '{' || first.c === '[') {
+      leak = true;
+    } else {
+      let word = first.c;
+      for (let k = 0; k < 5; k++) {
+        const token = next();
+        if (token === null) break;
+        word += token.c;
+      }
+      leak = /^(?:-?\d|true\b|false\b)/.test(word);
+    }
+    if (leak) ctx.leaks.push({ check: 'JWK private member in skipped prose (canonical reading)', match: text.slice(m.index, m.index + 80) });
+  }
+}
+
+function canonicalJwkLeaks(text, ctx) {
+  // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
+  if (!CANONICAL_KTY.test(text)) return;
+  const { skips, scanned } = canonicalSkipped(text);
+  ctx.work += scanned;
+  // The text without what is skipped (raw), and where each of its places is in the text.
+  const parts = [];
+  const toRaw = [];
+  let from = 0;
+  for (let r = 0; r <= skips.length; r += 2) {
+    const to = r < skips.length ? skips[r] : text.length;
+    parts.push(text.slice(from, to));
+    for (let k = from; k < to; k++) toRaw.push(k);
+    from = r < skips.length ? skips[r + 1] : text.length;
+  }
+  toRaw.push(text.length);
+  const raw = parts.join('');
+  // What is skipped as prose is never left unread (#352, security round 4): every private member in a skipped stretch
+  // is flagged whenever the text holds a kty, unless its value is the mask or nothing (fail closed).
+  const spans = [];
+  for (let r = 0; r < skips.length; r += 2) spans.push({ from: skips[r], to: skips[r + 1] });
+  const { t, origin } = canonicalForm(raw);
+  const n = t.length;
+  // The kept text is read three times (copied, decoded, its string levels); the canonical form at most six times (the
+  // closes, the names, the delimiters, the exact reading of the objects).
+  ctx.work += 3 * raw.length + 6 * n;
+  const spelling = k => raw.slice(origin[k], origin[k + 1]);
+  const names = canonicalNames(t, spelling);
+  const anyKty = names.some(name => name.kty) || spans.some(span => skippedKty(text, span));
+  if (anyKty) {
+    for (const span of spans) skippedPrivateLeaks(text, span, ctx);
+  }
+  if (names.length === 0) return;
+  const inStrings = canonicalOpenLevels(raw, ctx);
+  if (canonicalAmbiguous(t, origin, raw, inStrings, names, spelling)) {
+    ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
+    return;
+  }
+  canonicalOwners(t, spelling, names, anyKty);
+  canonicalValueLeaks(text, t, spelling, origin, names, k => toRaw[k], ctx, 'JWK private member (canonical reading)');
 }
 
 /**

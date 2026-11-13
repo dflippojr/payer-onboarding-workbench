@@ -2641,7 +2641,10 @@ class RedactorTest {
             for (String members : before) {
                 String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + members + u + "kty" + u + ":" + u + "RSA" + u
                         + "," + u + "d" + u + ":" + u + "dimension" + u + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                // With nothing before it, the kty opens no member (it follows the body's opening quote), so the d is kept.
+                assertEquals(members.isEmpty() ? text : text.replace("dimension", Redactor.MASK), Redactor.redact(text));
             }
         }
     }
@@ -2699,7 +2702,9 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String before : List.of("\"\"a\":0,", "\"a\":\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{" + before + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                    // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                    assertEquals(text.replace("dimension", Redactor.MASK), Redactor.redact(text));
                 }
                 for (String before : List.of("\"a\":0,", "")) {
                     String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
@@ -2721,7 +2726,10 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ", "\"\"a\":0,", "\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                    // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                    // A d after a value and a space is in no member's place, so it is still kept.
+                    assertEquals(mid.endsWith(",") ? text.replace("dimension", Redactor.MASK) : text, Redactor.redact(text));
                 }
                 for (String mid : List.of("0,", "0, y ", "[1],", "\"b\"c\"\",")) {
                     String form = "{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"%s\"}";
@@ -2767,7 +2775,11 @@ class RedactorTest {
                     for (String form : List.of("{\"kty\"" + space + ":\"oct\",\"k\":\"dimension\"}",
                             "{\"kty\":\"oct\",\"k\"" + space + ":\"dimension\"}", "{\"kty\":\"oct\",\"k\":" + space + "\"dimension\"}")) {
                         String text = "he said \"" + lb + encode.apply(form);
-                        assertEquals(text, Redactor.redact(text));
+                        // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                        // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                        // A no-break space is no whitespace to Java, so with it no kty or k name reads and the d is kept.
+                        assertEquals(space.equals("\u00a0") ? text : text.replace("dimension", Redactor.MASK),
+                                Redactor.redact(text));
                     }
                 }
             }
@@ -2783,8 +2795,9 @@ class RedactorTest {
                 assertEquals(before + escapedForJson(jwk.formatted("[REDACTED]")),
                         Redactor.redact(before + escapedForJson(jwk.formatted("FAKE_JWK_K_342"))));
             }
+            // #352 security round 4: a k value cut at a line break in skipped prose is masked to its close (fail closed).
             String cut = "he said \"" + lb + escapedForJson("{\"kty\":\"oct\",\"k\":\"[REDACTED]\\" + lb + "TAIL\"}");
-            assertEquals(cut, Redactor.redact(cut));
+            assertEquals("he said \"" + lb + escapedForJson(jwk.formatted("[REDACTED]")), Redactor.redact(cut));
         }
     }
 
@@ -2806,8 +2819,10 @@ class RedactorTest {
             for (String value : List.of("true", "1", "{}", b + "FAKE_JWK_K_342" + b)) {
                 for (String form : List.of("{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s:\\f%2$s}", "{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s\\f:%2$s}",
                         "{%1$skty%1$s\\f:%1$soct%1$s,%1$sk%1$s:%2$s}")) {
+                    // #352 security round 4: in prose the canonical reading skips, a k after a kty fails closed (over-flags
+                    // accepted): its value is masked, quoted as its name is.
                     String kept = "he said \"" + lb + form.formatted(b, value);
-                    assertEquals(kept, Redactor.redact(kept));
+                    assertEquals("he said \"" + lb + form.formatted(b, b + "[REDACTED]" + b), Redactor.redact(kept));
                 }
             }
             String formFeed = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000ctrue}";
@@ -2831,8 +2846,9 @@ class RedactorTest {
                         assertEquals(masked, Redactor.redact("he said \"" + lb + jwk.apply(q, k)));
                     }
                 }
-                String kept = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
-                assertEquals(kept, Redactor.redact(kept));
+                // #352 security round 4: a value holding more than the mask in skipped prose is masked to its close.
+                String tail = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
+                assertEquals(masked, Redactor.redact(tail));
             }
             for (String before : List.of("\"" + lb + "\",\"body\":", "\"" + lb + "\",\"b\":1,\"body\":", "x\"" + lb + "\",\"body\":")) {
                 assertEquals(before + jwk.apply(b, "[REDACTED]"), Redactor.redact(before + jwk.apply(b, "FAKE_JWK_K_342")));
@@ -2901,8 +2917,9 @@ class RedactorTest {
                 for (String value : List.of("true", q + "FAKE_JWK_K_342" + q)) {
                     String colon = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":\\f" + value + "}";
                     String kty = "he said \"" + lb + pre + "{" + q + "kty" + q + "\\f:" + q + "oct" + q + "," + q + "k" + q + ":" + value + "}";
-                    assertEquals(colon, Redactor.redact(colon));
-                    assertEquals(kty, Redactor.redact(kty));
+                    // #352 security round 4: in skipped prose the k after a kty fails closed (over-flags accepted).
+                    assertEquals(colon.replace(value, q + "[REDACTED]" + q), Redactor.redact(colon));
+                    assertEquals(kty.replace(value, q + "[REDACTED]" + q), Redactor.redact(kty));
                 }
                 String masked = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + "[REDACTED]" + q + "}";
                 assertEquals(masked, Redactor.redact(masked.replace("[REDACTED]", "FAKE_JWK_K_342")));
@@ -2959,7 +2976,8 @@ class RedactorTest {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + q;
                     assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
                     assertEquals(masked, Redactor.redact("he said \"" + lb + head + tail));
-                    assertEquals(head.contains("password") ? masked : masked + tail, Redactor.redact(masked + tail));
+                    // #352 security round 4: after a JWK member's value too, as the skipped prose reads it unclosed.
+                    assertEquals(masked, Redactor.redact(masked + tail));
                     assertEquals(masked + "}" + tail, Redactor.redact(masked + "}" + tail));
                 }
             }
@@ -2983,10 +3001,11 @@ class RedactorTest {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + b + tail;
                     String closed = "he said \"" + lb + head + "[REDACTED]" + q;
-                    boolean secret = head.contains("password");
-                    assertEquals(secret ? closed : masked, Redactor.redact(masked));
+                    // #352 security round 4: after a JWK member's name in prose the canonical reading skips, the open value
+                    // is masked to the end as well (fail closed, over-flags accepted).
+                    assertEquals(closed, Redactor.redact(masked));
                     String empty = "he said \"" + lb + head + b + tail;
-                    assertEquals(secret ? closed : empty, Redactor.redact(empty));
+                    assertEquals(closed, Redactor.redact(empty));
                 }
             }
         }
@@ -3005,8 +3024,9 @@ class RedactorTest {
                     assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + "[REDACTED]" + backslash + tail));
                     assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + backslash + tail));
                     String jwk = "he said \"" + lb + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q;
-                    assertEquals(jwk + "[REDACTED]" + backslash + tail, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
-                    assertEquals(jwk + backslash + tail, Redactor.redact(jwk + backslash + tail));
+                    // #352 security round 4: the k value open to the end of skipped prose is masked to the end too.
+                    assertEquals(jwk + "[REDACTED]" + q, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
+                    assertEquals(jwk + "[REDACTED]" + q, Redactor.redact(jwk + backslash + tail));
                 }
             }
         }
@@ -3077,8 +3097,11 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (String copied : List.of(b.apply(head + tail), u.apply(head) + b.apply(tail), b.apply(head) + u.apply(tail))) {
                 String text = "he said \"" + lb + copied;
-                assertEquals(text, Redactor.redact(text));
-                assertEquals(text, Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
+                // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                assertEquals(text.replace("dimension", Redactor.MASK), Redactor.redact(text));
+                assertEquals(text.replace("dimension", Redactor.MASK),
+                        Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
             }
         }
     }

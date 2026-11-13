@@ -19,7 +19,8 @@ import java.util.regex.Pattern;
  * <ul>
  * <li>A line break inside a string of its level that opens where prose or a value starts at that level, and not in a
  * member's place, is skipped from, to the string holding that level's close, or at level 0 to the end
- * ({@link #skipped}).</li>
+ * ({@link #skipped}). Skipped is never unread (#352, security round 4): each skipped stretch is read on its own, and
+ * every private member value in it is masked whenever the text holds a kty (fail closed).</li>
  * <li>A backslash starts an escape. Its backslash may be spelled as a run of backslashes and unicode escapes of a
  * backslash ({@code u005c} after a backslash), so an escape of any level, or chained through such escapes, is one
  * escape. After that run: {@code u} and four hex digits is that character; {@code n}, {@code r}, {@code t} or
@@ -170,7 +171,11 @@ final class CanonicalJwks {
         return true;
     }
 
-    /** Every JWK private member's value in {@code raw} that the canonical reading masks, as stretches of the text. */
+    /**
+     * Every JWK private member's value in {@code raw} that the canonical reading masks, as stretches of the text. What
+     * the reading skips as prose ({@link #skipped}) is never left unread (#352, security round 4): each skipped stretch
+     * is read on its own, and every private member value in it is masked whenever the text holds a kty (fail closed).
+     */
     static List<Value> privateValues(String raw) {
         List<Value> values = new ArrayList<>();
         if (raw.indexOf('"') < 0 && !raw.toLowerCase(java.util.Locale.ROOT).contains("u0022")
@@ -193,7 +198,44 @@ final class CanonicalJwks {
         toRaw[kept.length()] = raw.length();
         String read = kept.toString();
         Canonical canonical = canonical(read);
-        int[] inStrings = openLevels(read);
+        List<Name> names = names(read, canonical);
+        // Each skipped stretch, read on its own: its names, and where each of its places is in the text.
+        List<String> spans = new ArrayList<>();
+        List<Canonical> spanForms = new ArrayList<>();
+        List<List<Name>> spanNames = new ArrayList<>();
+        boolean anyKty = names.stream().anyMatch(Name::kty);
+        for (int r = 0; r < skips.length; r += 2) {
+            String span = raw.substring(skips[r], skips[r + 1]);
+            Canonical form = canonical(span);
+            List<Name> found = names(span, form);
+            spans.add(span);
+            spanForms.add(form);
+            spanNames.add(found);
+            anyKty |= found.stream().anyMatch(Name::kty);
+        }
+        if (!names.isEmpty()) {
+            values.addAll(stretchValues(raw, read, toRaw, raw.length(), canonical, names, anyKty, true));
+        }
+        for (int r = 0; r < spans.size(); r++) {
+            if (!anyKty || spanNames.get(r).isEmpty()) {
+                continue;
+            }
+            int start = skips[2 * r];
+            int[] at = new int[spans.get(r).length() + 1];
+            for (int k = 0; k < at.length; k++) {
+                at[k] = start + k;
+            }
+            values.addAll(stretchValues(raw, spans.get(r), at, skips[2 * r + 1], spanForms.get(r), spanNames.get(r),
+                    true, false));
+        }
+        return values;
+    }
+
+    /**
+     * The kty and private member names of {@code read}, in its canonical form: a quote in a member's place, 1 to 64 name
+     * characters, a quote, spaces and a colon, each letter at its name's level; a kty only with a string value.
+     */
+    private static List<Name> names(String read, Canonical canonical) {
         String t = canonical.text();
         int n = t.length();
         List<Name> names = new ArrayList<>();
@@ -219,9 +261,20 @@ final class CanonicalJwks {
                 names.add(new Name(q, value, kty));
             }
         }
-        if (names.isEmpty()) {
-            return values;
-        }
+        return names;
+    }
+
+    /**
+     * The values to mask in one stretch the reading reads, {@code read}, whose place {@code k} is at {@code toRaw[k]} in
+     * {@code raw} and which ends at {@code end} there: with {@code exact}, the private members {@link #owned} reads as a
+     * JWK's (and the strings {@link #ambiguous} masks whole, if any); without, a stretch skipped as prose, every private
+     * member when {@code anyKty}, since which object it is in is not read there.
+     */
+    private static List<Value> stretchValues(String raw, String read, int[] toRaw, int end, Canonical canonical,
+            List<Name> names, boolean anyKty, boolean exact) {
+        List<Value> values = new ArrayList<>();
+        String t = canonical.text();
+        int n = t.length();
         // Whether spaces then a comma, a closing bracket, a colon or the end follow (a string's close for the lexed
         // reading), and whether spaces and quotes then a comma, a closing bracket, a colon or the end follow (a value's
         // close).
@@ -282,10 +335,17 @@ final class CanonicalJwks {
         int[] lexed = brackets(t, Reading.LEXED, nextLexClose, null, null);
         int[] leveled = brackets(t, Reading.LEVELED, nextLexClose, null, deeper);
         int[] named = brackets(t, Reading.NAMED, nextLexClose, null, deeper);
-        boolean[] jwk = owned(t, read, canonical, names);
-        List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, inStrings, names);
-        if (!wholesale.isEmpty()) {
-            return wholesale;
+        boolean[] jwk = new boolean[names.size()];
+        if (exact) {
+            jwk = owned(t, read, canonical, names, anyKty);
+            List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, openLevels(read), names);
+            if (!wholesale.isEmpty()) {
+                return wholesale;
+            }
+        } else {
+            for (int j = 0; j < names.size(); j++) {
+                jwk[j] = anyKty && !names.get(j).kty();
+            }
         }
         Matcher scalar = SCALAR.matcher(t);
         // Where the last string value read ends: a name before it is inside that value, which is masked or the mask.
@@ -306,8 +366,8 @@ final class CanonicalJwks {
                 }
                 readTo = close + 1;
                 if (close >= n) {
-                    values.add(new Value(toRaw[canonical.at(v)], raw.length(), quote + Redactor.MASK + quote,
-                            toRaw[canonical.at(v + 1)], raw.length()));
+                    values.add(new Value(toRaw[canonical.at(v)], end, quote + Redactor.MASK + quote,
+                            toRaw[canonical.at(v + 1)], end));
                 } else {
                     String content = t.substring(v + 1, close);
                     if (!content.isEmpty() && !content.equals(Redactor.MASK)) {
@@ -318,9 +378,9 @@ final class CanonicalJwks {
                 }
             } else if (c == '{' || c == '[') {
                 // Unclosed in either reading: masked to the end (fail closed).
-                int end = counted[v] == -1 || lexed[v] == -1 || leveled[v] == -1 || named[v] == -1 ? -1
+                int close = counted[v] == -1 || lexed[v] == -1 || leveled[v] == -1 || named[v] == -1 ? -1
                         : Math.max(Math.max(counted[v], named[v]), Math.max(lexed[v], leveled[v]));
-                int stop = end < 0 ? raw.length() : rawEnd(toRaw, canonical.at(end + 1));
+                int stop = close < 0 ? end : rawEnd(toRaw, canonical.at(close + 1));
                 values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
                         stop));
             } else if (scalar.region(v, n).lookingAt()) {
@@ -337,10 +397,9 @@ final class CanonicalJwks {
      * each private member whose object, at its own level, holds a kty; and wherever the quotes leave which object a member
      * is in unestablished, every private member, when the text holds a kty (fail closed).
      */
-    private static boolean[] owned(String t, String read, Canonical canonical, List<Name> names) {
+    private static boolean[] owned(String t, String read, Canonical canonical, List<Name> names, boolean anyKty) {
         boolean[] jwk = new boolean[names.size()];
         int[] exact = exactOwners(t, read, canonical, names);
-        boolean anyKty = names.stream().anyMatch(Name::kty);
         for (int j = 0; j < names.size(); j++) {
             jwk[j] = !names.get(j).kty() && (exact[j] == JWK || exact[j] == UNREAD && anyKty);
         }
