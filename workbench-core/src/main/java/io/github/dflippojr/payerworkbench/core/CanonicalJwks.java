@@ -31,9 +31,9 @@ import java.util.regex.Pattern;
  * escape counts only if it is that letter at the level of the name's quotes ({@code "\\u0064"} in plain JSON is not
  * d). A kty counts only with a string value.</li>
  * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object holds a kty,
- * the brackets read three ways: every bracket counted, or those inside strings skipped, a string closing at the first
- * quote that spaces and then a comma, a closing bracket, a colon or the end follow, or at the first such quote no deeper
- * than its opening one. Any way is enough, with a kty
+ * the brackets read four ways: every bracket counted, or those inside strings skipped, a string closing at the first
+ * quote that spaces and then a comma, a closing bracket, a colon or the end follow, at the first such quote no deeper
+ * than its opening one, or at that or a deeper one a colon follows. Any way is enough, with a kty
  * whose quote is at the member's level ({@link #memberLevel}), or for a private member at its quote's level as
  * written.</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
@@ -286,11 +286,13 @@ final class CanonicalJwks {
             valuesTo = close + 1;
         }
         boolean[] jwk = new boolean[names.size()];
-        int[] counted = brackets(t, names, jwk, null, inValue, null);
-        int[] lexed = brackets(t, names, jwk, nextLexClose, null, null);
+        int[] counted = brackets(t, names, jwk, null, inValue, null, false);
+        int[] lexed = brackets(t, names, jwk, nextLexClose, null, null, false);
         // ...and with each string closed at its own quote level, so an escaped quote in an ordinary string does not end
-        // it (only this reading cannot see JSON nested in a string, which the others read).
-        int[] leveled = brackets(t, names, jwk, nextLexClose, null, deeper);
+        // it (these cannot see JSON nested in a string, which the others read): once strictly, and once letting a deeper
+        // quote that a colon follows close it too, as a name spelled with both quotes closes. Any reading is enough.
+        int[] leveled = brackets(t, names, jwk, nextLexClose, null, deeper, false);
+        int[] named = brackets(t, names, jwk, nextLexClose, null, deeper, true);
         List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, inStrings, names);
         if (!wholesale.isEmpty()) {
             return wholesale;
@@ -326,8 +328,8 @@ final class CanonicalJwks {
                 }
             } else if (c == '{' || c == '[') {
                 // Unclosed in either reading: masked to the end (fail closed).
-                int end = counted[v] == -1 || lexed[v] == -1 || leveled[v] == -1 ? -1
-                        : Math.max(counted[v], Math.max(lexed[v], leveled[v]));
+                int end = counted[v] == -1 || lexed[v] == -1 || leveled[v] == -1 || named[v] == -1 ? -1
+                        : Math.max(Math.max(counted[v], named[v]), Math.max(lexed[v], leveled[v]));
                 int stop = end < 0 ? raw.length() : rawEnd(toRaw, canonical.at(end + 1));
                 values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
                         stop));
@@ -347,7 +349,7 @@ final class CanonicalJwks {
      * opening bracket is (-1: none, or not read as a bracket).
      */
     private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose, boolean[] skip,
-            IntBinaryOperator deeper) {
+            IntBinaryOperator deeper, boolean colonCloses) {
         int n = t.length();
         int[] match = new int[n];
         Arrays.fill(match, -2);
@@ -377,10 +379,10 @@ final class CanonicalJwks {
             } else if ((c == '}' || c == ']') && !stack.isEmpty()) {
                 match[stack.pop()] = i;
             } else if (c == '"' && nextClose != null) {
-                // At its own quote level; a deeper quote that a colon follows still closes it, as a name spelled with both
-                // quotes closes (fail closed: the members after it are read).
+                // At its own quote level, unless a colon after a deeper quote closes it (colonCloses).
                 int close = nextClose[i + 1];
-                while (deeper != null && close < n && deeper.applyAsInt(close, i) == 1 && !colonNext(t, close + 1)) {
+                while (deeper != null && close < n && deeper.applyAsInt(close, i) == 1
+                        && !(colonCloses && colonNext(t, close + 1))) {
                     close = nextClose[close + 1];
                 }
                 i = close + 1;

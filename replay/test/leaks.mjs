@@ -1084,8 +1084,8 @@ function canonicalJwkLeaks(text, ctx) {
   const inStrings = canonicalOpenLevels(raw, ctx);
   const n = t.length;
   // The kept text is read three times (copied, decoded, its string levels); the canonical form five times (the closes,
-  // the names, the three readings of the brackets).
-  ctx.work += 3 * raw.length + 5 * n;
+  // the names, the four readings of the brackets).
+  ctx.work += 3 * raw.length + 6 * n;
   const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = [];
   for (let q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
@@ -1159,9 +1159,10 @@ function canonicalJwkLeaks(text, ctx) {
     ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
     return;
   }
-  // Every bracket counted (0), brackets inside strings skipped (1), and the same with each string closed at its own quote
-  // level (2), so an escaped quote in an ordinary string does not end it; any reading is enough.
-  for (const mode of [0, 1, 2]) {
+  // Every bracket counted (0), brackets inside strings skipped (1), the same with each string closed at its own quote
+  // level (2), so an escaped quote in an ordinary string does not end it, and with a deeper quote that a colon follows
+  // closing it too (3), as a name spelled with both quotes closes; any reading is enough.
+  for (const mode of [0, 1, 2, 3]) {
     const skipStrings = mode > 0;
     const stack = [];
     const owner = new Map();
@@ -1184,7 +1185,7 @@ function canonicalJwkLeaks(text, ctx) {
       else if ((c === '}' || c === ']') && stack.length > 0) stack.pop();
       else if (c === '"' && skipStrings) {
         let close = lexClose[i + 1];
-        if (mode === 2) {
+        if (mode >= 2) {
           const openLevel = canonicalCloseLevel(spelling(i));
           const openFlat = canonicalFlatLevel(spelling(i));
           // A deeper quote that a colon follows still closes it, as a name spelled with both quotes closes.
@@ -1193,7 +1194,7 @@ function canonicalJwkLeaks(text, ctx) {
             while (t[k] === ' ') k++;
             return t[k] === ':';
           };
-          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat) && !colonNext(close + 1)) {
+          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat) && !(mode === 3 && colonNext(close + 1))) {
             close = lexClose[close + 1];
           }
         }
