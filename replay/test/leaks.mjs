@@ -1159,11 +1159,11 @@ function canonicalJwkLeaks(text, ctx) {
     ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
     return;
   }
-  // Every bracket counted (0), brackets inside strings skipped (1), the same with each string closed at its own quote
-  // level (2), so an escaped quote in an ordinary string does not end it, and with a deeper quote that a colon follows
-  // closing it too (3), as a name spelled with both quotes closes; any reading is enough.
-  for (const mode of [0, 1, 2, 3]) {
-    const skipStrings = mode > 0;
+  // Every bracket counted (COUNTED), brackets inside strings skipped (LEXED), the same with each string closed at its
+  // own quote level (LEVELED), so an escaped quote in an ordinary string does not end it, and with a name (a string in a
+  // member's place) also closed at a deeper quote that a colon follows (NAMED); any reading is enough.
+  for (const mode of ['COUNTED', 'LEXED', 'LEVELED', 'NAMED']) {
+    const skipStrings = mode !== 'COUNTED';
     const stack = [];
     const owner = new Map();
     // The levels of the kty names in each object.
@@ -1180,12 +1180,12 @@ function canonicalJwkLeaks(text, ctx) {
         }
         next++;
       }
-      const c = !skipStrings && inValue[i] ? ' ' : t[i];
+      const c = mode === 'COUNTED' && inValue[i] ? ' ' : t[i];
       if (c === '{' || c === '[') stack.push(i);
       else if ((c === '}' || c === ']') && stack.length > 0) stack.pop();
       else if (c === '"' && skipStrings) {
         let close = lexClose[i + 1];
-        if (mode >= 2) {
+        if (mode === 'LEVELED' || mode === 'NAMED') {
           const openLevel = canonicalCloseLevel(spelling(i));
           const openFlat = canonicalFlatLevel(spelling(i));
           // A deeper quote that a colon follows still closes it, as a name spelled with both quotes closes.
@@ -1194,7 +1194,10 @@ function canonicalJwkLeaks(text, ctx) {
             while (t[k] === ' ') k++;
             return t[k] === ':';
           };
-          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat) && !(mode === 3 && colonNext(close + 1))) {
+          let b = i - 1;
+          while (b >= 0 && t[b] === ' ') b--;
+          const name = mode === 'NAMED' && b >= 0 && (t[b] === '{' || t[b] === ',');
+          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat) && !(name && colonNext(close + 1))) {
             close = lexClose[close + 1];
           }
         }

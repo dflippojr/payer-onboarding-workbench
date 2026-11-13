@@ -286,13 +286,10 @@ final class CanonicalJwks {
             valuesTo = close + 1;
         }
         boolean[] jwk = new boolean[names.size()];
-        int[] counted = brackets(t, names, jwk, null, inValue, null, false);
-        int[] lexed = brackets(t, names, jwk, nextLexClose, null, null, false);
-        // ...and with each string closed at its own quote level, so an escaped quote in an ordinary string does not end
-        // it (these cannot see JSON nested in a string, which the others read): once strictly, and once letting a deeper
-        // quote that a colon follows close it too, as a name spelled with both quotes closes. Any reading is enough.
-        int[] leveled = brackets(t, names, jwk, nextLexClose, null, deeper, false);
-        int[] named = brackets(t, names, jwk, nextLexClose, null, deeper, true);
+        int[] counted = brackets(t, names, jwk, Reading.COUNTED, null, inValue, null);
+        int[] lexed = brackets(t, names, jwk, Reading.LEXED, nextLexClose, null, null);
+        int[] leveled = brackets(t, names, jwk, Reading.LEVELED, nextLexClose, null, deeper);
+        int[] named = brackets(t, names, jwk, Reading.NAMED, nextLexClose, null, deeper);
         List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, inStrings, names);
         if (!wholesale.isEmpty()) {
             return wholesale;
@@ -348,8 +345,8 @@ final class CanonicalJwks {
      * each private member whose object holds a kty name in this reading, and returns where the bracket closing each
      * opening bracket is (-1: none, or not read as a bracket).
      */
-    private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose, boolean[] skip,
-            IntBinaryOperator deeper, boolean colonCloses) {
+    private static int[] brackets(String t, List<Name> names, boolean[] jwk, Reading reading, int[] nextClose,
+            boolean[] skip, IntBinaryOperator deeper) {
         int n = t.length();
         int[] match = new int[n];
         Arrays.fill(match, -2);
@@ -378,11 +375,13 @@ final class CanonicalJwks {
                 match[i] = -1;
             } else if ((c == '}' || c == ']') && !stack.isEmpty()) {
                 match[stack.pop()] = i;
-            } else if (c == '"' && nextClose != null) {
-                // At its own quote level, unless a colon after a deeper quote closes it (colonCloses).
+            } else if (c == '"' && reading != Reading.COUNTED) {
+                // LEVELED and NAMED: at its own quote level; NAMED lets a deeper quote that a colon follows close a
+                // string opening in a member's place, a name spelled with both quotes.
+                boolean name = reading == Reading.NAMED && inMemberPlace(t, i);
                 int close = nextClose[i + 1];
-                while (deeper != null && close < n && deeper.applyAsInt(close, i) == 1
-                        && !(colonCloses && colonNext(t, close + 1))) {
+                while (reading != Reading.LEXED && close < n && deeper.applyAsInt(close, i) == 1
+                        && !(name && colonNext(t, close + 1))) {
                     close = nextClose[close + 1];
                 }
                 i = close + 1;
@@ -862,6 +861,15 @@ final class CanonicalJwks {
         }
         return i < t.length() && t.charAt(i) == ':';
     }
+
+    /**
+     * How a bracket reading ({@link #brackets}) reads strings: COUNTED counts every bracket, outside strings or not;
+     * LEXED skips each string to the first quote that spaces and then a comma, a closing bracket, a colon or the end
+     * follow; LEVELED to the first such quote no deeper than its opening one; NAMED as LEVELED, but a name (a string
+     * opening in a member's place) also closes at a deeper such quote that a colon follows. Only COUNTED and LEXED read
+     * JSON nested in a string; LEVELED and NAMED keep an escaped quote in an ordinary string from ending it.
+     */
+    private enum Reading { COUNTED, LEXED, LEVELED, NAMED }
 
     private static boolean isNameChar(char c) {
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '-';
