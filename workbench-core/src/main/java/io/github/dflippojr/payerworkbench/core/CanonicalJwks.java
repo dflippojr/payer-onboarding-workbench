@@ -711,6 +711,7 @@ final class CanonicalJwks {
         }
         String t = canonical.text();
         int[] strings = null;
+        int span = 0;
         int masked = -1;
         // The last quote before here, and its level once read.
         int quote = -1;
@@ -751,13 +752,11 @@ final class CanonicalJwks {
             if (strings == null) {
                 strings = plainStrings(raw);
             }
-            int open = -1;
-            for (int s = 0; s < strings.length; s += 2) {
-                if (strings[s] < at && at < strings[s + 1]) {
-                    open = s;
-                    break;
-                }
+            // The delimiters come in order, so the strings are walked once, from where the last search stopped.
+            while (span < strings.length && strings[span + 1] <= at) {
+                span += 2;
             }
+            int open = span < strings.length && strings[span] < at ? span : -1;
             if (open < 0) {
                 wholesale.clear();
                 wholesale.add(new Value(0, raw.length(), Redactor.MASK, 0, raw.length()));
