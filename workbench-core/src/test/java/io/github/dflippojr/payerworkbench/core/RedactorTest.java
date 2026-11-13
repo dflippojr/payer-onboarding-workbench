@@ -2273,6 +2273,18 @@ class RedactorTest {
     }
 
     @Test
+    void keepsAPrivateMemberWhoseObjectHoldsAKtyOnlyInsideAString() {
+        // Automated review on 469b848: a kty quoted a level down inside a string value is no member of the object, however
+        // a comma before it reads in the canonical form.
+        String b = String.valueOf((char) 92);
+        for (String text : List.of("{\"note\":\"x," + b + "\"kty" + b + "\":" + b + "\"oct" + b + "\"\",\"d\":\"dimension\"}",
+                "{\"note\":\"x, " + b + "\"kty" + b + "\": " + b + "\"oct" + b + "\"\", \"d\": \"dimension\"}")) {
+            assertEquals(text, Redactor.redact(text));
+            assertEquals(nested(text), Redactor.redact(nested(text)));
+        }
+    }
+
+    @Test
     void masksEveryUnicodeQuotedPrivateMemberOnceTheFlattenedViewSpendsItsBudget() {
         // #352: repeated kty syntax spends the JWK search's budget, as in readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft,
         // and then every private member name in the flattened view is masked, in a JWK or not: this d is in none.
@@ -2320,7 +2332,10 @@ class RedactorTest {
                 "\"PRIVSTART" + u + "PRIVTAIL\"",
                 u + "PRIVSTART\"",
                 "{\"x\":\"PRIVSTART\"}",
-                "[\"PRIVSTART\"]");
+                "[\"PRIVSTART\"]",
+                // A value quoted \" holding an escaped quote a level further down, then a comma (automated review on
+                // 469b848): that quote does not close the value.
+                bs + "\"PRIVSTART" + bs + bs + u + ",PRIVTAIL" + bs + "\"");
         // Before the colon, after it, and after the value (every other kind of whitespace Java reads there:
         // masksAJwkValueAfterANameQuotedThroughAnEscapeChainOrBeforeTheJwksKty).
         List<String[]> spaces = List.of(new String[] {"", "", ""}, new String[] {"\n", "", "\n"},

@@ -2070,7 +2070,7 @@ test('flags every JWK private member however its quotes and whitespace are spell
   // JWK's plain-quoted kty before or after it, bare and nested once and twice.
   // RedactorTest checks that the committed grid holds the Redactor's outputs for them; see redactorGrid.
   const pairs = redactorGrid('jwk-spelling-grid');
-  assert.equal(pairs.length, 8 * 4 * 8 * 4 * 2 * 3);
+  assert.equal(pairs.length, 8 * 4 * 9 * 4 * 2 * 3);
   const wrong = [];
   for (const [input, out] of pairs) {
     if (findTextLeaks(input).length === 0) wrong.push(`not flagged: ${input}`);
@@ -2111,5 +2111,21 @@ test('accepts a masked JWK value followed by any whitespace the Redactor reads a
       assert.deepEqual(findTextLeaks(text), [], JSON.stringify(text));
     }
     assertFlagged(`{"kty":"oct",${u}d${u}:"[REDACTED]"PRIVTAIL"${space}}`);
+  }
+});
+
+test('flags a JWK value whose escaped quote a level further down is followed by a comma, and keeps a kty inside a string out of the object (#352, automated review on 469b848)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const start of ['PRIVSTART', '[REDACTED]']) {
+    const raw = `{${u}d${u}:${b}"${start}${b}${b}${u},PRIVTAIL${b}","kty":"oct"}`;
+    for (const text of [raw, JSON.stringify({ body: raw }), JSON.stringify({ body: JSON.stringify({ body: raw }) })]) {
+      assertFlagged(text);
+    }
+  }
+  for (const text of [`{"note":"x,${b}"kty${b}":${b}"oct${b}"","d":"dimension"}`,
+    `{"note":"x, ${b}"kty${b}": ${b}"oct${b}"", "d": "dimension"}`]) {
+    assertAccepted(text);
+    assertAccepted(JSON.stringify({ body: text }));
   }
 });
