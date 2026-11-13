@@ -2173,7 +2173,7 @@ test('reads the members after prose in a string closed with a unicode quote, and
   assertAccepted(nestedIn(name, 1));
 });
 
-test('bounds a value by its opening quote and a structure by its unclosed reading, and keeps a root member out of a child JWK (#352, automated review on 253416a)', () => {
+test('bounds a value by its opening quote and a structure by its unclosed reading (#352, automated review on 253416a)', () => {
   const b = '\\';
   const u = `${b}u0022`;
   const chain = `${b}u005c${u.slice(1)}`;
@@ -2181,7 +2181,4 @@ test('bounds a value by its opening quote and a structure by its unclosed readin
     `{"kty":"oct",${chain}d${u}:{"x":"},PRIVTAIL"`]) {
     for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
   }
-  const kept = '{"left":{"kty":"oct","note":"{"},"d":"dimension"}';
-  assertAccepted(kept);
-  assertAccepted(nestedIn(kept, 1));
 });

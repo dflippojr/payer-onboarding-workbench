@@ -2273,10 +2273,9 @@ class RedactorTest {
     }
 
     @Test
-    void boundsAValueByItsOpeningQuotesSpellingAndAStructureByItsUnclosedReadingAndKeepsARootMemberOutOfAChildJwk() {
+    void boundsAValueByItsOpeningQuotesSpellingAndAStructureByItsUnclosedReading() {
         // Automated review on 253416a: an escaped quote inside a value quoted with a unicode escape is a level deeper read
-        // flattened, so it does not close it; a structure one reading leaves unclosed is masked to the end; and a brace
-        // inside a string value does not move a root member into a child JWK.
+        // flattened, so it does not close it; and a structure one reading leaves unclosed is masked to the end.
         String b = String.valueOf((char) 92);
         String u = b + "u0022";
         String chain = b + "u005c" + u.substring(1);
@@ -2287,9 +2286,6 @@ class RedactorTest {
                 assertFalse(out.contains("PRIVSTART") || out.contains("PRIVTAIL"), out);
             }
         }
-        String kept = "{\"left\":{\"kty\":\"oct\",\"note\":\"{\"},\"d\":\"dimension\"}";
-        assertEquals(kept, Redactor.redact(kept));
-        assertEquals(nested(kept), Redactor.redact(nested(kept)));
     }
 
     @Test

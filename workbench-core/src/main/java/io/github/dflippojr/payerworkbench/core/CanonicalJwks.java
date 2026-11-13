@@ -255,9 +255,9 @@ final class CanonicalJwks {
             char c = t.charAt(v);
             if (c == '"') {
                 // A quote deeper than the opening one is an escaped quote inside the value, which goes on past it.
-                int open = closeLevel(canonical.spelling(read, v));
+                String opening = canonical.spelling(read, v);
                 int close = nextValueClose[v + 1];
-                while (close < n && closeLevel(canonical.spelling(read, close)) > open) {
+                while (close < n && deeper(canonical.spelling(read, close), opening)) {
                     close = nextValueClose[close + 1];
                 }
                 readTo = close + 1;
@@ -273,7 +273,8 @@ final class CanonicalJwks {
                     }
                 }
             } else if (c == '{' || c == '[') {
-                int end = Math.max(counted[v], lexed[v]);
+                // Unclosed in either reading: masked to the end (fail closed).
+                int end = counted[v] == -1 || lexed[v] == -1 ? -1 : Math.max(counted[v], lexed[v]);
                 int stop = end < 0 ? raw.length() : rawEnd(toRaw, canonical.at(end + 1));
                 values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
                         stop));
@@ -295,9 +296,8 @@ final class CanonicalJwks {
     private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose) {
         int n = t.length();
         int[] match = new int[n];
-        Arrays.fill(match, -1);
-        int[] stack = new int[n];
-        int top = 0;
+        Arrays.fill(match, -2);
+        java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
         int[] owner = new int[names.size()];
         Arrays.fill(owner, -1);
         // For each object a kty is in: the levels of its kty names, one bit each, the top bit for ANY_LEVEL.
@@ -309,7 +309,8 @@ final class CanonicalJwks {
                 next++;
             }
             if (next < names.size() && names.get(next).quote() == i) {
-                owner[next] = top > 0 && t.charAt(stack[top - 1]) == '{' ? stack[top - 1] : -1;
+                Integer top = stack.peek();
+                owner[next] = top != null && t.charAt(top) == '{' ? top : -1;
                 if (names.get(next).kty() && owner[next] >= 0) {
                     typed.merge(owner[next], levelBit(names.get(next).level()), (a, b) -> a | b);
                 }
@@ -317,9 +318,10 @@ final class CanonicalJwks {
             }
             char c = t.charAt(i);
             if (c == '{' || c == '[') {
-                stack[top++] = i;
-            } else if ((c == '}' || c == ']') && top > 0) {
-                match[stack[--top]] = i;
+                stack.push(i);
+                match[i] = -1;
+            } else if ((c == '}' || c == ']') && !stack.isEmpty()) {
+                match[stack.pop()] = i;
             } else if (c == '"' && nextClose != null) {
                 i = nextClose[i + 1] + 1;
                 continue;
@@ -555,11 +557,7 @@ final class CanonicalJwks {
                 // level that a plain quote opened in a member's place when a colon follows it: a name spelled with both
                 // ("note\\u0022:), never a value.
                 if (!unicode) {
-                    if ((levels & bit) == 0 && (last == '{' || last == ',')) {
-                        names |= bit;
-                    } else {
-                        names &= ~bit;
-                    }
+                    names = (levels & bit) == 0 && (last == '{' || last == ',') ? names | bit : names & ~bit;
                     levels ^= bit;
                 } else if ((levels & bit) != 0 && (names & bit) != 0 && colonAfter(read, stop)) {
                     // ...unless the name closes with its own plain quote before a colon, which keeps it whole. Looked
@@ -603,20 +601,42 @@ final class CanonicalJwks {
         return read.length();
     }
 
-    /** Whether a colon comes next from {@code from} in {@code read}, after whitespace, raw or escaped. */
+    /** Whether a colon comes next from {@code from} in {@code read}, after whitespace, raw or escaped at any level. */
     private static boolean colonAfter(String read, int from) {
         int i = from;
         while (i < read.length()) {
             char c = read.charAt(i);
             if (Character.isWhitespace(c)) {
                 i++;
-            } else if (c == BACKSLASH && i + 1 < read.length() && "nrt".indexOf(read.charAt(i + 1)) >= 0) {
-                i += 2;
+            } else if (c == BACKSLASH) {
+                int k = i;
+                while (k < read.length() && read.charAt(k) == BACKSLASH) {
+                    k++;
+                }
+                if (k >= read.length() || "nrt".indexOf(read.charAt(k)) < 0) {
+                    return false;
+                }
+                i = k + 1;
             } else {
                 return c == ':';
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a value's quote spelled {@code quote} is deeper than its opening quote spelled {@code opening}, so it is
+     * escaped inside the value: deeper decoded ({@link #closeLevel}), or deeper as a copied JWK reads it
+     * ({@link #flatLevel}), where an escaped quote inside a value quoted with a unicode escape is a level down. Either
+     * is enough (fail closed: the value goes on).
+     */
+    private static boolean deeper(String quote, String opening) {
+        if (closeLevel(quote) > closeLevel(opening)) {
+            return true;
+        }
+        int flat = flatLevel(quote);
+        int flatOpening = flatLevel(opening);
+        return flat != ANY_LEVEL && flatOpening != ANY_LEVEL && flat > flatOpening;
     }
 
     private static long levelBit(int level) {

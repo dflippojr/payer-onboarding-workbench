@@ -930,8 +930,7 @@ function canonicalOpenLevels(raw, ctx) {
     if (level >= 0 && level < 31) {
       const bit = 1 << level;
       if (!unicode) {
-        if ((levels & bit) === 0 && (last === '{' || last === ',')) names |= bit;
-        else names &= ~bit;
+        names = (levels & bit) === 0 && (last === '{' || last === ',') ? names | bit : names & ~bit;
         levels ^= bit;
       } else if ((levels & bit) !== 0 && (names & bit) !== 0 && canonicalColonAfter(raw, stop)) {
         // ...unless the name closes with its own plain quote before a colon; looked up once for each string.
@@ -963,12 +962,17 @@ function canonicalOpenLevels(raw, ctx) {
   return open;
 }
 
-/** Whether a colon comes next from `from`, after whitespace, raw or escaped. */
+/** Whether a colon comes next from `from`, after whitespace, raw or escaped at any level. */
 function canonicalColonAfter(raw, from) {
   let i = from;
   while (i < raw.length) {
     if (isJavaSpace(raw[i])) i++;
-    else if (raw[i] === '\\' && 'nrt'.includes(raw[i + 1] ?? 'x')) i += 2;
+    else if (raw[i] === '\\') {
+      let k = i;
+      while (raw[k] === '\\') k++;
+      if (!'nrt'.includes(raw[k] ?? 'x')) return false;
+      i = k + 1;
+    }
     else return raw[i] === ':';
   }
   return false;
@@ -976,6 +980,17 @@ function canonicalColonAfter(raw, from) {
 
 /** The level at which a value's quote is a quote, for bounding the value: one decoding to no quote is level 0. */
 const canonicalCloseLevel = spelling => canonicalQuoteLevel(spelling) ?? 0;
+
+/**
+ * Whether a value's quote is deeper than its opening one, so escaped inside the value: deeper decoded, or deeper as a
+ * copied JWK reads it (canonicalFlatLevel), where an escaped quote inside a unicode-quoted value is a level down.
+ */
+function canonicalDeeper(quote, opening) {
+  if (canonicalCloseLevel(quote) > canonicalCloseLevel(opening)) return true;
+  const flat = canonicalFlatLevel(quote);
+  const flatOpening = canonicalFlatLevel(opening);
+  return flat !== -1 && flatOpening !== -1 && flat > flatOpening;
+}
 
 function canonicalJwkLeaks(text, ctx) {
   // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
@@ -1092,9 +1107,9 @@ function canonicalJwkLeaks(text, ctx) {
     let leak = false;
     if (c === '"') {
       // A quote deeper than the opening one is escaped inside the value, which goes on past it.
-      const open = canonicalCloseLevel(spelling(v));
+      const opening = spelling(v);
       let close = valueClose[v + 1];
-      while (close < n && canonicalCloseLevel(spelling(close)) > open) close = valueClose[close + 1];
+      while (close < n && canonicalDeeper(spelling(close), opening)) close = valueClose[close + 1];
       read = close + 1;
       const content = t.slice(v + 1, close);
       leak = close >= n || (content !== '' && content !== MASK);
