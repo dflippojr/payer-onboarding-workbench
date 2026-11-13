@@ -2222,7 +2222,10 @@ test('flags a JWK whose quotes or delimiters read ambiguously, and accepts it ma
   const note = `{"note":"${b}"}",${chain}d${u}:"PRIVA","kty":"oct"}`;
   // Automated review on a7e04ee: also after a name opened plain and closed with a unicode escape.
   const mixed = `{"note":"${b}"}","d${u}:${chain}PRIVA${chain},"kty":"oct"}`;
-  for (const text of [note, nestedIn(note, 1), nestedIn(note, 2), mixed, nestedIn(mixed, 1), nestedIn(mixed, 2)]) {
+  // Automated review on 7aeccb5: and an escaped quote, a colon and a brace in an ordinary string.
+  const colon = `{"note":"x${b}":}",${chain}d${u}:"PRIVA","kty":"oct"}`;
+  for (const text of [note, nestedIn(note, 1), nestedIn(note, 2), mixed, nestedIn(mixed, 1), nestedIn(mixed, 2),
+    colon, nestedIn(colon, 1), nestedIn(colon, 2)]) {
     assertFlagged(text);
   }
   // ...and a name closed with a unicode escape before a form feed or an escaped one keeps a kty in a value out.

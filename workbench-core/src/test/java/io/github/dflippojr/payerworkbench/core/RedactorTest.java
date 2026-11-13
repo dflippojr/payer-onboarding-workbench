@@ -2294,7 +2294,10 @@ class RedactorTest {
         String note = "{\"note\":\"" + b + "\"}\"," + chain + "d" + u + ":\"PRIVA\",\"kty\":\"oct\"}";
         // Automated review on a7e04ee: also after a name opened plain and closed with a unicode escape.
         String mixed = "{\"note\":\"" + b + "\"}\",\"d" + u + ":" + chain + "PRIVA" + chain + ",\"kty\":\"oct\"}";
-        for (String form : List.of(note, nested(note), nested(nested(note)), mixed, nested(mixed), nested(nested(mixed)))) {
+        // Automated review on 7aeccb5: and an escaped quote, a colon and a brace in an ordinary string.
+        String colon = "{\"note\":\"x" + b + "\":}\"," + chain + "d" + u + ":\"PRIVA\",\"kty\":\"oct\"}";
+        for (String form : List.of(note, nested(note), nested(nested(note)), mixed, nested(mixed), nested(nested(mixed)),
+                colon, nested(colon), nested(nested(colon)))) {
             String out = Redactor.redact(form);
             assertFalse(out.contains("PRIVA"), out);
         }
