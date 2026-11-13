@@ -21,13 +21,15 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Replay admission is one atomic decision per {@code iss|jti}: checking the times, evicting expired entries and
@@ -49,6 +51,10 @@ class ClientJwtReplayAdmissionTest {
                     null, exp -> "expired", "jti", jti -> "replay " + jti),
             new ClientJwtValidator.ExpiryCap(Duration.ofMinutes(5), "too far"), null);
 
+    private static final String ACCEPTED = "accepted";
+
+    /** Whatever a worker thread threw; a thread's own exception never reaches JUnit through join(). */
+    private final Queue<Throwable> failures = new ConcurrentLinkedQueue<>();
     private KeyPair key;
     private TestKeys.JwksServer jwks;
     private GatedClock clock;
@@ -74,16 +80,18 @@ class ClientJwtReplayAdmissionTest {
         assertEquals(ISSUER, admit(token));
         clock.now = EXP;
 
-        AtomicInteger accepted = new AtomicInteger();
+        Queue<String> outcomes = new ConcurrentLinkedQueue<>();
         CountDownLatch replayHeld = new CountDownLatch(1);
         CountDownLatch rivalStarted = new CountDownLatch(1);
         Thread[] rival = new Thread[1];
-        Thread replay = validating(token, accepted);
+        Thread replay = validating(token, outcomes);
         clock.holdAfterRead(replay, EXP.minusMillis(1), replayHeld, rivalStarted, () -> rival[0]);
-        rival[0] = new Thread(validator::sweepExpired, "timer-sweep");
+        rival[0] = guarded(validator::sweepExpired);
 
         race(replay, replayHeld, rival[0], rivalStarted);
-        assertEquals(0, accepted.get(), "the assertion was already used and was still valid when the replay was checked");
+        assertNoWorkerFailed();
+        assertEquals(List.of("replay used-once"), List.copyOf(outcomes),
+                "the assertion was already used and was still valid when the replay was checked");
     }
 
     @Test
@@ -93,18 +101,20 @@ class ClientJwtReplayAdmissionTest {
         clock.now = EXP;
         String other = sign("other", EXP.minusSeconds(10), EXP.plusSeconds(60));
 
-        AtomicInteger accepted = new AtomicInteger();
-        AtomicInteger otherAccepted = new AtomicInteger();
+        Queue<String> outcomes = new ConcurrentLinkedQueue<>();
+        Queue<String> otherOutcomes = new ConcurrentLinkedQueue<>();
         CountDownLatch replayHeld = new CountDownLatch(1);
         CountDownLatch rivalStarted = new CountDownLatch(1);
         Thread[] rival = new Thread[1];
-        Thread replay = validating(token, accepted);
+        Thread replay = validating(token, outcomes);
         clock.holdAfterRead(replay, EXP.minusMillis(1), replayHeld, rivalStarted, () -> rival[0]);
-        rival[0] = validating(other, otherAccepted);
+        rival[0] = validating(other, otherOutcomes);
 
         race(replay, replayHeld, rival[0], rivalStarted);
-        assertEquals(0, accepted.get(), "the assertion was already used and was still valid when the replay was checked");
-        assertEquals(1, otherAccepted.get(), "the unrelated assertion is new and valid");
+        assertNoWorkerFailed();
+        assertEquals(List.of("replay used-once"), List.copyOf(outcomes),
+                "the assertion was already used and was still valid when the replay was checked");
+        assertEquals(List.of(ACCEPTED), List.copyOf(otherOutcomes), "the unrelated assertion is new and valid");
     }
 
     @Test
@@ -113,17 +123,17 @@ class ClientJwtReplayAdmissionTest {
         assertEquals(ISSUER, admit(token));
         clock.now = EXP;
 
-        AtomicInteger accepted = new AtomicInteger();
+        Queue<String> outcomes = new ConcurrentLinkedQueue<>();
         CountDownLatch anyHeld = new CountDownLatch(1);
         CountDownLatch rivalStarted = new CountDownLatch(1);
         Thread[] rival = new Thread[1];
         List<Thread> replays = new ArrayList<>();
         for (int i = 0; i < 2; i++) {
-            Thread replay = validating(token, accepted);
+            Thread replay = validating(token, outcomes);
             clock.holdAfterRead(replay, EXP.minusMillis(1), anyHeld, rivalStarted, () -> rival[0]);
             replays.add(replay);
         }
-        rival[0] = new Thread(validator::sweepExpired, "timer-sweep");
+        rival[0] = guarded(validator::sweepExpired);
 
         replays.forEach(Thread::start);
         anyHeld.await();
@@ -133,7 +143,12 @@ class ClientJwtReplayAdmissionTest {
         for (Thread replay : replays) {
             replay.join();
         }
-        assertEquals(0, accepted.get(), "every replay was checked while the first use was still valid");
+        assertNoWorkerFailed();
+        assertEquals(2, outcomes.size(), outcomes::toString);
+        // A replay decided before the sweep is refused as a replay; one decided after it is judged at the sweep's
+        // instant, exp, and refused as expired. Neither may be accepted.
+        assertTrue(outcomes.stream().allMatch(o -> o.equals("replay used-once") || o.equals("expired")),
+                "every replay was checked while the first use was still valid: " + outcomes);
     }
 
     @Test
@@ -159,26 +174,22 @@ class ClientJwtReplayAdmissionTest {
 
         int threads = 8;
         CyclicBarrier start = new CyclicBarrier(threads);
-        AtomicInteger accepted = new AtomicInteger();
+        Queue<String> outcomes = new ConcurrentLinkedQueue<>();
         List<Thread> workers = new ArrayList<>();
         for (int i = 0; i < threads; i++) {
-            workers.add(new Thread(() -> {
-                try {
-                    start.await();
-                    validator.validate(token, AUDIENCE, false, false, (iss, claims) -> { });
-                    accepted.incrementAndGet();
-                } catch (MockPayer.HttpError replay) {
-                    // the expected outcome for all but one
-                } catch (Exception e) {
-                    throw new IllegalStateException(e);
-                }
+            workers.add(guarded(() -> {
+                start.await();
+                record(token, outcomes);
             }));
         }
         workers.forEach(Thread::start);
         for (Thread worker : workers) {
             worker.join();
         }
-        assertEquals(1, accepted.get());
+        assertNoWorkerFailed();
+        assertEquals(threads, outcomes.size(), outcomes::toString);
+        assertEquals(1, outcomes.stream().filter(ACCEPTED::equals).count(), outcomes::toString);
+        assertEquals(threads - 1, outcomes.stream().filter("replay fresh"::equals).count(), outcomes::toString);
     }
 
     /** Starts the replay, waits until it holds a clock reading, then lets the rival evict. */
@@ -192,15 +203,42 @@ class ClientJwtReplayAdmissionTest {
         replay.join();
     }
 
-    private Thread validating(String token, AtomicInteger accepted) {
+    /** A worker body that may throw anything; whatever it throws is collected, not lost with the thread. */
+    @FunctionalInterface
+    private interface Work {
+        void run() throws Exception;
+    }
+
+    private Thread guarded(Work work) {
         return new Thread(() -> {
             try {
-                validator.validate(token, AUDIENCE, false, false, (iss, claims) -> { });
-                accepted.incrementAndGet();
-            } catch (MockPayer.HttpError refused) {
-                // counted as not accepted
+                work.run();
+            } catch (Throwable e) {
+                failures.add(e);
             }
         });
+    }
+
+    private void assertNoWorkerFailed() {
+        if (!failures.isEmpty()) {
+            AssertionError error = new AssertionError(failures.size() + " worker thread(s) failed");
+            failures.forEach(error::addSuppressed);
+            throw error;
+        }
+    }
+
+    /** Validates once and records {@link #ACCEPTED} or the refusal's message. Anything else is a worker failure. */
+    private void record(String token, Queue<String> outcomes) {
+        try {
+            validator.validate(token, AUDIENCE, false, false, (iss, claims) -> { });
+            outcomes.add(ACCEPTED);
+        } catch (MockPayer.HttpError refused) {
+            outcomes.add(refused.getMessage());
+        }
+    }
+
+    private Thread validating(String token, Queue<String> outcomes) {
+        return guarded(() -> record(token, outcomes));
     }
 
     private String admit(String token) {
