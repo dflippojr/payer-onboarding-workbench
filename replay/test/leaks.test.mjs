@@ -2156,3 +2156,15 @@ test('reads the members after a string holding a stray quote and a line break a 
   assertAccepted(kept);
   assertAccepted(nestedIn(kept, 1));
 });
+
+test('reads the members after prose in a string closed with a unicode quote, and keeps an oddly spelled kty in a string out (#352, automated review on 6ec18ce)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const value of ['VALUE352', '[REDACTED]PRIVTAIL']) {
+    const raw = `{"note":${u}x ${b}"${b}n${u},${u}d${u}:${b}"${value}${b}","kty":"oct"}`;
+    for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
+  }
+  const kept = `{"note":"x,${b}u005c${u}kty${u}:${u}oct${u}","d":"dimension"}`;
+  assertAccepted(kept);
+  assertAccepted(nestedIn(kept, 1));
+});

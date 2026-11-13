@@ -2273,6 +2273,23 @@ class RedactorTest {
     }
 
     @Test
+    void readsTheMembersAfterProseInAStringClosedWithAUnicodeQuoteAndKeepsAnOddlySpelledKtyInAString() {
+        // Automated review on 6ec18ce: the string holding the prose may close with a unicode escape of a quote, and a kty
+        // whose quote no rule places is still no member while a string is open around it.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String text = "{\"note\":" + u + "x " + b + "\"" + b + "n" + u + "," + u + "d" + u + ":" + b + "\"VALUE352" + b
+                + "\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("VALUE352"), out);
+        }
+        String kept = "{\"note\":\"x," + b + "u005c" + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        assertEquals(kept, Redactor.redact(kept));
+        assertEquals(nested(kept), Redactor.redact(nested(kept)));
+    }
+
+    @Test
     void readsTheMembersAfterAStringHoldingAStrayQuoteAndALineBreakALevelDown() {
         // Automated review on 9192663: a stray quote and a line break escaped inside one string end what the canonical
         // reading skips at that string's close, so the members after it are read; and a unicode quote that a colon follows
