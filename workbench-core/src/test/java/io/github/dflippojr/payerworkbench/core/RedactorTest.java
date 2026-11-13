@@ -2292,7 +2292,9 @@ class RedactorTest {
         }
         // Automated review on e7e4640: an escaped quote and a brace in an ordinary string do not close the object either.
         String note = "{\"note\":\"" + b + "\"}\"," + chain + "d" + u + ":\"PRIVA\",\"kty\":\"oct\"}";
-        for (String form : List.of(note, nested(note), nested(nested(note)))) {
+        // Automated review on a7e04ee: also after a name opened plain and closed with a unicode escape.
+        String mixed = "{\"note\":\"" + b + "\"}\",\"d" + u + ":" + chain + "PRIVA" + chain + ",\"kty\":\"oct\"}";
+        for (String form : List.of(note, nested(note), nested(nested(note)), mixed, nested(mixed), nested(nested(mixed)))) {
             String out = Redactor.redact(form);
             assertFalse(out.contains("PRIVA"), out);
         }

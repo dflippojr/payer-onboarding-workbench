@@ -2220,7 +2220,11 @@ test('flags a JWK whose quotes or delimiters read ambiguously, and accepts it ma
   for (const text of [quoteDepth, nestedIn(quoteDepth, 1), nestedIn(quoteDepth, 2)]) assertFlagged(text);
   // Automated review on e7e4640: an escaped quote and a brace in an ordinary string do not close the object either.
   const note = `{"note":"${b}"}",${chain}d${u}:"PRIVA","kty":"oct"}`;
-  for (const text of [note, nestedIn(note, 1), nestedIn(note, 2)]) assertFlagged(text);
+  // Automated review on a7e04ee: also after a name opened plain and closed with a unicode escape.
+  const mixed = `{"note":"${b}"}","d${u}:${chain}PRIVA${chain},"kty":"oct"}`;
+  for (const text of [note, nestedIn(note, 1), nestedIn(note, 2), mixed, nestedIn(mixed, 1), nestedIn(mixed, 2)]) {
+    assertFlagged(text);
+  }
   // ...and a name closed with a unicode escape before a form feed or an escaped one keeps a kty in a value out.
   for (const space of [`${b}f`, `${b}u000C`, `${b}u2028`]) {
     assertAccepted(`{"note${u}${space}:"x,${u}kty${u}:${u}oct${u}","d":"dimension"}`);
