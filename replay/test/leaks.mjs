@@ -913,16 +913,6 @@ function canonicalFlatLevel(spelling) {
 }
 
 /**
- * A name's level: canonicalFlatLevel, one deeper for a quote spelled as a unicode escape inside a string open at its
- * level, where it is a quote of the level below (a note's text, "x,\u0022kty\u0022:..."), as it is not outside one.
- */
-function canonicalMemberLevel(spelling, open) {
-  const level = canonicalFlatLevel(spelling);
-  const unicode = !spelling.endsWith('"');
-  return unicode && level >= 0 && level < 31 && (open & (1 << level)) !== 0 ? level + 1 : level;
-}
-
-/**
  * For each place, the levels a string is open at, one bit each: level L's strings open and close at plain quotes after
  * 2^L - 1 backslashes; a unicode escape of a quote of level L (canonicalFlatLevel) closes one that a plain quote opened
  * in a member's place when a colon follows it, as in a name spelled with both ("note\\u0022:), never a value, nor a name
@@ -1062,6 +1052,92 @@ function canonicalAmbiguous(t, origin, raw, inStrings, names, spelling) {
   return false;
 }
 
+/**
+ * Where a quote, as spelled, reads as a quote: { level, bare } with level the times it is decoded as JSON string
+ * content to get there, and bare false when backslashes that level reads as content come before it (\\" is a backslash
+ * and a quote of level 0); null when it decodes to no quote, or still decodes past the levels read.
+ */
+function canonicalExactQuote(spelling) {
+  let s = spelling;
+  for (let level = 0; level <= MAX_LEVELS - 1; level++) {
+    if (s === '"') return { level, bare: true };
+    let run = 0;
+    while (s.length - 2 - run >= 0 && s[s.length - 2 - run] === '\\') run++;
+    if (s.endsWith('"') && run % 2 === 0) return { level, bare: false };
+    try {
+      s = JSON.parse(`"${s}"`);
+    } catch {
+      return null;
+    }
+    if (s === '') return null;
+  }
+  return null;
+}
+
+/**
+ * Marks each private member name that is a JWK's (#352, security round 3). With the quotes read exactly, one is when
+ * its object, at its own level, holds a kty: a quote of level L (canonicalExactQuote) opens a string where L strings are
+ * open and closes the string of its level, and every deeper one, where more are; a bracket belongs to the level of the
+ * strings open around it, and a name to the object open at its level. The exact reading stops where a quote decodes to
+ * no quote or past the levels read, opens a string deeper than the level it is at, or opens one after backslashes at
+ * its level; where a bracket spelled as an escape decodes deeper than the strings open around it, or closes a bracket of
+ * the other kind; and where a name does not open and close a string of its level. Past where it stops, a private member
+ * whose object was not read to its close is a JWK's whenever the text holds a kty (fail closed): no reading of the
+ * quotes can establish which object it is in.
+ */
+function canonicalOwners(t, spelling, names) {
+  const n = t.length;
+  const stack = [];
+  const typed = new Set();
+  const closed = new Set();
+  const owner = [];
+  let depth = 0;
+  let nameLevel = 0;
+  let nameClose = -1;
+  let next = 0;
+  let exact = true;
+  for (let k = 0; k < n && exact; k++) {
+    const c = t[k];
+    if (c === '"') {
+      const quote = canonicalExactQuote(spelling(k));
+      const opensName = next < names.length && names[next].q === k;
+      exact = quote !== null && quote.level <= depth && (quote.level < depth || quote.bare)
+        && (!opensName || quote.level === depth) && (k !== nameClose || quote.level === nameLevel);
+      if (!exact) break;
+      if (opensName) {
+        const top = stack.length > 0 ? stack[stack.length - 1] : null;
+        owner.push(top !== null && top.level === depth && t[top.at] === '{' ? top.at : -1);
+        if (names[next].kty && owner[next] >= 0) typed.add(owner[next]);
+        nameLevel = quote.level;
+        nameClose = t.indexOf('"', k + 1);
+        next++;
+      }
+      if (quote.level === depth) {
+        depth++;
+      } else {
+        depth = quote.level;
+        while (stack.length > 0 && stack[stack.length - 1].level > depth) stack.pop();
+      }
+    } else if ('{}[]'.includes(c)) {
+      const spelled = spelling(k);
+      const opens = c === '{' || c === '[';
+      const top = stack.length > 0 ? stack[stack.length - 1] : null;
+      const closes = !opens && top !== null && top.level === depth;
+      exact = (spelled.length === 1 || canonicalLetterLevel(spelled) <= depth)
+        && (!closes || t[top.at] === (c === '}' ? '{' : '['));
+      if (!exact) break;
+      if (opens) stack.push({ at: k, level: depth });
+      else if (closes) closed.add(stack.pop().at);
+    }
+  }
+  const anyKty = names.some(name => name.kty);
+  names.forEach((name, j) => {
+    if (name.kty) return;
+    if (j >= next) name.jwk = anyKty;
+    else if (owner[j] >= 0) name.jwk = exact || closed.has(owner[j]) ? typed.has(owner[j]) : anyKty;
+  });
+}
+
 function canonicalJwkLeaks(text, ctx) {
   // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
   if (!CANONICAL_KTY.test(text)) return;
@@ -1083,8 +1159,8 @@ function canonicalJwkLeaks(text, ctx) {
   const { t, origin } = canonicalForm(raw);
   const inStrings = canonicalOpenLevels(raw, ctx);
   const n = t.length;
-  // The kept text is read three times (copied, decoded, its string levels); the canonical form five times (the closes,
-  // the names, the four readings of the brackets).
+  // The kept text is read three times (copied, decoded, its string levels); the canonical form at most six times (the
+  // closes, the names, the delimiters, the exact reading of the objects).
   ctx.work += 3 * raw.length + 6 * n;
   const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = [];
@@ -1114,106 +1190,23 @@ function canonicalJwkLeaks(text, ctx) {
     let v = colon + 1;
     while (t[v] === ' ') v++;
     if (kty && t[v] !== '"') continue;
-    const spelled = spelling(q);
-    const open = inStrings[origin[q]];
-    const nameLevel = canonicalMemberLevel(spelled, open);
-    // A kty whose quote no rule places goes with every level, but only where no string is open around it.
-    if (kty && nameLevel === -1 && open !== 0) continue;
-    names.push({ q, v, kty, level: nameLevel, written: canonicalFlatLevel(spelled), jwk: false });
+    names.push({ q, v, kty, jwk: false });
   }
   if (names.length === 0) return;
-  // From each place, the first quote closing a string in the reading that skips strings, and the first closing a value.
-  const lexClose = new Int32Array(n + 1).fill(n);
+  // From each place, the first quote closing a value.
   const valueClose = new Int32Array(n + 1).fill(n);
-  let lexEnd = true;
   let valueEnd = true;
   for (let i = n - 1; i >= 0; i--) {
     const c = t[i];
-    const after = { lex: lexEnd, value: valueEnd };
-    lexClose[i] = c === '"' && after.lex ? i : lexClose[i + 1];
-    valueClose[i] = c === '"' && after.value ? i : valueClose[i + 1];
-    lexEnd = c === ' ' ? lexEnd : ',}]:'.includes(c);
+    valueClose[i] = c === '"' && valueEnd ? i : valueClose[i + 1];
     valueEnd = c === ' ' || c === '"' ? valueEnd : ',}]:'.includes(c);
-  }
-  // Each private member's string value, bounded by its own quote level: counting every bracket skips those inside one
-  // past a quote escaped in it.
-  const inValue = new Uint8Array(n);
-  let valuesTo = 0;
-  for (const { v, kty } of names) {
-    if (kty || v >= n || v < valuesTo || t[v] !== '"') continue;
-    const openLevel = canonicalCloseLevel(spelling(v));
-    const openFlat = canonicalFlatLevel(spelling(v));
-    // Only past a quote read as escaped inside it (deeper than its opening one), where the reading is ambiguous.
-    let close = valueClose[v + 1];
-    let stepped = -1;
-    while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat)) {
-      if (stepped < 0) stepped = close;
-      close = valueClose[close + 1];
-    }
-    if (stepped >= 0) inValue.fill(1, stepped, Math.min(close + 1, n));
-    valuesTo = close + 1;
-    ctx.work += close - v;
   }
   ctx.work += n;
   if (canonicalAmbiguous(t, origin, raw, inStrings, names, spelling)) {
     ctx.leaks.push({ check: 'JWK reading ambiguous', match: text.slice(0, 80) });
     return;
   }
-  // Every bracket counted (COUNTED), brackets inside strings skipped (LEXED), the same with each string closed at its
-  // own quote level (LEVELED), so an escaped quote in an ordinary string does not end it, and with a name (a string in a
-  // member's place) also closed at a deeper quote that a colon follows (NAMED); any reading is enough.
-  for (const mode of ['COUNTED', 'LEXED', 'LEVELED', 'NAMED']) {
-    const skipStrings = mode !== 'COUNTED';
-    const stack = [];
-    const owner = new Map();
-    // The levels of the kty names in each object.
-    const typed = new Map();
-    let next = 0;
-    for (let i = 0; i < n;) {
-      while (next < names.length && names[next].q < i) next++;
-      if (next < names.length && names[next].q === i) {
-        const top = stack.length > 0 && t[stack[stack.length - 1]] === '{' ? stack[stack.length - 1] : -1;
-        owner.set(next, top);
-        if (names[next].kty && top >= 0) {
-          if (!typed.has(top)) typed.set(top, new Set());
-          typed.get(top).add(names[next].level);
-        }
-        next++;
-      }
-      const c = mode === 'COUNTED' && inValue[i] ? ' ' : t[i];
-      if (c === '{' || c === '[') stack.push(i);
-      else if ((c === '}' || c === ']') && stack.length > 0) stack.pop();
-      else if (c === '"' && skipStrings) {
-        let close = lexClose[i + 1];
-        if (mode === 'LEVELED' || mode === 'NAMED') {
-          const openLevel = canonicalCloseLevel(spelling(i));
-          const openFlat = canonicalFlatLevel(spelling(i));
-          // A deeper quote that a colon follows still closes it, as a name spelled with both quotes closes.
-          const colonNext = from => {
-            let k = from;
-            while (t[k] === ' ') k++;
-            return t[k] === ':';
-          };
-          let b = i - 1;
-          while (b >= 0 && t[b] === ' ') b--;
-          const name = mode === 'NAMED' && b >= 0 && (t[b] === '{' || t[b] === ',');
-          while (close < n && canonicalDeeper(spelling(close), openLevel, openFlat) && !(name && colonNext(close + 1))) {
-            close = lexClose[close + 1];
-          }
-        }
-        i = close + 1;
-        continue;
-      }
-      i++;
-    }
-    for (const [j, top] of owner) {
-      const levels = typed.get(top);
-      if (levels === undefined) continue;
-      // A private member goes with a kty at its level or at its quote's level as written (fail closed).
-      const { level, written } = names[j];
-      if (levels.has(level) || levels.has(written) || levels.has(-1) || level === -1 || written === -1) names[j].jwk = true;
-    }
-  }
+  canonicalOwners(t, spelling, names);
   // Where the last string value read ends: a name before it is inside that value.
   let read = 0;
   for (const { q, v, kty, jwk } of names) {

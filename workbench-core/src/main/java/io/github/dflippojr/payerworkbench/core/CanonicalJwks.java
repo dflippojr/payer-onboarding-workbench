@@ -30,16 +30,15 @@ import java.util.regex.Pattern;
  * a quote, spaces and a colon. Each quote must decode to a quote of some level, and a letter the text spells as an
  * escape counts only if it is that letter at the level of the name's quotes ({@code "\\u0064"} in plain JSON is not
  * d). A kty counts only with a string value.</li>
- * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object holds a kty,
- * the brackets read four ways: every bracket counted, or those inside strings skipped, a string closing at the first
- * quote that spaces and then a comma, a closing bracket, a colon or the end follow, at the first such quote no deeper
- * than its opening one, or at that or a deeper one a colon follows. Any way is enough, with a kty
- * whose quote is at the member's level ({@link #memberLevel}), or for a private member at its quote's level as
- * written.</li>
+ * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object, at its own
+ * level, holds a kty, with the quotes read exactly, each at the level it decodes to; and where the quotes stop reading
+ * exactly before its object closes, so no reading can establish which object it is in, whenever the text holds a kty
+ * (fail closed, #352 security round 3: {@link #owned}).</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
  * a closing bracket, a colon or the end follow; it is masked unless it reads {@link Redactor#MASK} or nothing, and one
  * that never closes is masked to the end of the text. An object or array is masked to the bracket closing it, the
- * further of the two readings, or to the end of the text; a number, {@code true} or {@code false} is masked whole.
+ * furthest of four readings of the brackets ({@link #brackets}), or to the end of the text; a number, {@code true} or
+ * {@code false} is masked whole.
  * A quote deeper than the value's opening one ({@link #closeLevel}) closes nothing. Anything else (a bare word, a
  * second colon) is no value and is kept, as the other readings keep it. A mask is quoted
  * as the member's name opens, so it reads as a string at the name's level however the value was quoted.</li>
@@ -107,10 +106,10 @@ final class CanonicalJwks {
     }
 
     /**
-     * A name the canonical reading finds: where its opening quote is and its value starts in the canonical form, whether
-     * it is a kty, its level ({@link #memberLevel}) and its quote's level as written ({@link #flatLevel}).
+     * A name the canonical reading finds: where its opening quote is and its value starts in the canonical form, and
+     * whether it is a kty.
      */
-    private record Name(int quote, int value, boolean kty, int level, int written) {
+    private record Name(int quote, int value, boolean kty) {
     }
 
     /** What {@link #flatLevel} gives for a quote of a spelling it does not place: it goes with a name of any level. */
@@ -217,13 +216,7 @@ final class CanonicalJwks {
             }
             int value = afterSpace(t, colon + 1);
             if (!kty || value < n && t.charAt(value) == '"') {
-                String spelling = canonical.spelling(read, q);
-                int open = inStrings[canonical.at(q)];
-                int level = memberLevel(spelling, open);
-                // A kty whose quote no rule places goes with every level, but only where no string is open around it.
-                if (!kty || level != ANY_LEVEL || open == 0) {
-                    names.add(new Name(q, value, kty, level, flatLevel(spelling)));
-                }
+                names.add(new Name(q, value, kty));
             }
         }
         if (names.isEmpty()) {
@@ -285,11 +278,11 @@ final class CanonicalJwks {
             }
             valuesTo = close + 1;
         }
-        boolean[] jwk = new boolean[names.size()];
-        int[] counted = brackets(t, names, jwk, Reading.COUNTED, null, inValue, null);
-        int[] lexed = brackets(t, names, jwk, Reading.LEXED, nextLexClose, null, null);
-        int[] leveled = brackets(t, names, jwk, Reading.LEVELED, nextLexClose, null, deeper);
-        int[] named = brackets(t, names, jwk, Reading.NAMED, nextLexClose, null, deeper);
+        int[] counted = brackets(t, Reading.COUNTED, null, inValue, null);
+        int[] lexed = brackets(t, Reading.LEXED, nextLexClose, null, null);
+        int[] leveled = brackets(t, Reading.LEVELED, nextLexClose, null, deeper);
+        int[] named = brackets(t, Reading.NAMED, nextLexClose, null, deeper);
+        boolean[] jwk = owned(t, read, canonical, names);
         List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, inStrings, names);
         if (!wholesale.isEmpty()) {
             return wholesale;
@@ -340,35 +333,150 @@ final class CanonicalJwks {
     }
 
     /**
-     * Reads the brackets of the canonical text {@code t}: every bracket counted, or, with {@code nextClose}, those
-     * outside strings, a string closing at {@code nextClose} of the place after its opening quote. Marks in {@code jwk}
-     * each private member whose object holds a kty name in this reading, and returns where the bracket closing each
-     * opening bracket is (-1: none, or not read as a bracket).
+     * Which private members are a JWK's (#352, security round 3): with the quotes read exactly ({@link #exactOwners}),
+     * each private member whose object, at its own level, holds a kty; where the quotes stop reading exactly before a
+     * member's object is read to its end, so no reading can establish which object it is in, every private member, when
+     * the text holds a kty (fail closed).
      */
-    private static int[] brackets(String t, List<Name> names, boolean[] jwk, Reading reading, int[] nextClose,
-            boolean[] skip, IntBinaryOperator deeper) {
+    private static boolean[] owned(String t, String read, Canonical canonical, List<Name> names) {
+        boolean[] jwk = new boolean[names.size()];
+        int[] exact = exactOwners(t, read, canonical, names);
+        boolean anyKty = names.stream().anyMatch(Name::kty);
+        for (int j = 0; j < names.size(); j++) {
+            jwk[j] = !names.get(j).kty() && (exact[j] == JWK || exact[j] == UNREAD && anyKty);
+        }
+        return jwk;
+    }
+
+    /** What {@link #exactOwners} gives a name: in an object with a kty, in none, or not read exactly. */
+    private static final int JWK = 1;
+    private static final int NOT_JWK = 0;
+    private static final int UNREAD = -1;
+
+    /**
+     * The exact reading of {@link #owned}, for each name: {@link #JWK} when it is in an object that, at its level, holds a
+     * kty, {@link #NOT_JWK} when it is in none, and {@link #UNREAD} when the quotes stop reading exactly before it, or
+     * before its object closes.
+     *
+     * <p>A quote of level L ({@link #exactQuote}) opens a string where L strings are open (each level's text being the
+     * content of a string of the level above), and closes the string of its level, and every deeper one, where more are
+     * open. A bracket belongs to the level of the strings open around it, and a name to the object open at its level. The
+     * reading stops where a quote decodes to no quote or past the levels read, opens a string deeper than the level it is
+     * at, or opens one with backslashes before it at its level; where a bracket spelled as an escape decodes deeper than
+     * the strings open around it, or closes a bracket of the other kind; and where a name does not open and close a string
+     * of its level. Each quote's spelling is decoded once, so the work is linear.
+     */
+    private static int[] exactOwners(String t, String read, Canonical canonical, List<Name> names) {
+        int n = t.length();
+        // The open brackets, each with the level it is at: a string closing ends the brackets of the levels below it.
+        int[] stack = new int[n];
+        int[] stackLevel = new int[n];
+        int top = 0;
+        int depth = 0;
+        int[] owner = new int[names.size()];
+        boolean[] typed = new boolean[n];
+        boolean[] closed = new boolean[n];
+        // The name being read: its quote's level, and where its closing quote is.
+        int nameLevel = 0;
+        int nameClose = -1;
+        int next = 0;
+        boolean exact = true;
+        for (int k = 0; k < n && exact; k++) {
+            char c = t.charAt(k);
+            if (c == '"') {
+                int quote = exactQuote(canonical.spelling(read, k));
+                int level = quote >> 1;
+                boolean opensName = next < names.size() && names.get(next).quote() == k;
+                exact = quote >= 0 && level <= depth && (level < depth || (quote & 1) == 1)
+                        && (!opensName || level == depth) && (k != nameClose || level == nameLevel);
+                if (exact && opensName) {
+                    owner[next] = top > 0 && stackLevel[top - 1] == depth && t.charAt(stack[top - 1]) == '{'
+                            ? stack[top - 1] : -1;
+                    if (names.get(next).kty() && owner[next] >= 0) {
+                        typed[owner[next]] = true;
+                    }
+                    nameLevel = level;
+                    nameClose = t.indexOf('"', k + 1);
+                    next++;
+                }
+                if (exact && level == depth) {
+                    depth++;
+                } else if (exact) {
+                    // A string closing ends the brackets of the levels below it.
+                    depth = level;
+                    while (top > 0 && stackLevel[top - 1] > depth) {
+                        top--;
+                    }
+                }
+            } else if ("{}[]".indexOf(c) >= 0) {
+                String spelling = canonical.spelling(read, k);
+                boolean opens = c == '{' || c == '[';
+                boolean closes = !opens && top > 0 && stackLevel[top - 1] == depth;
+                exact = (spelling.length() == 1 || letterLevel(spelling) <= depth)
+                        && (!closes || t.charAt(stack[top - 1]) == (c == '}' ? '{' : '['));
+                if (exact && opens) {
+                    stack[top] = k;
+                    stackLevel[top++] = depth;
+                } else if (exact && closes) {
+                    closed[stack[--top]] = true;
+                }
+            }
+        }
+        int[] state = new int[names.size()];
+        for (int j = 0; j < names.size(); j++) {
+            if (j >= next) {
+                state[j] = UNREAD;
+            } else if (owner[j] < 0) {
+                state[j] = NOT_JWK;
+            } else if (exact || closed[owner[j]]) {
+                state[j] = typed[owner[j]] ? JWK : NOT_JWK;
+            } else {
+                state[j] = UNREAD;
+            }
+        }
+        return state;
+    }
+
+    /**
+     * Where a quote, as the text spells it, reads as a quote, and whether it is only that: its level (how many times it
+     * is decoded as JSON string content to get there) times two, plus one when it is a bare quote there, not one after
+     * backslashes that level reads as content ({@code \\"} is a backslash and a quote of level 0); -1 for a spelling
+     * that decodes to no quote, or still decodes past {@link Redactor#NESTED_LEVELS}.
+     */
+    static int exactQuote(String spelling) {
+        String s = spelling;
+        for (int level = 0; level <= Redactor.NESTED_LEVELS; level++) {
+            if (s.equals("\"")) {
+                return level << 1 | 1;
+            }
+            int run = 0;
+            while (s.length() - 2 - run >= 0 && s.charAt(s.length() - 2 - run) == BACKSLASH) {
+                run++;
+            }
+            if (s.endsWith("\"") && run % 2 == 0) {
+                return level << 1;
+            }
+            s = Redactor.unescapedOnce(s);
+            if (s == null || s.isEmpty()) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Reads the brackets of the canonical text {@code t}: every bracket counted, or, with {@code nextClose}, those
+     * outside strings, a string closing at {@code nextClose} of the place after its opening quote. Returns where the
+     * bracket closing each opening bracket is (-1: none, or not read as a bracket), which bounds an object or array
+     * value.
+     */
+    private static int[] brackets(String t, Reading reading, int[] nextClose, boolean[] skip, IntBinaryOperator deeper) {
         int n = t.length();
         int[] match = new int[n];
         Arrays.fill(match, -2);
         java.util.ArrayDeque<Integer> stack = new java.util.ArrayDeque<>();
-        int[] owner = new int[names.size()];
-        Arrays.fill(owner, -1);
-        // For each object a kty is in: the levels of its kty names, one bit each, the top bit for ANY_LEVEL.
-        java.util.Map<Integer, Long> typed = new java.util.HashMap<>();
-        int next = 0;
         int i = 0;
         while (i < n) {
-            while (next < names.size() && names.get(next).quote() < i) {
-                next++;
-            }
-            if (next < names.size() && names.get(next).quote() == i) {
-                Integer top = stack.peek();
-                owner[next] = top != null && t.charAt(top) == '{' ? top : -1;
-                if (names.get(next).kty() && owner[next] >= 0) {
-                    typed.merge(owner[next], levelBit(names.get(next).level()), (a, b) -> a | b);
-                }
-                next++;
-            }
             char c = skip != null && skip[i] ? ' ' : t.charAt(i);
             if (c == '{' || c == '[') {
                 stack.push(i);
@@ -388,16 +496,6 @@ final class CanonicalJwks {
                 continue;
             }
             i++;
-        }
-        // A private member goes with a kty at its level, or at its quote's level as written (fail closed: which strings
-        // are open is read from plain quotes, which a text mixing spellings may set out of step).
-        for (int j = 0; j < names.size(); j++) {
-            long levels = owner[j] >= 0 ? typed.getOrDefault(owner[j], 0L) : 0L;
-            Name name = names.get(j);
-            if ((levels & (levelBit(name.level()) | levelBit(name.written()) | levelBit(ANY_LEVEL))) != 0
-                    || (name.level() == ANY_LEVEL || name.written() == ANY_LEVEL) && levels != 0) {
-                jwk[j] = true;
-            }
         }
         return match;
     }
@@ -591,18 +689,6 @@ final class CanonicalJwks {
             s = Redactor.unescapedOnce(s);
         }
         return Integer.MAX_VALUE;
-    }
-
-    /**
-     * The level of a name whose opening quote the text spells {@code spelling}, with {@code open} the levels at which a
-     * string is open there ({@link #openLevels}): its {@link #flatLevel}, one deeper for a quote spelled as a unicode
-     * escape inside a string of its level, where it is a quote of the level below ({@code "x,\\u0022kty\\u0022:..."} is
-     * a note's text, not a member), as it is not in a copied JWK, outside any string of its level (#352).
-     */
-    private static int memberLevel(String spelling, int open) {
-        int level = flatLevel(spelling);
-        boolean unicode = spelling.charAt(spelling.length() - 1) != '"';
-        return unicode && level >= 0 && level < 31 && (open & (1 << level)) != 0 ? level + 1 : level;
     }
 
     /**
@@ -809,10 +895,6 @@ final class CanonicalJwks {
             i = close + 1;
         }
         return spans.stream().mapToInt(Integer::intValue).toArray();
-    }
-
-    private static long levelBit(int level) {
-        return level == ANY_LEVEL || level >= 63 ? Long.MIN_VALUE : 1L << level;
     }
 
     /**

@@ -2040,13 +2040,20 @@ test('flags a JWK private member whose name is quoted with \\u0022 in a plain-qu
       if (flagged.length > 0) wrong.push(`flagged: ${wrap(masked)} ${JSON.stringify(flagged)}`);
     }
   }
-  // With no kty in its object, such a d is an ordinary name.
-  for (const kept of [`{"kid":"oct",${u}d${u}:"dimension"}`, `{"a":{"kty":"oct"},"b":{${u}d${u}:"dimension"}}`]) {
-    for (const wrap of [t => t, nestBody]) {
-      const flagged = findTextLeaks(wrap(kept));
-      if (flagged.length > 0) wrong.push(`flagged: ${wrap(kept)} ${JSON.stringify(flagged)}`);
-    }
+  // With no kty in the text, such a d is an ordinary name.
+  for (const wrap of [t => t, nestBody]) {
+    const kept = wrap(`{"kid":"oct",${u}d${u}:"dimension"}`);
+    const flagged = findTextLeaks(kept);
+    if (flagged.length > 0) wrong.push(`flagged: ${kept} ${JSON.stringify(flagged)}`);
   }
+  // With a kty elsewhere in the text, a name quoted with unicode escapes where no string is open reads no object
+  // exactly, so it fails closed (#352, security round 3: over-flags accepted); Redactor's mask is accepted.
+  for (const wrap of [t => t, nestBody]) {
+    const elsewhere = wrap(`{"a":{"kty":"oct"},"b":{${u}d${u}:"dimension"}}`);
+    if (findTextLeaks(elsewhere).length === 0) wrong.push(`not flagged: ${elsewhere}`);
+  }
+  const masked = `{"a":{"kty":"oct"},"b":{${u}d${u}:${u}[REDACTED]${u}}}`;
+  if (findTextLeaks(masked).length > 0) wrong.push(`flagged: ${masked}`);
   assert.deepEqual(wrong, []);
 });
 
@@ -2156,9 +2163,13 @@ test('reads the members after a string holding a stray quote and a line break a 
     const raw = `{"note":"x ${b}"${b}n",${u}d${u}:${b}"${value}${b}","kty":"oct"}`;
     for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
   }
-  const kept = `{"note":"x${u}: x,${u}kty${u}:${u}oct${u}","d":"dimension"}`;
-  assertAccepted(kept);
-  assertAccepted(nestedIn(kept, 1));
+  // A kty name whose opening quote closes the note's inner string reads no name exactly, so it fails closed (#352,
+  // security round 3); Redactor's mask is accepted.
+  const stray = `{"note":"x${u}: x,${u}kty${u}:${u}oct${u}","d":"dimension"}`;
+  for (const text of [stray, nestedIn(stray, 1)]) {
+    assertFlagged(text);
+    assertAccepted(text.replace('dimension', '[REDACTED]'));
+  }
 });
 
 test('reads the members after prose in a string closed with a unicode quote, and keeps an oddly spelled kty in a string out (#352, automated review on 6ec18ce)', () => {
@@ -2168,13 +2179,15 @@ test('reads the members after prose in a string closed with a unicode quote, and
     const raw = `{"note":${u}x ${b}"${b}n${u},${u}d${u}:${b}"${value}${b}","kty":"oct"}`;
     for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
   }
-  const kept = `{"note":"x,${b}u005c${u}kty${u}:${u}oct${u}","d":"dimension"}`;
-  assertAccepted(kept);
-  assertAccepted(nestedIn(kept, 1));
-  // Automated review on 472d442: a name that closes with its own plain quote holds its unicode quotes and colons.
+  // A kty name opened with a quote two levels down inside a one-level string, and a name holding unicode quotes and
+  // colons, read no object exactly: the private member after them fails closed (#352, security round 3); Redactor's
+  // mask is accepted.
+  const chained = `{"note":"x,${b}u005c${u}kty${u}:${u}oct${u}","d":"dimension"}`;
   const name = `{"note${u}: x,${u}kty${u}:${u}oct${u}":1,"d":"dimension"}`;
-  assertAccepted(name);
-  assertAccepted(nestedIn(name, 1));
+  for (const text of [chained, nestedIn(chained, 1), name, nestedIn(name, 1)]) {
+    assertFlagged(text);
+    assertAccepted(text.replace('dimension', '[REDACTED]'));
+  }
 });
 
 test('bounds a value by its opening quote and a structure by its unclosed reading (#352, automated review on 253416a)', () => {
@@ -2230,9 +2243,12 @@ test('flags a JWK whose quotes or delimiters read ambiguously, and accepts it ma
     colon, nestedIn(colon, 1), nestedIn(colon, 2), both, nestedIn(both, 1), nestedIn(both, 2)]) {
     assertFlagged(text);
   }
-  // ...and a name closed with a unicode escape before a form feed or an escaped one keeps a kty in a value out.
+  // ...and a name opened plain and closed with a unicode escape before a form feed or an escaped one reads no object
+  // exactly, so the private member after it fails closed (#352, security round 3: over-flags accepted).
   for (const space of [`${b}f`, `${b}u000C`, `${b}u2028`]) {
-    assertAccepted(`{"note${u}${space}:"x,${u}kty${u}:${u}oct${u}","d":"dimension"}`);
+    const mixedName = `{"note${u}${space}:"x,${u}kty${u}:${u}oct${u}","d":"dimension"}`;
+    assertFlagged(mixedName);
+    assertAccepted(mixedName.replace('dimension', '[REDACTED]'));
   }
   // A delimiter spelled as an escape where no string is open to decode it.
   const delimiter = `{"x":1${b}u002c${chain}d${u}:"PRIVA\nPRIVB","kty":"oct"}`;

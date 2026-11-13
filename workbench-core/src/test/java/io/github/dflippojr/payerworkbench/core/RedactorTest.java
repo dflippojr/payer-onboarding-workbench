@@ -2303,10 +2303,11 @@ class RedactorTest {
             String out = Redactor.redact(form);
             assertFalse(out.contains("PRIVA"), out);
         }
-        // ...and a name closed with a unicode escape before a form feed or an escaped one keeps a kty in a value out.
+        // ...and a name opened plain and closed with a unicode escape before a form feed or an escaped one reads no
+        // object exactly, so the private member after it fails closed (#352, security round 3: over-flags accepted).
         for (String space : List.of(b + "f", b + "u000C", b + "u2028")) {
-            String kept = "{\"note" + u + space + ":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
-            assertEquals(kept, Redactor.redact(kept));
+            String mixedName = "{\"note" + u + space + ":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+            assertEquals(mixedName.replace("dimension", Redactor.MASK), Redactor.redact(mixedName));
         }
         String delimiter = "{\"x\":1" + b + "u002c" + chain + "d" + u + ":\"PRIVA\nPRIVB\",\"kty\":\"oct\"}";
         assertEquals(Redactor.MASK, Redactor.redact(delimiter));
@@ -2393,13 +2394,13 @@ class RedactorTest {
             String out = Redactor.redact(form);
             assertFalse(out.contains("VALUE352"), out);
         }
-        String kept = "{\"note\":\"x," + b + "u005c" + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
-        assertEquals(kept, Redactor.redact(kept));
-        assertEquals(nested(kept), Redactor.redact(nested(kept)));
-        // Automated review on 472d442: a name that closes with its own plain quote holds its unicode quotes and colons.
+        // A kty name opened with a quote two levels down inside a one-level string, and a name holding unicode quotes and
+        // colons, read no object exactly: the private member after them fails closed (#352, security round 3).
+        String chained = "{\"note\":\"x," + b + "u005c" + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
         String name = "{\"note" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\":1,\"d\":\"dimension\"}";
-        assertEquals(name, Redactor.redact(name));
-        assertEquals(nested(name), Redactor.redact(nested(name)));
+        for (String form : List.of(chained, nested(chained), name, nested(name))) {
+            assertEquals(form.replace("dimension", Redactor.MASK), Redactor.redact(form));
+        }
     }
 
     @Test
@@ -2414,9 +2415,11 @@ class RedactorTest {
             String out = Redactor.redact(form);
             assertFalse(out.contains("PRIVSTART"), out);
         }
-        String kept = "{\"note\":\"x" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
-        assertEquals(kept, Redactor.redact(kept));
-        assertEquals(nested(kept), Redactor.redact(nested(kept)));
+        // A kty name whose opening quote closes the note's inner string reads no name exactly, so it fails closed (#352,
+        // security round 3).
+        String stray = "{\"note\":\"x" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        assertEquals(stray.replace("dimension", Redactor.MASK), Redactor.redact(stray));
+        assertEquals(nested(stray).replace("dimension", Redactor.MASK), Redactor.redact(nested(stray)));
     }
 
     @Test
@@ -2469,13 +2472,17 @@ class RedactorTest {
 
     @Test
     void keepsAPrivateMemberQuotedWithUnicodeEscapesOutsideAJwk() {
-        // #352: with no kty in its object, a d quoted with " is an ordinary name and is kept.
+        // #352: with no kty in the text, a d quoted with " is an ordinary name and is kept.
         String u = "\\u0022";
-        for (String text : List.of("{\"kid\":\"oct\"," + u + "d" + u + ":\"dimension\"}",
-                "{\"a\":{\"kty\":\"oct\"},\"b\":{" + u + "d" + u + ":\"dimension\"}}")) {
-            assertEquals(text, Redactor.redact(text));
-            assertEquals(nested(text), Redactor.redact(nested(text)));
-        }
+        String text = "{\"kid\":\"oct\"," + u + "d" + u + ":\"dimension\"}";
+        assertEquals(text, Redactor.redact(text));
+        assertEquals(nested(text), Redactor.redact(nested(text)));
+        // With a kty elsewhere in the text, a name quoted with unicode escapes where no string is open reads no object
+        // exactly, so it fails closed (#352, security round 3: over-flags accepted).
+        String elsewhere = "{\"a\":{\"kty\":\"oct\"},\"b\":{" + u + "d" + u + ":\"dimension\"}}";
+        assertEquals("{\"a\":{\"kty\":\"oct\"},\"b\":{" + u + "d" + u + ":" + u + Redactor.MASK + u + "}}",
+                Redactor.redact(elsewhere));
+        assertFalse(Redactor.redact(nested(elsewhere)).contains("dimension"));
     }
 
     /**
