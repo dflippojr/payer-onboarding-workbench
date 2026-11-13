@@ -2290,6 +2290,17 @@ class RedactorTest {
             String out = Redactor.redact(form);
             assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
         }
+        // Automated review on e7e4640: an escaped quote and a brace in an ordinary string do not close the object either.
+        String note = "{\"note\":\"" + b + "\"}\"," + chain + "d" + u + ":\"PRIVA\",\"kty\":\"oct\"}";
+        for (String form : List.of(note, nested(note), nested(nested(note)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVA"), out);
+        }
+        // ...and a name closed with a unicode escape before a form feed or an escaped one keeps a kty in a value out.
+        for (String space : List.of(b + "f", b + "u000C", b + "u2028")) {
+            String kept = "{\"note" + u + space + ":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+            assertEquals(kept, Redactor.redact(kept));
+        }
         String delimiter = "{\"x\":1" + b + "u002c" + chain + "d" + u + ":\"PRIVA\nPRIVB\",\"kty\":\"oct\"}";
         assertEquals(Redactor.MASK, Redactor.redact(delimiter));
         assertEquals("{\"body\":\"" + Redactor.MASK + "\"}", Redactor.redact(nested(delimiter)));
