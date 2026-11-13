@@ -384,7 +384,7 @@ final class CanonicalJwks {
                     // after the start, whitespace, a colon, an array's opening bracket or the quote opening the string
                     // that holds its level; never right after other text, nor in a member's place.
                     boolean prose = starts || quoteRun >= 0 && quoteRun < run;
-                    open.put(run, !prose || last == '{' || last == ',');
+                    open.put(run, !prose || last == '{' || last == ',' || afterPrivateName(raw, i));
                 }
             } else if ((run == 0 ? c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029
                     : run % 2 == 1 && (c == 'n' || c == 'r')) && Boolean.FALSE.equals(open.get(run))) {
@@ -408,6 +408,29 @@ final class CanonicalJwks {
             i += run + 1;
         }
         return skips.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** A private member's name, its quotes plain or unicode escapes, at the end of a stretch of text. */
+    private static final Pattern PRIVATE_NAME_END = Pattern.compile(
+            "(?:\"|u0022)(?:d|p|q|dp|dq|qi|oth|k)\\\\*+(?:\"|u0022)$", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Whether the string opening at {@code at} in {@code raw} opens right after a private member's name and colon, so it
+     * is that member's value, read through, never prose quoting a copy. The name is read in the 80 characters before.
+     */
+    private static boolean afterPrivateName(String raw, int at) {
+        int i = at - 1;
+        while (i >= 0 && Character.isWhitespace(raw.charAt(i))) {
+            i--;
+        }
+        if (i < 0 || raw.charAt(i) != ':') {
+            return false;
+        }
+        i--;
+        while (i >= 0 && Character.isWhitespace(raw.charAt(i))) {
+            i--;
+        }
+        return PRIVATE_NAME_END.matcher(raw.substring(Math.max(0, i - 79), i + 1)).find();
     }
 
     /** Where in the text the stretch of the kept text ending at {@code end} ends: just after its last character. */

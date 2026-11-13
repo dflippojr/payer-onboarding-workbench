@@ -712,7 +712,8 @@ function unconsumedSecretNames(text, ctx) {
  * once, so a member is read however its quotes, its whitespace and its name's letters are spelled.
  * - Skipped: from a line break inside a string of its level (a raw one at level 0, n or r after an odd
  *   backslash run below; the level's quotes have that run) that opens where prose or a value starts at that level (the
- *   start, whitespace at any level, `:`, `[`, or a shallower quote opening the string holding it), and not in a member's
+ *   start, whitespace at any level, `:`, `[`, or a shallower quote opening the string holding it), not a private member's
+ *   value (right after its name and colon), and not in a member's
  *   place (after `{` or `,`, whitespace aside), to the quote closing the string that holds that level (one after
  *   fewer backslashes), or at level 0 to the end: what it skips is prose quoting a copy (#342).
  * - A backslash run, its backslashes plain or `u005c` escapes after a backslash, then `u` and four hex digits is that
@@ -758,7 +759,7 @@ function canonicalSkipped(text) {
         // Only one opening where prose or a value starts at its level may be prose quoting a copy, never one right after
         // other text or in a member's place.
         const prose = starts || (quoteRun >= 0 && quoteRun < run);
-        open.set(run, !prose || last === '{' || last === ',');
+        open.set(run, !prose || last === '{' || last === ',' || canonicalAfterPrivateName(text, i));
       }
     } else if ((run === 0 ? CANONICAL_LINE_BREAKS.includes(c) : run % 2 === 1 && (c === 'n' || c === 'r'))
         && open.get(run) === false) {
@@ -794,6 +795,19 @@ function canonicalSkipped(text) {
     i += run + 1;
   }
   return { skips, scanned };
+}
+
+/**
+ * Whether the string opening at `at` opens right after a private member's name (its quotes plain or unicode escapes,
+ * read in the 80 characters before) and colon: that member's value, read through, never prose quoting a copy.
+ */
+function canonicalAfterPrivateName(text, at) {
+  let i = at - 1;
+  while (i >= 0 && isJavaSpace(text[i])) i--;
+  if (i < 0 || text[i] !== ':') return false;
+  i--;
+  while (i >= 0 && isJavaSpace(text[i])) i--;
+  return /(?:"|u0022)(?:d|p|q|dp|dq|qi|oth|k)\\*(?:"|u0022)$/i.test(text.slice(Math.max(0, i - 79), i + 1));
 }
 
 function canonicalForm(raw) {
