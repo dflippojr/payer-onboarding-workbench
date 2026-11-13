@@ -521,7 +521,7 @@ final class CanonicalJwks {
      * For each place in {@code read}, the levels at which a string is open there, one bit each: a level's strings open
      * and close at its plain quotes, after {@code 2^L - 1} backslashes, a run of any other length being content; a
      * unicode escape of a quote of that level ({@link #flatLevel}) that a colon follows closes one too, when it opened in
-     * a member's place (a name).
+     * a member's place (a name) and its level's next plain quote does not close it as a name.
      */
     private static int[] openLevels(String read) {
         int[] open = new int[read.length() + 1];
@@ -529,6 +529,9 @@ final class CanonicalJwks {
         // The levels whose open string opened in a member's place, and the last character no whitespace nor backslash.
         int names = 0;
         char last = 0;
+        // For each level: up to where the open name's own close was looked up, and whether it closes as a name.
+        int[] intactUntil = new int[31];
+        boolean[] intact = new boolean[31];
         int i = 0;
         while (i < read.length()) {
             int run = 0;
@@ -559,8 +562,17 @@ final class CanonicalJwks {
                     }
                     levels ^= bit;
                 } else if ((levels & bit) != 0 && (names & bit) != 0 && colonAfter(read, stop)) {
-                    levels ^= bit;
-                    names &= ~bit;
+                    // ...unless the name closes with its own plain quote before a colon, which keeps it whole. Looked
+                    // up once for each string, so each is read ahead once.
+                    if (intactUntil[level] <= i) {
+                        int close = nextPlainQuote(read, stop, level);
+                        intactUntil[level] = close + 1;
+                        intact[level] = close < read.length() && colonAfter(read, close + (1 << level));
+                    }
+                    if (!intact[level]) {
+                        levels ^= bit;
+                        names &= ~bit;
+                    }
                 }
             }
             if (level >= 0 || unicode) {
@@ -572,6 +584,23 @@ final class CanonicalJwks {
         }
         open[read.length()] = levels;
         return open;
+    }
+
+    /** Where the next plain quote of {@code level} (after {@code 2^level - 1} backslashes) starts from {@code from}, or the end. */
+    private static int nextPlainQuote(String read, int from, int level) {
+        int want = (1 << level) - 1;
+        int i = from;
+        while (i < read.length()) {
+            int run = 0;
+            while (i + run < read.length() && read.charAt(i + run) == BACKSLASH) {
+                run++;
+            }
+            if (i + run < read.length() && read.charAt(i + run) == '"' && run == want) {
+                return i;
+            }
+            i += run + 1;
+        }
+        return read.length();
     }
 
     /** Whether a colon comes next from {@code from} in {@code read}, after whitespace, raw or escaped. */

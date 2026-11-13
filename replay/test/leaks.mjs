@@ -899,14 +899,18 @@ function canonicalMemberLevel(spelling, open) {
 /**
  * For each place, the levels a string is open at, one bit each: level L's strings open and close at plain quotes after
  * 2^L - 1 backslashes; a unicode escape of a quote of level L (canonicalFlatLevel) closes one that a plain quote opened
- * in a member's place when a colon follows it, as in a name spelled with both ("note\\u0022:), never a value.
+ * in a member's place when a colon follows it, as in a name spelled with both ("note\\u0022:), never a value, nor a name
+ * that its level's next plain quote closes.
  */
-function canonicalOpenLevels(raw) {
+function canonicalOpenLevels(raw, ctx) {
   const open = new Int32Array(raw.length + 1);
   let levels = 0;
   // The levels whose open string opened in a member's place, and the last character no whitespace nor backslash.
   let names = 0;
   let last = '';
+  // For each level: up to where the open name's own close was looked up, and whether it closes as a name.
+  const intactUntil = new Array(31).fill(0);
+  const intact = new Array(31).fill(false);
   let i = 0;
   while (i < raw.length) {
     let run = 0;
@@ -930,8 +934,25 @@ function canonicalOpenLevels(raw) {
         else names &= ~bit;
         levels ^= bit;
       } else if ((levels & bit) !== 0 && (names & bit) !== 0 && canonicalColonAfter(raw, stop)) {
-        levels ^= bit;
-        names &= ~bit;
+        // ...unless the name closes with its own plain quote before a colon; looked up once for each string.
+        if (intactUntil[level] <= i) {
+          const want = 2 ** level - 1;
+          let j = stop;
+          while (j < raw.length) {
+            let k = 0;
+            while (raw[j + k] === '\\') k++;
+            if (raw[j + k] === '"' && k === want) break;
+            j += k + 1;
+          }
+          const close = Math.min(j, raw.length);
+          ctx.work += close - stop;
+          intactUntil[level] = close + 1;
+          intact[level] = close < raw.length && canonicalColonAfter(raw, close + want + 1);
+        }
+        if (!intact[level]) {
+          levels ^= bit;
+          names &= ~bit;
+        }
       }
     }
     if (level >= 0 || unicode) last = '"';
@@ -975,7 +996,7 @@ function canonicalJwkLeaks(text, ctx) {
   const raw = parts.join('');
   if ((!raw.includes('"') && !/u0022/i.test(raw)) || !CANONICAL_KTY.test(raw)) return;
   const { t, origin } = canonicalForm(raw);
-  const inStrings = canonicalOpenLevels(raw);
+  const inStrings = canonicalOpenLevels(raw, ctx);
   const n = t.length;
   // The kept text is read three times (copied, decoded, its string levels); the canonical form four times (the closes,
   // the names, the two readings of the brackets).
