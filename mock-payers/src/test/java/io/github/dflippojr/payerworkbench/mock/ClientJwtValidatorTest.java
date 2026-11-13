@@ -8,8 +8,12 @@ import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Test;
 
 import java.security.KeyPair;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Map;
 import java.util.Set;
@@ -56,12 +60,72 @@ class ClientJwtValidatorTest {
         }
     }
 
+    /**
+     * Before the extraction Tailspin read its clock once per assertion. A replay that passes the exp check a moment
+     * before exp must not then be swept from the cache by a later read at exp and accepted as new.
+     */
+    @Test
+    void aReplayCheckedJustBeforeExpIsStillRefusedWhenTheClockReachesExpMidRequest() throws Exception {
+        KeyPair key = TestKeys.rsa();
+        Instant issued = Instant.parse("2026-10-01T12:00:00Z");
+        Instant exp = issued.plusSeconds(300);
+        SteppingClock clock = new SteppingClock(issued);
+        try (TestKeys.JwksServer jwks = new TestKeys.JwksServer().publish("kid", key)) {
+            ClientJwtValidator validator = new ClientJwtValidator(Map.of("a", jwks.url()),
+                    message -> new MockPayer.HttpError(401, "rejected", message), clock, POLICY);
+            String token = sign(key, "a", "boundary", issued);
+            validator.validate(token, AUDIENCE, false, false, (iss, set) -> { });
+
+            // The first read of the next request is 1 ms before exp; every later read is at exp.
+            clock.then(exp.minusMillis(1), exp);
+            MockPayer.HttpError replay = assertThrows(MockPayer.HttpError.class,
+                    () -> validator.validate(token, AUDIENCE, false, false, (iss, set) -> { }));
+            assertEquals("replay boundary", replay.getMessage());
+        }
+    }
+
+    /** Answers queued instants in turn and repeats the last one. */
+    private static final class SteppingClock extends Clock {
+        private final ArrayDeque<Instant> next = new ArrayDeque<>();
+        private Instant last;
+
+        SteppingClock(Instant start) {
+            last = start;
+        }
+
+        void then(Instant... instants) {
+            next.addAll(java.util.List.of(instants));
+        }
+
+        @Override
+        public synchronized Instant instant() {
+            if (!next.isEmpty()) {
+                last = next.poll();
+            }
+            return last;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+    }
+
     private static String validate(ClientJwtValidator validator, KeyPair key, String issuer, String jti,
                                    Instant issuedAt) throws Exception {
+        return validator.validate(sign(key, issuer, jti, issuedAt), AUDIENCE, false, false, (iss, set) -> { });
+    }
+
+    private static String sign(KeyPair key, String issuer, String jti, Instant issuedAt) throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder().issuer(issuer).audience(AUDIENCE)
                 .issueTime(Date.from(issuedAt)).expirationTime(Date.from(issuedAt.plusSeconds(300))).jwtID(jti).build();
         SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS384).keyID("kid").build(), claims);
         jwt.sign(new RSASSASigner(key.getPrivate()));
-        return validator.validate(jwt.serialize(), AUDIENCE, false, false, (iss, set) -> { });
+        return jwt.serialize();
     }
 }
