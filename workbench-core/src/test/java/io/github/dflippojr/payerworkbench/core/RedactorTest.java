@@ -2273,6 +2273,23 @@ class RedactorTest {
     }
 
     @Test
+    void readsTheMembersAfterAStringHoldingAStrayQuoteAndALineBreakALevelDown() {
+        // Automated review on 9192663: a stray quote and a line break escaped inside one string end what the canonical
+        // reading skips at that string's close, so the members after it are read; and a unicode quote that a colon follows
+        // closes only a name, not a value, so a kty inside the note is still no member.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String text = "{\"note\":\"x " + b + "\"" + b + "n\"," + u + "d" + u + ":" + b + "\"PRIVSTART" + b + "\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVSTART"), out);
+        }
+        String kept = "{\"note\":\"x" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        assertEquals(kept, Redactor.redact(kept));
+        assertEquals(nested(kept), Redactor.redact(nested(kept)));
+    }
+
+    @Test
     void masksAPrivateMemberAfterANameClosedWithAUnicodeEscapeAndKeepsAKtyInsideAStringAtAnyDepth() {
         // Automated review on 45b52d4: a name opened plain and closed with a unicode escape closes the string its opening
         // quote opened, so a unicode-quoted d after it is a member of the JWK; and a kty inside a note is no member however

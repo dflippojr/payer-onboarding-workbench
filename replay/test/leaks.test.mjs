@@ -2144,3 +2144,15 @@ test('flags a private member after a name closed with a unicode escape, and keep
     assert.deepEqual(findTextLeaks(text), [], `depth ${depth}`);
   }
 });
+
+test('reads the members after a string holding a stray quote and a line break a level down, and closes only a name at a unicode quote and a colon (#352, automated review on 9192663)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const value of ['PRIVSTART', '[REDACTED]PRIVTAIL']) {
+    const raw = `{"note":"x ${b}"${b}n",${u}d${u}:${b}"${value}${b}","kty":"oct"}`;
+    for (const text of [raw, nestedIn(raw, 1), nestedIn(raw, 2)]) assertFlagged(text);
+  }
+  const kept = `{"note":"x${u}: x,${u}kty${u}:${u}oct${u}","d":"dimension"}`;
+  assertAccepted(kept);
+  assertAccepted(nestedIn(kept, 1));
+});
