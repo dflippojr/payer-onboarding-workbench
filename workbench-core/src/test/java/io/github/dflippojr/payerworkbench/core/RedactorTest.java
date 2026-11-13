@@ -2362,6 +2362,21 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateMemberAfterWhitespaceSpelledAsAUnicodeEscapeInSkippedProse() {
+        // Automated review on ab0bc7d: whitespace before a name is read as the canonical form reads it, any escape of it
+        // included, bare and stringified once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        for (String space : List.of(b + "u0020", b + "u0009", b + b + "u0020", b + "u005c" + b + "u2003")) {
+            String text = "{\"note\":\"a\nb\"," + space + "\"d" + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}";
+            for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                String out = Redactor.redact(form);
+                assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"), out);
+            }
+        }
+    }
+
+    @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.

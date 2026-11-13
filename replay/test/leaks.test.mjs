@@ -2349,6 +2349,33 @@ test('flags every private member with mixed quote spellings after a line separat
   }
 });
 
+test('flags a private member after whitespace spelled as a unicode escape in skipped prose (#352, automated review on ab0bc7d)', () => {
+  // Whitespace before a name is read as the canonical form reads it, any escape of it included.
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const space of [`${b}u0020`, `${b}u0009`, `${b}${b}u0020`, `${b}u005c${b}u2003`]) {
+    const text = `{"note":"a\nb",${space}"d${u}:${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`;
+    for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+  }
+});
+
+test('reads repeated backslash escapes after a name in skipped prose in linear time (#352, automated review on ab0bc7d)', () => {
+  // The skipped-prose name pattern reads each escape one way only: 28 repeats took about 12 s when it could split them
+  // many ways (its regex work is not charged to the scan budget, so the budget could not stop it).
+  const started = Date.now();
+  findTextLeaks(`{"kty":"oct","note":"a\nb","d"${'\\u005c'.repeat(28)}X`);
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+});
+
+test('reads many skipped prose stretches in linear time (#352, automated review on ab0bc7d)', () => {
+  // 20,000 strings each holding a stretch skipped as prose: searching from each stretch to the end of the text took
+  // about 18 s; reading every stretch in one pass takes well under a second.
+  const text = `{"kty":"oct",${'"body":"x:\\"y\\n\\"",'.repeat(20000)}"d":"[REDACTED]"}`;
+  const started = Date.now();
+  findTextLeaks(text);
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+});
+
 test('accepts a private member of an object without a kty whose ordinary string holds a brace (#352, automated review on e05c98c)', () => {
   // Plain JSON reads exactly: a brace in an ordinary string closes no object, so a d in an object without a kty is no
   // JWK's, inside a JWK or not.
