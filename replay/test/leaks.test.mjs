@@ -2189,7 +2189,10 @@ test('reads a private member value through a raw line break to the kty after it 
   for (const raw of [`{${b}u005cu0022d${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`,
     `{${b}u005cu0022${b}u0064${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`,
     // Automated review on 9a86a8e: and with whitespace escaped around the colon.
-    `{${b}u005cu0022d${b}u0022${b}n:${b}t"PRIVA\nPRIVB","kty":"oct"}`]) {
+    `{${b}u005cu0022d${b}u0022${b}n:${b}t"PRIVA\nPRIVB","kty":"oct"}`,
+    // Automated review on 2ec9796: a name letter spelled through a chain, and a form feed around the colon.
+    `{${b}u005cu0022${b}u005cu0064${b}u0022:"PRIVA\nPRIVB","kty":"oct"}`,
+    '{"d"\f:\f"PRIVA\nPRIVB","kty":"oct"}']) {
     for (const text of [raw, nestedIn(raw, 1)]) assert.ok(findTextLeaks(text).length > 0, JSON.stringify(text));
   }
 });
