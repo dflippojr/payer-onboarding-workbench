@@ -2376,6 +2376,28 @@ test('reads many skipped prose stretches in linear time (#352, automated review 
   assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
 });
 
+test('flags a private member after whitespace whose backslash is spelled as an escape in skipped prose (#352, automated review on 063cefd)', () => {
+  // A backslash run of raw backslashes and u005c escapes, then n, r, t, f or a unicode escape of whitespace, is
+  // whitespace to the canonical form, however the run is spelled.
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const space of [`${b}u005cn`, `${b}u005c${b}u005ct`, `${b}u005cu0020`, `${b}${b}u005cr`]) {
+    const text = `{"note":"a\nb",${space}"d${u}:${u}[REDACTED]TAIL${b}",${b}"kty":"oct"}`;
+    for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+  }
+});
+
+test('bounds a private value holding a run of escaped quotes in linear work (#352, automated review on 063cefd)', () => {
+  // 16,000 escaped quotes in a plain-quoted private value: stepping past each deeper quote read the rest of the run of
+  // quotes again (about 2,000n charged for 8,000); each run is now read once.
+  const text = `{"kty":"oct","d":"${'\\"'.repeat(16000)}"}`;
+  scanWork.characters = 0;
+  const started = Date.now();
+  findTextLeaks(text);
+  assert.ok(scanWork.characters <= 40 * text.length + 4096, `read ${scanWork.characters} of ${text.length} characters`);
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+});
+
 test('accepts a private member of an object without a kty whose ordinary string holds a brace (#352, automated review on e05c98c)', () => {
   // Plain JSON reads exactly: a brace in an ordinary string closes no object, so a d in an object without a kty is no
   // JWK's, inside a JWK or not.

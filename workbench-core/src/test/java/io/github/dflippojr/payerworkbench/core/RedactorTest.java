@@ -2367,7 +2367,9 @@ class RedactorTest {
         // included, bare and stringified once and twice.
         String b = String.valueOf((char) 92);
         String u = b + "u0022";
-        for (String space : List.of(b + "u0020", b + "u0009", b + b + "u0020", b + "u005c" + b + "u2003")) {
+        // Automated review on 063cefd: also with the whitespace's backslash spelled as an escape.
+        for (String space : List.of(b + "u0020", b + "u0009", b + b + "u0020", b + "u005c" + b + "u2003", b + "u005cn",
+                b + "u005c" + b + "u005ct", b + "u005cu0020", b + b + "u005cr")) {
             String text = "{\"note\":\"a\nb\"," + space + "\"d" + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}";
             for (String form : List.of(text, nested(text), nested(nested(text)))) {
                 String out = Redactor.redact(form);
