@@ -255,9 +255,12 @@ final class CanonicalJwks {
             char c = t.charAt(v);
             if (c == '"') {
                 // A quote deeper than the opening one is an escaped quote inside the value, which goes on past it.
+                // The opening quote's levels, read once: a candidate close is read against them.
                 String opening = canonical.spelling(read, v);
+                int openLevel = closeLevel(opening);
+                int openFlat = flatLevel(opening);
                 int close = nextValueClose[v + 1];
-                while (close < n && deeper(canonical.spelling(read, close), opening)) {
+                while (close < n && deeper(canonical.spelling(read, close), openLevel, openFlat)) {
                     close = nextValueClose[close + 1];
                 }
                 readTo = close + 1;
@@ -410,9 +413,19 @@ final class CanonicalJwks {
         return skips.stream().mapToInt(Integer::intValue).toArray();
     }
 
-    /** A private member's name, its quotes plain or unicode escapes, at the end of a stretch of text. */
-    private static final Pattern PRIVATE_NAME_END = Pattern.compile(
-            "(?:\"|u0022)(?:d|p|q|dp|dq|qi|oth|k)\\\\*+(?:\"|u0022)$", Pattern.CASE_INSENSITIVE);
+    /** A private member's name, its quotes and letters plain or unicode escapes, at the end of a stretch of text. */
+    private static final Pattern PRIVATE_NAME_END = Pattern.compile("(?:\"|u0022)(?:" + letters("d") + "|" + letters("p")
+            + "|" + letters("q") + "|" + letters("dp") + "|" + letters("dq") + "|" + letters("qi") + "|" + letters("oth")
+            + "|" + letters("k") + ")\\\\*+(?:\"|u0022)$", Pattern.CASE_INSENSITIVE);
+
+    /** A pattern for {@code name}, each letter plain or a unicode escape of it after a run of backslashes. */
+    private static String letters(String name) {
+        StringBuilder out = new StringBuilder();
+        for (char c : name.toCharArray()) {
+            out.append("(?:").append(c).append("|\\\\++u00").append(Integer.toHexString(c)).append(')');
+        }
+        return out.toString();
+    }
 
     /**
      * Whether the string opening at {@code at} in {@code raw} opens right after a private member's name and colon, so it
@@ -648,18 +661,17 @@ final class CanonicalJwks {
     }
 
     /**
-     * Whether a value's quote spelled {@code quote} is deeper than its opening quote spelled {@code opening}, so it is
-     * escaped inside the value: deeper decoded ({@link #closeLevel}), or deeper as a copied JWK reads it
-     * ({@link #flatLevel}), where an escaped quote inside a value quoted with a unicode escape is a level down. Either
-     * is enough (fail closed: the value goes on).
+     * Whether a value's quote spelled {@code quote} is deeper than its opening quote, whose levels are
+     * {@code openLevel} and {@code openFlat}, so it is escaped inside the value: deeper decoded ({@link #closeLevel}),
+     * or deeper as a copied JWK reads it ({@link #flatLevel}), where an escaped quote inside a value quoted with a
+     * unicode escape is a level down. Either is enough (fail closed: the value goes on).
      */
-    private static boolean deeper(String quote, String opening) {
-        if (closeLevel(quote) > closeLevel(opening)) {
+    private static boolean deeper(String quote, int openLevel, int openFlat) {
+        if (closeLevel(quote) > openLevel) {
             return true;
         }
         int flat = flatLevel(quote);
-        int flatOpening = flatLevel(opening);
-        return flat != ANY_LEVEL && flatOpening != ANY_LEVEL && flat > flatOpening;
+        return flat != ANY_LEVEL && openFlat != ANY_LEVEL && flat > openFlat;
     }
 
     private static long levelBit(int level) {
