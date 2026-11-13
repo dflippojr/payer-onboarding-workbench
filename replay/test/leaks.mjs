@@ -720,7 +720,7 @@ function unconsumedSecretNames(text, ctx) {
  * - A name: a quote in a member's place, 1-64 of [A-Za-z_-], a quote, spaces, a colon; an escaped letter counts only if
  *   decoded by the level of the name's deeper quote reads its content; a quote decoding to no quote opens no name. A kty
  *   counts only with a string value.
- * - A private member is a JWK's when its object holds a kty at the member's quote level (canonicalFlatLevel), brackets
+ * - A private member is a JWK's when its object holds a kty at the member's quote level (canonicalMemberLevel), brackets
  *   counted all, or those in strings skipped (a string closing at the first quote that spaces then `,` `}` `]` `:` or
  *   the end follow); either is enough.
  * - Its value: a string closing at the first quote that spaces and quotes then `,` `}` `]` `:` or the end follow must read
@@ -856,6 +856,34 @@ function canonicalFlatLevel(spelling) {
   return k === 1 ? level : -1;
 }
 
+/**
+ * A name's level: canonicalFlatLevel, one deeper for a quote spelled as a unicode escape inside a string open at its
+ * level, where it is a quote of the level below (a note's text, "x,\u0022kty\u0022:..."), as it is not outside one.
+ */
+function canonicalMemberLevel(spelling, open) {
+  const level = canonicalFlatLevel(spelling);
+  const unicode = !spelling.endsWith('"');
+  return unicode && level >= 0 && level < 31 && (open & (1 << level)) !== 0 ? level + 1 : level;
+}
+
+/** For each place, the levels a string is open at, one bit each: level L's strings open and close at quotes after 2^L - 1 backslashes. */
+function canonicalOpenLevels(raw) {
+  const open = new Int32Array(raw.length + 1);
+  let levels = 0;
+  let i = 0;
+  while (i < raw.length) {
+    let run = 0;
+    while (raw[i + run] === '\\') run++;
+    const stop = Math.min(i + run + 1, raw.length);
+    open.fill(levels, i, stop);
+    const l = Math.log2(run + 1);
+    if (raw[i + run] === '"' && Number.isInteger(l) && l < 31) levels ^= 1 << l;
+    i = stop;
+  }
+  open[raw.length] = levels;
+  return open;
+}
+
 /** The level at which a value's quote is a quote, for bounding the value: one decoding to no quote is level 0. */
 const canonicalCloseLevel = spelling => canonicalQuoteLevel(spelling) ?? 0;
 
@@ -867,10 +895,11 @@ function canonicalJwkLeaks(text, ctx) {
   const raw = text.slice(0, readable);
   if ((!raw.includes('"') && !/u0022/i.test(raw)) || !CANONICAL_KTY.test(raw)) return;
   const { t, origin } = canonicalForm(raw);
+  const inStrings = canonicalOpenLevels(raw);
   const n = t.length;
-  // The decoding reads the readable part once more; the canonical form is read four times (the closes, the names, the
+  // The decoding and the string levels read the readable part twice more; the canonical form is read four times (the closes, the names, the
   // two readings of the brackets).
-  ctx.work += readable + 4 * n;
+  ctx.work += 2 * readable + 4 * n;
   const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = [];
   for (let q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
@@ -899,7 +928,7 @@ function canonicalJwkLeaks(text, ctx) {
     let v = colon + 1;
     while (t[v] === ' ') v++;
     if (kty && t[v] !== '"') continue;
-    names.push({ q, v, kty, level: canonicalFlatLevel(spelling(q)), jwk: false });
+    names.push({ q, v, kty, level: canonicalMemberLevel(spelling(q), inStrings[origin[q]]), jwk: false });
   }
   if (names.length === 0) return;
   // From each place, the first quote closing a string in the reading that skips strings, and the first closing a value.

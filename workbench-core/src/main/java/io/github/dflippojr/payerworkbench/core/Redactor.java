@@ -1146,28 +1146,50 @@ public final class Redactor {
         if (unread.isEmpty()) {
             return masks;
         }
-        List<Mask> sorted = new ArrayList<>(masks);
-        sorted.sort((a, b) -> Integer.compare(a.start(), b.start()));
-        int[] starts = new int[sorted.size()];
-        // The furthest any mask up to each one in start order reaches.
-        int[] reach = new int[sorted.size()];
-        for (int i = 0; i < sorted.size(); i++) {
-            starts[i] = sorted.get(i).start();
-            reach[i] = Math.max(i > 0 ? reach[i - 1] : 0, sorted.get(i).end());
-        }
+        Coverage coverage = new Coverage(masks);
         List<Mask> all = new ArrayList<>(masks);
         for (Mask mask : unread) {
-            int at = Arrays.binarySearch(starts, mask.start());
-            if (at < 0) {
-                at = -at - 2;
-            } else {
-                continue;
-            }
-            if (at < 0 || reach[at] <= mask.start()) {
+            if (!coverage.startsAt(mask.start()) && coverage.reach(mask.start()) <= mask.start()) {
                 all.add(mask);
             }
         }
         return all;
+    }
+
+    /** Where masks start, in order, and the furthest any mask starting up to each place reaches. */
+    private static final class Coverage {
+
+        private final int[] starts;
+        private final int[] reach;
+
+        Coverage(List<Mask> masks) {
+            List<Mask> sorted = new ArrayList<>(masks);
+            sorted.sort((a, b) -> Integer.compare(a.start(), b.start()));
+            starts = new int[sorted.size()];
+            reach = new int[sorted.size()];
+            for (int i = 0; i < sorted.size(); i++) {
+                starts[i] = sorted.get(i).start();
+                reach[i] = Math.max(i > 0 ? reach[i - 1] : 0, sorted.get(i).end());
+            }
+        }
+
+        /** Whether a mask starts at {@code position}. */
+        boolean startsAt(int position) {
+            return Arrays.binarySearch(starts, position) >= 0;
+        }
+
+        /** The furthest any mask starting at or before {@code position} reaches, or -1 with none. */
+        int reach(int position) {
+            int at = Arrays.binarySearch(starts, position);
+            if (at < 0) {
+                at = -at - 2;
+            } else {
+                while (at + 1 < starts.length && starts[at + 1] == position) {
+                    at++;
+                }
+            }
+            return at < 0 ? -1 : reach[at];
+        }
     }
 
     /**
@@ -2132,28 +2154,11 @@ public final class Redactor {
         if (values.isEmpty()) {
             return masks;
         }
-        List<Mask> sorted = new ArrayList<>(masks);
-        sorted.sort((a, b) -> Integer.compare(a.start(), b.start()));
-        int[] starts = new int[sorted.size()];
-        // The furthest any mask up to each one in start order reaches.
-        int[] reach = new int[sorted.size()];
-        for (int i = 0; i < sorted.size(); i++) {
-            starts[i] = sorted.get(i).start();
-            reach[i] = Math.max(i > 0 ? reach[i - 1] : 0, sorted.get(i).end());
-        }
+        Coverage coverage = new Coverage(masks);
         List<Mask> all = new ArrayList<>(masks);
         for (CanonicalJwks.Value value : values) {
-            // The last mask starting at or before the value's content; the masks up to it cover the content whole if one
-            // reaches its end (a string's quotes may be masked or kept).
-            int at = Arrays.binarySearch(starts, value.contentStart());
-            if (at < 0) {
-                at = -at - 2;
-            } else {
-                while (at + 1 < starts.length && starts[at + 1] == value.contentStart()) {
-                    at++;
-                }
-            }
-            if (at < 0 || reach[at] < value.contentEnd()) {
+            // A string's quotes may be masked or kept: the value is covered when its content is.
+            if (coverage.reach(value.contentStart()) < value.contentEnd()) {
                 all.add(new Mask(value.start(), value.end(), value.replacement()));
             }
         }

@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object holds a kty,
  * the brackets read two ways: every bracket counted, or those inside strings skipped, a string closing at the first
  * quote that spaces and then a comma, a closing bracket, a colon or the end follow. Either way is enough, with a kty
- * whose quote is at the member's level ({@link #flatLevel}).</li>
+ * whose quote is at the member's level ({@link #memberLevel}).</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
  * a closing bracket, a colon or the end follow; it is masked unless it reads {@link Redactor#MASK} or nothing, and one
  * that never closes is masked to the end of the text. An object or array is masked to the bracket closing it, the
@@ -166,6 +166,7 @@ final class CanonicalJwks {
             return values;
         }
         Canonical canonical = canonical(read);
+        int[] inStrings = openLevels(read);
         String t = canonical.text();
         int n = t.length();
         List<Name> names = new ArrayList<>();
@@ -188,7 +189,7 @@ final class CanonicalJwks {
             }
             int value = afterSpace(t, colon + 1);
             if (!kty || value < n && t.charAt(value) == '"') {
-                names.add(new Name(q, value, kty, flatLevel(canonical.spelling(raw, q))));
+                names.add(new Name(q, value, kty, memberLevel(canonical.spelling(raw, q), inStrings[canonical.at(q)])));
             }
         }
         if (names.isEmpty()) {
@@ -433,6 +434,42 @@ final class CanonicalJwks {
             s = Redactor.unescapedOnce(s);
         }
         return Integer.MAX_VALUE;
+    }
+
+    /**
+     * The level of a name whose opening quote the text spells {@code spelling}, with {@code open} the levels at which a
+     * string is open there ({@link #openLevels}): its {@link #flatLevel}, one deeper for a quote spelled as a unicode
+     * escape inside a string of its level, where it is a quote of the level below ({@code "x,\\u0022kty\\u0022:..."} is
+     * a note's text, not a member), as it is not in a copied JWK, outside any string of its level (#352).
+     */
+    private static int memberLevel(String spelling, int open) {
+        int level = flatLevel(spelling);
+        boolean unicode = spelling.charAt(spelling.length() - 1) != '"';
+        return unicode && level >= 0 && level < 31 && (open & (1 << level)) != 0 ? level + 1 : level;
+    }
+
+    /**
+     * For each place in {@code read}, the levels at which a string is open there, one bit each: a level's strings open
+     * and close at its plain quotes, after {@code 2^L - 1} backslashes, a run of any other length being content.
+     */
+    private static int[] openLevels(String read) {
+        int[] open = new int[read.length() + 1];
+        int levels = 0;
+        int i = 0;
+        while (i < read.length()) {
+            int run = 0;
+            while (i + run < read.length() && read.charAt(i + run) == BACKSLASH) {
+                run++;
+            }
+            int stop = Math.min(i + run + 1, read.length());
+            Arrays.fill(open, i, stop, levels);
+            if (i + run < read.length() && read.charAt(i + run) == '"' && Integer.bitCount(run + 1) == 1 && run < 31) {
+                levels ^= 1 << Integer.numberOfTrailingZeros(run + 1);
+            }
+            i = stop;
+        }
+        open[read.length()] = levels;
+        return open;
     }
 
     private static long levelBit(int level) {
