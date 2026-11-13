@@ -2,7 +2,6 @@ package io.github.dflippojr.payerworkbench.core;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.BitSet;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -31,12 +30,14 @@ import java.util.regex.Pattern;
  * d). A kty counts only with a string value.</li>
  * <li>A private member is a name in {@link Redactor#JWK_PRIVATE_MEMBERS}; it is a JWK's when its object holds a kty,
  * the brackets read two ways: every bracket counted, or those inside strings skipped, a string closing at the first
- * quote that spaces and then a comma, a closing bracket, a colon or the end follow. Either way is enough.</li>
+ * quote that spaces and then a comma, a closing bracket, a colon or the end follow. Either way is enough, with a kty
+ * whose quote is at the member's level ({@link #flatLevel}).</li>
  * <li>A member's value starts after spaces. A string closes at the first quote that spaces and quotes and then a comma,
  * a closing bracket, a colon or the end follow; it is masked unless it reads {@link Redactor#MASK} or nothing, and one
  * that never closes is masked to the end of the text. An object or array is masked to the bracket closing it, the
  * further of the two readings, or to the end of the text; a number, {@code true} or {@code false} is masked whole.
- * Anything else (a bare word, a second colon) is no value and is kept, as the other readings keep it. A mask is quoted
+ * A quote deeper than the value's opening one ({@link #closeLevel}) closes nothing. Anything else (a bare word, a
+ * second colon) is no value and is kept, as the other readings keep it. A mask is quoted
  * as the member's name opens, so it reads as a string at the name's level however the value was quoted.</li>
  * </ul>
  * Each step reads each character a fixed number of times, so the work is linear in the text's length.
@@ -66,13 +67,40 @@ final class CanonicalJwks {
     }
 
     /** The canonical form of a text, and where each of its characters starts in the text (one longer, to its end). */
-    record Canonical(String text, int[] origin) {
+    static final class Canonical {
+
+        private final String text;
+        private final int[] origin;
+
+        Canonical(String text, int[] origin) {
+            this.text = text;
+            this.origin = origin;
+        }
+
+        String text() {
+            return text;
+        }
+
+        /** Where character {@code k} of the canonical form starts in the text ({@code k} up to its length). */
+        int at(int k) {
+            return origin[k];
+        }
 
         /** How the text spells character {@code k} of the canonical form. */
         String spelling(String raw, int k) {
             return raw.substring(origin[k], origin[k + 1]);
         }
     }
+
+    /**
+     * A name the canonical reading finds: where its opening quote is and its value starts in the canonical form, whether
+     * it is a kty, and its quote's level as {@link #flatLevel} reads it.
+     */
+    private record Name(int quote, int value, boolean kty, int level) {
+    }
+
+    /** What {@link #flatLevel} gives for a quote of a spelling it does not place: it goes with a name of any level. */
+    private static final int ANY_LEVEL = -1;
 
     static Canonical canonical(String raw) {
         StringBuilder out = new StringBuilder(raw.length());
@@ -140,8 +168,7 @@ final class CanonicalJwks {
         Canonical canonical = canonical(read);
         String t = canonical.text();
         int n = t.length();
-        // Each name: its opening quote, where its value starts, and whether it is a kty.
-        List<int[]> names = new ArrayList<>();
+        List<Name> names = new ArrayList<>();
         for (int q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
             int k = q + 1;
             while (k < n && k - q <= 64 && isNameChar(t.charAt(k))) {
@@ -161,7 +188,7 @@ final class CanonicalJwks {
             }
             int value = afterSpace(t, colon + 1);
             if (!kty || value < n && t.charAt(value) == '"') {
-                names.add(new int[] {q, value, kty ? 1 : 0});
+                names.add(new Name(q, value, kty, flatLevel(canonical.spelling(raw, q))));
             }
         }
         if (names.isEmpty()) {
@@ -193,36 +220,41 @@ final class CanonicalJwks {
         int[] counted = brackets(t, names, jwk, null);
         int[] lexed = brackets(t, names, jwk, nextLexClose);
         Matcher scalar = SCALAR.matcher(t);
+        // Where the last string value read ends: a name before it is inside that value, which is masked or the mask.
+        int readTo = 0;
         for (int j = 0; j < names.size(); j++) {
-            int[] name = names.get(j);
-            int v = name[1];
-            if (!jwk[j] || name[2] == 1 || v >= n) {
+            Name name = names.get(j);
+            int v = name.value();
+            if (!jwk[j] || name.kty() || v >= n || name.quote() < readTo) {
                 continue;
             }
-            String quote = canonical.spelling(raw, name[0]);
+            String quote = canonical.spelling(raw, name.quote());
             char c = t.charAt(v);
             if (c == '"') {
+                // A quote deeper than the opening one is an escaped quote inside the value, which goes on past it.
+                int open = closeLevel(canonical.spelling(raw, v));
                 int close = nextValueClose[v + 1];
+                while (close < n && closeLevel(canonical.spelling(raw, close)) > open) {
+                    close = nextValueClose[close + 1];
+                }
+                readTo = close + 1;
                 if (close >= n) {
-                    values.add(new Value(canonical.origin()[v], raw.length(), quote + Redactor.MASK + quote,
-                            canonical.origin()[v + 1], raw.length()));
+                    values.add(new Value(canonical.at(v), raw.length(), quote + Redactor.MASK + quote,
+                            canonical.at(v + 1), raw.length()));
                 } else {
                     String content = t.substring(v + 1, close);
                     if (!content.isEmpty() && !content.equals(Redactor.MASK)) {
-                        values.add(new Value(canonical.origin()[v], canonical.origin()[close + 1],
-                                quote + Redactor.MASK + quote,
-                                canonical.origin()[v + 1], canonical.origin()[close]));
+                        values.add(new Value(canonical.at(v), canonical.at(close + 1), quote + Redactor.MASK + quote,
+                                canonical.at(v + 1), canonical.at(close)));
                     }
                 }
             } else if (c == '{' || c == '[') {
                 int end = Math.max(counted[v], lexed[v]);
-                int stop = end < 0 ? raw.length() : canonical.origin()[end + 1];
-                values.add(new Value(canonical.origin()[v], stop, quote + Redactor.MASK + quote,
-                        canonical.origin()[v], stop));
+                int stop = end < 0 ? raw.length() : canonical.at(end + 1);
+                values.add(new Value(canonical.at(v), stop, quote + Redactor.MASK + quote, canonical.at(v), stop));
             } else if (scalar.region(v, n).lookingAt()) {
-                int stop = canonical.origin()[scalar.end()];
-                values.add(new Value(canonical.origin()[v], stop, quote + Redactor.MASK + quote,
-                        canonical.origin()[v], stop));
+                int stop = canonical.at(scalar.end());
+                values.add(new Value(canonical.at(v), stop, quote + Redactor.MASK + quote, canonical.at(v), stop));
             }
         }
         return values;
@@ -234,7 +266,7 @@ final class CanonicalJwks {
      * each private member whose object holds a kty name in this reading, and returns where the bracket closing each
      * opening bracket is (-1: none, or not read as a bracket).
      */
-    private static int[] brackets(String t, List<int[]> names, boolean[] jwk, int[] nextClose) {
+    private static int[] brackets(String t, List<Name> names, boolean[] jwk, int[] nextClose) {
         int n = t.length();
         int[] match = new int[n];
         Arrays.fill(match, -1);
@@ -242,17 +274,18 @@ final class CanonicalJwks {
         int top = 0;
         int[] owner = new int[names.size()];
         Arrays.fill(owner, -1);
-        BitSet typed = new BitSet(n);
+        // For each object a kty is in: the levels of its kty names, one bit each, the top bit for ANY_LEVEL.
+        java.util.Map<Integer, Long> typed = new java.util.HashMap<>();
         int next = 0;
         int i = 0;
         while (i < n) {
-            while (next < names.size() && names.get(next)[0] < i) {
+            while (next < names.size() && names.get(next).quote() < i) {
                 next++;
             }
-            if (next < names.size() && names.get(next)[0] == i) {
+            if (next < names.size() && names.get(next).quote() == i) {
                 owner[next] = top > 0 && t.charAt(stack[top - 1]) == '{' ? stack[top - 1] : -1;
-                if (names.get(next)[2] == 1 && owner[next] >= 0) {
-                    typed.set(owner[next]);
+                if (names.get(next).kty() && owner[next] >= 0) {
+                    typed.merge(owner[next], levelBit(names.get(next).level()), (a, b) -> a | b);
                 }
                 next++;
             }
@@ -268,7 +301,9 @@ final class CanonicalJwks {
             i++;
         }
         for (int j = 0; j < names.size(); j++) {
-            if (owner[j] >= 0 && typed.get(owner[j])) {
+            long levels = owner[j] >= 0 ? typed.getOrDefault(owner[j], 0L) : 0L;
+            int level = names.get(j).level();
+            if ((levels & (levelBit(level) | levelBit(ANY_LEVEL))) != 0 || level == ANY_LEVEL && levels != 0) {
                 jwk[j] = true;
             }
         }
@@ -398,6 +433,48 @@ final class CanonicalJwks {
             s = Redactor.unescapedOnce(s);
         }
         return Integer.MAX_VALUE;
+    }
+
+    private static long levelBit(int level) {
+        return level == ANY_LEVEL || level >= 63 ? Long.MIN_VALUE : 1L << level;
+    }
+
+    /**
+     * The level of a name's quote as a JSON text quoted inside JSON strings spells it, a unicode escape of a quote counting
+     * as a quote of the level it is written at (as #352 reads a copied JWK): a plain quote after {@code 2^L - 1}
+     * backslashes is level L; {@code \\u0022}, also with its backslash spelled as {@code u005c} escapes, is level 0, and
+     * level L + 1 with its backslash escaped as a backslash at level L. A kty counts for a private member only at the
+     * member's level, so {@code \\"kty\\"} inside a string of a plain-quoted object is no member of it. Any other
+     * spelling is {@link #ANY_LEVEL} (fail closed).
+     */
+    static int flatLevel(String spelling) {
+        int k = 0;
+        while (k < spelling.length() && spelling.charAt(k) == BACKSLASH) {
+            k++;
+        }
+        String rest = spelling.substring(k).toLowerCase(java.util.Locale.ROOT);
+        if (rest.equals("\"")) {
+            return Integer.bitCount(k + 1) == 1 ? Integer.numberOfTrailingZeros(k + 1) : ANY_LEVEL;
+        }
+        if (!rest.matches("(?:u005c)*u0022")) {
+            return ANY_LEVEL;
+        }
+        int level = 0;
+        while (k > 1 && k % 2 == 0) {
+            k /= 2;
+            level++;
+        }
+        return k == 1 ? level : ANY_LEVEL;
+    }
+
+    /**
+     * The level at which a value's quote is a quote ({@link #nameQuoteLevel}), for bounding the value: a quote of no level
+     * (an escaped backslash, then a plain quote) is level 0, and a chain still decoding past the levels read is deeper
+     * than any.
+     */
+    private static int closeLevel(String spelling) {
+        int level = nameQuoteLevel(spelling);
+        return level == NO_QUOTE ? 0 : level;
     }
 
     private static boolean isNameChar(char c) {

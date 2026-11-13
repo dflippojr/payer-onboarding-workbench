@@ -720,10 +720,12 @@ function unconsumedSecretNames(text, ctx) {
  * - A name: a quote in a member's place, 1-64 of [A-Za-z_-], a quote, spaces, a colon; an escaped letter counts only if
  *   decoded by the level of the name's deeper quote reads its content; a quote decoding to no quote opens no name. A kty
  *   counts only with a string value.
- * - A private member is a JWK's when its object holds a kty, brackets counted all, or those in strings skipped (a
- *   string closing at the first quote that spaces then `,` `}` `]` `:` or the end follow); either is enough.
+ * - A private member is a JWK's when its object holds a kty at the member's quote level (canonicalFlatLevel), brackets
+ *   counted all, or those in strings skipped (a string closing at the first quote that spaces then `,` `}` `]` `:` or
+ *   the end follow); either is enough.
  * - Its value: a string closing at the first quote that spaces and quotes then `,` `}` `]` `:` or the end follow must read
- *   the mask or nothing; an object, an array, a number, true or false is a leak; anything else is no value.
+ *   the mask or nothing, a quote deeper than its opening one closing nothing; an object, an array, a number, true or
+ *   false is a leak; anything else is no value.
  * A text whose readable part spells no kty, as CANONICAL_KTY reads it, holds no JWK there and is read no further.
  * Each step reads each character a fixed number of times, so the work is linear.
  */
@@ -831,6 +833,32 @@ function canonicalQuoteLevel(spelling) {
 /** Spells kty in the canonical form only where this matches the text: each letter plain or an escape of it. */
 const CANONICAL_KTY = /(?:k|u006[bB])(?:\\|u005[cC])*(?:t|u0074)(?:\\|u005[cC])*(?:y|u0079)/;
 
+/**
+ * The level of a name's quote with a unicode escape of a quote counting as a quote of the level it is written at:
+ * a plain quote after 2^L - 1 backslashes is level L; \u0022, its backslash also spelled as u005c escapes, is level 0,
+ * and one level deeper each time its backslash is escaped as a backslash. A kty goes with a private member at the same
+ * level only, so \"kty\" in a string of a plain-quoted object is none of its members. Any other spelling: -1, any level.
+ */
+function canonicalFlatLevel(spelling) {
+  let k = 0;
+  while (spelling[k] === '\\') k++;
+  const rest = spelling.slice(k).toLowerCase();
+  if (rest === '"') {
+    const l = Math.log2(k + 1);
+    return Number.isInteger(l) ? l : -1;
+  }
+  if (!/^(?:u005c)*u0022$/.test(rest)) return -1;
+  let level = 0;
+  while (k > 1 && k % 2 === 0) {
+    k /= 2;
+    level++;
+  }
+  return k === 1 ? level : -1;
+}
+
+/** The level at which a value's quote is a quote, for bounding the value: one decoding to no quote is level 0. */
+const canonicalCloseLevel = spelling => canonicalQuoteLevel(spelling) ?? 0;
+
 function canonicalJwkLeaks(text, ctx) {
   // A regex pre-check, uncharged as the regex checks are; the reads after it are charged as they are made.
   if (!CANONICAL_KTY.test(text)) return;
@@ -871,7 +899,7 @@ function canonicalJwkLeaks(text, ctx) {
     let v = colon + 1;
     while (t[v] === ' ') v++;
     if (kty && t[v] !== '"') continue;
-    names.push({ q, v, kty, jwk: false });
+    names.push({ q, v, kty, level: canonicalFlatLevel(spelling(q)), jwk: false });
   }
   if (names.length === 0) return;
   // From each place, the first quote closing a string in the reading that skips strings, and the first closing a value.
@@ -890,14 +918,18 @@ function canonicalJwkLeaks(text, ctx) {
   for (const skipStrings of [false, true]) {
     const stack = [];
     const owner = new Map();
-    const typed = new Set();
+    // The levels of the kty names in each object.
+    const typed = new Map();
     let next = 0;
     for (let i = 0; i < n;) {
       while (next < names.length && names[next].q < i) next++;
       if (next < names.length && names[next].q === i) {
         const top = stack.length > 0 && t[stack[stack.length - 1]] === '{' ? stack[stack.length - 1] : -1;
         owner.set(next, top);
-        if (names[next].kty && top >= 0) typed.add(top);
+        if (names[next].kty && top >= 0) {
+          if (!typed.has(top)) typed.set(top, new Set());
+          typed.get(top).add(names[next].level);
+        }
         next++;
       }
       const c = t[i];
@@ -909,14 +941,25 @@ function canonicalJwkLeaks(text, ctx) {
       }
       i++;
     }
-    for (const [j, top] of owner) if (top >= 0 && typed.has(top)) names[j].jwk = true;
+    for (const [j, top] of owner) {
+      const levels = typed.get(top);
+      if (levels === undefined) continue;
+      const level = names[j].level;
+      if (levels.has(level) || levels.has(-1) || level === -1) names[j].jwk = true;
+    }
   }
+  // Where the last string value read ends: a name before it is inside that value.
+  let read = 0;
   for (const { q, v, kty, jwk } of names) {
-    if (!jwk || kty || v >= n) continue;
+    if (!jwk || kty || v >= n || q < read) continue;
     const c = t[v];
     let leak = false;
     if (c === '"') {
-      const close = valueClose[v + 1];
+      // A quote deeper than the opening one is escaped inside the value, which goes on past it.
+      const open = canonicalCloseLevel(spelling(v));
+      let close = valueClose[v + 1];
+      while (close < n && canonicalCloseLevel(spelling(close)) > open) close = valueClose[close + 1];
+      read = close + 1;
       const content = t.slice(v + 1, close);
       leak = close >= n || (content !== '' && content !== MASK);
     } else if (c === '{' || c === '[' || /^(?:-?\d|true\b|false\b)/.test(t.slice(v, v + 6))) {
