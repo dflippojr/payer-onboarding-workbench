@@ -2274,11 +2274,13 @@ class RedactorTest {
 
     @Test
     void keepsAPrivateMemberWhoseObjectHoldsAKtyOnlyInsideAString() {
-        // Automated review on 469b848: a kty quoted a level down inside a string value is no member of the object, however
-        // a comma before it reads in the canonical form.
+        // Automated review on 469b848 and 84fe061: a kty quoted a level down inside a string value is no member of the
+        // object, however a comma before it reads in the canonical form.
         String b = String.valueOf((char) 92);
         for (String text : List.of("{\"note\":\"x," + b + "\"kty" + b + "\":" + b + "\"oct" + b + "\"\",\"d\":\"dimension\"}",
-                "{\"note\":\"x, " + b + "\"kty" + b + "\": " + b + "\"oct" + b + "\"\", \"d\": \"dimension\"}")) {
+                "{\"note\":\"x, " + b + "\"kty" + b + "\": " + b + "\"oct" + b + "\"\", \"d\": \"dimension\"}",
+                // ...also spelled with unicode escapes, a quote of the level below inside the note.
+                "{\"note\":\"x," + b + "u0022kty" + b + "u0022:" + b + "u0022oct" + b + "u0022\",\"d\":\"dimension\"}")) {
             assertEquals(text, Redactor.redact(text));
             assertEquals(nested(text), Redactor.redact(nested(text)));
         }

@@ -2124,7 +2124,8 @@ test('flags a JWK value whose escaped quote a level further down is followed by 
     }
   }
   for (const text of [`{"note":"x,${b}"kty${b}":${b}"oct${b}"","d":"dimension"}`,
-    `{"note":"x, ${b}"kty${b}": ${b}"oct${b}"", "d": "dimension"}`]) {
+    `{"note":"x, ${b}"kty${b}": ${b}"oct${b}"", "d": "dimension"}`,
+    `{"note":"x,${b}u0022kty${b}u0022:${b}u0022oct${b}u0022","d":"dimension"}`]) {
     assertAccepted(text);
     assertAccepted(JSON.stringify({ body: text }));
   }
