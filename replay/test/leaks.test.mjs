@@ -2284,6 +2284,25 @@ test('flags every private member whose name and value mix quote spellings after 
   }
 });
 
+test('flags every private member with mixed quote spellings after a line separator in an earlier ordinary string (#352, security round 4)', () => {
+  // What the canonical reading skips as prose is never left unread: a line separator, paragraph separator or next-line
+  // character (or a raw line feed or carriage return) in an earlier ordinary string starts such a stretch, and every
+  // private member in it is flagged whenever the text holds a kty, for all eight members, bare and stringified once and
+  // twice, in a report and as a field.
+  const b = '\\';
+  const u = `${b}u0022`;
+  for (const separator of ['\u2028', '\u2029', '\u0085', '\n', '\r']) {
+    const note = `{"note":"a${separator}b",`;
+    for (const member of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'oth']) {
+      for (const text of [
+        `${note}"${member}${u}:${u}PRIVA352PRIVB${b}",${b}"kty":"oct"}`,
+        `${note}${b}"${member}${u}:"PRIVA352PRIVB${u},"kty":"oct"}`]) {
+        for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+      }
+    }
+  }
+});
+
 test('accepts a private member of an object without a kty whose ordinary string holds a brace (#352, automated review on e05c98c)', () => {
   // Plain JSON reads exactly: a brace in an ordinary string closes no object, so a d in an object without a kty is no
   // JWK's, inside a JWK or not.

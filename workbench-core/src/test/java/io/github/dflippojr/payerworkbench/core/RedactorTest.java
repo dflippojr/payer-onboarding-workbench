@@ -2338,6 +2338,30 @@ class RedactorTest {
     }
 
     @Test
+    void masksEveryPrivateMemberWithMixedQuoteSpellingsAfterALineSeparatorInAnEarlierOrdinaryString() {
+        // Security round 4 (#352): what the canonical reading skips as prose is never left unread. A line separator,
+        // paragraph separator or next-line character (or a raw line feed or carriage return) in an earlier ordinary string
+        // starts such a stretch; every private member in it is masked whole whenever the text holds a kty, for all eight
+        // members, bare and stringified once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        for (char separator : new char[] {0x2028, 0x2029, 0x85, '\n', '\r'}) {
+            String note = "{\"note\":\"a" + separator + "b\",";
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                for (String text : List.of(
+                        note + "\"" + member + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
+                        note + b + "\"" + member + u + ":\"PRIVA352PRIVB" + u + ",\"kty\":\"oct\"}")) {
+                    for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                        String out = Redactor.redact(form);
+                        assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"),
+                                () -> Integer.toHexString(separator) + ": " + out);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.
