@@ -1268,9 +1268,11 @@ const spanLetter = c => {
 const spanWord = word => [...word].map(spanLetter).join('');
 /**
  * Whitespace as the canonical form may read it between a name and its colon: what Java reads as whitespace (isJavaSpace),
- * or any escape that may decode to it (every unicode escape counted, so it reads no less); and a colon.
+ * or any escape that may decode to it (every unicode escape but a quote's, a backslash's and a colon's counted, so it
+ * reads no less). Each escape matches one way only, a backslash run never splitting into an escape of its own, so the
+ * pattern reads in linear time (automated review on ab0bc7d); and a colon.
  */
-const SPAN_SPACE = String.raw`(?:[ \t\n\x0B\f\r\x1C-\x1F  -  -    　]|${ANY_BACKSLASH}(?:[nrtf]|u[0-9A-Fa-f]{4}))*`;
+const SPAN_SPACE = String.raw`(?:[ \t\n\x0B\f\r\x1C-\x1F  -  -    　]|${ANY_BACKSLASH}(?:[nrtf]|u(?!00(?:22|5[cC]|3[aA]))[0-9A-Fa-f]{4}))*`;
 const SPAN_COLON = String.raw`(?::|${ANY_BACKSLASH}u003[aA])`;
 /** A quote spelling that no backslash run continues from before, so each run is tried once (linear). */
 const SPAN_QUOTE = String.raw`(?<!\\|u005[cC])${ANY_QUOTE}`;
@@ -1281,44 +1283,82 @@ const SPAN_QUOTE = String.raw`(?<!\\|u005[cC])${ANY_QUOTE}`;
 const SPAN_PRIVATE = new RegExp(String.raw`${SPAN_QUOTE}(?:${['oth', 'dp', 'dq', 'qi', 'd', 'p', 'q', 'k'].map(spanWord).join('|')})${ANY_QUOTE}${SPAN_SPACE}${SPAN_COLON}`, 'g');
 const SPAN_KTY = new RegExp(String.raw`${SPAN_QUOTE}${spanWord('kty')}${ANY_QUOTE}${SPAN_SPACE}${SPAN_COLON}${SPAN_SPACE}${ANY_QUOTE}`, 'g');
 
-/** Whether the name at q in text opens in a member's place within [from, ...): after { or , and whitespace. */
+/**
+ * Where a unicode escape ending at k in text starts (its backslash run, raw backslashes and u005c escapes after one,
+ * included), and the character it decodes to; null if none ends there within [from, k).
+ */
+function unicodeEscapeBefore(text, from, k) {
+  if (k - 5 < from || text[k - 5] !== 'u' || !/^[0-9A-Fa-f]{4}$/.test(text.slice(k - 4, k))) return null;
+  let j = k - 5;
+  let raw = false;
+  for (;;) {
+    if (j - 1 >= from && text[j - 1] === '\\') {
+      j--;
+      raw = true;
+    } else if (raw && j - 5 >= from && /^u005c$/i.test(text.slice(j - 5, j)) && j - 6 >= from && (text[j - 6] === '\\' || /^005c$/i.test(text.slice(j - 9, j - 5)))) {
+      j -= 5;
+    } else {
+      break;
+    }
+  }
+  return raw ? { start: j, c: String.fromCharCode(Number.parseInt(text.slice(k - 4, k), 16)) } : null;
+}
+
+/**
+ * Whether the name at q in text opens in a member's place within [from, ...): after { or , and whitespace, each read
+ * back as the canonical form reads it, raw or escaped (an escaped n, r, t or f, or a unicode escape of any of them).
+ */
 function spanMemberPlace(text, from, q) {
   let k = q;
   for (;;) {
-    while (k > from && isJavaSpace(text[k - 1])) k--;
-    // ...or whitespace spelled as an escape: n, r, t or f after a backslash.
+    if (k > from && isJavaSpace(text[k - 1])) {
+      k--;
+      continue;
+    }
     if (k - 2 >= from && 'nrtf'.includes(text[k - 1]) && text[k - 2] === '\\') {
       k -= 2;
       while (k > from && text[k - 1] === '\\') k--;
       continue;
     }
-    break;
+    const escape = unicodeEscapeBefore(text, from, k);
+    if (escape !== null && isJavaSpace(escape.c)) {
+      k = escape.start;
+      continue;
+    }
+    if (escape !== null) return escape.c === '{' || escape.c === ',';
+    return k > from && (text[k - 1] === '{' || text[k - 1] === ',');
   }
-  if (k > from && (text[k - 1] === '{' || text[k - 1] === ',')) return true;
-  // ...or an escaped brace or comma.
-  return k - 6 >= from && /^\\u00(?:7[bB]|2[cC])$/.test(text.slice(k - 6, k));
-}
-
-/** Whether a skipped stretch holds a kty name with a string value. */
-function skippedKty(text, { from, to }) {
-  SPAN_KTY.lastIndex = from;
-  for (let m = SPAN_KTY.exec(text); m !== null && m.index < to; m = SPAN_KTY.exec(text)) {
-    if (m.index + m[0].length <= to && spanMemberPlace(text, from, m.index)) return true;
-  }
-  return false;
 }
 
 /**
- * Flags each private member in a skipped stretch whose value is not the mask or nothing: its value is read token by
+ * The matches of the global pattern re that lie whole inside one of the skipped stretches (in order, apart) and open in
+ * a member's place there, found in one pass over the text, so many stretches are read in linear time (automated review
+ * on ab0bc7d).
+ */
+function spanMatches(re, text, spans) {
+  const found = [];
+  if (spans.length === 0) return found;
+  re.lastIndex = spans[0].from;
+  let p = 0;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    while (p < spans.length && spans[p].to <= m.index) p++;
+    if (p >= spans.length) break;
+    const { from, to } = spans[p];
+    if (m.index >= from && m.index + m[0].length <= to && spanMemberPlace(text, from, m.index)) found.push({ m, to });
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return found;
+}
+
+/**
+ * Flags each private member in the skipped stretches whose value is not the mask or nothing: its value is read token by
  * token, as far as it goes, and charged so. A string is accepted only when it reads [REDACTED] or nothing, closed by a
  * quote no deeper than its opening one that spaces and quotes and then a comma, a closing bracket, a colon or the
  * stretch's end follow; an object, an array, a number, true or false is flagged; anything else is no value.
  */
-function skippedPrivateLeaks(text, { from, to }, ctx) {
-  SPAN_PRIVATE.lastIndex = from;
-  for (let m = SPAN_PRIVATE.exec(text); m !== null && m.index < to; m = SPAN_PRIVATE.exec(text)) {
+function skippedPrivateLeaks(text, spans, ctx) {
+  for (const { m, to } of spanMatches(SPAN_PRIVATE, text, spans)) {
     const v = m.index + m[0].length;
-    if (v > to || !spanMemberPlace(text, from, m.index)) continue;
     const tokens = [];
     let i = v;
     const next = () => {
@@ -1396,10 +1436,8 @@ function canonicalJwkLeaks(text, ctx) {
   ctx.work += 3 * raw.length + 6 * n;
   const spelling = k => raw.slice(origin[k], origin[k + 1]);
   const names = canonicalNames(t, spelling);
-  const anyKty = names.some(name => name.kty) || spans.some(span => skippedKty(text, span));
-  if (anyKty) {
-    for (const span of spans) skippedPrivateLeaks(text, span, ctx);
-  }
+  const anyKty = names.some(name => name.kty) || spanMatches(SPAN_KTY, text, spans).length > 0;
+  if (anyKty) skippedPrivateLeaks(text, spans, ctx);
   if (names.length === 0) return;
   const inStrings = canonicalOpenLevels(raw, ctx);
   if (canonicalAmbiguous(t, origin, raw, inStrings, names, spelling)) {
