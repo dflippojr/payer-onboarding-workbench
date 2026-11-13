@@ -368,6 +368,8 @@ final class CanonicalJwks {
         // any level, a colon, an array's opening bracket), and the run of the quote it was, if it was one (else -1).
         boolean starts = true;
         int quoteRun = -1;
+        // Where the last read for a private member's name began (afterPrivateName).
+        int[] floor = {0};
         int i = 0;
         while (i < raw.length()) {
             int run = 0;
@@ -387,7 +389,7 @@ final class CanonicalJwks {
                     // after the start, whitespace, a colon, an array's opening bracket or the quote opening the string
                     // that holds its level; never right after other text, nor in a member's place.
                     boolean prose = starts || quoteRun >= 0 && quoteRun < run;
-                    open.put(run, !prose || last == '{' || last == ',' || afterPrivateName(raw, i));
+                    open.put(run, !prose || last == '{' || last == ',' || afterPrivateName(raw, i, floor));
                 }
             } else if ((run == 0 ? c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029
                     : run % 2 == 1 && (c == 'n' || c == 'r')) && Boolean.FALSE.equals(open.get(run))) {
@@ -413,50 +415,24 @@ final class CanonicalJwks {
         return skips.stream().mapToInt(Integer::intValue).toArray();
     }
 
-    /** A private member's name, its quotes and letters plain or unicode escapes, at the end of a stretch of text. */
-    private static final Pattern PRIVATE_NAME_END = Pattern.compile("(?:\"|u0022)(?:" + letters("d") + "|" + letters("p")
-            + "|" + letters("q") + "|" + letters("dp") + "|" + letters("dq") + "|" + letters("qi") + "|" + letters("oth")
-            + "|" + letters("k") + ")\\\\*+(?:\"|u0022)$", Pattern.CASE_INSENSITIVE);
-
-    /** A pattern for {@code name}, each letter plain or a unicode escape of it after a run of backslashes. */
-    private static String letters(String name) {
-        StringBuilder out = new StringBuilder();
-        for (char c : name.toCharArray()) {
-            out.append("(?:").append(c).append("|\\\\++u00").append(Integer.toHexString(c)).append(')');
-        }
-        return out.toString();
-    }
+    /** A private member's name and colon, in the canonical form, with spaces around them. */
+    private static final Pattern PRIVATE_NAME_COLON = Pattern.compile(" *\"(?:d|p|q|dp|dq|qi|oth|k)\" *: *");
 
     /**
      * Whether the string opening at {@code at} in {@code raw} opens right after a private member's name and colon, so it
-     * is that member's value, read through, never prose quoting a copy; whitespace around the colon may be escaped. The
-     * name is read in the 80 characters before.
+     * is that member's value, read through, never prose quoting a copy: the text back to the comma or opening brace
+     * before it, read in the canonical form ({@link #canonical}), is that name and colon, so every spelling of its
+     * quotes, letters and whitespace reads as it does there. The read goes back no further than {@code floor[0]}, where
+     * the last one began, and sets it to {@code at}, so each stretch is read once.
      */
-    private static boolean afterPrivateName(String raw, int at) {
-        int i = spaceBefore(raw, at - 1);
-        if (i < 0 || raw.charAt(i) != ':') {
-            return false;
+    private static boolean afterPrivateName(String raw, int at, int[] floor) {
+        int k = at - 1;
+        while (k >= floor[0] && raw.charAt(k) != ',' && raw.charAt(k) != '{') {
+            k--;
         }
-        i = spaceBefore(raw, i - 1);
-        return PRIVATE_NAME_END.matcher(raw.substring(Math.max(0, i - 79), i + 1)).find();
-    }
-
-    /** Where, from {@code i} back, the last character before whitespace (raw, or escaped at any level) is, or -1. */
-    private static int spaceBefore(String raw, int i) {
-        int k = i;
-        while (k >= 0) {
-            if (Character.isWhitespace(raw.charAt(k))) {
-                k--;
-            } else if (k > 0 && "nrt".indexOf(raw.charAt(k)) >= 0 && raw.charAt(k - 1) == BACKSLASH) {
-                k -= 2;
-                while (k >= 0 && raw.charAt(k) == BACKSLASH) {
-                    k--;
-                }
-            } else {
-                break;
-            }
-        }
-        return k;
+        int from = Math.max(k + 1, floor[0]);
+        floor[0] = at;
+        return PRIVATE_NAME_COLON.matcher(canonical(raw.substring(from, at)).text()).matches();
     }
 
     /** Where in the text the stretch of the kept text ending at {@code end} ends: just after its last character. */
