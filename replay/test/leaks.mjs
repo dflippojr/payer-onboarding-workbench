@@ -770,6 +770,11 @@ function canonicalSkipped(text) {
           let k = 0;
           while (text[j + k] === '\\') k++;
           if (text[j + k] === '"' && k < run) break;
+          // ...or at a unicode escape of a quote of a shallower level than the run's.
+          if (k > 0 && text.slice(j + k, j + k + 5).toLowerCase() === 'u0022') {
+            const level = canonicalFlatLevel(text.slice(j, j + k + 5));
+            if (level >= 0 && level < Math.log2((run + 1) & -(run + 1))) break;
+          }
           j += k + 1;
         }
         end = Math.min(j, text.length);
@@ -1004,7 +1009,11 @@ function canonicalJwkLeaks(text, ctx) {
     while (t[v] === ' ') v++;
     if (kty && t[v] !== '"') continue;
     const spelled = spelling(q);
-    names.push({ q, v, kty, level: canonicalMemberLevel(spelled, inStrings[origin[q]]), written: canonicalFlatLevel(spelled), jwk: false });
+    const open = inStrings[origin[q]];
+    const nameLevel = canonicalMemberLevel(spelled, open);
+    // A kty whose quote no rule places goes with every level, but only where no string is open around it.
+    if (kty && nameLevel === -1 && open !== 0) continue;
+    names.push({ q, v, kty, level: nameLevel, written: canonicalFlatLevel(spelled), jwk: false });
   }
   if (names.length === 0) return;
   // From each place, the first quote closing a string in the reading that skips strings, and the first closing a value.

@@ -206,7 +206,12 @@ final class CanonicalJwks {
             int value = afterSpace(t, colon + 1);
             if (!kty || value < n && t.charAt(value) == '"') {
                 String spelling = canonical.spelling(read, q);
-                names.add(new Name(q, value, kty, memberLevel(spelling, inStrings[canonical.at(q)]), flatLevel(spelling)));
+                int open = inStrings[canonical.at(q)];
+                int level = memberLevel(spelling, open);
+                // A kty whose quote no rule places goes with every level, but only where no string is open around it.
+                if (!kty || level != ANY_LEVEL || open == 0) {
+                    names.add(new Name(q, value, kty, level, flatLevel(spelling)));
+                }
             }
         }
         if (names.isEmpty()) {
@@ -408,7 +413,10 @@ final class CanonicalJwks {
         return end == 0 ? toRaw[0] : toRaw[end - 1] + 1;
     }
 
-    /** Where the first quote after fewer than {@code run} backslashes starts, from {@code from} in {@code raw}, or its end. */
+    /**
+     * Where the first quote after fewer than {@code run} backslashes, or unicode escape of a quote of a shallower level,
+     * starts, from {@code from} in {@code raw}, or its end.
+     */
     private static int closingShallower(String raw, int from, int run) {
         int i = from;
         while (i < raw.length()) {
@@ -418,6 +426,13 @@ final class CanonicalJwks {
             }
             if (i + k < raw.length() && raw.charAt(i + k) == '"' && k < run) {
                 return i;
+            }
+            // ...or a unicode escape of a quote of a shallower level than the run's (flatLevel).
+            if (k > 0 && raw.regionMatches(true, i + k, "u0022", 0, 5)) {
+                int level = flatLevel(raw.substring(i, i + k + 5));
+                if (level >= 0 && level < Integer.numberOfTrailingZeros(run + 1)) {
+                    return i;
+                }
             }
             i += k + 1;
         }
