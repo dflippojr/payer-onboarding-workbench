@@ -137,6 +137,21 @@ class ClientJwtReplayAdmissionTest {
     }
 
     @Test
+    void aJtiEvictedAtExpIsNotAdmittedAgainWhenThePayerClockStepsBack() throws Exception {
+        String token = sign("used-once", ISSUED, EXP);
+        assertEquals(ISSUER, admit(token));
+        clock.now = EXP;
+        validator.sweepExpired();
+        assertEquals(0, validator.replayCacheSize());
+
+        clock.now = EXP.minusMillis(1);
+        MockPayer.HttpError refused = org.junit.jupiter.api.Assertions.assertThrows(MockPayer.HttpError.class,
+                () -> admit(token));
+        assertEquals("expired", refused.getMessage(),
+                "decisions never use an instant earlier than one that already evicted this jti");
+    }
+
+    @Test
     void concurrentFirstUsesOfOneJtiAdmitExactlyOne() throws Exception {
         clock.now = ISSUED.plusSeconds(1);
         String token = sign("fresh", ISSUED, EXP);
