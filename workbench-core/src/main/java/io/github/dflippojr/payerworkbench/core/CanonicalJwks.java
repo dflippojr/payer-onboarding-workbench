@@ -325,8 +325,13 @@ final class CanonicalJwks {
                     values.add(new Value(canonical.at(v), end, quote + Redactor.MASK + quote,
                             canonical.at(v + 1), end));
                 } else {
+                    // Backslashes before the closing quote at its level are content the canonical form folds into the
+                    // quote (automated review on 582cd72): such a value is never empty nor the mask. A quote of no level
+                    // is past the levels read, which the bound masks whole.
                     String content = t.substring(v + 1, close);
-                    if (!content.isEmpty() && !content.equals(Redactor.MASK)) {
+                    int closing = exactQuote(canonical.spelling(read, close));
+                    boolean backslashed = closing >= 0 && (closing & 1) == 0;
+                    if (backslashed || !content.isEmpty() && !content.equals(Redactor.MASK)) {
                         values.add(new Value(canonical.at(v), canonical.at(close + 1),
                                 quote + Redactor.MASK + quote, canonical.at(v + 1),
                                 canonical.at(close)));

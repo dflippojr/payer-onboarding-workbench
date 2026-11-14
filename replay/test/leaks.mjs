@@ -1253,7 +1253,11 @@ function canonicalValueLeaks(text, t, spelling, origin, names, at, ctx, check) {
       }
       read = close + 1;
       const content = t.slice(v + 1, close);
-      leak = close >= n || (content !== '' && content !== MASK);
+      // Backslashes before the closing quote at its level are content the canonical form folds into the quote
+      // (automated review on 582cd72): such a value is never empty nor the mask. A quote of no level is past the levels
+      // read, which the bound flags.
+      const closing = close < n ? canonicalExactQuote(spelling(close)) : null;
+      leak = close >= n || (closing !== null && !closing.bare) || (content !== '' && content !== MASK);
     } else if (c === '{' || c === '[' || /^(?:-?\d|true\b|false\b)/.test(t.slice(v, v + 6))) {
       leak = true;
     }
