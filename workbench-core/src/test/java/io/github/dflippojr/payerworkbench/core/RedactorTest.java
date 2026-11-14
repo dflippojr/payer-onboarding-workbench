@@ -2402,6 +2402,15 @@ class RedactorTest {
     }
 
     @Test
+    void readsASkippedStretchStartingInAMemberPlaceWithLongLeadingSpacesInLinearTime() {
+        // Automated review on f9317af: a skipped stretch that starts behind a comma, then 200,000 spaces and 200,000 quoted
+        // words in no member's place, read the leading spaces again for each quote (288 KB took 8.7 s); it is read once.
+        String u = String.valueOf((char) 92) + "u0022";
+        String in = "{\"kty\":\"oct\",\"note\":\"x" + u + ",\n" + " ".repeat(200_000) + "\"a\" ".repeat(200_000) + "}";
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(in));
+    }
+
+    @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.
