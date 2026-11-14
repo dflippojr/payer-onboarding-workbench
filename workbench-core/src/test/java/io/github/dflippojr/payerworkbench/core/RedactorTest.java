@@ -2410,6 +2410,93 @@ class RedactorTest {
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(in));
     }
 
+    /** A dummy secret whose characters appear nowhere else in the texts below, nor in the mask. */
+    private static final String SKIP_SECRET = "JGVWXZJGVWXZ";
+
+    /** Every line separator spelling the grids below use: raw, escaped once, and as unicode escapes. */
+    private static List<String> skipSeparators() {
+        String b = String.valueOf((char) 92);
+        return List.of("\n", "\r", "\r\n", "\u2028", "\u2029", "\u0085", b + "n", b + "r", b + "r" + b + "n",
+                b + "u000a", b + "u000d", b + "u2028", b + "u2029", b + "u0085");
+    }
+
+    /**
+     * {@code text} bare and nested in a JSON string at depths 1 to 3; and for every fifth {@code index}, at one depth of
+     * the band around the levels the Redactor reads (one below, at, and one past {@link Redactor#NESTED_LEVELS}) in turn,
+     * so the cases of a grid cover every shape, member, separator and depth of that band between them (a text nested 16
+     * levels is about a megabyte).
+     */
+    private static List<String> skipDepths(String text, int index) {
+        List<String> forms = new ArrayList<>();
+        int last = index % 5 == 0 ? Redactor.NESTED_LEVELS - 1 + index / 5 % 3 : 3;
+        String form = text;
+        for (int depth = 0; depth <= last; depth++) {
+            if (depth <= 3 || depth == last) {
+                forms.add(form);
+            }
+            form = depth < last ? nested(form) : form;
+        }
+        return forms;
+    }
+
+    private static void assertNoSecretCharacter(String in, String label) {
+        String out = Redactor.redact(in);
+        for (char c : SKIP_SECRET.toCharArray()) {
+            assertTrue(out.indexOf(c) < 0, () -> label + ": " + out.substring(0, Math.min(out.length(), 300)));
+        }
+    }
+
+    @Test
+    void masksTheWholeTextWheneverASkipPreventsCompleteAnalysisOfAnEarlierOrdinaryString() {
+        // The owner's rule (#352): whenever a skip prevents complete analysis, the whole text is masked. Every separator
+        // spelling in an earlier ordinary string, all eight private members, with mixed quote spellings, bare and nested
+        // one to three levels and across the band around the levels read (skipDepths): no character of the secret is left.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        int index = 0;
+        for (String separator : skipSeparators()) {
+            String note = "{\"note\":\"a" + separator + "b\",";
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                for (String text : List.of(
+                        note + "\"" + member + u + ":" + u + SKIP_SECRET + b + "\"," + b + "\"kty\":\"oct\"}",
+                        note + b + "\"" + member + u + ":\"" + SKIP_SECRET + u + ",\"kty\":\"oct\"}")) {
+                    List<String> forms = skipDepths(text, index++);
+                    for (int f = 0; f < forms.size(); f++) {
+                        assertNoSecretCharacter(forms.get(f), separator.codePoints().boxed().toList() + " " + member
+                                + " form " + f);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksTheWholeTextWheneverASkipEndsAtAPrivateMemberNameOrValue() {
+        // The owner's rule (#352): a skip whose stretch ends right at a private member's name, or between its name and
+        // its value, still masks the whole text. Every separator spelling, all eight private members, the kty before or
+        // after, bare and nested one to three levels and across the band around the levels read (skipDepths): no
+        // character of the secret is left.
+        String b = String.valueOf((char) 92);
+        String e = b + "\"";
+        int index = 0;
+        for (String separator : skipSeparators()) {
+            String note = "\"note\":" + e + "a" + separator + "b, ";
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                String atName = "\"" + member + "\": \"" + SKIP_SECRET + "\"";
+                String atValue = e + member + e + ": \"" + SKIP_SECRET + "\"";
+                for (String text : List.of("{\"kty\":\"oct\"," + note + atName + "}",
+                        "{\"kty\":\"oct\"," + note + atValue + "}", "{" + note + atName + ", \"kty\":\"oct\"}",
+                        "{" + note + atValue + ", \"kty\":\"oct\"}")) {
+                    List<String> forms = skipDepths(text, index++);
+                    for (int f = 0; f < forms.size(); f++) {
+                        assertNoSecretCharacter(forms.get(f), separator.codePoints().boxed().toList() + " " + member
+                                + " form " + f + " " + text);
+                    }
+                }
+            }
+        }
+    }
+
     @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a

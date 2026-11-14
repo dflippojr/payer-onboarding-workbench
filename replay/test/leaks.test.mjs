@@ -2430,3 +2430,59 @@ test('fails closed on a masked JWK nested seven levels deep with a long pad: spe
   assert.ok(findTextLeaks(nest(MASK)).some(leak => leak.check === 'scan budget spent'));
   assert.ok(findTextLeaks(nest('PRIVD352')).length > 0);
 });
+
+// The owner's rule (#352): whenever a skip prevents complete analysis, the whole text is masked and flagged. The grids
+// below are generated with a dummy secret, and RedactorTest builds the same texts.
+const SKIP_SECRET = 'JGVWXZJGVWXZ';
+const SKIP_MEMBERS = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'oth'];
+const SKIP_SEPARATORS = ['\n', '\r', '\r\n', ' ', ' ', '\u0085', '\\n', '\\r', '\\r\\n', '\\u000a', '\\u000d',
+  '\\u2028', '\\u2029', '\\u0085'];
+// The text bare and nested one to three levels; for every fifth index, also at one depth of the band around the 16 levels
+// Redactor reads (15, 16 or 17 in turn), as RedactorTest.skipDepths does.
+const skipDepths = (text, index) => {
+  const last = index % 5 === 0 ? 15 + Math.floor(index / 5) % 3 : 3;
+  const forms = [];
+  let form = text;
+  for (let depth = 0; depth <= last; depth++) {
+    if (depth <= 3 || depth === last) forms.push(form);
+    if (depth < last) form = JSON.stringify({ body: form });
+  }
+  return forms;
+};
+const assertSkipFlagged = form => {
+  assert.ok(findTextLeaks(form).length > 0, `not flagged: ${form.slice(0, 160)}`);
+  assert.ok(findJsonLeaks({ responseBody: form }).length > 0, `field not flagged: ${form.slice(0, 160)}`);
+};
+
+test('flags every private member after every separator spelling in an earlier ordinary string, across depths (#352, the owner\'s rule)', () => {
+  const b = '\\';
+  const u = `${b}u0022`;
+  let index = 0;
+  for (const separator of SKIP_SEPARATORS) {
+    const note = `{"note":"a${separator}b",`;
+    for (const member of SKIP_MEMBERS) {
+      for (const text of [
+        `${note}"${member}${u}:${u}${SKIP_SECRET}${b}",${b}"kty":"oct"}`,
+        `${note}${b}"${member}${u}:"${SKIP_SECRET}${u},"kty":"oct"}`]) {
+        for (const form of skipDepths(text, index++)) assertSkipFlagged(form);
+      }
+    }
+  }
+  assertAccepted(MASK);
+});
+
+test('flags a private member whose name or value follows right where a skip ends, across depths (#352, the owner\'s rule)', () => {
+  const e = '\\"';
+  let index = 0;
+  for (const separator of SKIP_SEPARATORS) {
+    const note = `"note":${e}a${separator}b, `;
+    for (const member of SKIP_MEMBERS) {
+      const atName = `"${member}": "${SKIP_SECRET}"`;
+      const atValue = `${e}${member}${e}: "${SKIP_SECRET}"`;
+      for (const text of [`{"kty":"oct",${note}${atName}}`, `{"kty":"oct",${note}${atValue}}`,
+        `{${note}${atName}, "kty":"oct"}`, `{${note}${atValue}, "kty":"oct"}`]) {
+        for (const form of skipDepths(text, index++)) assertSkipFlagged(form);
+      }
+    }
+  }
+});
