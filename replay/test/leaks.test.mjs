@@ -2548,3 +2548,15 @@ test('flags a private member whose name or value follows right where a skip ends
     }
   }
 });
+
+test('flags a private member whose name the exact reading of its quotes stops in (#352, automated review on 755dfdd)', () => {
+  // Which object it is in is not established, so it fails closed whenever the text holds a kty: all eight members, the
+  // kty after or before, bare and nested once and twice.
+  const b = '\\';
+  for (const member of SKIP_MEMBERS) {
+    const name = `${b}u005cu0022${member}${b}u0022:"${SKIP_SECRET}"`;
+    for (const text of [`{"note":"x${b}u0022,${name},"kty":"oct"}`, `{"kty":"oct","note":"x${b}u0022,${name}}`]) {
+      for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+    }
+  }
+});

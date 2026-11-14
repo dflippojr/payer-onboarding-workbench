@@ -2502,6 +2502,23 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateMemberWhoseNameTheExactReadingStopsIn() {
+        // Automated review on 755dfdd: where the exact reading of the quotes stops inside a private member's name, which
+        // object it is in is not established, so it fails closed whenever the text holds a kty: all eight members, the
+        // kty after or before, bare and nested once and twice.
+        String b = String.valueOf((char) 92);
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+            String name = b + "u005cu0022" + member + b + "u0022:\"" + SKIP_SECRET + "\"";
+            for (String text : List.of("{\"note\":\"x" + b + "u0022," + name + ",\"kty\":\"oct\"}",
+                    "{\"kty\":\"oct\",\"note\":\"x" + b + "u0022," + name + "}")) {
+                for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                    assertNoSecretCharacter(form, member + " " + form);
+                }
+            }
+        }
+    }
+
+    @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.
