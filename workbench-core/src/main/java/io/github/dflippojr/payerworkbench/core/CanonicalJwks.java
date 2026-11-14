@@ -253,13 +253,16 @@ final class CanonicalJwks {
         String t = canonical.text();
         int n = t.length();
         List<Name> names = new ArrayList<>();
+        // Where the first quote after a skipped stretch's leading spaces, or after its line break and spaces, may be: read
+        // once (automated review on f9317af).
+        int leading = startsInPlace ? afterSpace(t, 0) : -1;
+        int afterBreak = startsInPlace && n > 0 ? afterSpace(t, 1) : -1;
         for (int q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
             int k = q + 1;
             while (k < n && k - q <= 64 && isNameChar(t.charAt(k))) {
                 k++;
             }
-            boolean place = inMemberPlace(t, q)
-                    || startsInPlace && (afterSpace(t, 0) == q || n > 0 && afterSpace(t, 1) == q);
+            boolean place = inMemberPlace(t, q) || q == leading || q == afterBreak;
             if (k == q + 1 || k >= n || t.charAt(k) != '"' || !place) {
                 continue;
             }
