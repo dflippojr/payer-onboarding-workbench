@@ -1336,11 +1336,17 @@ function escapeBefore(text, from, k) {
 
 /**
  * Whether the name at q in text opens in a member's place within [from, ...): after { or , and whitespace, each read
- * back as the canonical form reads it, raw or escaped, whatever spelling the escape's backslash run has.
+ * back as the canonical form reads it, raw or escaped, whatever spelling the escape's backslash run has; the line break
+ * at [breakFrom, breakTo) that starts a skipped stretch counts as whitespace.
  */
-function spanMemberPlace(text, from, q) {
+function spanMemberPlace(text, from, q, breakFrom = -1, breakTo = -1) {
   let k = q;
   for (;;) {
+    // The line break that starts a skipped stretch is read past too, whatever Java reads it as.
+    if (k === breakTo && breakFrom >= from) {
+      k = breakFrom;
+      continue;
+    }
     if (k > from && isJavaSpace(text[k - 1])) {
       k--;
       continue;
@@ -1354,7 +1360,7 @@ function spanMemberPlace(text, from, q) {
 
 /**
  * The matches of the global pattern re that lie whole inside one of the skipped stretches (in order, apart) and open in
- * a member's place there, found in one pass over the text, so many stretches are read in linear time (automated review
+ * a member's place, read back into the text before the stretch, found in one pass over the text, so many stretches are read in linear time (automated review
  * on ab0bc7d).
  */
 function spanMatches(re, text, spans) {
@@ -1366,7 +1372,11 @@ function spanMatches(re, text, spans) {
     while (p < spans.length && spans[p].to <= m.index) p++;
     if (p >= spans.length) break;
     const { from, to } = spans[p];
-    if (m.index >= from && m.index + m[0].length <= to && spanMemberPlace(text, from, m.index)) found.push({ m, to });
+    // A stretch keeps the member place it starts in (automated review on bcd1db2): read back past its line break into
+    // the text before it.
+    const lineBreak = canonicalToken(text, from, to);
+    if (m.index >= from && m.index + m[0].length <= to
+        && spanMemberPlace(text, 0, m.index, from, lineBreak === null ? -1 : lineBreak.next)) found.push({ m, to });
     if (m[0].length === 0) re.lastIndex++;
   }
   return found;
@@ -1381,7 +1391,6 @@ function spanMatches(re, text, spans) {
 function skippedPrivateLeaks(text, spans, ctx) {
   for (const { m, to } of spanMatches(SPAN_PRIVATE, text, spans)) {
     const v = m.index + m[0].length;
-    const tokens = [];
     let i = v;
     const next = () => {
       if (i >= to) return null;
@@ -1390,7 +1399,6 @@ function skippedPrivateLeaks(text, spans, ctx) {
       ctx.work += token.next - i;
       const read = { c: token.c, at: i, end: token.next };
       i = token.next;
-      tokens.push(read);
       return read;
     };
     // The value starts after the spaces the canonical form reads.

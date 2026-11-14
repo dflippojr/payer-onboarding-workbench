@@ -198,16 +198,28 @@ final class CanonicalJwks {
         toRaw[kept.length()] = raw.length();
         String read = kept.toString();
         Canonical canonical = canonical(read);
-        List<Name> names = names(read, canonical);
+        List<Name> names = names(read, canonical, false);
         // Each skipped stretch, read on its own: its names, and where each of its places is in the text.
         List<String> spans = new ArrayList<>();
         List<Canonical> spanForms = new ArrayList<>();
         List<List<Name>> spanNames = new ArrayList<>();
         boolean anyKty = names.stream().anyMatch(Name::kty);
+        // Each stretch keeps the member place it starts in (automated review on bcd1db2): a comma or an object's opening
+        // bracket before it, spaces aside, in the text read whole.
+        Canonical whole = skips.length > 0 ? canonical(raw) : null;
+        int c = 0;
         for (int r = 0; r < skips.length; r += 2) {
             String span = raw.substring(skips[r], skips[r + 1]);
             Canonical form = canonical(span);
-            List<Name> found = names(span, form);
+            while (c < whole.text().length() && whole.at(c) < skips[r]) {
+                c++;
+            }
+            int before = c - 1;
+            while (before >= 0 && whole.text().charAt(before) == ' ') {
+                before--;
+            }
+            boolean startsInPlace = before >= 0 && "{,".indexOf(whole.text().charAt(before)) >= 0;
+            List<Name> found = names(span, form, startsInPlace);
             spans.add(span);
             spanForms.add(form);
             spanNames.add(found);
@@ -233,9 +245,11 @@ final class CanonicalJwks {
 
     /**
      * The kty and private member names of {@code read}, in its canonical form: a quote in a member's place, 1 to 64 name
-     * characters, a quote, spaces and a colon, each letter at its name's level; a kty only with a string value.
+     * characters, a quote, spaces and a colon, each letter at its name's level; a kty only with a string value. With
+     * {@code startsInPlace}, a skipped stretch starting in a member's place, a quote right after its line break and
+     * spaces is in one too.
      */
-    private static List<Name> names(String read, Canonical canonical) {
+    private static List<Name> names(String read, Canonical canonical, boolean startsInPlace) {
         String t = canonical.text();
         int n = t.length();
         List<Name> names = new ArrayList<>();
@@ -244,7 +258,9 @@ final class CanonicalJwks {
             while (k < n && k - q <= 64 && isNameChar(t.charAt(k))) {
                 k++;
             }
-            if (k == q + 1 || k >= n || t.charAt(k) != '"' || !inMemberPlace(t, q)) {
+            boolean place = inMemberPlace(t, q)
+                    || startsInPlace && (afterSpace(t, 0) == q || n > 0 && afterSpace(t, 1) == q);
+            if (k == q + 1 || k >= n || t.charAt(k) != '"' || !place) {
                 continue;
             }
             String name = t.substring(q + 1, k);
