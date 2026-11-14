@@ -370,7 +370,7 @@ final class CanonicalJwks {
     /**
      * The exact reading of {@link #owned}, for each name: {@link #JWK} when it is in an object that, at its level, holds a
      * kty; {@link #NOT_JWK} when it is in no object, or in one without a kty that holds no quote deeper than its own; and
-     * {@link #UNREAD} when the quotes stop reading exactly before it or before its object closes, or when its object
+     * {@link #UNREAD} when the quotes stop reading exactly before it, inside it or before its object closes, or when its object
      * holds a deeper quote, which in a copy may be one of that object's own quotes (closing a string or the object early,
      * or quoting a kty), so which object it is in is not established.
      *
@@ -392,6 +392,9 @@ final class CanonicalJwks {
         int depth = 0;
         int[] owner = new int[names.size()];
         int[] ownerLevel = new int[names.size()];
+        // Where each name's closing quote is, and where the reading stopped (n when it read to the end).
+        int[] closeOf = new int[names.size()];
+        int stop = n;
         boolean[] typed = new boolean[n];
         boolean[] closed = new boolean[n];
         // For each object read to its close, the deepest quote inside it.
@@ -421,6 +424,7 @@ final class CanonicalJwks {
                     }
                     nameLevel = level;
                     nameClose = t.indexOf('"', k + 1);
+                    closeOf[next] = nameClose < 0 ? n : nameClose;
                     next++;
                 }
                 if (exact && level == depth) {
@@ -447,6 +451,9 @@ final class CanonicalJwks {
                     top = popped(stack, stackDeepest, top, deepest);
                 }
             }
+            if (!exact) {
+                stop = k;
+            }
         }
         // Read to the end: the objects still open hold what was read inside them.
         while (exact && top > 0) {
@@ -456,7 +463,9 @@ final class CanonicalJwks {
         int[] state = new int[names.size()];
         for (int j = 0; j < names.size(); j++) {
             int object = j < next ? owner[j] : -1;
-            if (j >= next || object >= 0 && !closed[object]) {
+            // A name the reading stops in, before or at its closing quote, is in an object it did not establish
+            // (automated review on 755dfdd).
+            if (j >= next || object >= 0 && !closed[object] || closeOf[j] >= stop) {
                 state[j] = UNREAD;
             } else if (object < 0) {
                 state[j] = NOT_JWK;

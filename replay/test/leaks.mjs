@@ -1080,6 +1080,8 @@ function canonicalOwners(t, spelling, names, anyKty) {
   const deepest = new Map();
   const closed = new Set();
   const owner = [];
+  // Where the reading stopped (n when it read to the end).
+  let stop = n;
   let depth = 0;
   let nameLevel = 0;
   let nameClose = -1;
@@ -1098,14 +1100,18 @@ function canonicalOwners(t, spelling, names, anyKty) {
       const opensName = next < names.length && names[next].q === k;
       exact = quote !== null && quote.level <= depth && (quote.level < depth || quote.bare)
         && (!opensName || quote.level === depth) && (k !== nameClose || quote.level === nameLevel);
-      if (!exact) break;
+      if (!exact) {
+        stop = k;
+        break;
+      }
       const top = stack.length > 0 ? stack[stack.length - 1] : null;
       if (top !== null) top.deepest = Math.max(top.deepest, quote.level);
       if (opensName) {
-        owner.push({ at: top !== null && top.level === depth && t[top.at] === '{' ? top.at : -1, level: depth });
+        nameClose = t.indexOf('"', k + 1);
+        owner.push({ at: top !== null && top.level === depth && t[top.at] === '{' ? top.at : -1, level: depth,
+          close: nameClose < 0 ? n : nameClose });
         if (names[next].kty && owner[next].at >= 0) typed.add(owner[next].at);
         nameLevel = quote.level;
-        nameClose = t.indexOf('"', k + 1);
         next++;
       }
       if (quote.level === depth) {
@@ -1122,7 +1128,10 @@ function canonicalOwners(t, spelling, names, anyKty) {
       const closes = !opens && top !== null && top.level === depth;
       exact = (spelled.length === 1 || canonicalLetterLevel(spelled) <= depth)
         && (!closes || t[top.at] === (c === '}' ? '{' : '['));
-      if (!exact) break;
+      if (!exact) {
+        stop = k;
+        break;
+      }
       if (opens) stack.push({ at: k, level: depth, deepest: 0 });
       else if (closes) pop(true);
     }
@@ -1132,7 +1141,9 @@ function canonicalOwners(t, spelling, names, anyKty) {
   names.forEach((name, j) => {
     if (name.kty) return;
     const object = j < next ? owner[j] : null;
-    if (object === null || (object.at >= 0 && !closed.has(object.at))) name.jwk = anyKty;
+    // A name the reading stops in, before or at its closing quote, is in an object it did not establish (automated
+    // review on 755dfdd).
+    if (object === null || (object.at >= 0 && !closed.has(object.at)) || object.close >= stop) name.jwk = anyKty;
     else if (object.at >= 0 && typed.has(object.at)) name.jwk = true;
     // A quote deeper than its object's own inside it may be one of that object's quotes in a copy, closing a string or
     // the object early or quoting a kty, so which object the member is in is not established.
