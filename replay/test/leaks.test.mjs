@@ -2560,3 +2560,18 @@ test('flags a private member whose name the exact reading of its quotes stops in
     }
   }
 });
+
+test('flags a private value whose content ends in escaped backslashes before its closing quote (#352, automated review on 582cd72)', () => {
+  // Backslashes escaped before a value's closing quote are its content: a value of only such backslashes is not empty,
+  // and the mask followed by them is not the mask. All eight members, the name quoted plain or with unicode escapes,
+  // bare and nested once and twice.
+  const b = '\\';
+  for (const member of SKIP_MEMBERS) {
+    for (const name of [`${b}u005cu0022${member}${b}u0022`, `${b}u0022${member}${b}u0022`]) {
+      for (const content of [`${b}${b}`, `${b}${b}${b}${b}`, `${MASK}${b}${b}`]) {
+        const text = `{"kty":"oct",${name}:"${content}"}`;
+        for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+      }
+    }
+  }
+});

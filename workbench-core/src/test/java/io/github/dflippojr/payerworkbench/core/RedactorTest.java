@@ -2519,6 +2519,25 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateValueWhoseContentEndsInEscapedBackslashesBeforeItsClosingQuote() {
+        // Automated review on 582cd72: backslashes escaped before a value's closing quote are its content, so a value of
+        // only such backslashes is not empty and the mask followed by them is not the mask: each is masked, for all eight
+        // members, with the name quoted plain or with unicode escapes, bare and nested once and twice.
+        String b = String.valueOf((char) 92);
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+            for (String name : List.of(b + "u005cu0022" + member + b + "u0022", b + "u0022" + member + b + "u0022")) {
+                for (String content : List.of(b + b, b + b + b + b, Redactor.MASK + b + b)) {
+                    String text = "{\"kty\":\"oct\"," + name + ":\"" + content + "\"}";
+                    for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                        String out = Redactor.redact(form);
+                        assertFalse(out.equals(form), () -> member + " " + form);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.
