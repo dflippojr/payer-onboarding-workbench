@@ -543,11 +543,9 @@ test('accepts a loose kty in a copied value with mixed quote escapes after a str
   const before = ['', `${u}a${u}:0,`, `${u}a${u}:0,${u}b${u}:${u}x${u},`, `${u}a${u}:{${u}x${u}:1},`, `${u}a${u}:[1,${u}y${u}],`];
   for (const lb of ['\n', '\r\n']) {
     for (const members of before) {
-      // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-      // name (over-flags accepted); with nothing before it, the kty follows the body's opening quote and opens no member.
+      // The owner's rule (#352): every form skips prose, so it is flagged whole, its masked form too.
       const text = `he said "${lb}{${b}body${b}:${b}${members}${u}kty${u}:${u}RSA${u},${u}d${u}:${u}dimension${u}${b}}`;
-      if (members === '') assertFlagged(text);
-      else assertFlagged(text);
+      assertFlagged(text);
       assertFlagged(text.replace('dimension', MASK));
     }
   }
@@ -633,8 +631,8 @@ test('accepts a kty after an odd number of quotes in an escaped copy after a str
   for (const lb of ['\n', '\r\n']) {
     for (const encode of encodings) {
       for (const before of ['""a":0,', '"a":"b"c",']) {
-        // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-        // name (over-flags accepted); Redactor's mask is accepted.
+        // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+        // (Redactor masks it whole).
         assertFlagged(`he said "${lb}${encode(form(before, 'dimension'))}`);
         assertFlagged(`he said "${lb}${encode(form(before, MASK))}`);
       }
@@ -662,11 +660,9 @@ test('accepts a private member that opens no member in an escaped copy after a s
     for (const encode of encodings) {
       // Automated review on 223512b: nor after a value that leaves an odd number of quotes before the name.
       for (const mid of ['0 ', '"a" ', '{"y":1} ', '[1] ', '""a":0,', '"b"c",']) {
-        // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-        // name (over-flags accepted) where the d is in a member's place, after a comma; after a space it is still kept.
+        // The owner's rule (#352): every form skips prose, so it is flagged whole, its masked form too.
         const text = `he said "${lb}${encode(form(mid, 'dimension'))}`;
-        if (mid.endsWith(',')) assertFlagged(text);
-        else assertFlagged(text);
+        assertFlagged(text);
         assertFlagged(`he said "${lb}${encode(form(mid, MASK))}`);
       }
       for (const mid of ['0,', '0, y ', '[1],', '"b"c"",']) {
@@ -716,11 +712,9 @@ test('reads a private member value through its line breaks, and only ASCII white
       assertFlagged(`he said "${lb}${encode('{"kty":"oct","k":"[REDACTED]"}')}`);
       for (const space of ['\u00a0', '\u2003', '\u3000']) {
         for (const form of [`{"kty"${space}:"oct","k":"dimension"}`, `{"kty":"oct","k"${space}:"dimension"}`, `{"kty":"oct","k":${space}"dimension"}`]) {
-          // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-          // name (over-flags accepted); a no-break space is no whitespace to Java, so with it no kty or k name reads.
+          // The owner's rule (#352): every form skips prose, so it is flagged whole, its masked form too.
           const text = `he said "${lb}${encode(form)}`;
-          if (space === '\u00a0') assertFlagged(text);
-          else assertFlagged(text);
+          assertFlagged(text);
           assertFlagged(text.replace('dimension', MASK));
         }
       }
@@ -741,8 +735,8 @@ test('flags a JWK copied after two stray quotes and raw line breaks, and ends a 
       assertFlagged(before + copy('FAKE_JWK_K_342'));
       assertFlagged(before + copy(MASK));
     }
-    // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-    // name: a k value cut at a line break there reads on to its close, so it is flagged, and its mask accepted.
+    // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+    // (Redactor masks it whole).
     assertFlagged(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"[REDACTED]\\${lb}TAIL"}`).slice(1, -1)}`);
     assertFlagged(`he said "${lb}${copy(MASK)}`);
   }
@@ -762,8 +756,8 @@ test('flags a copied value after a backslash and a raw Unicode line break, and r
       assertFlagged(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"${MASK}\\${brk}TAIL"}`).slice(1, -1)}`);
     }
     for (const value of ['true', '1', '{}', '\\"FAKE_JWK_K_342\\"']) {
-      // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-      // name (over-flags accepted): with a \f escape too the k is flagged, and Redactor's mask of it accepted.
+      // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+      // (Redactor masks it whole).
       for (const form of ['{\\"kty\\":\\"oct\\",\\"k\\":\\f%s}', '{\\"kty\\":\\"oct\\",\\"k\\"\\f:%s}', '{\\"kty\\"\\f:\\"oct\\",\\"k\\":%s}']) {
         assertFlagged(`he said "${lb}${form.replace('%s', value)}`);
         assertFlagged(`he said "${lb}${form.replace('%s', `\\"${MASK}\\"`)}`);
@@ -884,8 +878,8 @@ test('reads a \\f escape where the text spells it after a malformed \\u escape i
   for (const lb of ['\n', '\r\n']) {
     for (const pre of ['\\uZ', '\\u0Z', '\\u00G']) {
       for (const value of ['true', `${q}FAKE_JWK_K_342${q}`]) {
-        // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-        // name (over-flags accepted): the k is flagged with a \f escape too, and Redactor's mask of it accepted.
+        // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+        // (Redactor masks it whole).
         for (const form of [`{${q}kty${q}:${q}oct${q},${q}k${q}:\\f%s}`, `{${q}kty${q}\\f:${q}oct${q},${q}k${q}:%s}`]) {
           assertFlagged(`he said "${lb}${pre}${form.replace('%s', value)}`);
           assertFlagged(`he said "${lb}${pre}${form.replace('%s', `${q}${MASK}${q}`)}`);
@@ -1011,8 +1005,8 @@ test('flags a copied secret field cut off in half a \\u escape after a \\u005c b
         // end (Codex round 5 on 8e6f207), and the copy as it was is flagged.
         assertFlagged(`${secret}${MASK}\\\\${tail}`);
         assertAccepted(`${secret}${MASK}${q}`);
-        // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-        // name: the k value open to the end there is flagged, and Redactor's mask of it accepted.
+        // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+        // (Redactor masks it whole).
         const jwk = `he said "${lb}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`;
         assertFlagged(`${jwk}${MASK}${backslash}${tail}`);
         assertFlagged(`${jwk}${backslash}${tail}`);
@@ -1139,8 +1133,8 @@ test('r8: accepts a loose private member next to JWKs whose search cannot spend 
   // member is read once, as the string it is, so its two kty names are not counted twice
   // (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks).
   const escapedCopy = `{"note":"line one\nline two","body":"${text.replace(/"/g, '\\u0022')}"}`;
-  // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-  // name: the raw line break in the note starts such prose, so the loose d is flagged and Redactor's mask of it accepted.
+  // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+  // (Redactor masks it whole).
   assertFlagged(escapedCopy);
   assertFlagged(escapedCopy.replace('dimension', MASK));
   assertFlagged(escapedCopy.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
@@ -1163,8 +1157,8 @@ test('accepts masked JWKs copied after a stray quote and a raw line break, read 
       b(`{"keys":[${jwk('a')},`) + u(`${jwk('b')}],"d":"dimension"}`),
     ]) {
       const text = `he said "${lb}${copied}`;
-      // #352 security round 4: a private member in prose the canonical reading skips fails closed when the text holds a kty
-      // name (over-flags accepted): the loose d is flagged, and Redactor's mask of it accepted.
+      // The owner's rule (#352): these forms skip prose, so the text is flagged whole, its masked form too
+      // (Redactor masks it whole).
       assertFlagged(text);
       assertFlagged(text.replace('dimension', MASK));
       assertFlagged(text.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
