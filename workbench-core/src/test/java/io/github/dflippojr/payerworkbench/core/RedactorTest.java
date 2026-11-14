@@ -2379,6 +2379,29 @@ class RedactorTest {
     }
 
     @Test
+    void masksAPrivateMemberOpeningRightAfterASkippedProseStretchStartsBehindACommaOrBrace() {
+        // Automated review on bcd1db2: a skipped prose stretch keeps the member place it starts in, so a name opening right
+        // after its line break, behind a comma or a brace before it, is a member's: masked whole, for every separator and
+        // member, bare and stringified once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        for (char separator : new char[] {0x2028, 0x2029, 0x85, '\n', '\r'}) {
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                String name = separator + u + member + u + ":\"PRIVA352PRIVB\"";
+                for (String text : List.of("{\"kty\":\"oct\",\"note\":\"x" + u + "," + name + "}",
+                        "{\"kty\":\"oct\",\"note\":\"x" + u + "{" + name + "}",
+                        "{\"note\":\"x" + u + "," + name + "," + u + "kty" + u + ":\"oct\"}")) {
+                    for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                        String out = Redactor.redact(form);
+                        assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"),
+                                () -> Integer.toHexString(separator) + ": " + out);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
         // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
         // d in an object without a kty is kept, inside a JWK or not, bare and nested.

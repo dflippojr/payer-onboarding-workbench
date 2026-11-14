@@ -2398,6 +2398,22 @@ test('bounds a private value holding a run of escaped quotes in linear work (#35
   assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
 });
 
+test('flags a private member opening right after a skipped prose stretch starts behind a comma or a brace (#352, automated review on bcd1db2)', () => {
+  // A skipped prose stretch keeps the member place it starts in, so a name opening right after its line break, behind a
+  // comma or a brace before it, is a member's: flagged for every separator and member, bare and stringified once and
+  // twice, in a report and as a field.
+  const u = '\\u0022';
+  for (const separator of ['\u2028', '\u2029', '\u0085', '\n', '\r']) {
+    for (const member of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'oth']) {
+      const name = `${separator}${u}${member}${u}:"PRIVA352PRIVB"`;
+      for (const text of [`{"kty":"oct","note":"x${u},${name}}`, `{"kty":"oct","note":"x${u}{${name}}`,
+        `{"note":"x${u},${name},${u}kty${u}:"oct"}`]) {
+        for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) assertFlagged(form);
+      }
+    }
+  }
+});
+
 test('accepts a private member of an object without a kty whose ordinary string holds a brace (#352, automated review on e05c98c)', () => {
   // Plain JSON reads exactly: a brace in an ordinary string closes no object, so a d in an object without a kty is no
   // JWK's, inside a JWK or not.
