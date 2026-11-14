@@ -2,12 +2,9 @@ package io.github.dflippojr.payerworkbench.mock;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URI;
-import java.text.ParseException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -31,15 +28,31 @@ public final class TailspinPayer extends MockPayer {
                     "Coverage and prior authorization requirements for orders being signed.", NorthwindPayer.standardPrefetch()),
             new ServiceDefinition("order-select", "order-select", "Tailspin coverage requirements (order-select)",
                     "Early coverage guidance for orders being selected.", NorthwindPayer.standardPrefetch()));
+    private static final String EXP_WINDOW = "exp must be in the future and no more than 5 minutes ahead";
+    /** SMART Backend Services: exp at most five minutes ahead; no iat rule. */
+    private static final ClientJwtValidator.Policy POLICY = new ClientJwtValidator.Policy(
+            ALGORITHMS, true,
+            new ClientJwtValidator.Messages(
+                    "client_assertion is required",
+                    "client_assertion must be a signed JWT",
+                    algorithm -> "alg must be RS384 or ES384",
+                    issuer -> "iss is not a registered client id",
+                    "kid is required",
+                    "exp is required",
+                    null,
+                    expiry -> EXP_WINDOW,
+                    "jti is required",
+                    jti -> "jti was already used (replay)"),
+            new ClientJwtValidator.ExpiryCap(Duration.ofMinutes(5), EXP_WINDOW),
+            null);
     private final Map<String, URI> clients;
-    private final RegisteredJwks verifier;
-    private final Map<String, Instant> usedJtis = new ConcurrentHashMap<>();
+    private final ClientJwtValidator validator;
     private final Map<String, Instant> tokens = new ConcurrentHashMap<>();
 
     private TailspinPayer(Builder builder) {
         super(builder);
         clients = Map.copyOf(builder.clients);
-        verifier = new RegisteredJwks(clients, TailspinPayer::invalidClient);
+        validator = new ClientJwtValidator(clients, TailspinPayer::invalidClient, clock, POLICY);
     }
     public static Builder builder() { return new Builder(); }
     @Override public String displayName() { return DISPLAY_NAME; }
@@ -72,38 +85,13 @@ public final class TailspinPayer extends MockPayer {
 
     /** @return the authenticated client id */
     private String validateAssertion(String assertion, String clientId) {
-        SignedJWT jwt;
-        JWTClaimsSet claims;
-        try {
-            if (assertion == null) { throw invalidClient("client_assertion is required"); }
-            jwt = SignedJWT.parse(assertion);
-            claims = jwt.getJWTClaimsSet();
-        } catch (ParseException e) { throw invalidClient("client_assertion must be a signed JWT"); }
-        if (!ALGORITHMS.contains(jwt.getHeader().getAlgorithm())) { throw invalidClient("alg must be RS384 or ES384"); }
-        String issuer = claims.getIssuer();
-        if (issuer == null || !clients.containsKey(issuer)) { throw invalidClient("iss is not a registered client id"); }
-        if (!issuer.equals(claims.getSubject()) || (clientId != null && !issuer.equals(clientId))) {
-            throw invalidClient("iss and sub must equal the registered client id");
-        }
-        String kid = jwt.getHeader().getKeyID();
-        if (kid == null || kid.isBlank()) { throw invalidClient("kid is required"); }
-        verifier.verify(jwt, issuer, kid);
-        String expected = faults().isEnabled(Fault.WRONG_AUDIENCE_REJECT) ? WRONG_AUDIENCE : publicBaseUrl() + TOKEN_PATH;
-        if (!List.of(expected).equals(claims.getAudience())) {
-            HttpError error = invalidClient("aud must be exactly '" + expected + "', got " + claims.getAudience());
-            throw faults().isEnabled(Fault.WRONG_AUDIENCE_REJECT) ? error.fault(Fault.WRONG_AUDIENCE_REJECT) : error;
-        }
-        Instant now = clock.instant();
-        if (claims.getExpirationTime() == null) { throw invalidClient("exp is required"); }
-        Instant exp = claims.getExpirationTime().toInstant();
-        if (!now.isBefore(exp) || exp.isAfter(now.plus(Duration.ofMinutes(5)))) {
-            throw invalidClient("exp must be in the future and no more than 5 minutes ahead");
-        }
-        String jti = claims.getJWTID();
-        if (jti == null || jti.isBlank()) { throw invalidClient("jti is required"); }
-        usedJtis.values().removeIf(expiry -> !now.isBefore(expiry));
-        if (usedJtis.putIfAbsent(issuer + "|" + jti, exp) != null) { throw invalidClient("jti was already used (replay)"); }
-        return issuer;
+        boolean wrongAudience = faults().isEnabled(Fault.WRONG_AUDIENCE_REJECT);
+        String expected = wrongAudience ? WRONG_AUDIENCE : publicBaseUrl() + TOKEN_PATH;
+        return validator.validate(assertion, expected, wrongAudience, false, (issuer, claims) -> {
+            if (!issuer.equals(claims.getSubject()) || (clientId != null && !issuer.equals(clientId))) {
+                throw invalidClient("iss and sub must equal the registered client id");
+            }
+        });
     }
     private static HttpError invalidClient(String message) { return new HttpError(401, "invalid_client", message); }
 
