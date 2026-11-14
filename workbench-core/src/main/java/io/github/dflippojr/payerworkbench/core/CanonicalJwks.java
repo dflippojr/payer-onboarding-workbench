@@ -18,9 +18,8 @@ import java.util.regex.Pattern;
  * <p>The canonical form, which replay/test/leaks.mjs implements separately to the same rules:
  * <ul>
  * <li>A line break inside a string of its level that opens where prose or a value starts at that level, and not in a
- * member's place, is skipped from, to the string holding that level's close, or at level 0 to the end
- * ({@link #skipped}). Skipped is never unread (#352, security round 4): each skipped stretch is read on its own, and
- * every private member value in it is masked whenever the text holds a kty (fail closed).</li>
+ * member's place, is prose the reading would skip ({@link #skipsProse}), so it cannot analyse the text completely: the
+ * whole text is masked whenever it holds a kty (#352, the owner's rule), and the leak scanner flags it.</li>
  * <li>A backslash starts an escape. Its backslash may be spelled as a run of backslashes and unicode escapes of a
  * backslash ({@code u005c} after a backslash), so an escape of any level, or chained through such escapes, is one
  * escape. After that run: {@code u} and four hex digits is that character; {@code n}, {@code r}, {@code t} or
@@ -172,9 +171,8 @@ final class CanonicalJwks {
     }
 
     /**
-     * Every JWK private member's value in {@code raw} that the canonical reading masks, as stretches of the text. What
-     * the reading skips as prose ({@link #skipped}) is never left unread (#352, security round 4): each skipped stretch
-     * is read on its own, and every private member value in it is masked whenever the text holds a kty (fail closed).
+     * Every JWK private member's value in {@code raw} that the canonical reading masks, as stretches of the text; the whole
+     * text when a skip ({@link #skipsProse}) prevents it reading the text completely (#352, the owner's rule).
      */
     static List<Value> privateValues(String raw) {
         List<Value> values = new ArrayList<>();
@@ -182,88 +180,34 @@ final class CanonicalJwks {
                 || !KTY.matcher(raw).find()) {
             return values;
         }
-        // The text without what the reading skips (skipped), and where each of its places is in the text.
-        int[] skips = skipped(raw);
-        StringBuilder kept = new StringBuilder(raw.length());
-        int[] toRaw = new int[raw.length() + 1];
-        int from = 0;
-        for (int r = 0; r <= skips.length; r += 2) {
-            int to = r < skips.length ? skips[r] : raw.length();
-            for (int k = from; k < to; k++) {
-                toRaw[kept.length()] = k;
-                kept.append(raw.charAt(k));
-            }
-            from = r < skips.length ? skips[r + 1] : raw.length();
+        // Whenever the reading would skip a stretch as prose (skipsProse), it cannot analyse the text completely: the whole
+        // text is masked (#352, the owner's rule), and the leak scanner flags it.
+        if (skipsProse(raw)) {
+            values.add(new Value(0, raw.length(), Redactor.MASK, 0, raw.length()));
+            return values;
         }
-        toRaw[kept.length()] = raw.length();
-        String read = kept.toString();
-        Canonical canonical = canonical(read);
-        List<Name> names = names(read, canonical, false);
-        // Each skipped stretch, read on its own: its names, and where each of its places is in the text.
-        List<String> spans = new ArrayList<>();
-        List<Canonical> spanForms = new ArrayList<>();
-        List<List<Name>> spanNames = new ArrayList<>();
-        boolean anyKty = names.stream().anyMatch(Name::kty);
-        // Each stretch keeps the member place it starts in (automated review on bcd1db2): a comma or an object's opening
-        // bracket before it, spaces aside, in the text read whole.
-        Canonical whole = skips.length > 0 ? canonical(raw) : null;
-        int c = 0;
-        for (int r = 0; r < skips.length; r += 2) {
-            String span = raw.substring(skips[r], skips[r + 1]);
-            Canonical form = canonical(span);
-            while (c < whole.text().length() && whole.at(c) < skips[r]) {
-                c++;
-            }
-            int before = c - 1;
-            while (before >= 0 && whole.text().charAt(before) == ' ') {
-                before--;
-            }
-            boolean startsInPlace = before >= 0 && "{,".indexOf(whole.text().charAt(before)) >= 0;
-            List<Name> found = names(span, form, startsInPlace);
-            spans.add(span);
-            spanForms.add(form);
-            spanNames.add(found);
-            anyKty |= found.stream().anyMatch(Name::kty);
-        }
+        Canonical canonical = canonical(raw);
+        List<Name> names = names(raw, canonical);
         if (!names.isEmpty()) {
-            values.addAll(stretchValues(raw, read, toRaw, raw.length(), canonical, names, anyKty, true));
-        }
-        for (int r = 0; r < spans.size(); r++) {
-            if (!anyKty || spanNames.get(r).isEmpty()) {
-                continue;
-            }
-            int start = skips[2 * r];
-            int[] at = new int[spans.get(r).length() + 1];
-            for (int k = 0; k < at.length; k++) {
-                at[k] = start + k;
-            }
-            values.addAll(stretchValues(raw, spans.get(r), at, skips[2 * r + 1], spanForms.get(r), spanNames.get(r),
-                    true, false));
+            values.addAll(maskedValues(raw, canonical, names));
         }
         return values;
     }
 
     /**
      * The kty and private member names of {@code read}, in its canonical form: a quote in a member's place, 1 to 64 name
-     * characters, a quote, spaces and a colon, each letter at its name's level; a kty only with a string value. With
-     * {@code startsInPlace}, a skipped stretch starting in a member's place, a quote right after its line break and
-     * spaces is in one too.
+     * characters, a quote, spaces and a colon, each letter at its name's level; a kty only with a string value.
      */
-    private static List<Name> names(String read, Canonical canonical, boolean startsInPlace) {
+    private static List<Name> names(String read, Canonical canonical) {
         String t = canonical.text();
         int n = t.length();
         List<Name> names = new ArrayList<>();
-        // Where the first quote after a skipped stretch's leading spaces, or after its line break and spaces, may be: read
-        // once (automated review on f9317af).
-        int leading = startsInPlace ? afterSpace(t, 0) : -1;
-        int afterBreak = startsInPlace && n > 0 ? afterSpace(t, 1) : -1;
         for (int q = t.indexOf('"'); q >= 0; q = t.indexOf('"', q + 1)) {
             int k = q + 1;
             while (k < n && k - q <= 64 && isNameChar(t.charAt(k))) {
                 k++;
             }
-            boolean place = inMemberPlace(t, q) || q == leading || q == afterBreak;
-            if (k == q + 1 || k >= n || t.charAt(k) != '"' || !place) {
+            if (k == q + 1 || k >= n || t.charAt(k) != '"' || !inMemberPlace(t, q)) {
                 continue;
             }
             String name = t.substring(q + 1, k);
@@ -284,14 +228,14 @@ final class CanonicalJwks {
     }
 
     /**
-     * The values to mask in one stretch the reading reads, {@code read}, whose place {@code k} is at {@code toRaw[k]} in
-     * {@code raw} and which ends at {@code end} there: with {@code exact}, the private members {@link #owned} reads as a
-     * JWK's (and the strings {@link #ambiguous} masks whole, if any); without, a stretch skipped as prose, every private
-     * member when {@code anyKty}, since which object it is in is not read there.
+     * The values to mask in {@code raw}: the private members {@link #owned} reads as a JWK's, or the strings
+     * {@link #ambiguous} masks whole, if any.
      */
-    private static List<Value> stretchValues(String raw, String read, int[] toRaw, int end, Canonical canonical,
-            List<Name> names, boolean anyKty, boolean exact) {
+    private static List<Value> maskedValues(String raw, Canonical canonical, List<Name> names) {
         List<Value> values = new ArrayList<>();
+        String read = raw;
+        int end = raw.length();
+        boolean anyKty = names.stream().anyMatch(Name::kty);
         String t = canonical.text();
         int n = t.length();
         // Whether spaces then a comma, a closing bracket, a colon or the end follow (a string's close for the lexed
@@ -354,17 +298,10 @@ final class CanonicalJwks {
         int[] lexed = brackets(t, Reading.LEXED, nextLexClose, null, null);
         int[] leveled = brackets(t, Reading.LEVELED, nextLexClose, null, deeper);
         int[] named = brackets(t, Reading.NAMED, nextLexClose, null, deeper);
-        boolean[] jwk = new boolean[names.size()];
-        if (exact) {
-            jwk = owned(t, read, canonical, names, anyKty);
-            List<Value> wholesale = ambiguous(raw, read, canonical, toRaw, openLevels(read), names);
-            if (!wholesale.isEmpty()) {
-                return wholesale;
-            }
-        } else {
-            for (int j = 0; j < names.size(); j++) {
-                jwk[j] = anyKty && !names.get(j).kty();
-            }
+        boolean[] jwk = owned(t, read, canonical, names, anyKty);
+        List<Value> wholesale = ambiguous(raw, canonical, openLevels(raw), names);
+        if (!wholesale.isEmpty()) {
+            return wholesale;
         }
         Matcher scalar = SCALAR.matcher(t);
         // Where the last string value read ends: a name before it is inside that value, which is masked or the mask.
@@ -385,26 +322,26 @@ final class CanonicalJwks {
                 }
                 readTo = close + 1;
                 if (close >= n) {
-                    values.add(new Value(toRaw[canonical.at(v)], end, quote + Redactor.MASK + quote,
-                            toRaw[canonical.at(v + 1)], end));
+                    values.add(new Value(canonical.at(v), end, quote + Redactor.MASK + quote,
+                            canonical.at(v + 1), end));
                 } else {
                     String content = t.substring(v + 1, close);
                     if (!content.isEmpty() && !content.equals(Redactor.MASK)) {
-                        values.add(new Value(toRaw[canonical.at(v)], rawEnd(toRaw, canonical.at(close + 1)),
-                                quote + Redactor.MASK + quote, toRaw[canonical.at(v + 1)],
-                                rawEnd(toRaw, canonical.at(close))));
+                        values.add(new Value(canonical.at(v), canonical.at(close + 1),
+                                quote + Redactor.MASK + quote, canonical.at(v + 1),
+                                canonical.at(close)));
                     }
                 }
             } else if (c == '{' || c == '[') {
                 // Unclosed in either reading: masked to the end (fail closed).
                 int close = counted[v] == -1 || lexed[v] == -1 || leveled[v] == -1 || named[v] == -1 ? -1
                         : Math.max(Math.max(counted[v], named[v]), Math.max(lexed[v], leveled[v]));
-                int stop = close < 0 ? end : rawEnd(toRaw, canonical.at(close + 1));
-                values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
+                int stop = close < 0 ? end : canonical.at(close + 1);
+                values.add(new Value(canonical.at(v), stop, quote + Redactor.MASK + quote, canonical.at(v),
                         stop));
             } else if (scalar.region(v, n).lookingAt()) {
-                int stop = rawEnd(toRaw, canonical.at(scalar.end()));
-                values.add(new Value(toRaw[canonical.at(v)], stop, quote + Redactor.MASK + quote, toRaw[canonical.at(v)],
+                int stop = canonical.at(scalar.end());
+                values.add(new Value(canonical.at(v), stop, quote + Redactor.MASK + quote, canonical.at(v),
                         stop));
             }
         }
@@ -611,21 +548,20 @@ final class CanonicalJwks {
     }
 
     /**
-     * What the canonical reading skips of {@code raw}, as start and end pairs, in order: from each line break inside a
-     * string, at any level, that a quote of that level opens, to the quote closing the string that holds that level (a
-     * quote after fewer backslashes), where reading goes on; at level 0, to the end (#342). A level is the run of backslashes before its quotes: none
-     * for plain JSON, one for JSON embedded in a JSON string, three below that; its line break is a raw one at level 0
-     * and an {@code n} or {@code r} after that run below it. Each level's strings open and close at its own quotes, a
-     * run of any other length being content. JSON holds no line break in a string, so what follows one is prose quoting
-     * a copy, which the exact readings decide on and keep; the canonical form, blind to levels, could not tell that
-     * copy from JSON. Only a string opening where prose or a value starts at its level counts: after the start,
-     * whitespace (raw, or escaped below level 0), a colon, an array's opening bracket, or the quote of a shallower
-     * level opening the string that holds it. One opening in a member's place (after an object's opening bracket or a
-     * comma) is a name, closed by a quote of another spelling, whose line break is whitespace before its colon; one
-     * opening right after other text is the rest of a value.
+     * Whether {@code raw} holds a stretch the canonical reading would skip as prose (#342), which it then cannot analyse
+     * completely, so the whole text is masked (#352, the owner's rule): a line break inside a string, at any level, that
+     * a quote of that level opens. A level is the run of backslashes before its quotes: none for plain JSON, one for JSON
+     * embedded in a JSON string, three below that; its line break is a raw one at level 0 and an {@code n} or {@code r}
+     * after that run below it. Each level's strings open and close at its own quotes, a run of any other length being
+     * content. JSON holds no line break in a string, so what follows one is prose quoting a copy, which the canonical
+     * form, blind to levels, could not tell from JSON. Only a string opening where prose or a value starts at its level
+     * counts: after the start, whitespace (raw, or escaped below level 0), a colon, an array's opening bracket, or the
+     * quote of a shallower level opening the string that holds it. One opening in a member's place (after an object's
+     * opening bracket or a comma) is a name, closed by a quote of another spelling, whose line break is whitespace before
+     * its colon; one opening right after other text is the rest of a value; one right after a private member's name and
+     * colon is its value: each of these is read through, as whitespace in the canonical form.
      */
-    private static int[] skipped(String raw) {
-        List<Integer> skips = new ArrayList<>();
+    private static boolean skipsProse(String raw) {
         // For each level (run) a string is open at: whether its line breaks are read past.
         java.util.Map<Integer, Boolean> open = new java.util.HashMap<>();
         // The last character before here that is no whitespace at any level, and no backslash.
@@ -659,17 +595,7 @@ final class CanonicalJwks {
                 }
             } else if ((run == 0 ? c == '\n' || c == '\r' || c == 0x85 || c == 0x2028 || c == 0x2029
                     : run % 2 == 1 && (c == 'n' || c == 'r')) && Boolean.FALSE.equals(open.get(run))) {
-                // Skipped to the quote closing the string that holds this level (a quote of a shorter run), or at level
-                // 0 to the end.
-                int end = run == 0 ? raw.length() : closingShallower(raw, i + run + 1, run);
-                skips.add(i);
-                skips.add(end);
-                int skippedRun = run;
-                open.keySet().removeIf(level -> level >= skippedRun);
-                starts = false;
-                quoteRun = -1;
-                i = end;
-                continue;
+                return true;
             }
             if (!space && (run == 0 || c == '"')) {
                 last = c;
@@ -678,7 +604,7 @@ final class CanonicalJwks {
             quoteRun = c == '"' ? run : -1;
             i += run + 1;
         }
-        return skips.stream().mapToInt(Integer::intValue).toArray();
+        return false;
     }
 
     /** A private member's name and colon, in the canonical form, with spaces around them. */
@@ -702,37 +628,6 @@ final class CanonicalJwks {
         String name = canonical(raw.substring(from, at)).text();
         name = name.substring(Math.max(name.lastIndexOf(','), name.lastIndexOf('{')) + 1);
         return PRIVATE_NAME_COLON.matcher(name).matches();
-    }
-
-    /** Where in the text the stretch of the kept text ending at {@code end} ends: just after its last character. */
-    private static int rawEnd(int[] toRaw, int end) {
-        return end == 0 ? toRaw[0] : toRaw[end - 1] + 1;
-    }
-
-    /**
-     * Where the first quote after fewer than {@code run} backslashes, or unicode escape of a quote of a shallower level,
-     * starts, from {@code from} in {@code raw}, or its end.
-     */
-    private static int closingShallower(String raw, int from, int run) {
-        int i = from;
-        while (i < raw.length()) {
-            int k = 0;
-            while (i + k < raw.length() && raw.charAt(i + k) == BACKSLASH) {
-                k++;
-            }
-            if (i + k < raw.length() && raw.charAt(i + k) == '"' && k < run) {
-                return i;
-            }
-            // ...or a unicode escape of a quote of a shallower level than the run's (flatLevel).
-            if (k > 0 && raw.regionMatches(true, i + k, "u0022", 0, 5)) {
-                int level = flatLevel(raw.substring(i, i + k + 5));
-                if (level >= 0 && level < Integer.numberOfTrailingZeros(run + 1)) {
-                    return i;
-                }
-            }
-            i += k + 1;
-        }
-        return raw.length();
     }
 
     /** Whether the name opening at {@code q} in {@code t} follows an object's opening bracket or a comma. */
@@ -917,8 +812,7 @@ final class CanonicalJwks {
      * text holds both a kty and a private member name, the string holding such a delimiter at level 0 is masked whole, or
      * the text when no string holds it. Empty when nothing reads ambiguously.
      */
-    private static List<Value> ambiguous(String raw, String read, Canonical canonical, int[] toRaw, int[] inStrings,
-            List<Name> names) {
+    private static List<Value> ambiguous(String raw, Canonical canonical, int[] inStrings, List<Name> names) {
         List<Value> wholesale = new ArrayList<>();
         if (names.stream().noneMatch(Name::kty) || names.stream().allMatch(Name::kty)) {
             return wholesale;
@@ -950,16 +844,16 @@ final class CanonicalJwks {
                         after++;
                     }
                     boolean closes = after >= t.length() || ",}]:".indexOf(t.charAt(after)) >= 0;
-                    int level = nameQuoteLevel(canonical.spelling(read, quote));
+                    int level = nameQuoteLevel(canonical.spelling(raw, quote));
                     quoteLevel = level == Integer.MAX_VALUE ? level : Math.max(0, level) + (closes ? 0 : 1);
                     quoteRead = quote;
                 }
                 depth = Math.max(depth, quoteLevel);
             }
-            if (letterLevel(canonical.spelling(read, k)) <= depth) {
+            if (letterLevel(canonical.spelling(raw, k)) <= depth) {
                 continue;
             }
-            int at = toRaw[canonical.at(k)];
+            int at = canonical.at(k);
             if (at < masked) {
                 continue;
             }
