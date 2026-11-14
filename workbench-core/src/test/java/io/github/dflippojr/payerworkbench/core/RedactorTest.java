@@ -2041,15 +2041,16 @@ class RedactorTest {
 
     @Test
     void masksAJwkMemberThatAStrayQuoteInAPrivateKeyBlockHides() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // Codex security round 6: the stray quote inside the block closes "note" early, so the JWK read of the text as
         // it came never sees d as a member; masking the block takes the quote away, and 6304ec0 (PEM first) masked d.
         String pem = "{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\"-----END PRIVATE KEY-----\",\"d\":\"FAKE_PRIVATE_KEY_293\"}";
         String pgp = pem.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
         // What 6304ec0 made of the two raw inputs.
-        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----\",\"d\":\"[REDACTED]\"}",
+        assertEquals(Redactor.MASK,
                 Redactor.redact(pem));
-        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
-                + "-----END PGP PRIVATE KEY BLOCK-----\",\"d\":\"[REDACTED]\"}", Redactor.redact(pgp));
+        assertEquals(Redactor.MASK, Redactor.redact(pgp));
         for (String raw : List.of(pem, pgp)) {
             for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingQuotes(raw),
                     nestedEscapingBackslashes(raw), nestedEscapingEverything(raw))) {
@@ -2138,9 +2139,11 @@ class RedactorTest {
 
     @Test
     void keepsALooseKtyInAStringAfterAValueWithARawLineBreak() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342: the leak scanner must accept this as it is.
         String text = "{\"note\":\"a\nb\",\"body\":\"" + "\"kty\":\"RSA\",\"d\":\"dimension\"".replace("\"", "\\u0022") + "\"}";
-        assertEquals(text, Redactor.redact(text));
+        assertEquals(Redactor.MASK, Redactor.redact(text));
     }
 
     @Test
@@ -2153,16 +2156,639 @@ class RedactorTest {
 
     @Test
     void masksAnEscapedJwkAfterAStrayQuoteAndARawLineBreak() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342: the leak scanner's escaped-JWK test uses this output as its masked form.
         for (String before : List.of("he said \"\n", "he said \"\r\n")) {
-            assertEquals(before + escapedEverything("{\"kty\":\"oct\",\"k\":") + escapedEverything("\"") + "[REDACTED]"
-                    + escapedEverything("\"}"),
+            assertEquals(Redactor.MASK,
                     Redactor.redact(before + escapedEverything("{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\"}")));
         }
     }
 
     @Test
+    void masksAJwkPrivateMemberWhoseNameIsQuotedWithUnicodeEscapesInAPlainQuotedJwk() {
+        // #352: the name's quotes spelled ", the rest of the JWK plain-quoted; also the value's quotes only. Each is
+        // masked with every other byte kept, bare and nested once and twice. The leak scanner's test of the same name
+        // uses these outputs as its masked forms.
+        String u = "\\u0022";
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put("{\"kty\":\"oct\"," + u + "d" + u + ":\"PRIVD352\"}",
+                "{\"kty\":\"oct\"," + u + "d" + u + ":\"[REDACTED]\"}");
+        cases.put("{\"kty\":\"oct\"," + u + "d" + u + ":[\"PRIVD352\"]}",
+                "{\"kty\":\"oct\"," + u + "d" + u + ":" + u + "[REDACTED]" + u + "}");
+        cases.put("{\"kty\":\"oct\",\"d\":" + u + "PRIVD352" + u + "}",
+                "{\"kty\":\"oct\",\"d\":" + u + "[REDACTED]" + u + "}");
+        cases.put("{\"kty\":\"RSA\",\"n\":\"N1\"," + u + "d" + u + ":\"PRIVD352\"," + u + "p" + u + ":\"PRIVP352\",\"e\":\"AQAB\"}",
+                "{\"kty\":\"RSA\",\"n\":\"N1\"," + u + "d" + u + ":\"[REDACTED]\"," + u + "p" + u + ":\"[REDACTED]\",\"e\":\"AQAB\"}");
+        for (Map.Entry<String, String> c : cases.entrySet()) {
+            String leaked = c.getKey();
+            String masked = c.getValue();
+            for (int depth = 0; depth < 3; depth++) {
+                assertEquals(masked, Redactor.redact(leaked), "depth " + depth);
+                assertEquals(masked, Redactor.redact(masked), "depth " + depth);
+                leaked = nested(leaked);
+                masked = nested(masked);
+            }
+        }
+    }
+
+    @Test
+    void readsJwksWithUnicodeQuotedMembersInLinearTimeWithinTheNestedBudget() {
+        // #352: the flattened view is read in the same walk of the levels as the other views, and spends its level's
+        // nested budget, so each level's reads continue one budget and the work stays linear. About 1 MB each: JWKs with a
+        // "-quoted member, names and values opening and closing on such quotes, and both nested once.
+        String u = "\\u0022";
+        String jwks = "[" + ("{\"kty\":\"oct\"," + u + "k" + u + ":\"PRIVK352\"},").repeat(30_000) + "{}]";
+        // Security round 1: values read past an escaped quote, or quoted a level down, with whitespace escaped a level down.
+        String b = String.valueOf((char) 92);
+        String escapedQuotes = "{\"kty\":\"oct\"," + ("" + u + "k" + u + ":" + u + "PRIVK352" + b + b + u + "x" + u + ",").repeat(25_000)
+                + "\"e\":1}";
+        List<String> texts = List.of(jwks, nested(jwks), ("{\"kty\":\"oct\"," + u + "d" + u + ":[" + u).repeat(40_000),
+                (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(60_000), escapedQuotes, nested(escapedQuotes),
+                ("{\"kty\":\"oct\"," + u + "d" + u + ":" + b + "\"").repeat(40_000),
+                nested(("{\"kty\":\"oct\"," + u + "d" + u + "\n:" + u).repeat(30_000)),
+                // Security round 2: kty after a value quoted a level down, names quoted through an escape chain, and
+                // values and structures that never close, read in the canonical form.
+                ("{" + u + "d" + u + ":" + b + "\"PRIVK352" + b + "\",\"kty\":\"oct\"},").repeat(30_000),
+                nested(("{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "k" + u + ":[\"PRIVK352\"]},").repeat(20_000)),
+                ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(40_000), ("\"kty\":\"d\":\"PRIVK352").repeat(50_000),
+                // Automated review on 697c3c9: a value opening on a long escape chain, then many quotes that might close it.
+                "{\"kty\":\"oct\",\"d\":" + b + "u005c".repeat(60_000) + "u0022PRIVK352" + (b + "\",").repeat(60_000) + "\"}",
+                // Automated review on 418139a: a JWK, then many strings each holding a delimiter that reads ambiguously.
+                "[{\"kty\":\"oct\",\"d\":\"PRIVK352\"}," + ("\"" + b + b + "u002c\",").repeat(250_000) + "1]");
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
+            List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+            String out = Redactor.redact(text, reads);
+            assertFalse(out.contains("PRIVK352"), () -> text.substring(0, 60));
+            Map<String, Integer> left = new LinkedHashMap<>();
+            for (Redactor.DiscoveryRead read : reads) {
+                Integer before = left.put(read.level(), read.after());
+                assertTrue(before == null || before == read.before(), () -> "a fresh budget for " + read + " in " + reads);
+                assertTrue(read.before() <= 4 * text.length() + 1024, () -> read + " in " + reads);
+            }
+        }));
+        assertEquals(jwks.replace("PRIVK352", "[REDACTED]"), Redactor.redact(jwks));
+    }
+
+    @Test
+    void masksAJwkValueThroughAnEscapedQuoteQuotedALevelDownOrAfterEscapedWhitespace() {
+        // Security round 1 on #352, one of each shape the matrix covers (jwkSpellingInputs). A quote spelled as a unicode
+        // escape after an escaped backslash, inside a unicode-quoted value, is an escaped quote a level down: the value
+        // goes on to the quote that closes it there, and is masked whole.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String head = "{\"kty\":\"oct\"," + u + "d" + u + ":";
+        assertEquals(head + u + "[REDACTED]" + u + "}", Redactor.redact(head + u + "PRIVSTART" + b + b + u + "PRIVTAIL" + u + "}"));
+        // A value quoted a level down, which no reading of the JWK's level reads: masked to the end of the string holding
+        // it (fail closed), quoted as the member's name is.
+        assertEquals(head + u + "[REDACTED]" + u, Redactor.redact(head + b + "\"PRIVSTART" + b + "\"}"));
+        assertEquals(head + u + "[REDACTED]" + u, Redactor.redact(head + b + "\"PRIVSTART" + b + "\",\"e\":\"AQAB\"}"));
+        // Whitespace a level down, escaped there: a string keeps the text's quotes, an object is quoted as the name is.
+        String nestedHead = "{\"body\":\"{" + b + "\"kty" + b + "\":" + b + "\"oct" + b + "\"," + b + u + "d" + b + u + ":";
+        assertEquals(nestedHead + b + "n" + b + "\"[REDACTED]" + b + "\"}\"}",
+                Redactor.redact(nestedHead + b + "n" + b + "\"PRIVSTART" + b + "\"}\"}"));
+        assertEquals(nestedHead + b + "t" + b + u + "[REDACTED]" + b + u + "}\"}",
+                Redactor.redact(nestedHead + b + "t{" + b + "\"x" + b + "\":" + b + "\"PRIVSTART" + b + "\"}}\"}"));
+    }
+
+    @Test
+    void masksAJwkValueAfterANameQuotedThroughAnEscapeChainOrBeforeTheJwksKty() {
+        // Security round 2 on #352, one of each shape the matrix adds (jwkSpellingInputs). A name quoted through an escape
+        // chain: the value is masked whole, quoted as the name opens.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String chainHead = "{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "d" + u + ":";
+        String chainQuote = b + "u005c" + u.substring(1);
+        assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}", Redactor.redact(chainHead + "[\"PRIVSTART\"]}"));
+        assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}",
+                Redactor.redact(chainHead + "{\"x\":\"PRIVSTART\"}}"));
+        assertEquals(chainHead + chainQuote + "[REDACTED]" + chainQuote + "}", Redactor.redact(chainHead + "\"PRIVSTART\"}"));
+        // The JWK's kty after a value quoted a level down, with or without a space before it: quoted as the name is.
+        for (String tail : List.of(", \"kty\":\"oct\"}", ",\"kty\":\"oct\"}")) {
+            assertEquals("{" + u + "d" + u + ":" + u + "[REDACTED]" + u + tail,
+                    Redactor.redact("{" + u + "d" + u + ":" + b + "\"PRIVSTART" + b + "\"" + tail));
+        }
+        // ...and after a value holding an escaped backslash and a unicode quote.
+        assertEquals("{" + u + "d" + u + ":" + u + "[REDACTED]" + u + ",\"kty\":\"oct\"}",
+                Redactor.redact("{" + u + "d" + u + ":" + u + "PRIVSTART" + b + b + u + "PRIVTAIL" + u + ",\"kty\":\"oct\"}"));
+        // Every kind of whitespace Java reads after a value is kept after its mask.
+        for (char space : new char[] {' ', '\t', '\n', 0x0B, '\f', '\r', 0x1C, 0x1F, 0x1680, 0x2000, 0x2006, 0x2008, 0x200A,
+                0x2028, 0x2029, 0x205F, 0x3000}) {
+            String head = "{\"kty\":\"oct\"," + u + "d" + u + ":";
+            assertEquals(head + "\"[REDACTED]\"" + space + "}", Redactor.redact(head + "\"PRIVSTART\"" + space + "}"),
+                    () -> Integer.toHexString(space));
+        }
+    }
+
+    @Test
+    void masksWholeTheStringHoldingAJwkWhoseQuotesOrDelimitersReadAmbiguously() {
+        // The bound (#352, liaison decision): where the quote reading is ambiguous, fail closed. A value holding an escaped
+        // quote and a brace is bounded by its own quote level in the structural reading too, so the kty after it stays a
+        // member of the JWK; and a delimiter spelled as an escape where no string is open to decode it is no delimiter of
+        // that level, so the string holding it, or the text, is masked whole.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String chain = b + "u005c" + u.substring(1);
+        String quoteDepth = "{" + chain + "d" + u + ":\"PRIVA" + b + "\",{PRIVB\",\"kty\":\"oct\"}";
+        for (String form : List.of(quoteDepth, nested(quoteDepth), nested(nested(quoteDepth)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
+        }
+        // Automated review on e7e4640: an escaped quote and a brace in an ordinary string do not close the object either.
+        String note = "{\"note\":\"" + b + "\"}\"," + chain + "d" + u + ":\"PRIVA\",\"kty\":\"oct\"}";
+        // Automated review on a7e04ee: also after a name opened plain and closed with a unicode escape.
+        String mixed = "{\"note\":\"" + b + "\"}\",\"d" + u + ":" + chain + "PRIVA" + chain + ",\"kty\":\"oct\"}";
+        // Automated review on 7aeccb5: and an escaped quote, a colon and a brace in an ordinary string.
+        String colon = "{\"note\":\"x" + b + "\":}\"," + chain + "d" + u + ":\"PRIVA\",\"kty\":\"oct\"}";
+        // Automated review on 3d4e81e: and that note before a name opened plain and closed with a unicode escape.
+        String both = "{\"note\":\"x" + b + "\":}\",\"d" + u + ":" + b + "\"PRIVA" + b + "\",\"kty\":\"oct\"}";
+        for (String form : List.of(note, nested(note), nested(nested(note)), mixed, nested(mixed), nested(nested(mixed)),
+                colon, nested(colon), nested(nested(colon)), both, nested(both), nested(nested(both)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVA"), out);
+        }
+        // ...and a name opened plain and closed with a unicode escape before a form feed or an escaped one reads no
+        // object exactly, so the private member after it fails closed (#352, security round 3: over-flags accepted).
+        for (String space : List.of(b + "f", b + "u000C", b + "u2028")) {
+            String mixedName = "{\"note" + u + space + ":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+            assertEquals(mixedName.replace("dimension", Redactor.MASK), Redactor.redact(mixedName));
+        }
+        String delimiter = "{\"x\":1" + b + "u002c" + chain + "d" + u + ":\"PRIVA\nPRIVB\",\"kty\":\"oct\"}";
+        assertEquals(Redactor.MASK, Redactor.redact(delimiter));
+        assertEquals("{\"body\":\"" + Redactor.MASK + "\"}", Redactor.redact(nested(delimiter)));
+    }
+
+    @Test
+    void masksEveryPrivateMemberWhoseNameAndValueMixQuoteSpellingsAfterAnOrdinaryStringHoldingAQuoteAColonAndABrace() {
+        // Security round 3 (#352): where the quotes do not read exactly, no reading may drop a private member's object,
+        // so each such member in a text holding a kty is masked whole (fail closed), bare and nested once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String note = "{\"note\":\"x" + b + "\":}\",";
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
+            for (String text : List.of(
+                    note + "\"" + member + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
+                    note + b + "\"" + member + u + ":\"PRIVA352PRIVB" + u + ",\"kty\":\"oct\"}",
+                    note + "\"" + member + b + "\":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
+                    // ...and escaped quotes in an ordinary string that, in a copy, close its object before the member.
+                    "{\"kty\":\"oct\",\"a\":{\"note\":\"x" + b + "\"}," + b + "\"y" + b + "\":" + b + "\"z\",\"" + member
+                            + "\":\"PRIVA352PRIVB\"}}")) {
+                for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                    String out = Redactor.redact(form);
+                    assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"), out);
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksEveryPrivateMemberWithMixedQuoteSpellingsAfterALineSeparatorInAnEarlierOrdinaryString() {
+        // Security round 4 (#352): what the canonical reading skips as prose is never left unread. A line separator,
+        // paragraph separator or next-line character (or a raw line feed or carriage return) in an earlier ordinary string
+        // starts such a stretch; every private member in it is masked whole whenever the text holds a kty, for all eight
+        // members, bare and stringified once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        for (char separator : new char[] {0x2028, 0x2029, 0x85, '\n', '\r'}) {
+            String note = "{\"note\":\"a" + separator + "b\",";
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                for (String text : List.of(
+                        note + "\"" + member + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}",
+                        note + b + "\"" + member + u + ":\"PRIVA352PRIVB" + u + ",\"kty\":\"oct\"}")) {
+                    for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                        String out = Redactor.redact(form);
+                        assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"),
+                                () -> Integer.toHexString(separator) + ": " + out);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksAPrivateMemberAfterWhitespaceSpelledAsAUnicodeEscapeInSkippedProse() {
+        // Automated review on ab0bc7d: whitespace before a name is read as the canonical form reads it, any escape of it
+        // included, bare and stringified once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        // Automated review on 063cefd: also with the whitespace's backslash spelled as an escape.
+        for (String space : List.of(b + "u0020", b + "u0009", b + b + "u0020", b + "u005c" + b + "u2003", b + "u005cn",
+                b + "u005c" + b + "u005ct", b + "u005cu0020", b + b + "u005cr")) {
+            String text = "{\"note\":\"a\nb\"," + space + "\"d" + u + ":" + u + "PRIVA352PRIVB" + b + "\"," + b + "\"kty\":\"oct\"}";
+            for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                String out = Redactor.redact(form);
+                assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"), out);
+            }
+        }
+    }
+
+    @Test
+    void masksAPrivateMemberOpeningRightAfterASkippedProseStretchStartsBehindACommaOrBrace() {
+        // Automated review on bcd1db2: a skipped prose stretch keeps the member place it starts in, so a name opening right
+        // after its line break, behind a comma or a brace before it, is a member's: masked whole, for every separator and
+        // member, bare and stringified once and twice.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        for (char separator : new char[] {0x2028, 0x2029, 0x85, '\n', '\r'}) {
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                String name = separator + u + member + u + ":\"PRIVA352PRIVB\"";
+                for (String text : List.of("{\"kty\":\"oct\",\"note\":\"x" + u + "," + name + "}",
+                        "{\"kty\":\"oct\",\"note\":\"x" + u + "{" + name + "}",
+                        "{\"note\":\"x" + u + "," + name + "," + u + "kty" + u + ":\"oct\"}")) {
+                    for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                        String out = Redactor.redact(form);
+                        assertFalse(out.contains("PRIVA") || out.contains("352") || out.contains("PRIVB"),
+                                () -> Integer.toHexString(separator) + ": " + out);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void readsASkippedStretchStartingInAMemberPlaceWithLongLeadingSpacesInLinearTime() {
+        // Automated review on f9317af: a skipped stretch that starts behind a comma, then 200,000 spaces and 200,000 quoted
+        // words in no member's place, read the leading spaces again for each quote (288 KB took 8.7 s); it is read once.
+        String u = String.valueOf((char) 92) + "u0022";
+        String in = "{\"kty\":\"oct\",\"note\":\"x" + u + ",\n" + " ".repeat(200_000) + "\"a\" ".repeat(200_000) + "}";
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(in));
+    }
+
+    /** A dummy secret whose characters appear nowhere else in the texts below, nor in the mask. */
+    private static final String SKIP_SECRET = "JGVWXZJGVWXZ";
+
+    /** Every line separator spelling the grids below use: raw, escaped once, and as unicode escapes. */
+    private static List<String> skipSeparators() {
+        String b = String.valueOf((char) 92);
+        return List.of("\n", "\r", "\r\n", "\u2028", "\u2029", "\u0085", b + "n", b + "r", b + "r" + b + "n",
+                b + "u000a", b + "u000d", b + "u2028", b + "u2029", b + "u0085");
+    }
+
+    /**
+     * {@code text} bare and nested in a JSON string at depths 1 to 3; and for every fifth {@code index}, at one depth of
+     * the band around the levels the Redactor reads (one below, at, and one past {@link Redactor#NESTED_LEVELS}) in turn,
+     * so the cases of a grid cover every shape, member, separator and depth of that band between them (a text nested 16
+     * levels is about a megabyte).
+     */
+    private static List<String> skipDepths(String text, int index) {
+        List<String> forms = new ArrayList<>();
+        int last = index % 5 == 0 ? Redactor.NESTED_LEVELS - 1 + index / 5 % 3 : 3;
+        String form = text;
+        for (int depth = 0; depth <= last; depth++) {
+            if (depth <= 3 || depth == last) {
+                forms.add(form);
+            }
+            form = depth < last ? nested(form) : form;
+        }
+        return forms;
+    }
+
+    private static void assertNoSecretCharacter(String in, String label) {
+        String out = Redactor.redact(in);
+        for (char c : SKIP_SECRET.toCharArray()) {
+            assertTrue(out.indexOf(c) < 0, () -> label + ": " + out.substring(0, Math.min(out.length(), 300)));
+        }
+    }
+
+    @Test
+    void masksTheWholeTextWheneverASkipPreventsCompleteAnalysisOfAnEarlierOrdinaryString() {
+        // The owner's rule (#352): whenever a skip prevents complete analysis, the whole text is masked. Every separator
+        // spelling in an earlier ordinary string, all eight private members, with mixed quote spellings, bare and nested
+        // one to three levels and across the band around the levels read (skipDepths): no character of the secret is left.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        int index = 0;
+        for (String separator : skipSeparators()) {
+            String note = "{\"note\":\"a" + separator + "b\",";
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                for (String text : List.of(
+                        note + "\"" + member + u + ":" + u + SKIP_SECRET + b + "\"," + b + "\"kty\":\"oct\"}",
+                        note + b + "\"" + member + u + ":\"" + SKIP_SECRET + u + ",\"kty\":\"oct\"}")) {
+                    List<String> forms = skipDepths(text, index++);
+                    for (int f = 0; f < forms.size(); f++) {
+                        assertNoSecretCharacter(forms.get(f), separator.codePoints().boxed().toList() + " " + member
+                                + " form " + f);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksTheWholeTextWheneverASkipEndsAtAPrivateMemberNameOrValue() {
+        // The owner's rule (#352): a skip whose stretch ends right at a private member's name, or between its name and
+        // its value, still masks the whole text. Every separator spelling, all eight private members, the kty before or
+        // after, bare and nested one to three levels and across the band around the levels read (skipDepths): no
+        // character of the secret is left.
+        String b = String.valueOf((char) 92);
+        String e = b + "\"";
+        int index = 0;
+        for (String separator : skipSeparators()) {
+            String note = "\"note\":" + e + "a" + separator + "b, ";
+            for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+                String atName = "\"" + member + "\": \"" + SKIP_SECRET + "\"";
+                String atValue = e + member + e + ": \"" + SKIP_SECRET + "\"";
+                for (String text : List.of("{\"kty\":\"oct\"," + note + atName + "}",
+                        "{\"kty\":\"oct\"," + note + atValue + "}", "{" + note + atName + ", \"kty\":\"oct\"}",
+                        "{" + note + atValue + ", \"kty\":\"oct\"}")) {
+                    List<String> forms = skipDepths(text, index++);
+                    for (int f = 0; f < forms.size(); f++) {
+                        assertNoSecretCharacter(forms.get(f), separator.codePoints().boxed().toList() + " " + member
+                                + " form " + f + " " + text);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksAPrivateMemberWhoseNameTheExactReadingStopsIn() {
+        // Automated review on 755dfdd: where the exact reading of the quotes stops inside a private member's name, which
+        // object it is in is not established, so it fails closed whenever the text holds a kty: all eight members, the
+        // kty after or before, bare and nested once and twice.
+        String b = String.valueOf((char) 92);
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+            String name = b + "u005cu0022" + member + b + "u0022:\"" + SKIP_SECRET + "\"";
+            for (String text : List.of("{\"note\":\"x" + b + "u0022," + name + ",\"kty\":\"oct\"}",
+                    "{\"kty\":\"oct\",\"note\":\"x" + b + "u0022," + name + "}")) {
+                for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                    assertNoSecretCharacter(form, member + " " + form);
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksAPrivateValueWhoseContentEndsInEscapedBackslashesBeforeItsClosingQuote() {
+        // Automated review on 582cd72: backslashes escaped before a value's closing quote are its content, so a value of
+        // only such backslashes is not empty and the mask followed by them is not the mask: each is masked, for all eight
+        // members, with the name quoted plain or with unicode escapes, bare and nested once and twice.
+        String b = String.valueOf((char) 92);
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "k", "oth")) {
+            for (String name : List.of(b + "u005cu0022" + member + b + "u0022", b + "u0022" + member + b + "u0022")) {
+                for (String content : List.of(b + b, b + b + b + b, Redactor.MASK + b + b)) {
+                    String text = "{\"kty\":\"oct\"," + name + ":\"" + content + "\"}";
+                    for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                        String out = Redactor.redact(form);
+                        assertFalse(out.equals(form), () -> member + " " + form);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void keepsAPrivateMemberOfAnObjectWithoutAKtyWhoseOrdinaryStringHoldsABrace() {
+        // Automated review on e05c98c: plain JSON reads exactly, so a brace in an ordinary string closes no object and a
+        // d in an object without a kty is kept, inside a JWK or not, bare and nested.
+        String text = "{\"kty\":\"oct\",\"a\":{\"note\":\"}\",\"d\":\"dimension\"}}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            assertEquals(form, Redactor.redact(form));
+        }
+        // An escaped quote in that string may be the object's own in a copy, closing it early: that fails closed.
+        String escaped = "{\"kty\":\"oct\",\"a\":{\"note\":\"x\\\"}\",\"d\":\"dimension\"}}";
+        assertEquals(escaped.replace("dimension", Redactor.MASK), Redactor.redact(escaped));
+    }
+
+    @Test
+    void readsAPrivateMembersValueThroughARawLineBreakToTheKtyAfterIt() {
+        // Automated review on 4ca9093: a string opening right after a private member's colon is its value, not prose
+        // quoting a copy, so a raw line break in it does not end the reading before the JWK's kty.
+        String b = String.valueOf((char) 92);
+        // Automated review on 697c3c9: also with the name's letter spelled as a unicode escape.
+        for (String text : List.of("{" + b + "u005cu0022d" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}",
+                "{" + b + "u005cu0022" + b + "u0064" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}",
+                // Automated review on 9a86a8e: and with whitespace escaped around the colon.
+                "{" + b + "u005cu0022d" + b + "u0022" + b + "n:" + b + "t\"PRIVA\nPRIVB\",\"kty\":\"oct\"}",
+                // Automated review on 2ec9796: a name letter spelled through a chain, and a form feed around the colon.
+                "{" + b + "u005cu0022" + b + "u005cu0064" + b + "u0022:\"PRIVA\nPRIVB\",\"kty\":\"oct\"}",
+                "{\"d\"\f:\f\"PRIVA\nPRIVB\",\"kty\":\"oct\"}")) {
+            for (String form : List.of(text, nested(text))) {
+                String out = Redactor.redact(form);
+                assertFalse(out.contains("PRIVA") || out.contains("PRIVB"), out);
+            }
+        }
+    }
+
+    @Test
+    void boundsAValueByItsOpeningQuotesSpellingAndAStructureByItsUnclosedReading() {
+        // Automated review on 253416a: an escaped quote inside a value quoted with a unicode escape is a level deeper read
+        // flattened, so it does not close it; and a structure one reading leaves unclosed is masked to the end.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String chain = b + "u005c" + u.substring(1);
+        for (String text : List.of("{\"kty\":\"oct\"," + chain + "d" + u + ":" + u + "PRIVSTART" + b + "\",PRIVTAIL" + u + "}",
+                "{\"kty\":\"oct\"," + chain + "d" + u + ":{\"x\":\"},PRIVTAIL\"")) {
+            for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                String out = Redactor.redact(form);
+                assertFalse(out.contains("PRIVSTART") || out.contains("PRIVTAIL"), out);
+            }
+        }
+    }
+
+    @Test
+    void readsTheMembersAfterProseInAStringClosedWithAUnicodeQuoteAndKeepsAnOddlySpelledKtyInAString() {
+        // Automated review on 6ec18ce: the string holding the prose may close with a unicode escape of a quote, and a kty
+        // whose quote no rule places is still no member while a string is open around it.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String text = "{\"note\":" + u + "x " + b + "\"" + b + "n" + u + "," + u + "d" + u + ":" + b + "\"VALUE352" + b
+                + "\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("VALUE352"), out);
+        }
+        // A kty name opened with a quote two levels down inside a one-level string, and a name holding unicode quotes and
+        // colons, read no object exactly: the private member after them fails closed (#352, security round 3).
+        String chained = "{\"note\":\"x," + b + "u005c" + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        String name = "{\"note" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\":1,\"d\":\"dimension\"}";
+        for (String form : List.of(chained, nested(chained), name, nested(name))) {
+            assertEquals(form.replace("dimension", Redactor.MASK), Redactor.redact(form));
+        }
+    }
+
+    @Test
+    void readsTheMembersAfterAStringHoldingAStrayQuoteAndALineBreakALevelDown() {
+        // Automated review on 9192663: a stray quote and a line break escaped inside one string end what the canonical
+        // reading skips at that string's close, so the members after it are read; and a unicode quote that a colon follows
+        // closes only a name, not a value, so a kty inside the note is still no member.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String text = "{\"note\":\"x " + b + "\"" + b + "n\"," + u + "d" + u + ":" + b + "\"PRIVSTART" + b + "\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVSTART"), out);
+        }
+        // A kty name whose opening quote closes the note's inner string reads no name exactly, so it fails closed (#352,
+        // security round 3).
+        String stray = "{\"note\":\"x" + u + ": x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        assertEquals(stray.replace("dimension", Redactor.MASK), Redactor.redact(stray));
+        assertEquals(nested(stray).replace("dimension", Redactor.MASK), Redactor.redact(nested(stray)));
+    }
+
+    @Test
+    void masksAPrivateMemberAfterANameClosedWithAUnicodeEscapeAndKeepsAKtyInsideAStringAtAnyDepth() {
+        // Automated review on 45b52d4: a name opened plain and closed with a unicode escape closes the string its opening
+        // quote opened, so a unicode-quoted d after it is a member of the JWK; and a kty inside a note is no member however
+        // deep the text is nested.
+        String b = String.valueOf((char) 92);
+        String u = b + "u0022";
+        String text = "{\"note" + u + ":" + b + "\"text" + b + "\"," + u + "d" + u + ":\"PRIVD352\",\"kty\":\"oct\"}";
+        for (String form : List.of(text, nested(text), nested(nested(text)))) {
+            String out = Redactor.redact(form);
+            assertFalse(out.contains("PRIVD352"), out);
+            assertTrue(out.contains("[REDACTED]"), out);
+        }
+        // A kty spelled with quotes a level down inside a note may be the object's own in a copy, so the d after it fails
+        // closed however deep the text is nested (#352, security round 3: over-flags accepted).
+        String copied = "{\"note\":\"x," + u + "kty" + u + ":" + u + "oct" + u + "\",\"d\":\"dimension\"}";
+        for (int depth = 0; depth <= 6; depth++) {
+            assertEquals(copied.replace("dimension", Redactor.MASK), Redactor.redact(copied), "depth " + depth);
+            copied = nested(copied);
+        }
+    }
+
+    @Test
+    void keepsAPrivateMemberWhoseObjectHoldsAKtyOnlyInsideAString() {
+        // Automated review on 469b848 and 84fe061: a kty quoted a level down inside a string value is no member of the
+        // object as JSON reads it, but in a copy those quotes may be the object's own, so which object the d is in is not
+        // established and it fails closed (#352, security round 3: over-flags accepted). With no kty in the text, it is kept.
+        String b = String.valueOf((char) 92);
+        for (String text : List.of("{\"note\":\"x," + b + "\"kty" + b + "\":" + b + "\"oct" + b + "\"\",\"d\":\"dimension\"}",
+                "{\"note\":\"x, " + b + "\"kty" + b + "\": " + b + "\"oct" + b + "\"\", \"d\": \"dimension\"}",
+                // ...also spelled with unicode escapes, a quote of the level below inside the note.
+                "{\"note\":\"x," + b + "u0022kty" + b + "u0022:" + b + "u0022oct" + b + "u0022\",\"d\":\"dimension\"}")) {
+            assertEquals(text.replace("dimension", Redactor.MASK), Redactor.redact(text));
+            assertEquals(nested(text).replace("dimension", Redactor.MASK), Redactor.redact(nested(text)));
+            String noKty = text.replace("kty", "kid");
+            assertEquals(noKty, Redactor.redact(noKty));
+            assertEquals(nested(noKty), Redactor.redact(nested(noKty)));
+        }
+    }
+
+    @Test
+    void masksEveryUnicodeQuotedPrivateMemberOnceTheFlattenedViewSpendsItsBudget() {
+        // #352: repeated kty syntax spends the JWK search's budget, as in readsJwksAfterPrivateKeyBlocksWithinTheBudgetLeft,
+        // and then every private member name in the flattened view is masked, in a JWK or not: this d is in none.
+        String u = "\\u0022";
+        String text = "\"kty\":\"".repeat(200) + u + "d" + u + ":\"PRIVD352\"";
+        List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+        String out = Redactor.redact(text, reads);
+        assertFalse(out.contains("PRIVD352"), () -> out.substring(out.length() - 80));
+        assertTrue(out.endsWith(u + "d" + u + ":\"[REDACTED]\""), () -> out.substring(out.length() - 80));
+        // The plain read spends its budget too, but finds no plain-quoted d; the flattened view's read masks it.
+        assertTrue(reads.stream().anyMatch(read -> read.level().equals("nested 1") && read.after() < 0), reads::toString);
+    }
+
+    @Test
+    void keepsAPrivateMemberQuotedWithUnicodeEscapesOutsideAJwk() {
+        // #352: with no kty in the text, a d quoted with " is an ordinary name and is kept.
+        String u = "\\u0022";
+        String text = "{\"kid\":\"oct\"," + u + "d" + u + ":\"dimension\"}";
+        assertEquals(text, Redactor.redact(text));
+        assertEquals(nested(text), Redactor.redact(nested(text)));
+        // With a kty elsewhere in the text, a name quoted with unicode escapes where no string is open reads no object
+        // exactly, so it fails closed (#352, security round 3: over-flags accepted).
+        String elsewhere = "{\"a\":{\"kty\":\"oct\"},\"b\":{" + u + "d" + u + ":\"dimension\"}}";
+        assertEquals("{\"a\":{\"kty\":\"oct\"},\"b\":{" + u + "d" + u + ":" + u + Redactor.MASK + u + "}}",
+                Redactor.redact(elsewhere));
+        assertFalse(Redactor.redact(nested(elsewhere)).contains("dimension"));
+    }
+
+    /**
+     * The JWK spelling matrix (#352, security rounds 1 and 2): every private member, with its name's and its value's
+     * quotes each spelled plain, as a unicode escape, escaped one level down or through an escape chain, whitespace
+     * around its colon and after its value, the JWK's plain-quoted kty before or after it, bare and nested once and
+     * twice. The inputs, in order; the scanner's test reads them from the grid this test writes.
+     */
+    private static List<String> jwkSpellingInputs() {
+        String bs = String.valueOf((char) 92);
+        String u = bs + "u0022";
+        // A quote escaped through a chain: an escaped backslash spelled as a unicode escape, then a unicode quote.
+        String chain = bs + "u005c" + u.substring(1);
+        List<String[]> nameQuotes = List.of(new String[] {"\"", "\""}, new String[] {u, u}, new String[] {"\"", u},
+                new String[] {chain, u});
+        List<String> values = List.of(
+                "\"PRIVSTART\"",
+                u + "PRIVSTART" + u,
+                bs + "\"PRIVSTART" + bs + "\"",
+                // An escaped backslash and a unicode quote inside a unicode-quoted value: the flattened view reads that
+                // quote as an escaped one a level down, so the value goes on to PRIVTAIL.
+                u + "PRIVSTART" + bs + bs + u + "PRIVTAIL" + u,
+                "\"PRIVSTART" + u + "PRIVTAIL\"",
+                u + "PRIVSTART\"",
+                "{\"x\":\"PRIVSTART\"}",
+                "[\"PRIVSTART\"]",
+                // A value quoted \" holding an escaped quote a level further down, then a comma (automated review on
+                // 469b848): that quote does not close the value.
+                bs + "\"PRIVSTART" + bs + bs + u + ",PRIVTAIL" + bs + "\"");
+        // Before the colon, after it, and after the value (every other kind of whitespace Java reads there:
+        // masksAJwkValueAfterANameQuotedThroughAnEscapeChainOrBeforeTheJwksKty).
+        List<String[]> spaces = List.of(new String[] {"", "", ""}, new String[] {"\n", "", "\n"},
+                new String[] {"", "\t", " "}, new String[] {"\r", " ", "\t"});
+        List<String> inputs = new ArrayList<>();
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
+            for (String[] quote : nameQuotes) {
+                for (String value : values) {
+                    for (String[] space : spaces) {
+                        String field = quote[0] + member + quote[1] + space[0] + ":" + space[1] + value + space[2];
+                        for (String raw : List.of("{\"kty\":\"oct\"," + field + "}", "{" + field + ",\"kty\":\"oct\"}")) {
+                            inputs.add(raw);
+                            inputs.add(nested(raw));
+                            inputs.add(nested(nested(raw)));
+                        }
+                    }
+                }
+            }
+        }
+        // The bound (#352, liaison decision): a name quoted through an escape chain that decodes at the last level read
+        // (NESTED_LEVELS) and one past it, and a JWK nested NESTED_LEVELS levels deep and one past it. Inside the bound
+        // the value is masked where it is; past it the string holding it is masked whole.
+        String atBound = bs + "u005c".repeat(Redactor.NESTED_LEVELS - 1) + "u0022";
+        String pastBound = bs + "u005c".repeat(Redactor.NESTED_LEVELS) + "u0022";
+        for (String member : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) {
+            for (String boundChain : List.of(atBound, pastBound)) {
+                String field = boundChain + member + u + ":\"PRIVSTART\"";
+                inputs.add("{\"kty\":\"oct\"," + field + "}");
+                inputs.add("{" + field + ",\"kty\":\"oct\"}");
+            }
+        }
+        String deep = "{\"kty\":\"oct\",\"d\":\"PRIVSTART\"}";
+        for (int depth = 0; depth < Redactor.NESTED_LEVELS + 1; depth++) {
+            deep = nested(deep);
+            if (depth >= Redactor.NESTED_LEVELS - 1) {
+                inputs.add(deep);
+            }
+        }
+        return inputs;
+    }
+
+    @Test
+    void masksEveryJwkPrivateMemberHoweverItsQuotesAndWhitespaceAreSpelledAndWritesTheOutputsForTheScanner()
+            throws Exception {
+        // Security round 1 on #352: a unicode-quoted name with a value quoted \" one level down, escaped whitespace around
+        // the colon a level down, and an escaped quote inside a unicode-quoted value each left the value, or the part of
+        // it after that quote, unmasked. Round 2: so did a name quoted through an escape chain, and a kty after the value. No byte of any value may survive; the outputs must match the committed
+        // scanner-grids/jwk-spelling-grid.json.gz, where replay/test/leaks.test.mjs checks that the scanner flags every
+        // input, accepts every output, and rejects each output with a secret continuation after its mask.
+        List<String[]> pairs = new ArrayList<>();
+        List<String> wrong = new ArrayList<>();
+        for (String input : jwkSpellingInputs()) {
+            String out = Redactor.redact(input);
+            pairs.add(new String[] {input, out});
+            if (out.contains("PRIVSTART") || out.contains("PRIVTAIL") || !out.contains(Redactor.MASK)) {
+                wrong.add(input + " => " + out);
+            }
+        }
+        assertEquals(List.of(), wrong, () -> wrong.size() + " of " + pairs.size() + " texts are wrong, first: "
+                + wrong.subList(0, Math.min(5, wrong.size())));
+        assertScannerGrid("jwk-spelling-grid", pairs);
+    }
+
+    @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 925a782): kty quoted with \u0022 and k with \" (or the other way round). The leak
         // scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
@@ -2175,7 +2801,7 @@ class RedactorTest {
         for (String before : List.of("he said \"\n", "he said \"\r\n", "\"\n", "\"\r\n")) {
             for (String after : List.of("", "\"", "\" and \"x\"")) {
                 for (var form : forms) {
-                    assertEquals(before + form.apply("[REDACTED]") + after,
+                    assertEquals(Redactor.MASK,
                             Redactor.redact(before + form.apply("FAKE_JWK_K_342") + after));
                 }
             }
@@ -2184,6 +2810,8 @@ class RedactorTest {
 
     @Test
     void keepsALooseKtyInACopiedValueWithMixedQuoteEscapesAfterAStrayQuoteAndARawLineBreak() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on c4ffeef and 39dd7ff): the leak scanner must accept each as it is.
         String u = "\\u0022";
         String b = "\\\"";
@@ -2193,13 +2821,18 @@ class RedactorTest {
             for (String members : before) {
                 String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + members + u + "kty" + u + ":" + u + "RSA" + u
                         + "," + u + "d" + u + ":" + u + "dimension" + u + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                // With nothing before it, the kty opens no member (it follows the body's opening quote), so the d is kept.
+                assertEquals(Redactor.MASK, Redactor.redact(text));
             }
         }
     }
 
     @Test
     void keepsAKtyThatOpensNoMemberInACopiedValueAfterAStrayQuote() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 0ab5aeb): only the first string after { or , is a member name, so a kty after a
         // value with no comma makes no JWK. The leak scanner's test of the same form uses these outputs.
         String b = "\\\"";
@@ -2207,18 +2840,20 @@ class RedactorTest {
             for (String mid : List.of("0 ", b + "a" + b + " ", "{" + b + "y" + b + ":1} ", "[1] ")) {
                 String text = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
                         + b + "d" + b + ":" + b + "dimension" + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                assertEquals(Redactor.MASK, Redactor.redact(text));
             }
             for (String mid : List.of("0,", "0 , ", "0, x ", "{" + b + "y" + b + ":1},", "[1],")) {
                 String form = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
                         + b + "d" + b + ":" + b + "%s" + b + "}";
-                assertEquals(form.formatted("[REDACTED]"), Redactor.redact(form.formatted("FAKE_PRIVATE_KEY_342")));
+                assertEquals(Redactor.MASK, Redactor.redact(form.formatted("FAKE_PRIVATE_KEY_342")));
             }
         }
     }
 
     @Test
     void keepsAKtyThatOpensNoMemberInAnEscapedCopyAfterAStrayQuote() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 380cf7c): the leak scanner's test of the same form uses these outputs.
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"),
@@ -2229,11 +2864,11 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ")) {
                     String text = "he said \"" + lb + encode.apply("{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertEquals(Redactor.MASK, Redactor.redact(text));
                 }
                 for (String mid : List.of("0,", "0, x ")) {
                     String form = "{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                    assertEquals(Redactor.MASK,
                             Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
                 }
             }
@@ -2242,6 +2877,8 @@ class RedactorTest {
 
     @Test
     void keepsAKtyAfterAnOddNumberOfQuotesInAnEscapedCopyAfterAStrayQuote() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 9a3e247): the leak scanner's test of the same form uses these outputs.
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"),
@@ -2251,11 +2888,13 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String before : List.of("\"\"a\":0,", "\"a\":\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{" + before + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                    // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                    assertEquals(Redactor.MASK, Redactor.redact(text));
                 }
                 for (String before : List.of("\"a\":0,", "")) {
                     String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                    assertEquals(Redactor.MASK,
                             Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
                 }
             }
@@ -2264,6 +2903,8 @@ class RedactorTest {
 
     @Test
     void keepsAPrivateMemberThatOpensNoMemberInAnEscapedCopyAfterAStrayQuote() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated reviews on fa4fd1d and 223512b): the leak scanner's test of the same form uses these outputs.
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"),
@@ -2273,11 +2914,14 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ", "\"\"a\":0,", "\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                    // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                    // A d after a value and a space is in no member's place, so it is still kept.
+                    assertEquals(Redactor.MASK, Redactor.redact(text));
                 }
                 for (String mid : List.of("0,", "0, y ", "[1],", "\"b\"c\"\",")) {
                     String form = "{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                    assertEquals(Redactor.MASK,
                             Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
                 }
             }
@@ -2286,6 +2930,8 @@ class RedactorTest {
 
     @Test
     void readsJwksInAnEscapedCopyAfterAStrayQuoteAsItsSearchFindsThem() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 65e1e7f): the leak scanner's test of the same name uses these outputs.
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"),
@@ -2295,17 +2941,19 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String before : List.of("\"{\":\"\"a\":0,", "\"[\":\"\"a\":0,\"b\":{", "\"a\":\"{\",")) {
                     String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                    assertEquals(Redactor.MASK,
                             Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
                 }
                 String colons = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"d\"::\"dimension\"}");
-                assertEquals(colons, Redactor.redact(colons));
+                assertEquals(Redactor.MASK, Redactor.redact(colons));
             }
         }
     }
 
     @Test
     void readsAPrivateMemberValueThroughItsLineBreaksAndOnlyAsciiWhitespaceAroundAColon() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 7050fef): the leak scanner's test of the same form uses these outputs.
         List<java.util.function.UnaryOperator<String>> encodings = List.of(
                 text -> text.replace("\"", "\\u0022"), text -> text.replace("\"", "\\\\u0022"));
@@ -2313,13 +2961,17 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String value : List.of("\\nTAIL", "\\r\\nTAIL", "\\n")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"" + value + "\"}");
-                    assertEquals("he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}"), Redactor.redact(text));
+                    assertEquals(Redactor.MASK, Redactor.redact(text));
                 }
                 for (String space : List.of("\u00a0", "\u2003", "\u3000")) {
                     for (String form : List.of("{\"kty\"" + space + ":\"oct\",\"k\":\"dimension\"}",
                             "{\"kty\":\"oct\",\"k\"" + space + ":\"dimension\"}", "{\"kty\":\"oct\",\"k\":" + space + "\"dimension\"}")) {
                         String text = "he said \"" + lb + encode.apply(form);
-                        assertEquals(text, Redactor.redact(text));
+                        // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                        // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                        // A no-break space is no whitespace to Java, so with it no kty or k name reads and the d is kept.
+                        assertEquals(Redactor.MASK,
+                                Redactor.redact(text));
                     }
                 }
             }
@@ -2328,20 +2980,25 @@ class RedactorTest {
 
     @Test
     void masksAJwkCopiedAfterTwoStrayQuotesAndEndsAValueAtABackslashBeforeALineBreak() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 5173e8e): the leak scanner's test of the same form uses these outputs.
         String jwk = "{\"kty\":\"oct\",\"k\":\"%s\"}";
         for (String lb : List.of("\n", "\r\n")) {
             for (String before : List.of("he said \"" + lb + "he said \"" + lb, "he said \"" + lb + "x\"" + lb + "more" + lb, "\"" + lb + "\"" + lb)) {
-                assertEquals(before + escapedForJson(jwk.formatted("[REDACTED]")),
+                assertEquals(Redactor.MASK,
                         Redactor.redact(before + escapedForJson(jwk.formatted("FAKE_JWK_K_342"))));
             }
+            // #352 security round 4: a k value cut at a line break in skipped prose is masked to its close (fail closed).
             String cut = "he said \"" + lb + escapedForJson("{\"kty\":\"oct\",\"k\":\"[REDACTED]\\" + lb + "TAIL\"}");
-            assertEquals(cut, Redactor.redact(cut));
+            assertEquals(Redactor.MASK, Redactor.redact(cut));
         }
     }
 
     @Test
     void masksACopiedValueAfterABackslashAndARawUnicodeLineBreakAndReadsNoFormFeedEscapeAsWhitespace() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on e2487e1): the leak scanner's test of the same form relies on these outputs. A
         // backslash escaped in the copy, then a raw U+0085, U+2028 or U+2029, is part of the value, so the whole value is
         // masked; a \f escape is no whitespace in an escaped copy, so no member is found, while a \u000c is.
@@ -2352,24 +3009,28 @@ class RedactorTest {
                 for (String k : List.of("", "[REDACTED]")) {
                     String in = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + k + "\\\\" + brk
                             + "TAIL" + b + "}";
-                    assertEquals(masked, Redactor.redact(in));
+                    assertEquals(Redactor.MASK, Redactor.redact(in));
                 }
             }
             for (String value : List.of("true", "1", "{}", b + "FAKE_JWK_K_342" + b)) {
                 for (String form : List.of("{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s:\\f%2$s}", "{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s\\f:%2$s}",
                         "{%1$skty%1$s\\f:%1$soct%1$s,%1$sk%1$s:%2$s}")) {
+                    // #352 security round 4: in prose the canonical reading skips, a k after a kty fails closed (over-flags
+                    // accepted): its value is masked, quoted as its name is.
                     String kept = "he said \"" + lb + form.formatted(b, value);
-                    assertEquals(kept, Redactor.redact(kept));
+                    assertEquals(Redactor.MASK, Redactor.redact(kept));
                 }
             }
             String formFeed = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000ctrue}";
-            assertEquals("he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000c" + b + "[REDACTED]" + b + "}",
+            assertEquals(Redactor.MASK,
                     Redactor.redact(formFeed));
         }
     }
 
     @Test
     void readsPastALineBreakSpelledAsAUnicodeEscapeInAValueAndMasksACopyAfterAPairedStrayString() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 4175db6): the leak scanner's test of the same form relies on these outputs.
         String u = "\\u0022";
         String b = "\\\"";
@@ -2380,27 +3041,30 @@ class RedactorTest {
                 String masked = "he said \"" + lb + jwk.apply(q, "[REDACTED]");
                 for (String brk : List.of("\\u000a", "\\u000d", "\\u0085", "\\u2028", "\\u2029")) {
                     for (String k : List.of("\\u005c" + brk + "TAIL", "[REDACTED]\\u005c" + brk + "TAIL", "[REDACTED]\\\\" + brk + "TAIL")) {
-                        assertEquals(masked, Redactor.redact("he said \"" + lb + jwk.apply(q, k)));
+                        assertEquals(Redactor.MASK, Redactor.redact("he said \"" + lb + jwk.apply(q, k)));
                     }
                 }
-                String kept = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
-                assertEquals(kept, Redactor.redact(kept));
+                // #352 security round 4: a value holding more than the mask in skipped prose is masked to its close.
+                String tail = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
+                assertEquals(Redactor.MASK, Redactor.redact(tail));
             }
             for (String before : List.of("\"" + lb + "\",\"body\":", "\"" + lb + "\",\"b\":1,\"body\":", "x\"" + lb + "\",\"body\":")) {
-                assertEquals(before + jwk.apply(b, "[REDACTED]"), Redactor.redact(before + jwk.apply(b, "FAKE_JWK_K_342")));
+                assertEquals(before.startsWith("x") ? before + jwk.apply(b, "[REDACTED]") : Redactor.MASK, Redactor.redact(before + jwk.apply(b, "FAKE_JWK_K_342")));
             }
         }
     }
 
     @Test
     void masksACopyCutOffInHalfAnEscapeAndANestOfPairedStrayStrings() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 5ca573a): the leak scanner's test of the same form relies on these outputs.
         String jwk = "{\"kty\":\"oct\",\"k\":\"%s\"}";
         for (String lb : List.of("\n", "\r\n")) {
             for (String tail : List.of("\\", "\\u0", "\\u00", "\\u002", "\\\\\\")) {
                 String masked = "he said \"" + lb + escapedForJson(jwk.formatted("[REDACTED]")) + tail;
-                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(jwk.formatted("FAKE_JWK_K_342")) + tail));
-                assertEquals(masked, Redactor.redact(masked));
+                assertEquals(Redactor.MASK, Redactor.redact("he said \"" + lb + escapedForJson(jwk.formatted("FAKE_JWK_K_342")) + tail));
+                assertEquals(Redactor.MASK, Redactor.redact(masked));
             }
             for (int pad : List.of(500, 2000, 10000)) {
                 String leaked = "{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\",\"pad\":\"" + "x".repeat(pad) + "\"}";
@@ -2409,36 +3073,40 @@ class RedactorTest {
                     leaked = "\"" + lb + "\"" + lb + escapedForJson(leaked);
                     masked = "\"" + lb + "\"" + lb + escapedForJson(masked);
                 }
-                assertEquals(masked, Redactor.redact(leaked));
-                assertEquals(masked, Redactor.redact(masked));
+                assertEquals(Redactor.MASK, Redactor.redact(leaked));
+                assertEquals(Redactor.MASK, Redactor.redact(masked));
             }
         }
     }
 
     @Test
     void masksAJwkPrivateMemberWhoseOpeningQuoteIsEscapedOneLevelMore() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 32194d8): the leak scanner's test of the same form uses these outputs.
         List<String> forms = List.of("{\"kty\":\"oct\",\\\"k\":\"%1$s\"}", "{\"kty\":\"oct\", \\\"d\":\"%1$s\"}",
                 "{\"kty\":\"RSA\",\"n\":\"AQAB\",\\\"d\":\"%1$s\",\\\"p\":\"%1$s\"}");
         for (String lb : List.of("\n", "\r\n")) {
             for (String form : forms) {
                 String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]"));
-                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342"))));
-                assertEquals(masked, Redactor.redact(masked));
+                assertEquals(Redactor.MASK, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342"))));
+                assertEquals(Redactor.MASK, Redactor.redact(masked));
             }
         }
     }
 
     @Test
     void masksACopyThatEndsInAMalformedUnicodeEscape() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 92f3ad6): the leak scanner's test of the same form uses these outputs.
         List<String> forms = List.of("{\"kty\":\"oct\",\"k\":\"%s\"}", "{\"password\":\"%s\"}");
         for (String lb : List.of("\n", "\r\n")) {
             for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
                 for (String form : forms) {
                     String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]")) + tail;
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")) + tail));
-                    assertEquals(masked, Redactor.redact(masked));
+                    assertEquals(form.contains("kty") ? Redactor.MASK : masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")) + tail));
+                    assertEquals(form.contains("kty") ? Redactor.MASK : masked, Redactor.redact(masked));
                 }
             }
         }
@@ -2446,6 +3114,8 @@ class RedactorTest {
 
     @Test
     void readsAFormFeedEscapeAfterARepairedMalformedUnicodeEscape() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on a7d0f8f): the leak scanner's test of the same form relies on these outputs.
         String q = "\\\"";
         for (String lb : List.of("\n", "\r\n")) {
@@ -2453,18 +3123,21 @@ class RedactorTest {
                 for (String value : List.of("true", q + "FAKE_JWK_K_342" + q)) {
                     String colon = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":\\f" + value + "}";
                     String kty = "he said \"" + lb + pre + "{" + q + "kty" + q + "\\f:" + q + "oct" + q + "," + q + "k" + q + ":" + value + "}";
-                    assertEquals(colon, Redactor.redact(colon));
-                    assertEquals(kty, Redactor.redact(kty));
+                    // #352 security round 4: in skipped prose the k after a kty fails closed (over-flags accepted).
+                    assertEquals(Redactor.MASK, Redactor.redact(colon));
+                    assertEquals(Redactor.MASK, Redactor.redact(kty));
                 }
                 String masked = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + "[REDACTED]" + q + "}";
-                assertEquals(masked, Redactor.redact(masked.replace("[REDACTED]", "FAKE_JWK_K_342")));
-                assertEquals(masked, Redactor.redact(masked));
+                assertEquals(Redactor.MASK, Redactor.redact(masked.replace("[REDACTED]", "FAKE_JWK_K_342")));
+                assertEquals(Redactor.MASK, Redactor.redact(masked));
             }
         }
     }
 
     @Test
     void masksANestedCopyThatEndsInAMalformedUnicodeEscape() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on c5a0b7f): the leak scanner's test of the same form relies on these outputs.
         for (String lb : List.of("\n", "\r\n")) {
             for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
@@ -2475,8 +3148,8 @@ class RedactorTest {
                         leaked = "he said \"" + lb + escapedForJson(leaked);
                         masked = "he said \"" + lb + escapedForJson(masked);
                     }
-                    assertEquals(masked + tail, Redactor.redact(leaked + tail));
-                    assertEquals(masked + tail, Redactor.redact(masked + tail));
+                    assertEquals(Redactor.MASK, Redactor.redact(leaked + tail));
+                    assertEquals(Redactor.MASK, Redactor.redact(masked + tail));
                 }
             }
         }
@@ -2484,15 +3157,17 @@ class RedactorTest {
 
     @Test
     void masksACopiedSecretValueCutOffInAMalformedUnicodeEscape() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 058e89a): the leak scanner's test of the same form relies on these outputs.
         String q = "\\\"";
         for (String lb : List.of("\n", "\r\n")) {
             for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + q;
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "FAKE_JWK_K_342" + tail));
-                    assertEquals(masked, Redactor.redact(masked));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked, Redactor.redact("he said \"" + lb + head + "FAKE_JWK_K_342" + tail));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked, Redactor.redact(masked));
                 }
             }
         }
@@ -2500,6 +3175,8 @@ class RedactorTest {
 
     @Test
     void masksACopiedSecretValueCutOffInHalfAUnicodeEscape() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (Codex security round 2 at 8a06f7e): the leak scanner's test of the same form relies on these outputs.
         // Half an escape inside a value still open at the end is masked with it. After a closed secret value it is masked
         // too, as no strict reading reads past it (Codex round 5 on 8e6f207); after a JWK member's value it is kept, and
@@ -2509,10 +3186,11 @@ class RedactorTest {
             for (String lb : List.of("\n", "\r\n")) {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + q;
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + tail));
-                    assertEquals(head.contains("password") ? masked : masked + tail, Redactor.redact(masked + tail));
-                    assertEquals(masked + "}" + tail, Redactor.redact(masked + "}" + tail));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked, Redactor.redact("he said \"" + lb + head + tail));
+                    // #352 security round 4: after a JWK member's value too, as the skipped prose reads it unclosed.
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked, Redactor.redact(masked + tail));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : masked + "}" + tail, Redactor.redact(masked + "}" + tail));
                 }
             }
             for (String head : List.of("{\"kty\":\"oct\",\"k\":\"", "{\"password\":\"")) {
@@ -2524,6 +3202,8 @@ class RedactorTest {
 
     @Test
     void keepsACopiedValueCutOffInHalfAUnicodeEscapeAfterAnEscapedBackslash() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on b9d6038): the leak scanner's test of the same form relies on these outputs. An
         // escaped backslash before half an escape at the end leaves the cut value unmatched, so the text is kept after a JWK
         // member's name. After a secret name no strict reading reads the value, so it is masked from the colon to the
@@ -2535,10 +3215,11 @@ class RedactorTest {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + b + tail;
                     String closed = "he said \"" + lb + head + "[REDACTED]" + q;
-                    boolean secret = head.contains("password");
-                    assertEquals(secret ? closed : masked, Redactor.redact(masked));
+                    // #352 security round 4: after a JWK member's name in prose the canonical reading skips, the open value
+                    // is masked to the end as well (fail closed, over-flags accepted).
+                    assertEquals(head.contains("kty") ? Redactor.MASK : closed, Redactor.redact(masked));
                     String empty = "he said \"" + lb + head + b + tail;
-                    assertEquals(secret ? closed : empty, Redactor.redact(empty));
+                    assertEquals(head.contains("kty") ? Redactor.MASK : closed, Redactor.redact(empty));
                 }
             }
         }
@@ -2546,6 +3227,8 @@ class RedactorTest {
 
     @Test
     void masksACopiedSecretFieldCutOffInHalfAUnicodeEscapeAfterAUnicodeBackslash() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on 73e4411): the leak scanner's test of the same form relies on these outputs. A
         // backslash spelled as a unicode escape before half an escape at the end is masked with a secret field's value;
         // the JWK search matches no k member there, and the text is kept.
@@ -2557,8 +3240,9 @@ class RedactorTest {
                     assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + "[REDACTED]" + backslash + tail));
                     assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + backslash + tail));
                     String jwk = "he said \"" + lb + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q;
-                    assertEquals(jwk + "[REDACTED]" + backslash + tail, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
-                    assertEquals(jwk + backslash + tail, Redactor.redact(jwk + backslash + tail));
+                    // #352 security round 4: the k value open to the end of skipped prose is masked to the end too.
+                    assertEquals(Redactor.MASK, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
+                    assertEquals(Redactor.MASK, Redactor.redact(jwk + backslash + tail));
                 }
             }
         }
@@ -2566,6 +3250,8 @@ class RedactorTest {
 
     @Test
     void masksACopiedJwkWithMixedQuoteEscapesAfterAnEscapedQuoteInAValue() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String u = "\\u0022";
         String b = "\\\"";
@@ -2578,7 +3264,7 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (var form : forms) {
                 String before = "he said \"" + lb;
-                assertEquals(before + form.apply("[REDACTED]"), Redactor.redact(before + form.apply("FAKE_JWK_K_342")));
+                assertEquals(Redactor.MASK, Redactor.redact(before + form.apply("FAKE_JWK_K_342")));
             }
         }
     }
@@ -2616,6 +3302,8 @@ class RedactorTest {
 
     @Test
     void keepsALoosePrivateMemberNextToMaskedJwksCopiedAfterAStrayQuoteAndARawLineBreak() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342: the r8 text copied with \" (or \" and \u0022 mixed) after a stray quote and a raw line break. The JWK
         // search still cannot spend its budget, so "d" is kept; an unmasked private member is masked. The leak
         // scanner's test of the same name uses these as accepted forms.
@@ -2629,14 +3317,19 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (String copied : List.of(b.apply(head + tail), u.apply(head) + b.apply(tail), b.apply(head) + u.apply(tail))) {
                 String text = "he said \"" + lb + copied;
-                assertEquals(text, Redactor.redact(text));
-                assertEquals(text, Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
+                // #352 security round 4: a private member in prose the canonical reading skips fails closed when the
+                // text holds a kty name (over-flags accepted), masked as its name is quoted.
+                assertEquals(Redactor.MASK, Redactor.redact(text));
+                assertEquals(Redactor.MASK,
+                        Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
             }
         }
     }
 
     @Test
     void masksAJwkCopiedAfterAStrayQuoteAndARawLineBreakNestedEightDeep() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342: the leak scanner's test reading this form within its scan budget uses this output as its masked form.
         String jwk = "{\"kty\":\"oct\",\"k\":\"%s\",\"pad\":\"" + "x".repeat(100) + "\"}";
         for (String lb : List.of("\n", "\r\n")) {
@@ -2646,13 +3339,15 @@ class RedactorTest {
                 masked = "he said \"" + lb + escapedForJson(masked);
                 leaked = "he said \"" + lb + escapedForJson(leaked);
             }
-            assertEquals(masked, Redactor.redact(masked));
-            assertEquals(masked, Redactor.redact(leaked));
+            assertEquals(Redactor.MASK, Redactor.redact(masked));
+            assertEquals(Redactor.MASK, Redactor.redact(leaked));
         }
     }
 
     @Test
     void masksAJwkWithALongPadCopiedAfterAStrayQuoteNestedThreeDeep() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342, Codex security round 1 at 0ab5aeb: the leak scanner's test reading this form within its scan budget uses
         // this output as its masked form.
         String jwk = "{\"kty\":\"oct\",\"k\":\"%s\",\"pad\":\"" + "x".repeat(2000) + "\"}";
@@ -2663,13 +3358,15 @@ class RedactorTest {
                 masked = "he said \"" + lb + escapedForJson(masked);
                 leaked = "he said \"" + lb + escapedForJson(leaked);
             }
-            assertEquals(masked, Redactor.redact(masked));
-            assertEquals(masked, Redactor.redact(leaked));
+            assertEquals(Redactor.MASK, Redactor.redact(masked));
+            assertEquals(Redactor.MASK, Redactor.redact(leaked));
         }
     }
 
     @Test
     void masksAJwkAfterALongPadCopiedAndClosedThreeDeep() {
+        // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
+        // skips here is now expected masked whole.
         // #342 (automated review on feb555e): the leak scanner's test reading this form within its scan budget uses this
         // output as its masked form.
         String jwk = "{\"pad\":\"" + "x".repeat(5000) + "\",\"kty\":\"oct\",\"k\":\"%s\"}";
@@ -2680,8 +3377,8 @@ class RedactorTest {
                 masked = "he said \"" + lb + escapedForJson(masked) + "\"";
                 leaked = "he said \"" + lb + escapedForJson(leaked) + "\"";
             }
-            assertEquals(masked, Redactor.redact(masked));
-            assertEquals(masked, Redactor.redact(leaked));
+            assertEquals(Redactor.MASK, Redactor.redact(masked));
+            assertEquals(Redactor.MASK, Redactor.redact(leaked));
         }
     }
 
