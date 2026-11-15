@@ -2020,3 +2020,136 @@ test('reads the rest of a secret field\'s object once for all its secret fields,
     assert.ok(scanWork.characters <= 40 * text.length, `read ${scanWork.characters} characters of a ${text.length}-character text`);
   }
 });
+
+// #360: the classes security rounds 3 to 6 on #356 found, as RedactorEarlyExitTest builds them. Wherever reading a text
+// stops early (an exit, a skip, a cut-off, a budget, an exception or an ambiguous reading) the scanner flags the whole
+// text, and the Redactor masks it whole, which the scanner accepts. Each grid crosses all eight private members, both
+// boundaries, every separator or delimiter spelling, and the text bare, stringified one to three levels, and in turn
+// one level below, at and one past the 16 levels the Redactor reads. Failure messages name a case, not its text.
+const EARLY_SECRET = 'JGVWXZJGVWXZ';
+const EARLY_MEMBERS = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'oth'];
+const EB = '\\';
+const EU = `${EB}u0022`;
+const ECHAIN = `${EB}u005cu0022`;
+const EARLY_SEPARATORS = ['\n', '\r', '\r\n', ' ', ' ', '\u0085', `${EB}n`, `${EB}r`, `${EB}r${EB}n`,
+  `${EB}u000a`, `${EB}u000d`, `${EB}u2028`, `${EB}u2029`, `${EB}u0085`];
+const earlyDelimiters = () => {
+  const out = [];
+  for (const c of [',', ':', '{', '}', '[', ']', '"']) {
+    const hex = c.charCodeAt(0).toString(16).padStart(4, '0');
+    out.push(`${EB}u${hex}`, `${EB}u${hex.toUpperCase()}`, `${EB}u005cu${hex}`, `${EB}${EB}u${hex}`);
+  }
+  return out;
+};
+const earlyRound3 = () => {
+  const texts = [];
+  for (const note of [`{"note":"x${EB}":}",`, `{"note":"${EB}"}",`, `{"note":"x${EB}",{",`, `{"note":"x${EB}":[",`]) {
+    for (const m of EARLY_MEMBERS) {
+      texts.push(`${note}"${m}${EU}:${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`,
+        `${note}${EB}"${m}${EU}:"${EARLY_SECRET}${EU},"kty":"oct"}`,
+        `${note}"${m}${EB}":${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`,
+        `${note}${ECHAIN}${m}${EU}:"${EARLY_SECRET}","kty":"oct"}`);
+    }
+  }
+  for (const m of EARLY_MEMBERS) {
+    texts.push(`{"kty":"oct","a":{"note":"x${EB}"},${EB}"y${EB}":${EB}"z","${m}":"${EARLY_SECRET}"}}`);
+  }
+  return texts;
+};
+const earlyRound4 = () => {
+  const texts = [];
+  for (const sep of EARLY_SEPARATORS) {
+    const note = `{"note":"a${sep}b",`;
+    for (const m of EARLY_MEMBERS) {
+      const name = `${sep}${EU}${m}${EU}:"${EARLY_SECRET}"`;
+      texts.push(`${note}"${m}${EU}:${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`,
+        `${note}${EB}"${m}${EU}:"${EARLY_SECRET}${EU},"kty":"oct"}`,
+        `{"kty":"oct","note":"x${EU},${name}}`, `{"kty":"oct","note":"x${EU}{${name}}`,
+        `{"note":"x${EU},${name},${EU}kty${EU}:"oct"}`);
+    }
+  }
+  for (const space of [`${EB}u0020`, `${EB}u0009`, `${EB}${EB}u0020`, `${EB}u005c${EB}u2003`, `${EB}u005cn`,
+    `${EB}u005c${EB}u005ct`, `${EB}u005cu0020`, `${EB}${EB}u005cr`]) {
+    for (const m of EARLY_MEMBERS) {
+      texts.push(`{"note":"a\nb",${space}"${m}${EU}:${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`);
+    }
+  }
+  return texts;
+};
+const earlyRound5 = () => {
+  const texts = [];
+  const e = `${EB}"`;
+  for (const sep of EARLY_SEPARATORS) {
+    const note = `"note":${e}a${sep}b, `;
+    for (const m of EARLY_MEMBERS) {
+      const atName = `"${m}": "${EARLY_SECRET}"`;
+      const atValue = `${e}${m}${e}: "${EARLY_SECRET}"`;
+      texts.push(`{"kty":"oct",${note}${atName}}`, `{"kty":"oct",${note}${atValue}}`, `{${note}${atName}, "kty":"oct"}`,
+        `{${note}${atValue}, "kty":"oct"}`);
+    }
+  }
+  return texts;
+};
+const earlyRound6 = () => {
+  const texts = [];
+  for (const delimiter of earlyDelimiters()) {
+    for (const m of EARLY_MEMBERS) {
+      texts.push(`{"kty":"oct","x":1${delimiter}"${m}":"${EARLY_SECRET}"}`,
+        `{"kty":"oct","x":"y"${delimiter}"${m}":"${EARLY_SECRET}"}`,
+        `{"kty":"oct","${m}"${delimiter}"${EARLY_SECRET}"}`,
+        `{"x":1${delimiter}${ECHAIN}${m}${EU}:"${EARLY_SECRET}\nX","kty":"oct"}`,
+        `{"${m}"${delimiter}"${EARLY_SECRET}","kty":"oct"}`,
+        `{"x":"y"${delimiter}${EU}${m}${EU}:${EU}${EARLY_SECRET}${EU},"kty":"oct"}`);
+    }
+  }
+  return texts;
+};
+// The text bare and stringified one to three levels, and for every fifth case one level of 15, 16 and 17 in turn.
+const earlyLevels = (text, index) => {
+  const last = index % 5 === 0 ? 15 + Math.floor(index / 5) % 3 : 3;
+  const forms = [];
+  let form = text;
+  for (let depth = 0; depth <= last; depth++) {
+    if (depth <= 3 || depth === last) forms.push(form);
+    if (depth < last) form = JSON.stringify({ body: form });
+  }
+  return forms;
+};
+const assertEarlyGrid = (round, texts) => {
+  texts.forEach((text, i) => {
+    earlyLevels(text, i).forEach((form, f) => {
+      const label = `${round} case ${i} form ${f}`;
+      assert.ok(findTextLeaks(form).length > 0, `${label}: not flagged`);
+      assert.ok(findTextLeaks(reportForm(form)).length > 0, `${label}: report form not flagged`);
+      assert.ok(findJsonLeaks({ responseBody: form }).length > 0, `${label}: field not flagged`);
+    });
+  });
+  // The Redactor's output for every case is the mask alone (RedactorEarlyExitTest).
+  assertAccepted('[REDACTED]');
+};
+
+test('flags the whole text where an ambiguous quote reading leaves a private member\'s object undecided (#360, round 3 class)', () => {
+  assertEarlyGrid('round 3', earlyRound3());
+});
+
+test('flags the whole text where a prose skip starts at a line separator before a private member (#360, round 4 class)', () => {
+  assertEarlyGrid('round 4', earlyRound4());
+});
+
+test('flags the whole text where a skip in stringified text ends at a private member\'s name or value (#360, round 5 class)', () => {
+  assertEarlyGrid('round 5', earlyRound5());
+});
+
+test('flags the whole text where an escaped delimiter outside a string precedes a private member\'s name or value (#360, round 6 class)', () => {
+  assertEarlyGrid('round 6', earlyRound6());
+});
+
+test('flags one case of each class at every level up to and one past the bound (#360)', () => {
+  [earlyRound3(), earlyRound4(), earlyRound5(), earlyRound6()].forEach((grid, round) => {
+    let form = grid[0];
+    for (let depth = 0; depth <= 17; depth++) {
+      assert.ok(findTextLeaks(form).length > 0, `round ${round + 3} case 0 at level ${depth}: not flagged`);
+      form = JSON.stringify({ body: form });
+    }
+  });
+});
