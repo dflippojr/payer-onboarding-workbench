@@ -401,24 +401,23 @@ public final class Redactor {
         // reading of the text as it came stops (it is not strict JSON at a level it needs, or needs a level past those
         // read); the JWK search below stops (a level's budget spent, or JSON nested past NESTED_LEVELS); an exception; or
         // the output does not read completely with every JWK private member masked.
-        boolean mayHold = WholeTextGuard.mayHoldPrivateMember(text);
-        if (mayHold && !WholeTextGuard.readsCompletely(text)) {
-            return MASK;
-        }
-        Discovery discovery = new Discovery(text.length(), reads);
-        String out;
         try {
-            out = redactParts(text, discovery);
+            boolean mayHold = WholeTextGuard.mayHoldPrivateMember(text);
+            if (mayHold && !WholeTextGuard.readsCompletely(text)) {
+                return MASK;
+            }
+            Discovery discovery = new Discovery(text.length(), reads);
+            String out = redactParts(text, discovery);
+            if (mayHold && discovery.stopped) {
+                return MASK;
+            }
+            if (WholeTextGuard.mayHoldPrivateMember(out) && !WholeTextGuard.readsMasked(out)) {
+                return MASK;
+            }
+            return out;
         } catch (RuntimeException | StackOverflowError e) {
             return MASK;
         }
-        if (mayHold && discovery.stopped) {
-            return MASK;
-        }
-        if (WholeTextGuard.mayHoldPrivateMember(out) && !WholeTextGuard.readsMasked(out)) {
-            return MASK;
-        }
-        return out;
     }
 
     /**
