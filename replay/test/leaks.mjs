@@ -1806,6 +1806,193 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   return read;
 }
 
+// ---- #360: one rule wherever reading stops early ----
+// Security rounds 3 to 6 on #356 each found one more path (an ambiguous quote reading, a prose skip, a cut-off, an escaped
+// delimiter read where no string is open) where a JWK private member next to what a reading skipped was left unflagged.
+// Instead of one fix per path, the scanner flags the whole text wherever its canonical reading cannot be completed: the
+// text is strict JSON (RFC 8259), and so, level by level, is the content of every string in it holding a quote or a
+// backslash, within the levels the Redactor reads; and every JWK private member that reading finds is the mask. This is
+// the scanner's own reading, written apart from the Redactor's WholeTextGuard: it shares no code with it.
+
+/** The levels the canonical reading reads, 0 to 15: a string needing a reading at level 16 or deeper stops it. */
+const CANONICAL_LEVELS = 16;
+
+/**
+ * A private member name quoted in any spelling: the last character of the opening quote (" or the u0022 of an escape),
+ * one to three name characters each plain or an escape whose backslash may be spelled as more backslashes or u005c
+ * escapes, and a closing quote in any spelling ahead.
+ */
+const QUOTED_PRIVATE_NAME = /(?:"|u0022)((?:[a-z]|\\(?:\\|u005[cC])*u00[0-9A-Fa-f]{2}){1,3})(?=(?:\\|u005[cC])*(?:"|u0022))/g;
+
+/** `text` with every escape read once, in a string or not; a lone backslash at the end stays. */
+const decodeLoosely = text => text.replace(/\\(?:u([0-9A-Fa-f]{4})|([\s\S]))/g, (whole, hex, ch) => {
+  if (hex) return String.fromCharCode(parseInt(hex, 16));
+  return { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f' }[ch] ?? ch;
+});
+
+/** Whether `view` holds a quoted name that decodes to a JWK private member's. */
+const quotesPrivateName = view => {
+  for (const m of view.matchAll(QUOTED_PRIVATE_NAME)) {
+    const name = m[1].replace(/\\(?:\\|u005[cC])*u00([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    if (JWK_PRIVATE_MEMBERS.has(name)) return true;
+  }
+  return false;
+};
+
+/**
+ * Whether `text` may hold a JWK private member: a kty name and a quoted private member name in any spelling, found in the
+ * text or in it decoded loosely, level after level, one level past those read. With escapes still left there, either one
+ * is enough.
+ */
+const mayHoldJwkPrivateMember = text => {
+  let kty = false;
+  let name = false;
+  let view = text;
+  for (let level = 0; level <= CANONICAL_LEVELS + 1; level++) {
+    kty ||= ktyCount(view) > 0;
+    name ||= quotesPrivateName(view);
+    if (kty && name) return true;
+    if (!view.includes('\\')) return false;
+    view = decodeLoosely(view);
+  }
+  return kty || name;
+};
+
+/**
+ * Whether `content` holds a quote at some level of its escaping: as it is, or decoded loosely up to `levels` times, or
+ * escapes are still left after that. Content with no quote at any level holds no member name at any level.
+ */
+const quoteAtSomeLevel = (content, levels) => {
+  let view = content;
+  for (let k = 0; k <= levels; k++) {
+    if (view.includes('"')) return true;
+    if (!view.includes('\\')) return false;
+    view = decodeLoosely(view);
+  }
+  return true;
+};
+
+const JSON_SPACE = new Set([' ', '\t', '\n', '\r']);
+const STRICT_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+const STRICT_STRING = /"((?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*)"/y;
+
+/**
+ * Why the canonical reading of `text`, `level` levels down, stops or finds an unmasked JWK private member, or null when
+ * it reads completely and every such member is masked ('[REDACTED]', or null). It walks one level with an explicit
+ * stack, so deep arrays need no recursion; a string's content is read a level down only when it holds a quote or a
+ * backslash. Every member counts, a repeated name too, which JSON.parse would drop.
+ */
+const canonicalStop = (text, level) => {
+  if (level >= CANONICAL_LEVELS) return `a string needs reading at level ${level}, past the levels read`;
+  let at = 0;
+  const skip = () => { while (at < text.length && JSON_SPACE.has(text[at])) at++; };
+  // Each open container: { object, kty, unmasked, name }.
+  const stack = [];
+  const record = (kind, content) => {
+    const top = stack[stack.length - 1];
+    if (!top?.object) return;
+    if (top.name === 'kty') top.kty = true;
+    if (JWK_PRIVATE_MEMBERS.has(top.name) && kind !== 'null' && !(kind === 'string' && content === MASK)) top.unmasked = true;
+  };
+  const string = () => {
+    STRICT_STRING.lastIndex = at;
+    const m = STRICT_STRING.exec(text);
+    if (!m) return { stop: `no strict JSON string at ${at} of level ${level}` };
+    at = STRICT_STRING.lastIndex;
+    const content = JSON.parse(m[0]);
+    if (quoteAtSomeLevel(content, CANONICAL_LEVELS - level)) {
+      const deeper = canonicalStop(content, level + 1);
+      if (deeper) return { stop: deeper };
+    }
+    return { content };
+  };
+  const name = () => {
+    skip();
+    if (text[at] !== '"') return `no member name at ${at} of level ${level}`;
+    const read = string();
+    if (read.stop) return read.stop;
+    skip();
+    if (text[at] !== ':') return `no colon at ${at} of level ${level}`;
+    at++;
+    stack[stack.length - 1].name = read.content;
+    return null;
+  };
+  let wantValue = true;
+  for (;;) {
+    if (wantValue) {
+      skip();
+      const c = text[at];
+      if (c === '{' || c === '[') {
+        at++;
+        skip();
+        if (text[at] === (c === '{' ? '}' : ']')) {
+          at++;
+          record('structure');
+          wantValue = false;
+        } else {
+          stack.push({ object: c === '{', kty: false, unmasked: false, name: null });
+          if (c === '{') {
+            const stop = name();
+            if (stop) return stop;
+          }
+          continue;
+        }
+      } else if (c === '"') {
+        const read = string();
+        if (read.stop) return read.stop;
+        record('string', read.content);
+        wantValue = false;
+      } else if (text.startsWith('null', at)) {
+        at += 4;
+        record('null');
+        wantValue = false;
+      } else if (text.startsWith('true', at) || text.startsWith('false', at)) {
+        at += c === 't' ? 4 : 5;
+        record('scalar');
+        wantValue = false;
+      } else {
+        STRICT_NUMBER.lastIndex = at;
+        if (!STRICT_NUMBER.test(text) || STRICT_NUMBER.lastIndex === at) return `no JSON value at ${at} of level ${level}`;
+        at = STRICT_NUMBER.lastIndex;
+        record('scalar');
+        wantValue = false;
+      }
+    }
+    skip();
+    if (stack.length === 0) return at === text.length ? null : `text after the JSON value at ${at} of level ${level}`;
+    const top = stack[stack.length - 1];
+    const c = text[at++];
+    if (c === ',') {
+      if (top.object) {
+        const stop = name();
+        if (stop) return stop;
+      }
+      wantValue = true;
+    } else if (c === (top.object ? '}' : ']')) {
+      stack.pop();
+      if (top.kty && top.unmasked) return `an unmasked JWK private member at level ${level}`;
+      record('structure');
+    } else {
+      return `no delimiter at ${at - 1} of level ${level}`;
+    }
+  }
+};
+
+/**
+ * The whole-text rule over `text`, read `level` levels down: one leak for the whole text when it may hold a JWK private
+ * member and its canonical reading stops or finds one unmasked. A thrown error stops the reading too.
+ */
+const wholeTextLeak = (text, level) => {
+  if (!mayHoldJwkPrivateMember(text)) return null;
+  let stop;
+  try {
+    stop = canonicalStop(text, level);
+  } catch (e) {
+    stop = `reading threw ${e?.name ?? 'an error'}`;
+  }
+  return stop ? { check: 'JWK text not read completely', match: `${stop}: ${text.slice(0, 60)}` } : null;
+};
+
 /**
  * The leaks in `text` read as JSON nested `level` levels down: the regex checks over the text itself, then
  * the JSON scan, which shares one budget linear in the text's length.
@@ -1814,6 +2001,10 @@ function textLeaks(text, level) {
   // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
   // read: the views readNested has read, by level and span in the text.
   const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text, strictNames: new Set() };
+  // The whole-text rule first (#360): every path below that stops reading early (the scan budget, a level cap, an
+  // exception, a skipped stretch, an ambiguous quote) is covered by it, whatever that path then does.
+  const whole = wholeTextLeak(text, level);
+  if (whole) ctx.leaks.push(whole);
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {

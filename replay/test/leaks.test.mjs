@@ -164,14 +164,14 @@ test('reads unicode-escaped embedded JSON after prose, also in a report field', 
   assert.ok(findTextLeaks(`evidence: ${leaked}`).length > 0);
   assert.ok(findTextLeaks(`evidence: ${leaked} (twice: ${leaked})`).length > 0);
   assert.ok(findJsonLeaks({ responseBody: `evidence: ${leaked}` }).length > 0);
-  assert.deepEqual(findTextLeaks(`evidence: ${masked}`), []);
-  assert.deepEqual(findJsonLeaks({ responseBody: `evidence: ${masked}` }), []);
+  assertFlaggedWholeBy(findTextLeaks, `evidence: ${masked}`);
+  assertFlaggedWholeBy(findJsonLeaks, { responseBody: `evidence: ${masked}` });
 });
 test('reads JSON after prose in a parsed report string, whatever its escapes were', () => {
   assert.ok(findJsonLeaks({ evidence: 'payer said: {"kty":"oct","k":"LEAKED"}' }).length > 0);
   assert.ok(findTextLeaks(String.raw`{"evidence":"payer said: {\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022LEAKED\u0022}"}`).length > 0);
-  assert.deepEqual(findJsonLeaks({ evidence: 'payer said: {"kty":"oct","k":"[REDACTED]"}' }), []);
-  assert.deepEqual(findTextLeaks(String.raw`{"evidence":"payer said: {\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022[REDACTED]\u0022}"}`), []);
+  assertFlaggedWholeBy(findJsonLeaks, { evidence: 'payer said: {"kty":"oct","k":"[REDACTED]"}' });
+  assertFlaggedWholeBy(findTextLeaks, String.raw`{"evidence":"payer said: {\u0022kty\u0022:\u0022oct\u0022,\u0022k\u0022:\u0022[REDACTED]\u0022}"}`);
 });
 test('reads unicode-escaped embedded JSON that is cut off or repeats a member', () => {
   assert.ok(findTextLeaks(String.raw`{"body":"{\u0022kty\u0022:\u0022RSA\u0022,\u0022d\u0022:\u0022LEAKED`).length > 0);
@@ -272,6 +272,18 @@ const assertAccepted = text => {
   assert.deepEqual(findTextLeaks(reportForm(text)), [], text.slice(0, 120));
   assert.deepEqual(findJsonLeaks({ responseBody: text }), [], text.slice(0, 120));
 };
+// #360: a text that may hold a JWK private member and does not read completely is flagged whole, and by nothing else
+// that would not flag it anyway: these texts were accepted before the rule. The Redactor's output for such a text is
+// the mask alone, which is accepted.
+const WHOLE_TEXT = 'JWK text not read completely';
+const onlyWhole = leaks => leaks.length > 0 && leaks.every(leak => leak.check === WHOLE_TEXT);
+const assertFlaggedWholeBy = (find, value) => assert.ok(onlyWhole(find(value)), JSON.stringify(find(value)).slice(0, 200));
+const assertFlaggedWhole = text => {
+  assertFlaggedWholeBy(findTextLeaks, text);
+  assertFlaggedWholeBy(findTextLeaks, reportForm(text));
+  assertFlaggedWholeBy(findJsonLeaks, { responseBody: text });
+  assertAccepted(MASK);
+};
 test('r1: a JWK nested two levels deep, and a short punctuation credential', () => {
   assertFlagged(nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 2));
   assertAccepted(nestedIn('{"kty":"oct","k":"[REDACTED]"}', 2));
@@ -283,19 +295,19 @@ test('r3: a JWK nested 17 levels deep behind an unrelated unicode escape', () =>
   assertFlagged(prefix + nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 17));
   // Redactor masks whole the string that holds JSON nested past the levels it reads.
   assertAccepted(prefix + nestedIn('{"body":"[REDACTED]"}', 15));
-  assertAccepted(prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 15));
-  // 16 levels down is the last level read: a masked JWK there passes and an unmasked one does not. The report
-  // that holds such a body adds a level, so there it is past the cap and fails closed.
+  assertFlaggedWhole(prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 15));
+  // #360: after prose the text is not JSON, so it does not read completely and is flagged whole at any depth (the
+  // Redactor masks it whole). The report that holds a body 16 levels down adds a level, past the cap, and fails closed.
   const masked16 = prefix + nestedIn('{"kty":"oct","k":"[REDACTED]"}', 16);
-  assert.deepEqual(findTextLeaks(masked16), []);
-  assert.deepEqual(findJsonLeaks({ responseBody: masked16 }), []);
-  assert.deepEqual(findTextLeaks(reportForm(masked16)).map(l => l.check), ['JSON nested past 17 levels']);
+  assertFlaggedWholeBy(findTextLeaks, masked16);
+  assertFlaggedWholeBy(findJsonLeaks, { responseBody: masked16 });
+  assert.deepEqual(findTextLeaks(reportForm(masked16)).map(l => l.check), [WHOLE_TEXT, 'JSON nested past 17 levels']);
   assertFlagged(prefix + nestedIn('{"kty":"oct","k":"FAKE_PRIVATE_KEY_293"}', 16));
 });
 test('r3: a stray quote in prose does not hide the JSON after it', () => {
   assertFlagged('evidence: 5" screen {"kty":"oct","k":"LEAKED"}');
   // What Redactor leaves for it.
-  assertAccepted('evidence: 5" screen {"kty":"oct","k":"[REDACTED]"}');
+  assertFlaggedWhole('evidence: 5" screen {"kty":"oct","k":"[REDACTED]"}');
 });
 test('r3: one long backslash run is scanned in linear work', () => {
   const body = JSON.stringify({ k: '[REDACTED]', padding: '\\'.repeat(16384) + 'x', kty: 'oct' });
@@ -309,14 +321,14 @@ test('r3: one long backslash run is scanned in linear work', () => {
 test('judges a value cut at a line break, a list of numbers, and a value a colon follows', () => {
   // A value cut off at a line break before a truncation note: Redactor masks it through to the end.
   assertFlagged('{"kty":"oct","k":"LEAKED\n[truncated at 1 MB]');
-  assertAccepted('{"kty":"oct","k":"[REDACTED]"');
+  assertFlaggedWhole('{"kty":"oct","k":"[REDACTED]"');
   // A number in a secret-named list is not a mask: Redactor masks the list whole.
   assertFlagged('payer said: {"client_secret":[12345678]}');
   assertFlagged('{"client_secret":["[REDACTED]",true]}');
   assertAccepted('payer said: {"client_secret":"[REDACTED]"}');
   // A value with a colon after it is still the member's value; Redactor masks it and keeps the colon.
   assertFlagged('{"kty":"oct","k":"LEAKED":0}');
-  assertAccepted('{"kty":"oct","k":"[REDACTED]":0}');
+  assertFlaggedWhole('{"kty":"oct","k":"[REDACTED]":0}');
 });
 test('reads JSON serialized into a member name', () => {
   assertFlagged('{"{\\"password\\":\\"LEAKED\\"}":1}');
@@ -346,7 +358,7 @@ test('r4: a secret value with a raw line break in it is judged whole', () => {
   assertAccepted('{"kty":"oct","k":"[REDACTED]"}');
   assertAccepted('{"password":"[REDACTED]"}');
   assertFlagged('{"kty":"oct","k":"LEAKED\n[truncated at 1 MB]');
-  assertAccepted('{"kty":"oct","k":"[REDACTED]"');
+  assertFlaggedWhole('{"kty":"oct","k":"[REDACTED]"');
   assertAccepted('{"body":"{\\"password\\":\\"[REDACTED]\\"}\n[truncated at 1 MB]');
 });
 test('reads repeated scheme words, escaped header lines and token runs in linear work', () => {
@@ -372,7 +384,7 @@ test('reads repeated scheme words, escaped header lines and token runs in linear
 test('compares a decoded member name exactly: an extension member with a backslash is not a private one', () => {
   // The automated review on 69a1e64: "\\k" is the name \k, which Redactor keeps.
   assertAccepted('{"kty":"oct","\\\\k":"keep","k":"[REDACTED]"}');
-  assertAccepted('{"kty":"oct","k\\\\":"keep","d\\"":"keep","k":"[REDACTED]"}');
+  assertFlaggedWhole('{"kty":"oct","k\\\\":"keep","d\\"":"keep","k":"[REDACTED]"}');
   assertFlagged('{"kty":"oct","\\\\k":"keep","k":"LEAKED"}');
   // A name whose quote has a stray backslash before it, outside any string, is malformed and still read as one.
   assert.ok(findTextLeaks('{"kty":"oct",\\\\"k\\\\":"LEAKED"}').length > 0);
@@ -381,8 +393,8 @@ test('r5: a key block starting in a JWK member, and a chain past the cap in a un
   // Redactor's input is flagged in every form, and what it leaves for it passes.
   assertFlagged('{"kty":"RSA","d":"-----BEGIN PRIVATE KEY-----","note":"FAKEKEYMATERIAL_293\\n-----END PRIVATE KEY-----"}');
   assertFlagged('{"kty":"RSA","d":"-----BEGIN PGP PRIVATE KEY BLOCK-----","note":"FAKEKEYMATERIAL_293"}');
-  assertAccepted('{"kty":"RSA","d":"[REDACTED]""}');
-  assertAccepted('{"kty":"RSA","d":"[REDACTED]"');
+  assertFlaggedWhole('{"kty":"RSA","d":"[REDACTED]""}');
+  assertFlaggedWhole('{"kty":"RSA","d":"[REDACTED]"');
   const quote = String.raw`\u005c` + 'u005c'.repeat(40) + 'u0022';
   const jwk = `{${quote}kty${quote}:${quote}oct${quote},${quote}k${quote}:${quote}PRIVATECHAINVALUE${quote}}`;
   assertFlagged(String.raw`\u0022` + jwk + String.raw`\u0022`);
@@ -392,10 +404,10 @@ test('r5: a key block starting in a JWK member, and a chain past the cap in a un
 test('treats kty as a JWK member only in a JSON object, not in loose text or an array (#262)', () => {
   // The automated review on 4927c5c: Redactor keeps each of these (RedactorTest.leavesJwkMemberNamesOutsideAJwkAlone).
   const loose = '"kty": "RSA", "d": "dimension"';
-  assert.deepEqual(findTextLeaks(JSON.stringify({ responseBody: loose })), [], "the review's report form");
+  assertFlaggedWholeBy(findTextLeaks, JSON.stringify({ responseBody: loose }));
   for (const kept of [loose, '"kty": "RSA", "d": "x"', '["kty": "RSA", "d": "x"]', '["kty": 1, "kty": 2, "d": "x"]',
     JSON.stringify({ body: loose })]) {
-    assertAccepted(kept);
+    assertFlaggedWhole(kept);
   }
   // A real JWK in loose text, beside loose kty text, in an array or cut off, is still judged: flagged as it came,
   // accepted as Redactor leaves it (each masked form is Redactor's output for the leaked one), also embedded.
@@ -408,7 +420,7 @@ test('treats kty as a JWK member only in a JSON object, not in loose text or an 
   ];
   for (const [leaked, masked] of [...cases, ...cases.map(([l, m]) => [JSON.stringify({ body: l }), JSON.stringify({ body: m })])]) {
     assertFlagged(leaked);
-    assertAccepted(masked);
+    assertFlaggedWhole(masked);
   }
 });
 test('flags member syntax inside a secret-named array (#262)', () => {
@@ -451,7 +463,7 @@ test('r7: flags a private member Redactor masks once finding the JWKs spends its
   const copied = [escaped(escaped(loose + d)), escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote)];
   for (const [leaked, kept] of [...cases, ...cases.map(([l, m]) => [nestedIn(l, 1), nestedIn(m, 1)]), once, twice, copied]) {
     assertFlagged(leaked);
-    assertAccepted(kept);
+    assertFlaggedWhole(kept);
   }
 });
 test('r9: flags the twice-escaped copied form when quoted prose follows it (#262)', () => {
@@ -463,7 +475,7 @@ test('r9: flags the twice-escaped copied form when quoted prose follows it (#262
   const quote = '\\u0022';
   const prose = ' note: "ok"';
   assertFlagged(escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_293"')) + prose);
-  assertAccepted(escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + prose);
+  assertFlaggedWhole(escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + prose);
 });
 test('r9: flags the twice-escaped copied form after a stray quote whose string JSON cannot read (#262)', () => {
   // The stray quote opens a string to the end of the text, and its \' escape makes JSON.parse reject it, so neither the
@@ -474,7 +486,7 @@ test('r9: flags the twice-escaped copied form after a stray quote whose string J
   const quote = '\\u0022';
   for (const [before, after] of [["he said \"don\\'t ", ''], ["he said \"don\\'t ", ' note: "ok"']]) {
     assertFlagged(before + escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_293"')) + after);
-    assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
+    assertFlaggedWhole(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
   }
 });
 test('flags the twice-escaped copied form after a stray quote and a raw line break (#342)', () => {
@@ -488,7 +500,7 @@ test('flags the twice-escaped copied form after a stray quote and a raw line bre
   for (const before of ['he said "\n', 'he said "\r\n', 'he said "\r', '"\n', 'he said "\\\n', 'he said "\\\r\n']) {
     for (const after of ['', ' note: "ok"']) {
       assertFlagged(before + escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_342"')) + after);
-      assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
+      assertFlaggedWhole(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote) + after);
     }
   }
 });
@@ -499,7 +511,7 @@ test('flags an escaped JWK after a stray quote and a raw line break (#342)', () 
   const escaped = text => [...text].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
   for (const before of ['he said "\n', 'he said "\r\n']) {
     assertFlagged(before + escaped('{"kty":"oct","k":"FAKE_JWK_K_342"}'));
-    assertAccepted(before + escaped('{"kty":"oct","k":') + escaped('"') + MASK + escaped('"}'));
+    assertFlaggedWhole(before + escaped('{"kty":"oct","k":') + escaped('"') + MASK + escaped('"}'));
   }
 });
 test('flags a copied JWK with mixed quote escapes after a stray quote and a raw line break (#342)', () => {
@@ -520,7 +532,7 @@ test('flags a copied JWK with mixed quote escapes after a stray quote and a raw 
     for (const after of ['', '"', '" and "x"']) {
       for (const form of forms) {
         assertFlagged(before + form('FAKE_JWK_K_342') + after);
-        assertAccepted(before + form(MASK) + after);
+        assertFlaggedWhole(before + form(MASK) + after);
       }
     }
   }
@@ -537,7 +549,7 @@ test('accepts a loose kty in a copied value with mixed quote escapes after a str
   const before = ['', `${u}a${u}:0,`, `${u}a${u}:0,${u}b${u}:${u}x${u},`, `${u}a${u}:{${u}x${u}:1},`, `${u}a${u}:[1,${u}y${u}],`];
   for (const lb of ['\n', '\r\n']) {
     for (const members of before) {
-      assertAccepted(`he said "${lb}{${b}body${b}:${b}${members}${u}kty${u}:${u}RSA${u},${u}d${u}:${u}dimension${u}${b}}`);
+      assertFlaggedWhole(`he said "${lb}{${b}body${b}:${b}${members}${u}kty${u}:${u}RSA${u},${u}d${u}:${u}dimension${u}${b}}`);
     }
   }
 });
@@ -555,7 +567,7 @@ test('flags a copied JWK with mixed quote escapes after an escaped quote in a va
   for (const lb of ['\n', '\r\n']) {
     for (const form of forms) {
       assertFlagged(`he said "${lb}${form('FAKE_JWK_K_342')}`);
-      assertAccepted(`he said "${lb}${form(MASK)}`);
+      assertFlaggedWhole(`he said "${lb}${form(MASK)}`);
     }
   }
 });
@@ -568,11 +580,11 @@ test('accepts a kty in a copied value read whole that opens no member after a st
   const form = (mid, d) => `{${b}x${b}:${mid}${b}kty${b}:${b}RSA${b},${b}d${b}:${b}${d}${b}}`;
   for (const lb of ['\n', '\r\n']) {
     for (const mid of ['0 ', `${b}a${b} `, `{${b}y${b}:1} `, '[1] ']) {
-      assertAccepted(`he said "${lb}${form(mid, 'dimension')}`);
+      assertFlaggedWhole(`he said "${lb}${form(mid, 'dimension')}`);
     }
     for (const mid of ['0,', '0 , ', '0, x ', `{${b}y${b}:1},`, '[1],']) {
       assertFlagged(`he said "${lb}${form(mid, 'FAKE_PRIVATE_KEY_342')}`);
-      assertAccepted(`he said "${lb}${form(mid, MASK)}`);
+      assertFlaggedWhole(`he said "${lb}${form(mid, MASK)}`);
     }
   }
 });
@@ -591,11 +603,11 @@ test('accepts a kty that opens no member in an escaped copy after a stray quote 
   for (const lb of ['\n', '\r\n']) {
     for (const encode of encodings) {
       for (const mid of ['0 ', '"a" ', '{"y":1} ', '[1] ']) {
-        assertAccepted(`he said "${lb}${encode(form(mid, 'dimension'))}`);
+        assertFlaggedWhole(`he said "${lb}${encode(form(mid, 'dimension'))}`);
       }
       for (const mid of ['0,', '0, x ']) {
         assertFlagged(`he said "${lb}${encode(form(mid, 'FAKE_PRIVATE_KEY_342'))}`);
-        assertAccepted(`he said "${lb}${encode(form(mid, MASK))}`);
+        assertFlaggedWhole(`he said "${lb}${encode(form(mid, MASK))}`);
       }
     }
   }
@@ -614,11 +626,11 @@ test('accepts a kty after an odd number of quotes in an escaped copy after a str
   for (const lb of ['\n', '\r\n']) {
     for (const encode of encodings) {
       for (const before of ['""a":0,', '"a":"b"c",']) {
-        assertAccepted(`he said "${lb}${encode(form(before, 'dimension'))}`);
+        assertFlaggedWhole(`he said "${lb}${encode(form(before, 'dimension'))}`);
       }
       for (const before of ['"a":0,', '']) {
         assertFlagged(`he said "${lb}${encode(form(before, 'FAKE_PRIVATE_KEY_342'))}`);
-        assertAccepted(`he said "${lb}${encode(form(before, MASK))}`);
+        assertFlaggedWhole(`he said "${lb}${encode(form(before, MASK))}`);
       }
     }
   }
@@ -638,11 +650,11 @@ test('accepts a private member that opens no member in an escaped copy after a s
     for (const encode of encodings) {
       // Automated review on 223512b: nor after a value that leaves an odd number of quotes before the name.
       for (const mid of ['0 ', '"a" ', '{"y":1} ', '[1] ', '""a":0,', '"b"c",']) {
-        assertAccepted(`he said "${lb}${encode(form(mid, 'dimension'))}`);
+        assertFlaggedWhole(`he said "${lb}${encode(form(mid, 'dimension'))}`);
       }
       for (const mid of ['0,', '0, y ', '[1],', '"b"c"",']) {
         assertFlagged(`he said "${lb}${encode(form(mid, 'FAKE_PRIVATE_KEY_342'))}`);
-        assertAccepted(`he said "${lb}${encode(form(mid, MASK))}`);
+        assertFlaggedWhole(`he said "${lb}${encode(form(mid, MASK))}`);
       }
     }
   }
@@ -663,9 +675,9 @@ test('reads JWKs in an escaped copy after a stray quote and a raw line break as 
       for (const before of ['"{":""a":0,', '"[":""a":0,"b":{', '"a":"{",']) {
         const form = d => `he said "${lb}${encode(`{${before}"kty":"RSA","d":"${d}"}`)}`;
         assertFlagged(form('FAKE_PRIVATE_KEY_342'));
-        assertAccepted(form(MASK));
+        assertFlaggedWhole(form(MASK));
       }
-      assertAccepted(`he said "${lb}${encode('{"kty":"RSA","d"::"dimension"}')}`);
+      assertFlaggedWhole(`he said "${lb}${encode('{"kty":"RSA","d"::"dimension"}')}`);
     }
   }
 });
@@ -680,10 +692,10 @@ test('reads a private member value through its line breaks, and only ASCII white
       for (const value of ['\\nTAIL', '\\r\\nTAIL', '\\n']) {
         assertFlagged(`he said "${lb}${encode(`{"kty":"oct","k":"${value}"}`)}`);
       }
-      assertAccepted(`he said "${lb}${encode('{"kty":"oct","k":"[REDACTED]"}')}`);
+      assertFlaggedWhole(`he said "${lb}${encode('{"kty":"oct","k":"[REDACTED]"}')}`);
       for (const space of ['\u00a0', '\u2003', '\u3000']) {
         for (const form of [`{"kty"${space}:"oct","k":"dimension"}`, `{"kty":"oct","k"${space}:"dimension"}`, `{"kty":"oct","k":${space}"dimension"}`]) {
-          assertAccepted(`he said "${lb}${encode(form)}`);
+          assertFlaggedWhole(`he said "${lb}${encode(form)}`);
         }
       }
     }
@@ -699,9 +711,9 @@ test('flags a JWK copied after two stray quotes and raw line breaks, and ends a 
   for (const lb of ['\n', '\r\n']) {
     for (const before of [`he said "${lb}he said "${lb}`, `he said "${lb}x"${lb}more${lb}`, `"${lb}"${lb}`]) {
       assertFlagged(before + copy('FAKE_JWK_K_342'));
-      assertAccepted(before + copy(MASK));
+      assertFlaggedWhole(before + copy(MASK));
     }
-    assertAccepted(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"[REDACTED]\\${lb}TAIL"}`).slice(1, -1)}`);
+    assertFlaggedWhole(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"[REDACTED]\\${lb}TAIL"}`).slice(1, -1)}`);
   }
 });
 test('flags a copied value after a backslash and a raw Unicode line break, and reads no \\f escape as whitespace (#342)', () => {
@@ -717,9 +729,9 @@ test('flags a copied value after a backslash and a raw Unicode line break, and r
       assertFlagged(`he said "${lb}${JSON.stringify(`{"kty":"oct","k":"${MASK}\\${brk}TAIL"}`).slice(1, -1)}`);
     }
     for (const value of ['true', '1', '{}', '\\"FAKE_JWK_K_342\\"']) {
-      assertAccepted(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\f${value}}`);
-      assertAccepted(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\"\\f:${value}}`);
-      assertAccepted(`he said "${lb}{\\"kty\\"\\f:\\"oct\\",\\"k\\":${value}}`);
+      assertFlaggedWhole(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\f${value}}`);
+      assertFlaggedWhole(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\"\\f:${value}}`);
+      assertFlaggedWhole(`he said "${lb}{\\"kty\\"\\f:\\"oct\\",\\"k\\":${value}}`);
       assertFlagged(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\u000c${value}}`);
       assertFlagged(`he said "${lb}{\\"kty\\":\\"oct\\",\\"k\\":\\n${value}}`);
     }
@@ -742,11 +754,11 @@ test('reads past a line break spelled as a \\u escape in a value, and flags a co
         assertFlagged(`he said "${lb}${jwk(q, `${MASK}\\u005c${brk}TAIL`)}`);
         assertFlagged(`he said "${lb}${jwk(q, `${MASK}\\\\${brk}TAIL`)}`);
       }
-      assertAccepted(`he said "${lb}${jwk(q, `${MASK}\\u005c\\nTAIL`)}`);
+      assertFlaggedWhole(`he said "${lb}${jwk(q, `${MASK}\\u005c\\nTAIL`)}`);
     }
     for (const before of [`"${lb}","body":`, `"${lb}","b":1,"body":`, `x"${lb}","body":`]) {
       assertFlagged(before + jwk(b, 'FAKE_JWK_K_342'));
-      assertAccepted(before + jwk(b, MASK));
+      assertFlaggedWhole(before + jwk(b, MASK));
     }
   }
 });
@@ -761,7 +773,7 @@ test('flags a copy cut off in half an escape at the end of the text, and reads a
   for (const lb of ['\n', '\r\n']) {
     for (const tail of ['\\', '\\u0', '\\u00', '\\u002', '\\\\\\']) {
       assertFlagged(`he said "${lb}${copy('FAKE_JWK_K_342')}${tail}`);
-      assertAccepted(`he said "${lb}${copy(MASK)}${tail}`);
+      assertFlaggedWhole(`he said "${lb}${copy(MASK)}${tail}`);
     }
     const nest = (k, pad) => {
       let text = `{"kty":"oct","k":"${k}","pad":"${'x'.repeat(pad)}"}`;
@@ -769,11 +781,11 @@ test('flags a copy cut off in half an escape at the end of the text, and reads a
       return text;
     };
     for (const pad of [500, 2000]) {
-      assertAccepted(nest(MASK, pad));
+      assertFlaggedWhole(nest(MASK, pad));
       assertFlagged(nest('FAKE_JWK_K_342', pad));
     }
     // With a 10,000-character pad the report form, one level deeper, fails closed, as on 4175db6 (accepted, row 2x).
-    assert.deepEqual(findTextLeaks(nest(MASK, 10000)), []);
+    assertFlaggedWholeBy(findTextLeaks, nest(MASK, 10000));
     // 57.9n on 5ca573a, 40.6n on 4175db6.
     const masked = nest(MASK, 2000);
     scanWork.characters = 0;
@@ -794,7 +806,7 @@ test('flags a JWK private member whose opening quote is escaped one level more t
   for (const lb of ['\n', '\r\n']) {
     for (const form of forms) {
       assertFlagged(`he said "${lb}${JSON.stringify(form('FAKE_JWK_K_342')).slice(1, -1)}`);
-      assertAccepted(`he said "${lb}${JSON.stringify(form(MASK)).slice(1, -1)}`);
+      assertFlaggedWhole(`he said "${lb}${JSON.stringify(form(MASK)).slice(1, -1)}`);
     }
   }
 });
@@ -808,7 +820,8 @@ test('flags a copy that ends in a malformed \\u escape, a \\u with fewer than fo
     for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
       for (const form of [v => `{"kty":"oct","k":"${v}"}`, v => `{"password":"${v}"}`]) {
         assertFlagged(`he said "${lb}${copy(form('FAKE_JWK_K_342'))}${tail}`);
-        assertAccepted(`he said "${lb}${copy(form(MASK))}${tail}`);
+        // #360: the JWK copy does not read completely, so it is flagged whole.
+        (form('').includes('kty') ? assertFlaggedWhole : assertAccepted)(`he said "${lb}${copy(form(MASK))}${tail}`);
       }
     }
   }
@@ -822,11 +835,11 @@ test('reads a \\f escape where the text spells it after a malformed \\u escape i
   for (const lb of ['\n', '\r\n']) {
     for (const pre of ['\\uZ', '\\u0Z', '\\u00G']) {
       for (const value of ['true', `${q}FAKE_JWK_K_342${q}`]) {
-        assertAccepted(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:\\f${value}}`);
-        assertAccepted(`he said "${lb}${pre}{${q}kty${q}\\f:${q}oct${q},${q}k${q}:${value}}`);
+        assertFlaggedWhole(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:\\f${value}}`);
+        assertFlaggedWhole(`he said "${lb}${pre}{${q}kty${q}\\f:${q}oct${q},${q}k${q}:${value}}`);
       }
       assertFlagged(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}FAKE_JWK_K_342${q}}`);
-      assertAccepted(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}${MASK}${q}}`);
+      assertFlaggedWhole(`he said "${lb}${pre}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}${MASK}${q}}`);
     }
   }
 });
@@ -843,7 +856,7 @@ test('reads a nested copy that ends in a malformed \\u escape once per level, wi
         return text + tail;
       };
       for (const pad of [1000, 2000]) {
-        assertAccepted(nest(MASK, pad));
+        assertFlaggedWhole(nest(MASK, pad));
         assertFlagged(nest('FAKE_JWK_K_342', pad));
       }
       // 58.3n on c5a0b7f, 36.4n with the fix and without the \uZ.
@@ -865,7 +878,8 @@ test('flags a copied secret value cut off in a malformed \\u escape, which Redac
       for (const head of [`{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`, `{${q}password${q}:${q}`]) {
         assertFlagged(`he said "${lb}${head}${MASK}${tail}`);
         assertFlagged(`he said "${lb}${head}FAKE_JWK_K_342${tail}`);
-        assertAccepted(`he said "${lb}${head}${MASK}${q}`);
+        // #360: the JWK copy does not read completely, so it is flagged whole.
+        (head.includes('kty') ? assertFlaggedWhole : assertAccepted)(`he said "${lb}${head}${MASK}${q}`);
       }
     }
   }
@@ -884,16 +898,18 @@ test('flags a copied secret value cut off in half a \\u escape, which Redactor m
         assertFlagged(`he said "${lb}${head}${MASK}${tail}`);
         assertFlagged(`he said "${lb}${head}${tail}`);
         if (head.includes('password')) assertFlagged(`he said "${lb}${head}${MASK}${q}${tail}`);
-        else assertAccepted(`he said "${lb}${head}${MASK}${q}${tail}`);
-        assertAccepted(`he said "${lb}${head}${MASK}${q}`);
-        assertAccepted(`he said "${lb}${head}${MASK}${q}}${tail}`);
+        else assertFlaggedWhole(`he said "${lb}${head}${MASK}${q}${tail}`);
+        // #360: the JWK copies do not read completely, so they are flagged whole.
+        const kept = head.includes('kty') ? assertFlaggedWhole : assertAccepted;
+        kept(`he said "${lb}${head}${MASK}${q}`);
+        kept(`he said "${lb}${head}${MASK}${q}}${tail}`);
       }
     }
   }
   for (const tail of ['\\u', '\\u0', '\\u00', '\\u005']) {
     for (const head of ['{"kty":"oct","k":"', '{"password":"']) {
       assertFlagged(`${head}${MASK}${tail}`);
-      assertAccepted(`${head}${MASK}"}${tail}`);
+      (head.includes('kty') ? assertFlaggedWhole : assertAccepted)(`${head}${MASK}"}${tail}`);
     }
   }
 });
@@ -908,7 +924,8 @@ test('keeps a copied value cut off in half a \\u escape after an escaped backsla
   for (const lb of ['\n', '\r\n']) {
     for (const tail of ['\\u', '\\u0', '\\u005']) {
       for (const head of [`{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`, `{${q}password${q}:${q}`]) {
-        const check = head.includes('password') ? assertFlagged : assertAccepted;
+        // #360: the JWK copy does not read completely, so it is flagged whole.
+        const check = head.includes('password') ? assertFlagged : assertFlaggedWhole;
         check(`he said "${lb}${head}${MASK}\\\\${tail}`);
         check(`he said "${lb}${head}\\\\${tail}`);
         assertFlagged(`he said "${lb}${head}${MASK}${tail}`);
@@ -934,8 +951,8 @@ test('flags a copied secret field cut off in half a \\u escape after a \\u005c b
         assertFlagged(`${secret}${MASK}\\\\${tail}`);
         assertAccepted(`${secret}${MASK}${q}`);
         const jwk = `he said "${lb}{${q}kty${q}:${q}oct${q},${q}k${q}:${q}`;
-        assertAccepted(`${jwk}${MASK}${backslash}${tail}`);
-        assertAccepted(`${jwk}${backslash}${tail}`);
+        assertFlaggedWhole(`${jwk}${MASK}${backslash}${tail}`);
+        assertFlaggedWhole(`${jwk}${backslash}${tail}`);
       }
     }
   }
@@ -951,8 +968,8 @@ test('reads a nested copy cut in half a \\u escape after an escaped backslash wi
       text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}${'\\'.repeat(backslashes)}u005`;
       for (let level = 1; level < 3; level++) text = `he said "${lb}${JSON.stringify(text).slice(1, -1)}`;
       if (backslashes === 3) {
-        assert.deepEqual(findTextLeaks(text), [], JSON.stringify(lb));
-        assert.deepEqual(findJsonLeaks({ responseBody: text }), [], JSON.stringify(lb));
+        assertFlaggedWholeBy(findTextLeaks, text);
+        assertFlaggedWholeBy(findJsonLeaks, { responseBody: text });
       } else {
         assert.ok(findTextLeaks(text).some(leak => leak.check === 'JSON secret field'), JSON.stringify(lb));
       }
@@ -967,7 +984,7 @@ test('checks each private member name for a form feed in time that grows with th
   const text = `he said "\n{${'\\"k\\":\\"\\",'.repeat(200_000)}\\"kty\\":\\"oct\\"}`;
   const before = scanWork.characters;
   const started = performance.now();
-  assert.deepEqual(findTextLeaks(text), []);
+  assertFlaggedWholeBy(findTextLeaks, text);
   const elapsed = performance.now() - started;
   assert.ok(elapsed < 4000, `took ${Math.round(elapsed)} ms`);
   assert.ok(scanWork.characters - before <= 40 * text.length + 4096);
@@ -1013,7 +1030,7 @@ test('flags the twice-escaped copied form after a stray quote that opens no memb
   const quote = '\\u0022';
   for (const before of ['"\n","body":', '"\r\n","body":', 'x","body":']) {
     assertFlagged(before + escaped(escaped(loose + '"d":"FAKE_PRIVATE_KEY_342"')));
-    assertAccepted(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote));
+    assertFlaggedWhole(before + escaped(escaped(loose + '"d":')) + escaped(quote) + MASK + escaped(quote));
   }
 });
 test('reads a string that runs through a raw line break as one string, not as JSON around it (#342)', () => {
@@ -1021,7 +1038,7 @@ test('reads a string that runs through a raw line break as one string, not as JS
   // next member's string into the JSON around it, and its escaped quotes made a JWK out of a loose kty. Redactor leaves
   // the text as it is (RedactorTest.keepsALooseKtyInAStringAfterAValueWithARawLineBreak).
   const loose = '"kty":"RSA","d":"dimension"'.replace(/"/g, '\\u0022');
-  assertAccepted(`{"note":"a\nb","body":"${loose}"}`);
+  assertFlaggedWhole(`{"note":"a\nb","body":"${loose}"}`);
   assertFlagged(`{"note":"a\nb","body":"${'{"kty":"RSA","d":"FAKE_PRIVATE_KEY_342"}'.replace(/"/g, '\\u0022')}"}`);
 });
 test('still flags a copied JWK before a stray quote and a unicode escape (#342)', () => {
@@ -1030,7 +1047,7 @@ test('still flags a copied JWK before a stray quote and a unicode escape (#342)'
   // masked form is Redactor's output (RedactorTest.masksACopiedJwkBeforeAStrayQuoteAndAUnicodeEscape).
   const copied = k => `{\\"kty\\":\\"oct\\",\\"k\\":\\"${k}\\"}`;
   assertFlagged(copied('FAKE_JWK_K_342') + ' "x" \\u0041');
-  assertAccepted(copied(MASK) + ' "x" \\u0041');
+  assertFlaggedWhole(copied(MASK) + ' "x" \\u0041');
 });
 test('r8: accepts a loose private member next to JWKs whose search cannot spend its budget (#262)', () => {
   // Automated review on 26f8c2b: two masked RSA JWKs and a sibling "d" in no JWK. Redactor's JWK search reads a few
@@ -1047,7 +1064,7 @@ test('r8: accepts a loose private member next to JWKs whose search cannot spend 
   // member is read once, as the string it is, so its two kty names are not counted twice
   // (RedactorTest.keepsALoosePrivateMemberNextToMaskedJwks).
   const escapedCopy = `{"note":"line one\nline two","body":"${text.replace(/"/g, '\\u0022')}"}`;
-  assertAccepted(escapedCopy);
+  assertFlaggedWhole(escapedCopy);
   assertFlagged(escapedCopy.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
 });
 test('accepts masked JWKs copied after a stray quote and a raw line break, read whole and in parts (#342)', () => {
@@ -1066,7 +1083,7 @@ test('accepts masked JWKs copied after a stray quote and a raw line break, read 
       b(`{"keys":[${jwk('a')},`) + u(`${jwk('b')}],"d":"dimension"}`),
     ]) {
       const text = `he said "${lb}${copied}`;
-      assertAccepted(text);
+      assertFlaggedWhole(text);
       assertFlagged(text.replace('[REDACTED]', 'FAKE_PRIVATE_KEY_342'));
     }
   }
@@ -1083,7 +1100,7 @@ test('reads a JWK copied after a stray quote and a raw line break, nested 8 deep
       return text;
     };
     const masked = nest(jwk(MASK));
-    assertAccepted(masked);
+    assertFlaggedWhole(masked);
     assertFlagged(nest(jwk('FAKE_JWK_K_342')));
     scanWork.characters = 0;
     findTextLeaks(masked);
@@ -1103,7 +1120,7 @@ test('reads a masked JWK with a long pad copied after a stray quote and a raw li
       return text;
     };
     for (const pad of [threshold - 1, threshold, 2000]) {
-      assertAccepted(nest(jwk(MASK, pad)));
+      assertFlaggedWhole(nest(jwk(MASK, pad)));
       const leaked = nest(jwk('FAKE_JWK_K_342', pad));
       assertFlagged(leaked);
       assert.ok(findTextLeaks(leaked).some(leak => leak.check === 'JSON secret field'), `k not judged: pad ${pad}`);
@@ -1126,7 +1143,7 @@ test('reads a masked JWK after a long pad, copied after a stray quote and closed
   };
   for (const lb of ['\n', '\r\n']) {
     const masked = nest(MASK, lb);
-    assertAccepted(masked);
+    assertFlaggedWhole(masked);
     const leaked = nest('FAKE_JWK_K_342', lb);
     assertFlagged(leaked);
     assert.ok(findTextLeaks(leaked).some(leak => leak.check === 'JSON secret field'), 'k not judged');
@@ -1146,7 +1163,8 @@ test('fails closed on a masked JWK after a long pad, copied and closed at each l
     return text;
   };
   for (const lb of ['\n', '\r\n']) {
-    assert.deepEqual(findTextLeaks(nest(MASK, lb)).map(leak => leak.check), ['scan budget spent']);
+    // #360: after a stray quote the text is not JSON, so it is flagged whole too.
+    assert.deepEqual(findTextLeaks(nest(MASK, lb)).map(leak => leak.check), [WHOLE_TEXT, 'scan budget spent']);
     assert.ok(findTextLeaks(nest('FAKE_JWK_K_342', lb)).length > 0);
   }
 });
