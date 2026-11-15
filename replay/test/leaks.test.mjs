@@ -2059,26 +2059,29 @@ const earlyDelimiters = () => {
   }
   return out;
 };
-const earlyRound3 = () => {
+const EARLY_NOTES = [`{"note":"x${EB}":}",`, `{"note":"${EB}"}",`, `{"note":"x${EB}",{",`, `{"note":"x${EB}":[",`];
+const EARLY_SPACES = [`${EB}u0020`, `${EB}u0009`, `${EB}${EB}u0020`, `${EB}u005c${EB}u2003`, `${EB}u005cn`,
+  `${EB}u005c${EB}u005ct`, `${EB}u005cu0020`, `${EB}${EB}u005cr`];
+const earlyRound3 = (notes = EARLY_NOTES, members = EARLY_MEMBERS) => {
   const texts = [];
-  for (const note of [`{"note":"x${EB}":}",`, `{"note":"${EB}"}",`, `{"note":"x${EB}",{",`, `{"note":"x${EB}":[",`]) {
-    for (const m of EARLY_MEMBERS) {
+  for (const note of notes) {
+    for (const m of members) {
       texts.push(`${note}"${m}${EU}:${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`,
         `${note}${EB}"${m}${EU}:"${EARLY_SECRET}${EU},"kty":"oct"}`,
         `${note}"${m}${EB}":${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`,
         `${note}${ECHAIN}${m}${EU}:"${EARLY_SECRET}","kty":"oct"}`);
     }
   }
-  for (const m of EARLY_MEMBERS) {
+  for (const m of members) {
     texts.push(`{"kty":"oct","a":{"note":"x${EB}"},${EB}"y${EB}":${EB}"z","${m}":"${EARLY_SECRET}"}}`);
   }
   return texts;
 };
-const earlyRound4 = () => {
+const earlyRound4 = (separators = EARLY_SEPARATORS, spaces = EARLY_SPACES, members = EARLY_MEMBERS) => {
   const texts = [];
-  for (const sep of EARLY_SEPARATORS) {
+  for (const sep of separators) {
     const note = `{"note":"a${sep}b",`;
-    for (const m of EARLY_MEMBERS) {
+    for (const m of members) {
       const name = `${sep}${EU}${m}${EU}:"${EARLY_SECRET}"`;
       texts.push(`${note}"${m}${EU}:${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`,
         `${note}${EB}"${m}${EU}:"${EARLY_SECRET}${EU},"kty":"oct"}`,
@@ -2086,20 +2089,19 @@ const earlyRound4 = () => {
         `{"note":"x${EU},${name},${EU}kty${EU}:"oct"}`);
     }
   }
-  for (const space of [`${EB}u0020`, `${EB}u0009`, `${EB}${EB}u0020`, `${EB}u005c${EB}u2003`, `${EB}u005cn`,
-    `${EB}u005c${EB}u005ct`, `${EB}u005cu0020`, `${EB}${EB}u005cr`]) {
-    for (const m of EARLY_MEMBERS) {
+  for (const space of spaces) {
+    for (const m of members) {
       texts.push(`{"note":"a\nb",${space}"${m}${EU}:${EU}${EARLY_SECRET}${EB}",${EB}"kty":"oct"}`);
     }
   }
   return texts;
 };
-const earlyRound5 = () => {
+const earlyRound5 = (separators = EARLY_SEPARATORS, members = EARLY_MEMBERS) => {
   const texts = [];
   const e = `${EB}"`;
-  for (const sep of EARLY_SEPARATORS) {
+  for (const sep of separators) {
     const note = `"note":${e}a${sep}b, `;
-    for (const m of EARLY_MEMBERS) {
+    for (const m of members) {
       const atName = `"${m}": "${EARLY_SECRET}"`;
       const atValue = `${e}${m}${e}: "${EARLY_SECRET}"`;
       texts.push(`{"kty":"oct",${note}${atName}}`, `{"kty":"oct",${note}${atValue}}`, `{${note}${atName}, "kty":"oct"}`,
@@ -2108,10 +2110,10 @@ const earlyRound5 = () => {
   }
   return texts;
 };
-const earlyRound6 = () => {
+const earlyRound6 = (delimiters = earlyDelimiters(), members = EARLY_MEMBERS) => {
   const texts = [];
-  for (const delimiter of earlyDelimiters()) {
-    for (const m of EARLY_MEMBERS) {
+  for (const delimiter of delimiters) {
+    for (const m of members) {
       texts.push(`{"kty":"oct","x":1${delimiter}"${m}":"${EARLY_SECRET}"}`,
         `{"kty":"oct","x":"y"${delimiter}"${m}":"${EARLY_SECRET}"}`,
         `{"kty":"oct","${m}"${delimiter}"${EARLY_SECRET}"}`,
@@ -2162,13 +2164,28 @@ test('flags the whole text where an escaped delimiter outside a string precedes 
   assertEarlyGrid('round 6', earlyRound6());
 });
 
-test('flags one case of each class at every level up to and one past the bound (#360)', () => {
-  [earlyRound3(), earlyRound4(), earlyRound5(), earlyRound6()].forEach((grid, round) => {
-    let form = grid[0];
-    for (let depth = 0; depth <= 17; depth++) {
-      assert.ok(findTextLeaks(form).length > 0, `round ${round + 3} case 0 at level ${depth}: not flagged`);
-      form = JSON.stringify({ body: form });
-    }
+// Every spelling with one member, and every member with one spelling, in every shape of each class, as
+// RedactorEarlyExitTest.sweeps builds them: each spelling, member and shape runs at every level, 0 to 17.
+const earlySweeps = () => {
+  const d = ['d'];
+  const join = (a, b) => [...new Set([...a, ...b])];
+  return [
+    join(earlyRound3(EARLY_NOTES, d), earlyRound3(EARLY_NOTES.slice(0, 1))),
+    join(earlyRound4(EARLY_SEPARATORS, EARLY_SPACES, d), earlyRound4(EARLY_SEPARATORS.slice(0, 1), EARLY_SPACES.slice(0, 1))),
+    join(earlyRound5(EARLY_SEPARATORS, d), earlyRound5(EARLY_SEPARATORS.slice(0, 1))),
+    join(earlyRound6(earlyDelimiters(), d), earlyRound6(earlyDelimiters().slice(0, 1))),
+  ];
+};
+
+test('flags every spelling, member and shape of each class at every level up to and one past the bound (#360)', () => {
+  earlySweeps().forEach((texts, round) => {
+    texts.forEach((text, i) => {
+      let form = text;
+      for (let depth = 0; depth <= 17; depth++) {
+        assert.ok(findTextLeaks(form).length > 0, `round ${round + 3} sweep case ${i} at level ${depth}: not flagged`);
+        form = JSON.stringify({ body: form });
+      }
+    });
   });
 });
 
@@ -2208,7 +2225,7 @@ test('reads strict JSON only, and a string\'s content a level down only where so
     assertAccepted(`{${jwk},"x":${json}}`);
   }
   for (const bad of ['{', '[1,]', '{"a"}', '{"a":1,}', '{"a" 1}', '01', '1.', '1e', '-', 'tru', 'nul', '[1 2]', '"a\\x"',
-    '"\\u12"', '"\\u12G4"', '"a\nb"', '"open', '{1:2}', '["a"}', '{"a":1]', '"say \\"hi\\""', '"x\\\\u0022y"']) {
+    '"\\u12"', '"\\u12G4"', '"\\u00\uff101"', '"\\u00\u06601"', '"a\nb"', '"open', '{1:2}', '["a"}', '{"a":1]', '"say \\"hi\\""', '"x\\\\u0022y"']) {
     assertFlaggedWholeBy(findTextLeaks, `{${jwk},"x":${bad}}`);
   }
   assertFlaggedWholeBy(findTextLeaks, `{${jwk}}x`);

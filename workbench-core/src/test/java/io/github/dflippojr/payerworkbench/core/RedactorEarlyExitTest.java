@@ -60,17 +60,26 @@ class RedactorEarlyExitTest {
 
     /** Round 3: a quote reading that is ambiguous, so which object owns a private member is not decided. */
     static List<String> round3() {
+        return round3(notes(), MEMBERS);
+    }
+
+    /** The earlier ordinary strings round 3 puts before the private member, each holding an escaped quote and delimiters. */
+    static List<String> notes() {
+        return List.of("{\"note\":\"x" + B + "\":}\",", "{\"note\":\"" + B + "\"}\",", "{\"note\":\"x" + B + "\",{\",",
+                "{\"note\":\"x" + B + "\":[\",");
+    }
+
+    static List<String> round3(List<String> notes, List<String> members) {
         List<String> texts = new ArrayList<>();
-        for (String note : List.of("{\"note\":\"x" + B + "\":}\",", "{\"note\":\"" + B + "\"}\",",
-                "{\"note\":\"x" + B + "\",{\",", "{\"note\":\"x" + B + "\":[\",")) {
-            for (String m : MEMBERS) {
+        for (String note : notes) {
+            for (String m : members) {
                 texts.add(note + "\"" + m + U + ":" + U + SECRET + B + "\"," + B + "\"kty\":\"oct\"}");
                 texts.add(note + B + "\"" + m + U + ":\"" + SECRET + U + ",\"kty\":\"oct\"}");
                 texts.add(note + "\"" + m + B + "\":" + U + SECRET + B + "\"," + B + "\"kty\":\"oct\"}");
                 texts.add(note + CHAIN + m + U + ":\"" + SECRET + "\",\"kty\":\"oct\"}");
             }
         }
-        for (String m : MEMBERS) {
+        for (String m : members) {
             // Escaped quotes in an ordinary string that, read as quotes, close its object before the member.
             texts.add("{\"kty\":\"oct\",\"a\":{\"note\":\"x" + B + "\"}," + B + "\"y" + B + "\":" + B + "\"z\",\"" + m
                     + "\":\"" + SECRET + "\"}}");
@@ -80,10 +89,20 @@ class RedactorEarlyExitTest {
 
     /** Round 4: a prose skip that starts at a line separator in an earlier string, with the private member after it. */
     static List<String> round4() {
+        return round4(separators(), spaces(), MEMBERS);
+    }
+
+    /** Whitespace before a name spelled as an escape, also with its backslash spelled as one. */
+    static List<String> spaces() {
+        return List.of(B + "u0020", B + "u0009", B + B + "u0020", B + "u005c" + B + "u2003", B + "u005cn",
+                B + "u005c" + B + "u005ct", B + "u005cu0020", B + B + "u005cr");
+    }
+
+    static List<String> round4(List<String> separators, List<String> spaces, List<String> members) {
         List<String> texts = new ArrayList<>();
-        for (String sep : separators()) {
+        for (String sep : separators) {
             String note = "{\"note\":\"a" + sep + "b\",";
-            for (String m : MEMBERS) {
+            for (String m : members) {
                 texts.add(note + "\"" + m + U + ":" + U + SECRET + B + "\"," + B + "\"kty\":\"oct\"}");
                 texts.add(note + B + "\"" + m + U + ":\"" + SECRET + U + ",\"kty\":\"oct\"}");
                 // The private member opening right after the separator, behind a comma or a brace.
@@ -93,10 +112,8 @@ class RedactorEarlyExitTest {
                 texts.add("{\"note\":\"x" + U + "," + name + "," + U + "kty" + U + ":\"oct\"}");
             }
         }
-        // Whitespace before the name spelled as an escape, also with its backslash spelled as one.
-        for (String space : List.of(B + "u0020", B + "u0009", B + B + "u0020", B + "u005c" + B + "u2003", B + "u005cn",
-                B + "u005c" + B + "u005ct", B + "u005cu0020", B + B + "u005cr")) {
-            for (String m : MEMBERS) {
+        for (String space : spaces) {
+            for (String m : members) {
                 texts.add("{\"note\":\"a\nb\"," + space + "\"" + m + U + ":" + U + SECRET + B + "\"," + B
                         + "\"kty\":\"oct\"}");
             }
@@ -109,11 +126,15 @@ class RedactorEarlyExitTest {
      * the skipped stretch, or the name inside the stretch and the value outside it; the kty before or after.
      */
     static List<String> round5() {
+        return round5(separators(), MEMBERS);
+    }
+
+    static List<String> round5(List<String> separators, List<String> members) {
         List<String> texts = new ArrayList<>();
         String e = B + "\"";
-        for (String sep : separators()) {
+        for (String sep : separators) {
             String note = "\"note\":" + e + "a" + sep + "b, ";
-            for (String m : MEMBERS) {
+            for (String m : members) {
                 String atName = "\"" + m + "\": \"" + SECRET + "\"";
                 String atValue = e + m + e + ": \"" + SECRET + "\"";
                 texts.add("{\"kty\":\"oct\"," + note + atName + "}");
@@ -130,9 +151,13 @@ class RedactorEarlyExitTest {
      * private member's name, or its value, just past that span; the kty before or after.
      */
     static List<String> round6() {
+        return round6(delimiters(), MEMBERS);
+    }
+
+    static List<String> round6(List<String> delimiters, List<String> members) {
         List<String> texts = new ArrayList<>();
-        for (String delimiter : delimiters()) {
-            for (String m : MEMBERS) {
+        for (String delimiter : delimiters) {
+            for (String m : members) {
                 texts.add("{\"kty\":\"oct\",\"x\":1" + delimiter + "\"" + m + "\":\"" + SECRET + "\"}");
                 texts.add("{\"kty\":\"oct\",\"x\":\"y\"" + delimiter + "\"" + m + "\":\"" + SECRET + "\"}");
                 texts.add("{\"kty\":\"oct\",\"" + m + "\"" + delimiter + "\"" + SECRET + "\"}");
@@ -206,14 +231,37 @@ class RedactorEarlyExitTest {
         assertGrid("round 6", round6());
     }
 
+    /**
+     * Every spelling with one member, and every member with one spelling, in every shape of each class: so each spelling,
+     * member and shape runs at every level, 0 to one past {@link Redactor#NESTED_LEVELS}.
+     */
+    static List<List<String>> sweeps() {
+        List<String> d = List.of("d");
+        List<List<String>> sweeps = new ArrayList<>();
+        sweeps.add(join(round3(notes(), d), round3(notes().subList(0, 1), MEMBERS)));
+        sweeps.add(join(round4(separators(), spaces(), d), round4(separators().subList(0, 1), spaces().subList(0, 1), MEMBERS)));
+        sweeps.add(join(round5(separators(), d), round5(separators().subList(0, 1), MEMBERS)));
+        sweeps.add(join(round6(delimiters(), d), round6(delimiters().subList(0, 1), MEMBERS)));
+        return sweeps;
+    }
+
+    private static List<String> join(List<String> a, List<String> b) {
+        List<String> out = new ArrayList<>(a);
+        b.stream().filter(text -> !out.contains(text)).forEach(out::add);
+        return out;
+    }
+
     @Test
-    void masksOneCaseOfEachClassAtEveryLevelUpToAndOnePastTheBound() {
-        List<List<String>> grids = List.of(round3(), round4(), round5(), round6());
-        for (int round = 0; round < grids.size(); round++) {
-            String form = grids.get(round).get(0);
-            for (int depth = 0; depth <= Redactor.NESTED_LEVELS + 1; depth++) {
-                assertMaskedWhole(form, "round " + (round + 3) + " case 0 at level " + depth);
-                form = nested(form);
+    void masksEverySpellingMemberAndShapeOfEachClassAtEveryLevelUpToAndOnePastTheBound() {
+        List<List<String>> sweeps = sweeps();
+        for (int round = 0; round < sweeps.size(); round++) {
+            List<String> texts = sweeps.get(round);
+            for (int i = 0; i < texts.size(); i++) {
+                String form = texts.get(i);
+                for (int depth = 0; depth <= Redactor.NESTED_LEVELS + 1; depth++) {
+                    assertMaskedWhole(form, "round " + (round + 3) + " sweep case " + i + " at level " + depth);
+                    form = nested(form);
+                }
             }
         }
     }
@@ -277,6 +325,12 @@ class RedactorEarlyExitTest {
                 "[1 2]", "{\"a\":1}x", "\"a\\x\"", "\"\\u12\"", "\"\\u12G4\"", "\"a\nb\"", "\"open", "\"a\\",
                 "{1:2}", "[\"a\"}", "{\"a\":1]")) {
             assertFalse(WholeTextGuard.readsCompletely(text), text);
+        }
+        // A unicode escape takes four ASCII hex digits only: other Unicode digits (fullwidth, Arabic-Indic) are no hex digit.
+        for (char digit : new char[] {'\uff10', '\uff41', '\u0660'}) {
+            assertFalse(WholeTextGuard.readsCompletely("\"\\u00" + digit + "1\""), () -> Integer.toHexString(digit));
+            // Loosely, it is no unicode escape either: the backslash goes, as before any other character.
+            assertEquals("u00" + digit + "1", WholeTextGuard.looselyDecoded(B + "u00" + digit + "1"));
         }
         // A string whose content holds a quote at some escape level must be JSON in its turn; one with none need not be.
         assertTrue(WholeTextGuard.readsCompletely("{\"a\":\"x\\\\\\\\y\",\"b\":\"[1,{\\\"c\\\":2}]\"}"));
