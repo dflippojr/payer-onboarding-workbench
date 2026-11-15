@@ -391,10 +391,44 @@ public final class Redactor {
         if (text == null || text.isEmpty()) {
             return text;
         }
+        // The one rule for early exits (#360, WholeTextGuard): wherever reading a text that may hold a JWK private member
+        // stops before it is complete, the whole text is masked. Each path that can stop it ends here: the canonical
+        // reading of the text as it came stops (it is not strict JSON at a level it needs, or needs a level past those
+        // read); the JWK search below stops (a level's budget spent, or JSON nested past NESTED_LEVELS); an exception; or
+        // the output does not read completely with every JWK private member masked.
+        boolean mayHold = WholeTextGuard.mayHoldPrivateMember(text);
+        if (mayHold && !WholeTextGuard.readsCompletely(text)) {
+            return MASK;
+        }
+        Discovery discovery = new Discovery(text.length(), reads);
+        String out;
+        try {
+            out = redactParts(text, discovery);
+        } catch (RuntimeException | StackOverflowError e) {
+            return MASK;
+        }
+        if (mayHold && discovery.stopped) {
+            return MASK;
+        }
+        if (WholeTextGuard.mayHoldPrivateMember(out) && !WholeTextGuard.readsMasked(out)) {
+            return MASK;
+        }
+        return out;
+    }
+
+    /**
+     * The passes under the whole-text rule, without it: what {@link #redact(String, List)} makes of a text that reads
+     * completely. Package-private so tests can pin what the passes do on their own, as a second line under the rule.
+     */
+    static String redactParts(String text, List<DiscoveryRead> reads) {
+        return redactParts(text, new Discovery(text.length(), reads));
+    }
+
+    /** {@link #redact(String, List)} before the whole-text rule: every pass, reading the JWKs with {@code discovery}. */
+    private static String redactParts(String text, Discovery discovery) {
         // The JWKs' private members and the PEM and PGP blocks are found in the text as it came, and masked
         // together: masking either first would hide the other (an unterminated block masked to the end of the
         // text may hold the JWK's kty; a JWK member's mask may hold the block's header).
-        Discovery discovery = new Discovery(text.length(), reads);
         List<Mask> masks = jwkMasks(text, discovery);
         List<Mask> pem = pemMasks(text);
         masks.addAll(pem);
@@ -921,6 +955,9 @@ public final class Redactor {
             }
         });
         if (deepest != null) {
+            if (discovery != null) {
+                discovery.stopped = true;
+            }
             List<Mask> strings = stringsHoldingEscapes(text);
             masks.addAll(strings);
             // A string found only in a view (its quotes spelled as unicode escapes in the text) has no bare
@@ -1902,6 +1939,9 @@ public final class Redactor {
         private final List<DiscoveryRead> reads;
         private boolean again;
 
+        /** Whether a read stopped before it was complete: a level's budget spent, or JSON nested past the levels read. */
+        private boolean stopped;
+
         Discovery(int length, List<DiscoveryRead> reads) {
             plain = new int[] {4 * length + 1024};
             embedded = new int[] {4 * length + 1024};
@@ -1934,6 +1974,7 @@ public final class Redactor {
             int allowance = Math.min(before, 4 * text.length() + 1024);
             int[] left = {allowance};
             List<JwkValue> values = jwkValues(text, embedded, left);
+            stopped |= left[0] < 0;
             budget[0] = left[0] < 0 ? left[0] : before - (allowance - left[0]);
             if (reads != null) {
                 reads.add(new DiscoveryRead(level, before, budget[0]));

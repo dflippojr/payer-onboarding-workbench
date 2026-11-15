@@ -415,8 +415,8 @@ class RedactorTest {
 
     @Test
     void masksSecretFieldsHoldingAnObjectOrArray() {
-        assertEquals("{\"private_key\":\"[REDACTED]\",\"kid\":\"k1\"}",
-                Redactor.redact("{\"private_key\":{\"kty\":\"RSA\",\"d\":\"PRIVATED\",\"n\":\"a}]\\\"b\"},\"kid\":\"k1\"}"));
+        assertWholeMaskOver("{\"private_key\":\"[REDACTED]\",\"kid\":\"k1\"}",
+                "{\"private_key\":{\"kty\":\"RSA\",\"d\":\"PRIVATED\",\"n\":\"a}]\\\"b\"},\"kid\":\"k1\"}");
         assertEquals("{\"access_token\": \"[REDACTED]\"}", Redactor.redact("{\"access_token\": [\"ARRSECRET\", [1]]}"));
         assertEquals("{\"secret\":\"[REDACTED]\"", Redactor.redact("{\"secret\":{\"d\":\"CUTOFF"));
         assertEquals("{\"result\":\"{\\\"private_key\\\":\\\"[REDACTED]\\\",\\\"kid\\\":\\\"k1\\\"}\"}",
@@ -572,16 +572,16 @@ class RedactorTest {
                 Redactor.redact("{\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"d\":\"PRIVECD\",\"kty\":\"EC\"}"));
         assertEquals("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}", Redactor.redact("{\"kty\":\"oct\",\"k\":12345678}"));
         // Each key of a JWKS, also pretty-printed, and a key with braces and quotes in a string.
-        assertEquals("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"[REDACTED]\"},\n"
+        assertWholeMaskOver("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"[REDACTED]\"},\n"
                         + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"[REDACTED]\",\n   \"kty\" : \"oct\"}]}",
-                Redactor.redact("{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"PRIVOKPD\"},\n"
-                        + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"PRIVK\",\n   \"kty\" : \"oct\"}]}"));
+                "{\"keys\":[{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"X1\",\"d\":\"PRIVOKPD\"},\n"
+                        + "  {\"kid\":\"a}{\\\"b\",\n   \"k\" : \"PRIVK\",\n   \"kty\" : \"oct\"}]}");
         // In JSON embedded in a JSON string, and in a body cut off at the size limit.
         assertEquals("{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"n\\\":\\\"N1\\\",\\\"d\\\":\\\"[REDACTED]\\\"}\"}",
                 Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"n\\\":\\\"N1\\\",\\\"d\\\":\\\"PRIVEMBD\\\"}\"}"));
         assertEquals("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}]}\"}",
                 Redactor.redact("{\"body\":\"{\\\"keys\\\":[{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVEMBK\\\"}]}\"}"));
-        assertEquals("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"", Redactor.redact("{\"kty\":\"RSA\",\"d\":\"PRIVCUTOFF"));
+        assertWholeMaskOver("{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"", "{\"kty\":\"RSA\",\"d\":\"PRIVCUTOFF");
         // Pretty-printed JSON embedded in a JSON string: its line breaks are escaped.
         assertEquals("{\"body\":\"{\\n \\\"kty\\\" :\\n \\\"RSA\\\",\\n \\\"d\\\":\\n\\t\\\"[REDACTED]\\\"}\"}",
                 Redactor.redact("{\"body\":\"{\\n \\\"kty\\\" :\\n \\\"RSA\\\",\\n \\\"d\\\":\\n\\t\\\"PRIVEMBNL\\\"}\"}"));
@@ -596,8 +596,8 @@ class RedactorTest {
         assertEquals("{\"kty\":\"RSA\",\"oth\":\"[REDACTED]\"}",
                 Redactor.redact("{\"kty\":\"RSA\",\"oth\":[{\"kty\":\"oct\",\"k\":\"PRIVK\"}]}"));
         // Embedded JSON cut off before its object closes.
-        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"\",\"n\":1}",
-                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"\",\"n\":1}"));
+        assertWholeMaskOver("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"\",\"n\":1}",
+                "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"\",\"n\":1}");
     }
 
     @Test
@@ -609,7 +609,12 @@ class RedactorTest {
                 "{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"X1\",\"y\":\"Y1\",\"kid\":\"k1\",\"use\":\"sig\",\"alg\":\"ES256\"}",
                 // Only the JWK's own members: not a sibling of a nested JWK, nor a member of an object inside one.
                 "{\"jwk\":{\"kty\":\"RSA\",\"n\":\"N1\"},\"d\":\"x\"}",
-                "{\"kty\":\"RSA\",\"meta\":{\"d\":\"x\"},\"n\":\"N1\"}",
+                "{\"kty\":\"RSA\",\"meta\":{\"d\":\"x\"},\"n\":\"N1\"}")) {
+            assertEquals(text, Redactor.redact(text));
+        }
+        // #360: these hold a kty and a private member name, and do not read completely (a string holding a quote is not
+        // JSON in its turn, or the text is not JSON), so they are masked whole. The passes on their own still keep them.
+        for (String text : List.of(
                 // kty quoted in a string is not a member.
                 "{\"note\":\"the \\\"kty\\\": member\",\"d\":\"x\"}",
                 "{\"note\":\"\\\"kty\\\":\",\"d\":\"x\"}",
@@ -620,7 +625,7 @@ class RedactorTest {
                 "\"kty\": \"RSA\", \"d\": \"x\"",
                 "[\"kty\": \"RSA\", \"d\": \"x\"]",
                 "[\"kty\": 1, \"kty\": 2, \"d\": \"x\"]")) {
-            assertEquals(text, Redactor.redact(text));
+            assertWholeMaskOver(text, text);
         }
     }
 
@@ -727,7 +732,8 @@ class RedactorTest {
             String out = masked;
             for (int depth = 1; depth <= 4; depth++) {
                 in = nested(in);
-                out = nested(out);
+                // #360: a text that does not read completely is masked whole, and so is every text that nests it.
+                out = Redactor.MASK.equals(masked) ? Redactor.MASK : nested(out);
                 assertEquals(out, Redactor.redact(in), "depth " + depth + ": " + jwk);
             }
         }
@@ -758,7 +764,7 @@ class RedactorTest {
                 "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\\"k\\\"\\u003a\\u0020\\\"PRIVK\\\"}\"}")) {
             String out = Redactor.redact(in);
             assertFalse(out.contains("PRIVK"), out);
-            assertEquals(Redactor.redact(unnested(in)), unnested(out), in);
+            assertEquals(Redactor.redact(unnested(in)), unnestedOrMask(out), in);
         }
         // A value opened with \" and closed with \\u0022, before a private member or after a secret field: the
         // members after it are read as JSON reads them.
@@ -767,7 +773,7 @@ class RedactorTest {
                 "{\"body\":\"{\\\"kty\\\":\\\"RSA\\\",\\\"password\\\":\\\"PRIVPW\\u0022,\\\"d\\\":\\\"PRIVD\\\"}\"}")) {
             String out = Redactor.redact(in);
             assertFalse(out.contains("PRIV"), out);
-            assertEquals(Redactor.redact(unnested(in)), unnested(out), in);
+            assertEquals(Redactor.redact(unnested(in)), unnestedOrMask(out), in);
         }
         String spelled = "{\"body\":\"\\u007B\\\"kty\\\":\\\"oct\\\"\\u002C\\u000A\\\"k\\\":\\\"PRIVK\\\"\\u007D\"}";
         assertFalse(Redactor.redact(spelled).contains("PRIVK"), Redactor.redact(spelled));
@@ -780,13 +786,14 @@ class RedactorTest {
                 "{\"kty\":\"RSA\",\"n\":\"N1\",\"d\":\"PRIVD\",\"oth\":[{\"r\":\"PRIVR\"}],\"qi\":\"PRIVQI\"}",
                 "{\"keys\":[{\"k\":\"PRIVK\",\"kty\":\"oct\"}]}",
                 "{\"kty\":\"oct\",\"note\":\"a \\\"quoted\\\" \\\\ word\",\"k\":\"PRIVK\"}")) {
+            // #360: a JWK whose string holds a quote that is not JSON in its turn is masked whole, at every depth.
             String masked = Redactor.redact(jwk);
             for (UnaryOperator<String> a : levels) {
                 for (UnaryOperator<String> b : levels) {
                     for (String in : List.of(a.apply(jwk), b.apply(a.apply(jwk)), a.apply(b.apply(a.apply(jwk))))) {
                         String out = Redactor.redact(in);
                         assertFalse(out.contains("PRIV"), out);
-                        assertEquals(masked, unnested(out), in);
+                        assertEquals(masked, unnestedOrMask(out), in);
                     }
                 }
             }
@@ -809,7 +816,10 @@ class RedactorTest {
             String out = assertTimeout(Duration.ofSeconds(5), () -> Redactor.redact(in));
             assertFalse(out.contains("PRIVATECHAINVALUE"), () -> links + ": " + out);
             assertTrue(out.length() <= in.length(), () -> links + ": " + out.length() + " > " + in.length());
-            assertTrue(JSON.readTree(out).has("body"), out);
+            // #360: the body's content is not JSON (a chain is a quote only levels further down), so the text is masked
+            // whole; the passes on their own still leave valid JSON.
+            assertEquals(Redactor.MASK, out);
+            assertTrue(JSON.readTree(Redactor.redactParts(in, null)).has("body"), out);
         }
         // A sibling holding an escaped quote, or a stray quote in prose before the JSON, must not shift which quotes
         // bound the string that holds the chain (the review on 2334a77).
@@ -1944,6 +1954,11 @@ class RedactorTest {
         return out.toString();
     }
 
+    /** {@link #unnested}, or the mask for a text masked whole (#360). */
+    private static String unnestedOrMask(String text) {
+        return Redactor.MASK.equals(text) ? text : unnested(text);
+    }
+
     /** The JSON text innermost in {@code text}: the {@code body} string, read as JSON, until it is not JSON with one. */
     private static String unnested(String text) {
         String json = text;
@@ -1963,6 +1978,25 @@ class RedactorTest {
     private static String escapedForJson(String text) {
         String quoted = JSON.writeValueAsString(text);
         return quoted.substring(1, quoted.length() - 1);
+    }
+
+    /**
+     * #360: {@code in} may hold a JWK private member and does not read completely (it is not strict JSON at a level it
+     * needs, or reading it stops early), so {@link Redactor#redact(String)} masks it whole. What the passes under that
+     * rule make of it on their own is still {@code parts}, the output {@code redact} gave before the rule.
+     */
+    private static void assertWholeMaskOver(String parts, String in) {
+        assertEquals(Redactor.MASK, Redactor.redact(in));
+        assertEquals(parts, Redactor.redactParts(in, null));
+    }
+
+    /** {@link #assertWholeMaskOver} for a {@code jwk} form; for a form holding no JWK, {@code redact} still gives {@code parts}. */
+    private static void assertWholeMaskOverIf(boolean jwk, String parts, String in) {
+        if (jwk) {
+            assertWholeMaskOver(parts, in);
+        } else {
+            assertEquals(parts, Redactor.redact(in));
+        }
     }
 
     /** {@code text} as the value of a JSON string member, escaped as a serializer escapes it. */
@@ -1991,11 +2025,17 @@ class RedactorTest {
     @Test
     void masksJwkPrivateMembersInTextTooTangledToReadInLinearTime() {
         // Past its time budget the search gives up on finding each JWK and masks every private member.
-        String out = Redactor.redact("\"kty\":\"".repeat(80_000) + "{\"kty\":\"oct\",\"k\":\"PRIVK\"}");
+        // #360: such text does not read completely either, so redact masks it whole; the passes on their own still mask
+        // every private member.
+        String tangled = "\"kty\":\"".repeat(80_000) + "{\"kty\":\"oct\",\"k\":\"PRIVK\"}";
+        assertEquals(Redactor.MASK, Redactor.redact(tangled));
+        String out = Redactor.redactParts(tangled, null);
         assertFalse(out.contains("PRIVK"));
         assertTrue(out.endsWith("\"k\":\"[REDACTED]\"}"), out.substring(out.length() - 40));
-        String embedded = Redactor.redact("{\"b\":\"" + "\\\"kty\\\":\\\"".repeat(80_000)
-                + "{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"}\"}");
+        String tangledEmbedded = "{\"b\":\"" + "\\\"kty\\\":\\\"".repeat(80_000)
+                + "{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"PRIVK\\\"}\"}";
+        assertEquals(Redactor.MASK, Redactor.redact(tangledEmbedded));
+        String embedded = Redactor.redactParts(tangledEmbedded, null);
         assertFalse(embedded.contains("PRIVK"));
         assertTrue(embedded.endsWith("\\\"k\\\":\\\"[REDACTED]\\\"}\"}"), embedded.substring(embedded.length() - 40));
     }
@@ -2046,10 +2086,10 @@ class RedactorTest {
         String pem = "{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\"-----END PRIVATE KEY-----\",\"d\":\"FAKE_PRIVATE_KEY_293\"}";
         String pgp = pem.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
         // What 6304ec0 made of the two raw inputs.
-        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----\",\"d\":\"[REDACTED]\"}",
-                Redactor.redact(pem));
-        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
-                + "-----END PGP PRIVATE KEY BLOCK-----\",\"d\":\"[REDACTED]\"}", Redactor.redact(pgp));
+        assertWholeMaskOver("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----\",\"d\":\"[REDACTED]\"}",
+                pem);
+        assertWholeMaskOver("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
+                + "-----END PGP PRIVATE KEY BLOCK-----\",\"d\":\"[REDACTED]\"}", pgp);
         for (String raw : List.of(pem, pgp)) {
             for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingQuotes(raw),
                     nestedEscapingBackslashes(raw), nestedEscapingEverything(raw))) {
@@ -2081,10 +2121,10 @@ class RedactorTest {
         // The same text copied from inside such strings, with no bracket or quote left bare.
         cases.put(escapedEverything(escapedEverything(loose + d)), escapedEverything(escapedEverything(loose + "\"d\":"))
                 + escapedEverything(quote) + "[REDACTED]" + escapedEverything(quote));
-        cases.forEach((leaked, kept) -> assertEquals(kept, Redactor.redact(leaked)));
+        cases.forEach((leaked, kept) -> assertWholeMaskOver(kept, leaked));
         // Ten repetitions do not spend it: d is in no object, and is kept.
         String few = "\"kty\":\"".repeat(10) + d;
-        assertEquals(few, Redactor.redact(few));
+        assertWholeMaskOver(few, few);
     }
 
     @Test
@@ -2094,15 +2134,15 @@ class RedactorTest {
         String loose = "\"kty\":\"".repeat(63);
         String quote = "\\u0022";
         String prose = " note: \"ok\"";
-        assertEquals(escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
+        assertWholeMaskOver(escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
                 + escapedEverything(quote) + prose,
-                Redactor.redact(escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + prose));
+                escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + prose);
         // After a stray quote whose string has an escape JSON has not, with and without the prose: the scanner's r9 tests.
         String stray = "he said \"don\\'t ";
         for (String after : List.of("", prose)) {
-            assertEquals(stray + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
+            assertWholeMaskOver(stray + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote) + "[REDACTED]"
                     + escapedEverything(quote) + after,
-                    Redactor.redact(stray + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + after));
+                    stray + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_293\"")) + after);
         }
     }
 
@@ -2116,10 +2156,10 @@ class RedactorTest {
         for (String before : List.of("he said \"\n", "he said \"\r\n", "he said \"\r", "\"\n", "he said \"\\\n",
                 "he said \"\\\r\n")) {
             for (String after : List.of("", " note: \"ok\"")) {
-                assertEquals(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
+                assertWholeMaskOver(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
                         + "[REDACTED]" + escapedEverything(quote) + after,
-                        Redactor.redact(before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))
-                                + after));
+                        before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))
+                                + after);
             }
         }
     }
@@ -2130,9 +2170,9 @@ class RedactorTest {
         String loose = "\"kty\":\"".repeat(63);
         String quote = "\\u0022";
         for (String before : List.of("\"\n\",\"body\":", "\"\r\n\",\"body\":", "x\",\"body\":")) {
-            assertEquals(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
+            assertWholeMaskOver(before + escapedEverything(escapedEverything(loose + "\"d\":")) + escapedEverything(quote)
                     + "[REDACTED]" + escapedEverything(quote),
-                    Redactor.redact(before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\""))));
+                    before + escapedEverything(escapedEverything(loose + "\"d\":\"FAKE_PRIVATE_KEY_342\"")));
         }
     }
 
@@ -2140,24 +2180,24 @@ class RedactorTest {
     void keepsALooseKtyInAStringAfterAValueWithARawLineBreak() {
         // #342: the leak scanner must accept this as it is.
         String text = "{\"note\":\"a\nb\",\"body\":\"" + "\"kty\":\"RSA\",\"d\":\"dimension\"".replace("\"", "\\u0022") + "\"}";
-        assertEquals(text, Redactor.redact(text));
+        assertWholeMaskOver(text, text);
     }
 
     @Test
     void masksACopiedJwkBeforeAStrayQuoteAndAUnicodeEscape() {
         // #342: the leak scanner's test of the same name uses this output as its masked form.
         String after = " \"x\" \\u0041";
-        assertEquals("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}" + after,
-                Redactor.redact("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"FAKE_JWK_K_342\\\"}" + after));
+        assertWholeMaskOver("{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"[REDACTED]\\\"}" + after,
+                "{\\\"kty\\\":\\\"oct\\\",\\\"k\\\":\\\"FAKE_JWK_K_342\\\"}" + after);
     }
 
     @Test
     void masksAnEscapedJwkAfterAStrayQuoteAndARawLineBreak() {
         // #342: the leak scanner's escaped-JWK test uses this output as its masked form.
         for (String before : List.of("he said \"\n", "he said \"\r\n")) {
-            assertEquals(before + escapedEverything("{\"kty\":\"oct\",\"k\":") + escapedEverything("\"") + "[REDACTED]"
+            assertWholeMaskOver(before + escapedEverything("{\"kty\":\"oct\",\"k\":") + escapedEverything("\"") + "[REDACTED]"
                     + escapedEverything("\"}"),
-                    Redactor.redact(before + escapedEverything("{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\"}")));
+                    before + escapedEverything("{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\"}"));
         }
     }
 
@@ -2175,8 +2215,8 @@ class RedactorTest {
         for (String before : List.of("he said \"\n", "he said \"\r\n", "\"\n", "\"\r\n")) {
             for (String after : List.of("", "\"", "\" and \"x\"")) {
                 for (var form : forms) {
-                    assertEquals(before + form.apply("[REDACTED]") + after,
-                            Redactor.redact(before + form.apply("FAKE_JWK_K_342") + after));
+                    assertWholeMaskOver(before + form.apply("[REDACTED]") + after,
+                            before + form.apply("FAKE_JWK_K_342") + after);
                 }
             }
         }
@@ -2193,7 +2233,7 @@ class RedactorTest {
             for (String members : before) {
                 String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + members + u + "kty" + u + ":" + u + "RSA" + u
                         + "," + u + "d" + u + ":" + u + "dimension" + u + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                assertWholeMaskOver(text, text);
             }
         }
     }
@@ -2207,12 +2247,12 @@ class RedactorTest {
             for (String mid : List.of("0 ", b + "a" + b + " ", "{" + b + "y" + b + ":1} ", "[1] ")) {
                 String text = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
                         + b + "d" + b + ":" + b + "dimension" + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                assertWholeMaskOver(text, text);
             }
             for (String mid : List.of("0,", "0 , ", "0, x ", "{" + b + "y" + b + ":1},", "[1],")) {
                 String form = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
                         + b + "d" + b + ":" + b + "%s" + b + "}";
-                assertEquals(form.formatted("[REDACTED]"), Redactor.redact(form.formatted("FAKE_PRIVATE_KEY_342")));
+                assertWholeMaskOver(form.formatted("[REDACTED]"), form.formatted("FAKE_PRIVATE_KEY_342"));
             }
         }
     }
@@ -2229,12 +2269,12 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ")) {
                     String text = "he said \"" + lb + encode.apply("{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertWholeMaskOver(text, text);
                 }
                 for (String mid : List.of("0,", "0, x ")) {
                     String form = "{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
-                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                    assertWholeMaskOver("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            "he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342")));
                 }
             }
         }
@@ -2251,12 +2291,12 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String before : List.of("\"\"a\":0,", "\"a\":\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{" + before + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertWholeMaskOver(text, text);
                 }
                 for (String before : List.of("\"a\":0,", "")) {
                     String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
-                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                    assertWholeMaskOver("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            "he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342")));
                 }
             }
         }
@@ -2273,12 +2313,12 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ", "\"\"a\":0,", "\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertWholeMaskOver(text, text);
                 }
                 for (String mid : List.of("0,", "0, y ", "[1],", "\"b\"c\"\",")) {
                     String form = "{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
-                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                    assertWholeMaskOver("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            "he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342")));
                 }
             }
         }
@@ -2295,11 +2335,11 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String before : List.of("\"{\":\"\"a\":0,", "\"[\":\"\"a\":0,\"b\":{", "\"a\":\"{\",")) {
                     String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
-                    assertEquals("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
-                            Redactor.redact("he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342"))));
+                    assertWholeMaskOver("he said \"" + lb + encode.apply(form.formatted("[REDACTED]")),
+                            "he said \"" + lb + encode.apply(form.formatted("FAKE_PRIVATE_KEY_342")));
                 }
                 String colons = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"d\"::\"dimension\"}");
-                assertEquals(colons, Redactor.redact(colons));
+                assertWholeMaskOver(colons, colons);
             }
         }
     }
@@ -2313,13 +2353,13 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String value : List.of("\\nTAIL", "\\r\\nTAIL", "\\n")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"" + value + "\"}");
-                    assertEquals("he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}"), Redactor.redact(text));
+                    assertWholeMaskOver("he said \"" + lb + encode.apply("{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}"), text);
                 }
                 for (String space : List.of("\u00a0", "\u2003", "\u3000")) {
                     for (String form : List.of("{\"kty\"" + space + ":\"oct\",\"k\":\"dimension\"}",
                             "{\"kty\":\"oct\",\"k\"" + space + ":\"dimension\"}", "{\"kty\":\"oct\",\"k\":" + space + "\"dimension\"}")) {
                         String text = "he said \"" + lb + encode.apply(form);
-                        assertEquals(text, Redactor.redact(text));
+                        assertWholeMaskOver(text, text);
                     }
                 }
             }
@@ -2332,11 +2372,11 @@ class RedactorTest {
         String jwk = "{\"kty\":\"oct\",\"k\":\"%s\"}";
         for (String lb : List.of("\n", "\r\n")) {
             for (String before : List.of("he said \"" + lb + "he said \"" + lb, "he said \"" + lb + "x\"" + lb + "more" + lb, "\"" + lb + "\"" + lb)) {
-                assertEquals(before + escapedForJson(jwk.formatted("[REDACTED]")),
-                        Redactor.redact(before + escapedForJson(jwk.formatted("FAKE_JWK_K_342"))));
+                assertWholeMaskOver(before + escapedForJson(jwk.formatted("[REDACTED]")),
+                        before + escapedForJson(jwk.formatted("FAKE_JWK_K_342")));
             }
             String cut = "he said \"" + lb + escapedForJson("{\"kty\":\"oct\",\"k\":\"[REDACTED]\\" + lb + "TAIL\"}");
-            assertEquals(cut, Redactor.redact(cut));
+            assertWholeMaskOver(cut, cut);
         }
     }
 
@@ -2352,19 +2392,19 @@ class RedactorTest {
                 for (String k : List.of("", "[REDACTED]")) {
                     String in = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":" + b + k + "\\\\" + brk
                             + "TAIL" + b + "}";
-                    assertEquals(masked, Redactor.redact(in));
+                    assertWholeMaskOver(masked, in);
                 }
             }
             for (String value : List.of("true", "1", "{}", b + "FAKE_JWK_K_342" + b)) {
                 for (String form : List.of("{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s:\\f%2$s}", "{%1$skty%1$s:%1$soct%1$s,%1$sk%1$s\\f:%2$s}",
                         "{%1$skty%1$s\\f:%1$soct%1$s,%1$sk%1$s:%2$s}")) {
                     String kept = "he said \"" + lb + form.formatted(b, value);
-                    assertEquals(kept, Redactor.redact(kept));
+                    assertWholeMaskOver(kept, kept);
                 }
             }
             String formFeed = "he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000ctrue}";
-            assertEquals("he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000c" + b + "[REDACTED]" + b + "}",
-                    Redactor.redact(formFeed));
+            assertWholeMaskOver("he said \"" + lb + "{" + b + "kty" + b + ":" + b + "oct" + b + "," + b + "k" + b + ":\\u000c" + b + "[REDACTED]" + b + "}",
+                    formFeed);
         }
     }
 
@@ -2380,14 +2420,14 @@ class RedactorTest {
                 String masked = "he said \"" + lb + jwk.apply(q, "[REDACTED]");
                 for (String brk : List.of("\\u000a", "\\u000d", "\\u0085", "\\u2028", "\\u2029")) {
                     for (String k : List.of("\\u005c" + brk + "TAIL", "[REDACTED]\\u005c" + brk + "TAIL", "[REDACTED]\\\\" + brk + "TAIL")) {
-                        assertEquals(masked, Redactor.redact("he said \"" + lb + jwk.apply(q, k)));
+                        assertWholeMaskOver(masked, "he said \"" + lb + jwk.apply(q, k));
                     }
                 }
                 String kept = "he said \"" + lb + jwk.apply(q, "[REDACTED]\\u005c\\nTAIL");
-                assertEquals(kept, Redactor.redact(kept));
+                assertWholeMaskOver(kept, kept);
             }
             for (String before : List.of("\"" + lb + "\",\"body\":", "\"" + lb + "\",\"b\":1,\"body\":", "x\"" + lb + "\",\"body\":")) {
-                assertEquals(before + jwk.apply(b, "[REDACTED]"), Redactor.redact(before + jwk.apply(b, "FAKE_JWK_K_342")));
+                assertWholeMaskOver(before + jwk.apply(b, "[REDACTED]"), before + jwk.apply(b, "FAKE_JWK_K_342"));
             }
         }
     }
@@ -2399,8 +2439,8 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (String tail : List.of("\\", "\\u0", "\\u00", "\\u002", "\\\\\\")) {
                 String masked = "he said \"" + lb + escapedForJson(jwk.formatted("[REDACTED]")) + tail;
-                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(jwk.formatted("FAKE_JWK_K_342")) + tail));
-                assertEquals(masked, Redactor.redact(masked));
+                assertWholeMaskOver(masked, "he said \"" + lb + escapedForJson(jwk.formatted("FAKE_JWK_K_342")) + tail);
+                assertWholeMaskOver(masked, masked);
             }
             for (int pad : List.of(500, 2000, 10000)) {
                 String leaked = "{\"kty\":\"oct\",\"k\":\"FAKE_JWK_K_342\",\"pad\":\"" + "x".repeat(pad) + "\"}";
@@ -2409,8 +2449,8 @@ class RedactorTest {
                     leaked = "\"" + lb + "\"" + lb + escapedForJson(leaked);
                     masked = "\"" + lb + "\"" + lb + escapedForJson(masked);
                 }
-                assertEquals(masked, Redactor.redact(leaked));
-                assertEquals(masked, Redactor.redact(masked));
+                assertWholeMaskOver(masked, leaked);
+                assertWholeMaskOver(masked, masked);
             }
         }
     }
@@ -2423,8 +2463,8 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (String form : forms) {
                 String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]"));
-                assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342"))));
-                assertEquals(masked, Redactor.redact(masked));
+                assertWholeMaskOver(masked, "he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")));
+                assertWholeMaskOver(masked, masked);
             }
         }
     }
@@ -2437,8 +2477,10 @@ class RedactorTest {
             for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
                 for (String form : forms) {
                     String masked = "he said \"" + lb + escapedForJson(form.formatted("[REDACTED]")) + tail;
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")) + tail));
-                    assertEquals(masked, Redactor.redact(masked));
+                    // #360: the JWK form does not read completely, so it is masked whole.
+                    boolean jwk = form.contains("kty");
+                    assertWholeMaskOverIf(jwk, masked, "he said \"" + lb + escapedForJson(form.formatted("FAKE_JWK_K_342")) + tail);
+                    assertWholeMaskOverIf(jwk, masked, masked);
                 }
             }
         }
@@ -2453,12 +2495,12 @@ class RedactorTest {
                 for (String value : List.of("true", q + "FAKE_JWK_K_342" + q)) {
                     String colon = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":\\f" + value + "}";
                     String kty = "he said \"" + lb + pre + "{" + q + "kty" + q + "\\f:" + q + "oct" + q + "," + q + "k" + q + ":" + value + "}";
-                    assertEquals(colon, Redactor.redact(colon));
-                    assertEquals(kty, Redactor.redact(kty));
+                    assertWholeMaskOver(colon, colon);
+                    assertWholeMaskOver(kty, kty);
                 }
                 String masked = "he said \"" + lb + pre + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q + "[REDACTED]" + q + "}";
-                assertEquals(masked, Redactor.redact(masked.replace("[REDACTED]", "FAKE_JWK_K_342")));
-                assertEquals(masked, Redactor.redact(masked));
+                assertWholeMaskOver(masked, masked.replace("[REDACTED]", "FAKE_JWK_K_342"));
+                assertWholeMaskOver(masked, masked);
             }
         }
     }
@@ -2475,8 +2517,8 @@ class RedactorTest {
                         leaked = "he said \"" + lb + escapedForJson(leaked);
                         masked = "he said \"" + lb + escapedForJson(masked);
                     }
-                    assertEquals(masked + tail, Redactor.redact(leaked + tail));
-                    assertEquals(masked + tail, Redactor.redact(masked + tail));
+                    assertWholeMaskOver(masked + tail, leaked + tail);
+                    assertWholeMaskOver(masked + tail, masked + tail);
                 }
             }
         }
@@ -2490,9 +2532,11 @@ class RedactorTest {
             for (String tail : List.of("\\uZ", "\\u0Z", "\\u00G")) {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + q;
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "FAKE_JWK_K_342" + tail));
-                    assertEquals(masked, Redactor.redact(masked));
+                    // #360: the JWK form does not read completely, so it is masked whole.
+                    boolean jwk = head.contains("kty");
+                    assertWholeMaskOverIf(jwk, masked, "he said \"" + lb + head + "[REDACTED]" + tail);
+                    assertWholeMaskOverIf(jwk, masked, "he said \"" + lb + head + "FAKE_JWK_K_342" + tail);
+                    assertWholeMaskOverIf(jwk, masked, masked);
                 }
             }
         }
@@ -2509,15 +2553,18 @@ class RedactorTest {
             for (String lb : List.of("\n", "\r\n")) {
                 for (String head : List.of("{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q, "{" + q + "password" + q + ":" + q)) {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + q;
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + "[REDACTED]" + tail));
-                    assertEquals(masked, Redactor.redact("he said \"" + lb + head + tail));
-                    assertEquals(head.contains("password") ? masked : masked + tail, Redactor.redact(masked + tail));
-                    assertEquals(masked + "}" + tail, Redactor.redact(masked + "}" + tail));
+                    // #360: the JWK forms do not read completely, so they are masked whole.
+                    boolean jwk = head.contains("kty");
+                    assertWholeMaskOverIf(jwk, masked, "he said \"" + lb + head + "[REDACTED]" + tail);
+                    assertWholeMaskOverIf(jwk, masked, "he said \"" + lb + head + tail);
+                    assertWholeMaskOverIf(jwk, head.contains("password") ? masked : masked + tail, masked + tail);
+                    assertWholeMaskOverIf(jwk, masked + "}" + tail, masked + "}" + tail);
                 }
             }
             for (String head : List.of("{\"kty\":\"oct\",\"k\":\"", "{\"password\":\"")) {
-                assertEquals(head + "[REDACTED]\"", Redactor.redact(head + "[REDACTED]" + tail));
-                assertEquals(head + "[REDACTED]\"}" + tail, Redactor.redact(head + "[REDACTED]\"}" + tail));
+                boolean jwk = head.contains("kty");
+                assertWholeMaskOverIf(jwk, head + "[REDACTED]\"", head + "[REDACTED]" + tail);
+                assertWholeMaskOverIf(jwk, head + "[REDACTED]\"}" + tail, head + "[REDACTED]\"}" + tail);
             }
         }
     }
@@ -2536,9 +2583,10 @@ class RedactorTest {
                     String masked = "he said \"" + lb + head + "[REDACTED]" + b + tail;
                     String closed = "he said \"" + lb + head + "[REDACTED]" + q;
                     boolean secret = head.contains("password");
-                    assertEquals(secret ? closed : masked, Redactor.redact(masked));
+                    // #360: the JWK form does not read completely, so it is masked whole.
+                    assertWholeMaskOverIf(!secret, secret ? closed : masked, masked);
                     String empty = "he said \"" + lb + head + b + tail;
-                    assertEquals(secret ? closed : empty, Redactor.redact(empty));
+                    assertWholeMaskOverIf(!secret, secret ? closed : empty, empty);
                 }
             }
         }
@@ -2557,8 +2605,8 @@ class RedactorTest {
                     assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + "[REDACTED]" + backslash + tail));
                     assertEquals(secret + "[REDACTED]" + q, Redactor.redact(secret + backslash + tail));
                     String jwk = "he said \"" + lb + "{" + q + "kty" + q + ":" + q + "oct" + q + "," + q + "k" + q + ":" + q;
-                    assertEquals(jwk + "[REDACTED]" + backslash + tail, Redactor.redact(jwk + "[REDACTED]" + backslash + tail));
-                    assertEquals(jwk + backslash + tail, Redactor.redact(jwk + backslash + tail));
+                    assertWholeMaskOver(jwk + "[REDACTED]" + backslash + tail, jwk + "[REDACTED]" + backslash + tail);
+                    assertWholeMaskOver(jwk + backslash + tail, jwk + backslash + tail);
                 }
             }
         }
@@ -2578,7 +2626,7 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (var form : forms) {
                 String before = "he said \"" + lb;
-                assertEquals(before + form.apply("[REDACTED]"), Redactor.redact(before + form.apply("FAKE_JWK_K_342")));
+                assertWholeMaskOver(before + form.apply("[REDACTED]"), before + form.apply("FAKE_JWK_K_342"));
             }
         }
     }
@@ -2629,8 +2677,8 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (String copied : List.of(b.apply(head + tail), u.apply(head) + b.apply(tail), b.apply(head) + u.apply(tail))) {
                 String text = "he said \"" + lb + copied;
-                assertEquals(text, Redactor.redact(text));
-                assertEquals(text, Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
+                assertWholeMaskOver(text, text);
+                assertWholeMaskOver(text, text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342"));
             }
         }
     }
@@ -2646,8 +2694,8 @@ class RedactorTest {
                 masked = "he said \"" + lb + escapedForJson(masked);
                 leaked = "he said \"" + lb + escapedForJson(leaked);
             }
-            assertEquals(masked, Redactor.redact(masked));
-            assertEquals(masked, Redactor.redact(leaked));
+            assertWholeMaskOver(masked, masked);
+            assertWholeMaskOver(masked, leaked);
         }
     }
 
@@ -2663,8 +2711,8 @@ class RedactorTest {
                 masked = "he said \"" + lb + escapedForJson(masked);
                 leaked = "he said \"" + lb + escapedForJson(leaked);
             }
-            assertEquals(masked, Redactor.redact(masked));
-            assertEquals(masked, Redactor.redact(leaked));
+            assertWholeMaskOver(masked, masked);
+            assertWholeMaskOver(masked, leaked);
         }
     }
 
@@ -2680,8 +2728,8 @@ class RedactorTest {
                 masked = "he said \"" + lb + escapedForJson(masked) + "\"";
                 leaked = "he said \"" + lb + escapedForJson(leaked) + "\"";
             }
-            assertEquals(masked, Redactor.redact(masked));
-            assertEquals(masked, Redactor.redact(leaked));
+            assertWholeMaskOver(masked, masked);
+            assertWholeMaskOver(masked, leaked);
         }
     }
 
@@ -2699,8 +2747,11 @@ class RedactorTest {
         String spentOnTheFirstRead = "\"kty\":\"".repeat(63) + block + "\"d\":\"FAKE_PRIVATE_KEY_293\"";
         for (String raw : List.of(jwk, spentOnTheSecondRead, spentOnTheFirstRead)) {
             for (String text : List.of(raw, nested(raw), nested(nested(raw)))) {
+                // #360: a stray quote leaves the text not JSON, so redact masks it whole; the budgets are those of the
+                // passes under that rule.
+                assertEquals(Redactor.MASK, Redactor.redact(text));
                 List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
-                String out = Redactor.redact(text, reads);
+                String out = Redactor.redactParts(text, reads);
                 assertFalse(out.contains("FAKE_PRIVATE_KEY_293"), () -> text + "\n became " + out);
                 int allowance = 4 * text.length() + 1024;
                 Map<String, Integer> left = new LinkedHashMap<>();
@@ -2720,7 +2771,7 @@ class RedactorTest {
             }
         }
         List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
-        Redactor.redact(spentOnTheFirstRead, reads);
+        Redactor.redactParts(spentOnTheFirstRead, reads);
         assertTrue(reads.stream().filter(read -> read.level().equals("plain")).allMatch(read -> read.after() < 0), reads::toString);
     }
 
@@ -2732,11 +2783,11 @@ class RedactorTest {
         String key = "\"kty\":\"".repeat(63) + "\"d\":\"FAKE_PRIVATE_KEY_293\"" + "-----BEGIN PRIVATE KEY-----"
                 + "X".repeat(10_000) + "-----END PRIVATE KEY-----";
         String pgp = key.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
-        // What 027fe1e made of the two raw inputs.
-        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n"
-                + "-----END PRIVATE KEY-----", Redactor.redact(key));
-        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
-                + "-----END PGP PRIVATE KEY BLOCK-----", Redactor.redact(pgp));
+        // What 027fe1e made of the two raw inputs; #360: they are not JSON, so redact masks them whole.
+        assertWholeMaskOver("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n"
+                + "-----END PRIVATE KEY-----", key);
+        assertWholeMaskOver("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
+                + "-----END PGP PRIVATE KEY BLOCK-----", pgp);
         // Embedded forms that keep the value and the block's header literal, so the second read runs at an escaped
         // level; each was masked on 027fe1e and kept on 3c47acc.
         List<org.junit.jupiter.api.function.Executable> embedded = new java.util.ArrayList<>();
