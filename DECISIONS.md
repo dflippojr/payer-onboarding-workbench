@@ -164,3 +164,18 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
 - **Two fixed texts, chosen by payer id.** `RunReport.DISCLAIMER_TEXT` stays for synthetic runs, byte for byte. A run whose payer id is `custom-endpoint` gets `CUSTOM_DISCLAIMER_TEXT`, the issue's recommended wording. The replay bundle only records synthetic runs, so it does not change.
 - **The UI claims "no real payer" only after the server confirms it.** `index.html` holds neutral text that is true in every mode, which stays up while the page loads and if `/api/features` fails. `app.js` then shows the synthetic text, kept in an inert `<template>`, when custom endpoints are off, or the custom text when they are on.
 - **The tests scan for the claim, not only the disclaimer.** `CustomEndpointTest` and `reference-runs.mjs` search each whole rendered report, and `custom-endpoint-form.ts` the whole page, so text added elsewhere that is only true of a synthetic payer fails too. The JS and Java patterns are separate copies, like the redaction rules, but have no shared corpus.
+
+## One rule wherever reading stops early (#360)
+
+- Security rounds 3 to 6 on #356 each found one more path where reading a text stopped early and left a JWK private
+  member next to the skipped part unmasked or unflagged. Instead of one fix per path, the Redactor masks and the leak
+  scanner flags the whole text wherever its canonical reading cannot be completed. Over-masking is accepted; a miss is not.
+- The canonical reading is strict JSON at level 0 and, level by level, the content of every string in which some escape
+  level holds a quote, within the 16 levels the Redactor reads. A string with no quote at any level holds no member name,
+  so it is not read further. Every member counts, a repeated name too.
+- The rule applies to a text that may hold a JWK private member: a `kty` and a quoted private member name, each in any
+  spelling, at any escape level. Other texts are not changed by it.
+- The Redactor checks its input and its output: the output must read completely with every JWK private member masked.
+  Its earlier passes stay as a second line (`redactParts`), and tests still pin what they do on their own.
+- The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,
+  allowlist or threshold changed.

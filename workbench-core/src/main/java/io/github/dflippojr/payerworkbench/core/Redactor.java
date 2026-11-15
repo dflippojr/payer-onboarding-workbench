@@ -52,6 +52,11 @@ import java.util.stream.IntStream;
  * character it spells ({@code "kt\\u0079"} is {@code kty}). It is a safety net, not a
  * guarantee: callers should still avoid passing secrets around in the first place.
  *
+ * <p>Wherever reading a text that may hold a JWK private member stops before it is complete, the whole text is masked
+ * (#360, {@link WholeTextGuard}): a text that is not strict JSON at a level it needs, JSON nested past
+ * {@link #NESTED_LEVELS}, a JWK search that spends its budget, a pass that throws, or an output that does not read
+ * completely with every JWK private member masked.
+ *
  * <p>Out of scope (#262): other schemes in free text, such as {@code Digest response=...}
  * (an {@code Authorization} header or line is still masked whole); URL-encoded separators
  * after any scheme but {@code Bearer}; JWK member names outside an object with a
