@@ -1,6 +1,11 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.Duration;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -211,5 +216,112 @@ class RedactorEarlyExitTest {
                 form = nested(form);
             }
         }
+    }
+
+    @Test
+    void readsAMaskedJwkCompletelyWithinTheLevelsReadAndMasksItWholeAtTheLastLevel() {
+        // Levels 0 to NESTED_LEVELS - 1 are read canonically: a masked JWK there is kept as it is, and an unmasked one has
+        // its private member masked in place. A JWK that needs reading at the last level or past it is masked whole.
+        String masked = "{\"kty\":\"oct\",\"k\":\"[REDACTED]\"}";
+        String leaked = "{\"kty\":\"oct\",\"k\":\"" + SECRET + "\"}";
+        String maskedForm = masked;
+        String leakedForm = leaked;
+        for (int depth = 0; depth < Redactor.NESTED_LEVELS; depth++) {
+            assertEquals(maskedForm, Redactor.redact(maskedForm), "masked, level " + depth);
+            assertEquals(maskedForm, Redactor.redact(leakedForm), "leaked, level " + depth);
+            maskedForm = nested(maskedForm);
+            leakedForm = nested(leakedForm);
+        }
+        assertEquals(Redactor.MASK, Redactor.redact(maskedForm));
+        assertEquals(Redactor.MASK, Redactor.redact(leakedForm));
+        assertEquals(Redactor.MASK, Redactor.redact(nested(maskedForm)));
+    }
+
+    @Test
+    void readsEveryMemberOfAJwkARepeatedNameToo() {
+        // A repeated name is read each time: none of its values may hold the secret, whichever comes last.
+        for (String text : List.of("{\"kty\":\"oct\",\"k\":\"" + SECRET + "\",\"k\":\"[REDACTED]\"}",
+                "{\"kty\":\"oct\",\"k\":\"[REDACTED]\",\"k\":\"" + SECRET + "\"}")) {
+            for (String form : List.of(text, nested(text), nested(nested(text)))) {
+                assertMaskedLeavingNoSecret(form);
+            }
+        }
+        assertTrue(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":\"[REDACTED]\",\"k\":\"[REDACTED]\"}"));
+        assertFalse(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":\"x\",\"k\":\"[REDACTED]\"}"));
+        assertFalse(WholeTextGuard.readsMasked("{\"k\":\"[REDACTED]\",\"k\":7,\"kty\":\"oct\"}"));
+        assertFalse(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":{\"x\":1}}"));
+        // A null holds nothing; a number or a boolean may be the secret.
+        assertTrue(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":null}"));
+        assertFalse(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":12345}"));
+        assertFalse(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":true}"));
+        // Only the JWK's own members: a private name in an object without a kty is ordinary.
+        assertTrue(WholeTextGuard.readsMasked("{\"kty\":\"oct\",\"k\":\"[REDACTED]\",\"a\":{\"d\":\"x\"}}"));
+        assertTrue(WholeTextGuard.readsMasked("[{\"d\":\"x\"},{\"kty\":\"RSA\",\"d\":\"[REDACTED]\"}]"));
+    }
+
+    /** No character of the secret is left in what the Redactor makes of {@code in}. */
+    private static void assertMaskedLeavingNoSecret(String in) {
+        String out = Redactor.redact(in);
+        for (char c : SECRET.toCharArray()) {
+            assertTrue(out.indexOf(c) < 0, "a character of the secret is left");
+        }
+    }
+
+    @Test
+    void readsStrictJsonOnly() {
+        for (String json : List.of("{}", "[]", " [1, -0.5e+3, true, false, null, \"a\\u00e9\\n\"] ", "{\"a\":{\"b\":[{}]}}", "0",
+                "-12.5E-2", "\"\\/\\b\\f\\r\\t\\\\\"")) {
+            assertTrue(WholeTextGuard.readsCompletely(json), json);
+        }
+        for (String text : List.of("", "{", "[1,]", "{\"a\"}", "{\"a\":1,}", "{\"a\" 1}", "01", "1.", "1e", "-", "tru", "nul",
+                "[1 2]", "{\"a\":1}x", "\"a\\x\"", "\"\\u12\"", "\"\\u12G4\"", "\"a\nb\"", "\"open", "\"a\\",
+                "{1:2}", "[\"a\"}", "{\"a\":1]")) {
+            assertFalse(WholeTextGuard.readsCompletely(text), text);
+        }
+        // A string whose content holds a quote at some escape level must be JSON in its turn; one with none need not be.
+        assertTrue(WholeTextGuard.readsCompletely("{\"a\":\"x\\\\\\\\y\",\"b\":\"[1,{\\\"c\\\":2}]\"}"));
+        assertFalse(WholeTextGuard.readsCompletely("{\"a\":\"say \\\"hi\\\"\"}"));
+        assertFalse(WholeTextGuard.readsCompletely("{\"a\":\"x\\\\u0022y\"}"));
+    }
+
+    @Test
+    void readsDeeplyNestedArraysWithoutRecursion() {
+        // An explicit stack: a hundred thousand open brackets read in linear time, with no stack overflow.
+        String deep = "{\"kty\":\"oct\",\"k\":\"" + SECRET + "\",\"x\":" + "[".repeat(100_000) + "]".repeat(100_000) + "}";
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(deep));
+        assertMaskedLeavingNoSecret(deep);
+        assertTrue(WholeTextGuard.readsMasked(out));
+        assertFalse(WholeTextGuard.readsCompletely("[".repeat(100_000)));
+    }
+
+    @Test
+    void findsAKtyAndAPrivateNameInAnySpellingAtAnyLevel() {
+        String b = B;
+        for (String text : List.of("{\"kty\":1,\"d\":2}", "{\"k" + b + "u0074y\":1," + U + "d" + U + ":2}",
+                // A name letter whose own escape's u is an escape a level up.
+                "{\"kty\":1,\"" + b + "u005c" + b + "u00750064\":2}",
+                "{" + b + "u005cu0022kty" + b + "u005cu0022:1," + b + "u005cu0022oth" + b + "u005cu0022:2}")) {
+            assertTrue(WholeTextGuard.mayHoldPrivateMember(text), text);
+        }
+        for (String text : List.of("{\"kty\":1,\"n\":2}", "{\"d\":2}", "{\"kty\":1,\"dpq\":2}", "plain prose with d and kty",
+                "{\"kty\":1,\"D\":2}")) {
+            assertFalse(WholeTextGuard.mayHoldPrivateMember(text), text);
+        }
+        // Escapes still left past the levels read: either name is enough.
+        String chain = b.repeat(1 << 18);
+        assertTrue(WholeTextGuard.mayHoldPrivateMember("kty " + chain));
+        assertEquals("a\n\r\t\b\f\"/" + b + "u" + b, WholeTextGuard.looselyDecoded("a" + b + "n" + b + "r" + b + "t" + b + "b" + b + "f"
+                + b + "\"" + b + "/" + b + b + b + "u" + b));
+        assertEquals("\u00e9xu12", WholeTextGuard.looselyDecoded(b + "u00e9x" + b + "u12"));
+    }
+
+    @Test
+    void masksTheWholeTextWhereThePassesThemselvesWouldLeaveAPrivateMemberUnmasked() {
+        // The last check reads the output: a JWK that reads completely but whose private member the passes do not reach
+        // (here a member name the passes read as an ordinary field) is masked whole rather than left.
+        String text = "{\"kty\":\"oct\",\"k\":\"" + SECRET + "\"}";
+        assertTrue(WholeTextGuard.readsCompletely(text));
+        assertFalse(WholeTextGuard.readsMasked(text));
+        assertTrue(WholeTextGuard.readsMasked(Redactor.redact(text)));
     }
 }

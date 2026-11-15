@@ -2171,3 +2171,62 @@ test('flags one case of each class at every level up to and one past the bound (
     }
   });
 });
+
+test('reads a masked JWK completely within the 16 levels the Redactor reads, and flags it whole at the last level (#360)', () => {
+  // As RedactorEarlyExitTest: levels 0 to 15 are read canonically and a masked JWK there is accepted; one that needs
+  // reading at level 16 or deeper is flagged whole (the Redactor masks it whole).
+  let masked = '{"kty":"oct","k":"[REDACTED]"}';
+  let leaked = `{"kty":"oct","k":"${EARLY_SECRET}"}`;
+  for (let depth = 0; depth < 16; depth++) {
+    assert.deepEqual(findTextLeaks(masked), [], `masked, level ${depth}`);
+    assert.ok(findTextLeaks(leaked).length > 0, `leaked, level ${depth}`);
+    masked = JSON.stringify({ body: masked });
+    leaked = JSON.stringify({ body: leaked });
+  }
+  assertFlaggedWholeBy(findTextLeaks, masked);
+  assert.ok(findTextLeaks(leaked).length > 0);
+});
+
+test('reads every member of a JWK, a repeated name too, which JSON.parse drops (#360)', () => {
+  for (const text of [`{"kty":"oct","k":"${EARLY_SECRET}","k":"[REDACTED]"}`, `{"kty":"oct","k":"[REDACTED]","k":"${EARLY_SECRET}"}`,
+    '{"k":"[REDACTED]","k":7,"kty":"oct"}', '{"kty":"oct","k":{"x":1}}', '{"kty":"oct","k":true}']) {
+    for (const form of [text, nestedIn(text, 1), nestedIn(text, 2)]) {
+      assert.ok(findTextLeaks(form).some(leak => leak.check === WHOLE_TEXT), form);
+    }
+  }
+  // A null holds nothing; a private name in an object without a kty is ordinary.
+  for (const text of ['{"kty":"oct","k":"[REDACTED]","k":"[REDACTED]"}', '{"kty":"oct","k":null}',
+    '{"kty":"oct","k":"[REDACTED]","a":{"d":"x"}}', '[{"d":"x"},{"kty":"RSA","d":"[REDACTED]"}]']) {
+    assertAccepted(text);
+  }
+});
+
+test('reads strict JSON only, and a string\'s content a level down only where some escape level holds a quote (#360)', () => {
+  const jwk = '"kty":"oct","k":"[REDACTED]"';
+  for (const json of ['{}', '[]', ' [1, -0.5e+3, true, false, null, "a\\u00e9\\n"] ', '{"a":{"b":[{}]}}', '0', '-12.5E-2',
+    '"\\/\\b\\f\\r\\t\\\\"', '{"a":"x\\\\\\\\y","b":"[1,{\\"c\\":2}]"}']) {
+    assertAccepted(`{${jwk},"x":${json}}`);
+  }
+  for (const bad of ['{', '[1,]', '{"a"}', '{"a":1,}', '{"a" 1}', '01', '1.', '1e', '-', 'tru', 'nul', '[1 2]', '"a\\x"',
+    '"\\u12"', '"\\u12G4"', '"a\nb"', '"open', '{1:2}', '["a"}', '{"a":1]', '"say \\"hi\\""', '"x\\\\u0022y"']) {
+    assertFlaggedWholeBy(findTextLeaks, `{${jwk},"x":${bad}}`);
+  }
+  assertFlaggedWholeBy(findTextLeaks, `{${jwk}}x`);
+});
+
+test('reads deeply nested arrays without recursion, and finds a kty and a private name in any spelling (#360)', () => {
+  const deep = `{"kty":"oct","k":"[REDACTED]","x":${'['.repeat(100_000)}${']'.repeat(100_000)}}`;
+  assertAccepted(deep);
+  assertFlaggedWholeBy(findTextLeaks, `{"kty":"oct","k":"[REDACTED]","x":${'['.repeat(100_000)}}`);
+  const b = '\\';
+  // A name letter whose own escape's u is an escape a level up, and quotes through a u005c chain.
+  for (const text of [`{"kty":1,"${b}u005c${b}u00750064":2}x`, `{${b}u005cu0022kty${b}u005cu0022:1,${b}u005cu0022oth${b}u005cu0022:2}`]) {
+    assert.ok(findTextLeaks(text).some(leak => leak.check === WHOLE_TEXT), text);
+  }
+  // No private name, or no kty: the rule does not apply.
+  for (const text of ['{"kty":1,"n":2}x', '{"d":2}x', '{"kty":1,"dpq":2}x', '{"kty":1,"D":2}x']) {
+    assert.ok(!findTextLeaks(text).some(leak => leak.check === WHOLE_TEXT), text);
+  }
+  // Escapes still left past the levels read: a kty is enough.
+  assert.ok(findTextLeaks(`"kty" ${b.repeat(1 << 18)}`).some(leak => leak.check === WHOLE_TEXT));
+});

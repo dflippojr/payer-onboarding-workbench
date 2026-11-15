@@ -1860,14 +1860,15 @@ const mayHoldJwkPrivateMember = text => {
 
 /**
  * Whether `content` holds a quote at some level of its escaping: as it is, or decoded loosely up to `levels` times, or
- * escapes are still left after that. Content with no quote at any level holds no member name at any level.
+ * decoding still changes it after that. Content with no quote at any level holds no member name at any level.
  */
 const quoteAtSomeLevel = (content, levels) => {
   let view = content;
   for (let k = 0; k <= levels; k++) {
     if (view.includes('"')) return true;
-    if (!view.includes('\\')) return false;
-    view = decodeLoosely(view);
+    const next = view.includes('\\') ? decodeLoosely(view) : view;
+    if (next === view) return false;
+    view = next;
   }
   return true;
 };

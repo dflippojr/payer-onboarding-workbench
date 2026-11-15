@@ -127,8 +127,8 @@ final class WholeTextGuard {
     }
 
     /**
-     * Whether {@code content} holds a quote, or one {@link #looselyDecoded} up to {@code levels} times does, or it still
-     * holds an escape after that. Without a quote at any level it holds no JSON name at any level, so no member to read
+     * Whether {@code content} holds a quote, or one {@link #looselyDecoded} up to {@code levels} times does, or decoding
+     * still changes it after that. Without a quote at any level it holds no JSON name at any level, so no member to read
      * and no string whose bounds a reading could shift.
      */
     static boolean mayHoldQuote(String content, int levels) {
@@ -137,10 +137,11 @@ final class WholeTextGuard {
             if (view.indexOf('"') >= 0) {
                 return true;
             }
-            if (view.indexOf('\\') < 0) {
+            String next = view.indexOf('\\') < 0 ? view : looselyDecoded(view);
+            if (next.equals(view)) {
                 return false;
             }
-            view = looselyDecoded(view);
+            view = next;
         }
         return true;
     }
