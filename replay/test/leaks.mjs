@@ -1810,9 +1810,10 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
 // Security rounds 3 to 6 on #356 each found one more path (an ambiguous quote reading, a prose skip, a cut-off, an escaped
 // delimiter read where no string is open) where a JWK private member next to what a reading skipped was left unflagged.
 // Instead of one fix per path, the scanner flags the whole text wherever its canonical reading cannot be completed: the
-// text is strict JSON (RFC 8259), and so, level by level, is the content of every string in it holding a quote or a
-// backslash, within the levels the Redactor reads; and every JWK private member that reading finds is the mask. This is
-// the scanner's own reading, written apart from the Redactor's WholeTextGuard: it shares no code with it.
+// text is strict JSON (RFC 8259), and so, level by level, is the content of every string in it that holds a quote at
+// some escape level (quoteAtSomeLevel), within the levels the Redactor reads; and every JWK private member that
+// reading finds is the mask. This is the scanner's own reading, written apart from the Redactor's WholeTextGuard: it
+// shares no code with it.
 
 /** The levels the canonical reading reads, 0 to 15: a string needing a reading at level 16 or deeper stops it. */
 const CANONICAL_LEVELS = 16;

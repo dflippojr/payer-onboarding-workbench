@@ -12,8 +12,9 @@ import java.util.regex.Pattern;
  * next one. Over-masking is accepted; a miss is not.
  *
  * <p>The canonical reading of a text is strict JSON (RFC 8259) at level 0, and, level by level, the content of every
- * string in it that holds a quote or a backslash, which must be strict JSON in its turn: so no quote is read two ways,
- * no delimiter spelled as an escape is read where no string is open to decode it, and no stretch is skipped as prose.
+ * string in it that holds a quote at some escape level ({@link #mayHoldQuote}), which must be strict JSON in its turn:
+ * so no quote is read two ways, no delimiter spelled as an escape is read where no string is open to decode it, and no
+ * stretch is skipped as prose.
  * It reads {@link Redactor#NESTED_LEVELS} levels, 0 to {@code NESTED_LEVELS - 1}; a string that would need reading at
  * the last level or past it stops the reading. Every member of every object is kept, a repeated name included.
  *
@@ -117,9 +118,11 @@ final class WholeTextGuard {
         return out.toString();
     }
 
+    /** Whether {@code text} holds ASCII hex digits only from {@code from} to {@code to}, as a JSON unicode escape needs. */
     private static boolean isHex(String text, int from, int to) {
         for (int i = from; i < to; i++) {
-            if (Character.digit(text.charAt(i), 16) < 0) {
+            char c = text.charAt(i);
+            if (!(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F')) {
                 return false;
             }
         }
