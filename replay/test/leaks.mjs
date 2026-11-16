@@ -807,6 +807,9 @@ const firstBareQuote = (text, ctx) => {
   return -1;
 };
 
+/** A backslash at some level ending a text: a run of backslashes, or backslashes before a u005c or u005C. */
+const BACKSLASH_BEFORE = /(?:\\|\\+u005[cC])$/;
+
 /**
  * The text `body` holds read as a string's content, as JSON.parse reads it. When it is not one, as when quoted prose
  * follows text copied from inside a string twice over (Codex narrow check at 3c47acc), it is the unicode escapes
@@ -832,13 +835,12 @@ const decodeString = (body, ctx, read = []) => {
     // off makes it a cut view (`cut`), whose open value lost bytes. Such a body cannot be parsed as it is, so it is not
     // tried.
     const end = repairedEnd(body);
-    // A malformed \u after a backslash, an escaped one (\\) or one spelled \u005c, would leave that backslash before
-    // \uZ when only its own backslash is dropped, an escape again one level down: it is cut off whole, so the view ends
-    // in that lone backslash, a value Redactor's JWK search matches no member in, as after half a \u escape (cutOf;
-    // automated review on 57c7d4b).
-    const afterBackslash = end.removed >= 0 && (backslashesBefore(body, end.removed) > 0
-      || (/\\u005[cC]$/.test(body.slice(Math.max(0, end.removed - 6), end.removed))
-        && backslashesBefore(body, end.removed - 6) % 2 === 0));
+    // A malformed \u after a backslash at any level, spelled with backslashes and \u005c escapes as Redactor spells
+    // one (an escaped backslash, a \u005c, or a \u005c escaped again), would leave that backslash before \uZ when only
+    // its own backslash is dropped, an escape again at a level below: it is cut off whole, so the view where the
+    // backslash appears ends in it, a value Redactor's JWK search matches no member in where the spelling is that
+    // view's own, as after half a \u escape (cutOf; automated reviews on 57c7d4b and c0836bb).
+    const afterBackslash = end.removed >= 0 && BACKSLASH_BEFORE.test(body.slice(Math.max(0, end.removed - 64), end.removed));
     const fixed = afterBackslash ? body.slice(0, end.removed) : end.body;
     ctx.work += fixed.length;
     try {
@@ -925,7 +927,7 @@ const decodeString = (body, ctx, read = []) => {
     if (to - from > 1 && body.slice(from, to).includes('\\')) unread.push([from, to]);
   }
   if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread, repaired };
-  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread, repaired };
+  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread, repaired, loose: true };
 };
 
 /**
@@ -1398,7 +1400,7 @@ const FLAT_ALLOWANCE = 8;
  * the scanned text up to it again for each view (Codex security round 1 at 0ab5aeb). A string with no quote and no
  * escape holds nothing to read, so it is neither compared nor kept.
  */
-function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
+function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = false) {
   const quoted = decoded.includes('"');
   if (!quoted && !decoded.includes('\\')) return;
   const span = `${level}:${toRoot(0)}:${decoded.length}`;
@@ -1407,8 +1409,9 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
   // A view read in a mode finds no more than the same view read in a mode before it (MAIN, UNREAD, WHOLE), so such a
   // read covers it.
   // A view cut inside a value (cut) finds more than the same view not cut there.
-  if (views.some(view => view.decoded === decoded && view.mode <= mode && view.cut >= cut)) return;
-  const view = { decoded, mode, cut, read: null };
+  // A loose decode's view is read without its repaired copy (`loose`), so it covers only another such read.
+  if (views.some(view => view.decoded === decoded && view.mode <= mode && view.cut >= cut && (!view.loose || loose))) return;
+  const view = { decoded, mode, cut, read: null, loose };
   views.push(view);
   ctx.read.set(span, views);
   // scanJson reads the string first, so decodeString knows which strings it decoded.
@@ -1423,15 +1426,18 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
   const below = mode === MAIN ? MAIN : UNREAD;
   // A FLAT copy is read in place only (see FLAT).
   if (!decoded.includes('\\') || mode === FLAT) return;
-  const { decoded: unescaped, at: inDecoded, unread, repaired } = decodeString(decoded, ctx, read);
+  const { decoded: unescaped, at: inDecoded, unread, repaired, loose: looseView = false } = decodeString(decoded, ctx, read);
   if (unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'))) {
     if (level >= MAX_LEVELS) {
       failClosed(ctx, 'JSON nested past 17 levels', decoded);
       return;
     }
-    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped, cut) : 0);
+    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped, cut) : 0, looseView);
   }
-  readRepaired(repaired, level + 1, ctx, toRoot, cut);
+  // The loose decode's own unicode escapes outside strings decoded may spell an escape Redactor does not read as one
+  // (two \u005c escapes become an escaped backslash): the copy repaired at the end of such a view is not read
+  // (automated review on c0836bb). The views main reads of it are.
+  if (!loose) readRepaired(repaired, level + 1, ctx, toRoot, cut);
   // Only a string with a quote has strings to leave unread, and one at the level cap has failed closed above.
   readUnread(decoded, unread, level + 1, ctx, toRoot, cut);
 }
@@ -1924,8 +1930,8 @@ function textLeaks(text, level) {
   // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too, loosely
   // when quoted prose around it makes it no string's content (decodeString).
   if (text.includes('\\')) {
-    const { decoded, at, unread, repaired } = decodeString(text, ctx, read);
-    if (decoded !== text) readNested(decoded, level + 1, ctx, at);
+    const { decoded, at, unread, repaired, loose = false } = decodeString(text, ctx, read);
+    if (decoded !== text) readNested(decoded, level + 1, ctx, at, MAIN, 0, loose);
     readRepaired(repaired, level + 1, ctx, j => j);
     readUnread(text, unread, level + 1, ctx, j => j);
   }
