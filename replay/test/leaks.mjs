@@ -1574,8 +1574,12 @@ const ESCAPED_JAVA_SPACE = /\\(?:[nrt]|u00(?:0[9a-dA-D]|20))/y;
  * takes. A short escape it keeps as one, a backslash before a raw character, or a unicode escape whose backslash run is
  * longer than one escape at the field's level (review on e8e09c4) leaves something else there.
  */
-const spelledAsJavaSpace = (i, depth, ctx, toRoot) => {
+const spelledAsJavaSpace = (text, i, depth, ctx, toRoot) => {
   let from = toRoot(i);
+  // A character the scanned text writes as it is, with no backslash before it, every view holds as it is: no view is
+  // built for it, so a long run of plain whitespace costs one step a character (review on 2ac5a7a).
+  ctx.work++;
+  if (isJavaSpace(text[i]) && ctx.text[from] === text[i] && ctx.text[from - 1] !== '\\') return true;
   while (from > 0 && ctx.text[from - 1] === '\\') from--;
   const view = redactorViewAt(ctx.text, from, depth, ctx);
   return view !== null && (isJavaSpace(view[0]) || /^\\[nrt]/.test(view));
@@ -1597,7 +1601,7 @@ const javaSpaceEnd = (text, from, depth, ctx, toRoot) => {
     } else if (!isJavaSpace(text[i])) {
       break;
     }
-    if (!spelledAsJavaSpace(i, depth, ctx, toRoot)) break;
+    if (!spelledAsJavaSpace(text, i, depth, ctx, toRoot)) break;
     i = end;
   }
   ctx.work += i - from;
