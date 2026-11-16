@@ -2960,16 +2960,22 @@ class RedactorTest {
 
         Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
 
-        assertEquals(List.copyOf(tree.keySet()), List.copyOf(out.keySet()));
+        // An enum key, like any object that is not a string, map, list or exact JDK scalar, becomes its redacted text.
+        assertEquals(List.of("summary", "requestHeaders", "tags", "card", "count", "FAIL", "missing"),
+                List.copyOf(out.keySet()));
         assertEquals("Echo: Bearer [REDACTED]", out.get("summary"));
         assertEquals(Map.of("Authorization", List.of("Bearer [REDACTED]"), "Cookie", List.of("[REDACTED]")),
                 out.get("requestHeaders"));
-        assertEquals(Set.of("Bearer [REDACTED]"), out.get("tags"));
-        // A record keeps its type; a secret-named component that cannot hold the mask is emptied.
-        assertEquals(new Echoed("Bearer [REDACTED]", "[REDACTED]", null, 0, List.of("Bearer [REDACTED]")),
-                out.get("card"));
+        assertEquals(Redactor.redact("[Bearer " + token + "]"), out.get("tags"));
+        // A record is its redacted record form (#360, owner decision 2026-11-16): secret-named components are masked
+        // there as in any other text.
+        String card = (String) out.get("card");
+        assertTrue(card.startsWith("Echoed[summary=Bearer [REDACTED]"), card);
+        for (String held : List.of(token, "918273645", "918273646")) {
+            assertFalse(card.contains(held), card);
+        }
         assertEquals(3, out.get("count"));
-        assertEquals(1L, out.get(Severity.FAIL));
+        assertEquals(1L, out.get("FAIL"));
         assertTrue(out.containsKey("missing"));
         assertNull(out.get("missing"));
         assertNull(Redactor.redactTree(null));
@@ -2998,11 +3004,13 @@ class RedactorTest {
         Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
 
         assertEquals("v", out.get("key: Bearer [REDACTED]"));
-        assertEquals(List.of("Bearer [REDACTED]"), out.get("array"));
-        assertEquals(List.of(List.of("Bearer [REDACTED]"), 7), out.get("nested"));
-        assertEquals(List.of("Bearer [REDACTED]"), out.get("queue"));
-        assertEquals(Optional.of("Bearer [REDACTED]"), out.get("optional"));
-        assertEquals(Optional.empty(), Redactor.redactTree(Optional.empty()));
+        // Arrays, other collections and optionals are not walked (#360, owner decision 2026-11-16): each becomes its
+        // redacted string form, an array's showing what it holds.
+        assertEquals(Redactor.redact("[" + echo + "]"), out.get("array"));
+        assertEquals(Redactor.redact("[[" + echo + "], 7]"), out.get("nested"));
+        assertEquals(Redactor.redact("[" + echo + "]"), out.get("queue"));
+        assertEquals(Redactor.redact("Optional[" + echo + "]"), out.get("optional"));
+        assertEquals("Optional.empty", Redactor.redactTree(Optional.empty()));
         // Any other type becomes its redacted string form.
         assertEquals("Bearer [REDACTED]", out.get("builder"));
         assertEquals("{\"echo\":\"Bearer [REDACTED]\"}", out.get("node"));

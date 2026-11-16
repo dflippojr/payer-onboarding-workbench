@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigDecimal;
@@ -262,11 +263,22 @@ class RedactorTraversalTest {
             misses.check(cases);
         }
         misses.assertNone();
-        // A map that holds itself is masked where the walk cannot finish, rather than throwing.
+        // A map or list that holds itself is masked where it comes round again, rather than throwing or walking on.
         Map<Object, Object> cycle = new LinkedHashMap<>();
         cycle.put("self", cycle);
-        Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(cycle);
-        assertEquals(Map.of("self", Redactor.MASK), out);
+        cycle.put("again", List.of(cycle, cycle));
+        Object out = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> Redactor.redactTree(cycle));
+        assertEquals(Map.of("self", Redactor.MASK, "again", List.of(Redactor.MASK, Redactor.MASK)), out);
+        // So is anything past the levels walked.
+        Object deep = "end";
+        for (int i = 0; i <= Redactor.TREE_LEVELS; i++) {
+            deep = List.of(deep);
+        }
+        Object walked = Redactor.redactTree(deep);
+        for (int i = 0; i < Redactor.TREE_LEVELS; i++) {
+            walked = ((List<?>) walked).getFirst();
+        }
+        assertEquals(Redactor.MASK, walked);
     }
 
     // ---- class 3: records and objects that carry JWK context ----

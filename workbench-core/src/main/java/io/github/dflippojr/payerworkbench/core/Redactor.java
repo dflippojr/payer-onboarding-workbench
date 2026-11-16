@@ -1,24 +1,32 @@
 package io.github.dflippojr.payerworkbench.core;
 
-import java.lang.reflect.Array;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
-import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Field;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.time.temporal.TemporalAccessor;
-import java.time.temporal.TemporalAmount;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.MonthDay;
+import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.Period;
+import java.time.Year;
+import java.time.YearMonth;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -31,7 +39,6 @@ import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 /**
  * Masks credential material in strings and HTTP headers before they are stored,
@@ -2537,68 +2544,166 @@ public final class Redactor {
     }
 
     /**
-     * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
-     * and the value of every field named like a secret or a credential header is masked, recursively,
-     * or {@code null} if {@code value} is {@code null}. Maps keep their iteration order, and every key is
-     * redacted as a value is (a key that holds text becomes its redacted text, which the field-name and JWK
-     * decisions read); sets are copied, other collections and arrays become lists, and an
-     * {@link Optional} keeps its redacted value; a record is rebuilt through its canonical constructor
-     * from redacted components, so it keeps its type. Numbers, booleans, characters, enums, dates and
-     * durations are returned as they are. Any other value, such as a {@code StringBuilder} or a parsed
-     * JSON tree, becomes its redacted {@link String#valueOf(Object) string form}, so it cannot carry a
-     * secret through unredacted. An {@code Authorization}-style field keeps a registered scheme
-     * ({@code Bearer [REDACTED]}) and is otherwise masked whole. A record that cannot be rebuilt throws an
-     * {@link IllegalArgumentException} naming its type and the cause's type only. In a map with a {@code kty} key (a JWK) the
-     * {@link #JWK_PRIVATE_MEMBERS} are masked too.
+     * The scalar classes {@link #redactTree(Object)} keeps as they are: JDK classes whose string form is made by the JDK
+     * from a number, a flag, one character or a date or time, so it holds no caller text. Matched by exact class, never
+     * by {@code instanceof}, so no subclass (of {@link BigDecimal} or {@link BigInteger}, which are not final) passes.
+     */
+    private static final Set<Class<?>> KEPT_SCALARS = Set.of(Boolean.class, Character.class, Byte.class, Short.class,
+            Integer.class, Long.class, Float.class, Double.class, BigInteger.class, BigDecimal.class, Instant.class,
+            LocalDate.class, LocalTime.class, LocalDateTime.class, OffsetDateTime.class, OffsetTime.class,
+            Duration.class, Period.class, Year.class, YearMonth.class, MonthDay.class, ZoneOffset.class);
+
+    /**
+     * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)} and the value
+     * of every field named like a secret or a credential header is masked, recursively, or {@code null} if
+     * {@code value} is {@code null}. Only strings, maps, lists and {@link #KEPT_SCALARS} (matched by exact class) are
+     * walked or kept: maps keep their iteration order and lists their order, both read once. Every other object, an
+     * enum, a record, a set, an array, an {@link Optional}, a custom number or temporal value, becomes its
+     * {@link String#valueOf(Object) string form} (an array's shows what it holds) put through {@link #redact(String)},
+     * and is masked whole where it
+     * carries JWK context: it sits under a JWK, declares a {@code kty} field, or its string form may name {@code kty}.
+     * Map keys follow the same rule (a key that holds text becomes its redacted text, which the field-name and JWK
+     * decisions read). In a map with a key that may name {@code kty} (a JWK), and in everything under it, the
+     * {@link #JWK_PRIVATE_MEMBERS} are masked, and so is the value of any key that does not read as itself. An
+     * {@code Authorization}-style field keeps a registered scheme ({@code Bearer [REDACTED]}) and is otherwise masked
+     * whole. Nothing is thrown: whatever reading a value throws, its string form or a map's or a list's iteration, masks
+     * that value whole, as does a map or list that holds itself or sits more than {@link #TREE_LEVELS} deep, and no
+     * exception's message reaches the output.
      */
     public static Object redactTree(Object value) {
-        return redactTree(null, value);
+        return redactTree(null, value, false, Collections.newSetFromMap(new IdentityHashMap<>()));
     }
 
-    private static Object redactTree(String key, Object value) {
-        if (key != null && isSecretKey(key)) {
-            return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
+    /**
+     * How many maps and lists deep {@link #redactTree(Object)} walks; anything deeper is masked whole, as is a map or list
+     * that holds itself, so the walk always ends without running out of stack.
+     */
+    static final int TREE_LEVELS = 128;
+
+    /**
+     * The fail-closed boundary of the walk, around every value: whatever reading it throws, including what a caller's
+     * own {@code toString}, map or list throws, checked or not, masks it whole, and no exception leaves.
+     */
+    @SuppressWarnings("java:S1181") // Throwable on purpose: an Error or a sneaky checked exception may quote caller text.
+    private static Object redactTree(String key, Object value, boolean jwk, Set<Object> path) {
+        try {
+            return redactNode(key, value, jwk, path);
+        } catch (Throwable e) {
+            return MASK;
         }
-        if (value == null || value instanceof Number || value instanceof Boolean || value instanceof Character
-                || value instanceof Enum<?> || value instanceof TemporalAccessor || value instanceof TemporalAmount) {
+    }
+
+    private static Object redactNode(String key, Object value, boolean jwk, Set<Object> path) {
+        if (key != null && isSecretKey(key)) {
+            return value instanceof List<?> list ? redactList(list, v -> maskField(key, v)) : maskField(key, value);
+        }
+        if (value == null || KEPT_SCALARS.contains(value.getClass())) {
             return value;
         }
         if (value instanceof String s) {
             return redact(s);
         }
-        if (value instanceof Map<?, ?> map) {
-            // A key is redacted as a value is: a string, or any key that holds text (a StringBuilder, a parsed JSON
-            // tree), becomes its redacted text, and the field-name and JWK decisions read that text.
-            Map<Object, Object> keys = new LinkedHashMap<>();
-            map.keySet().forEach(k -> keys.put(k, redactTree(null, k)));
-            boolean jwk = keys.values().stream().anyMatch("kty"::equals);
-            Map<Object, Object> out = new LinkedHashMap<>();
-            map.forEach((k, v) -> {
-                Object name = keys.get(k);
-                out.put(name, jwk && name instanceof String s && JWK_PRIVATE_MEMBERS.contains(s)
-                        ? maskField(s, v)
-                        : redactTree(String.valueOf(name), v));
-            });
-            return Collections.unmodifiableMap(out);
+        if (value instanceof Map<?, ?> || value instanceof List<?>) {
+            // A map or list already on the path (a cycle), or past the levels walked, is masked whole.
+            if (path.size() >= TREE_LEVELS || !path.add(value)) {
+                return MASK;
+            }
+            try {
+                return value instanceof Map<?, ?> map
+                        ? redactMap(map, jwk, path)
+                        : redactList((List<?>) value, v -> redactTree(null, v, jwk, path));
+            } finally {
+                path.remove(value);
+            }
         }
-        if (value instanceof Set<?> set) {
-            Set<Object> out = new LinkedHashSet<>();
-            set.forEach(v -> out.add(redactTree(null, v)));
-            return Collections.unmodifiableSet(out);
+        if (jwk || declaresKty(value.getClass())) {
+            return MASK;
         }
-        if (value instanceof Collection<?> collection) {
-            return collection.stream().map(v -> redactTree(null, v)).toList();
-        }
+        String text = textOf(value);
+        return WholeTextGuard.mayNameKty(text) ? MASK : redact(text);
+    }
+
+    /** The string form of {@code value}; an array's shows what it holds, as {@link Arrays#deepToString} does. */
+    private static String textOf(Object value) {
         if (value.getClass().isArray()) {
-            return IntStream.range(0, Array.getLength(value)).mapToObj(i -> redactTree(null, Array.get(value, i))).toList();
+            String text = Arrays.deepToString(new Object[] {value});
+            return text.substring(1, text.length() - 1);
         }
-        if (value instanceof Optional<?> optional) {
-            return optional.map(v -> redactTree(null, v));
+        return String.valueOf(value);
+    }
+
+    /** {@code list} read once, each item through {@code item}. */
+    private static List<Object> redactList(List<?> list, java.util.function.UnaryOperator<Object> item) {
+        List<Object> out = new ArrayList<>();
+        for (Object v : list) {
+            out.add(item.apply(v));
         }
-        if (value instanceof Record record) {
-            return redactRecord(record);
+        return Collections.unmodifiableList(out);
+    }
+
+    /** A map key as the walk reads it: its redacted form, whether it may name {@code kty}, and whether it reads as itself. */
+    private record Key(Object name, boolean kty, boolean asGiven) {
+    }
+
+    private static Map<Object, Object> redactMap(Map<?, ?> map, boolean enclosingJwk, Set<Object> path) {
+        // Read once: each entry's key and value are taken one time, so a map cannot show one key to the JWK decision and
+        // another to the output.
+        List<Object[]> entries = new ArrayList<>();
+        for (Map.Entry<?, ?> e : map.entrySet()) {
+            entries.add(new Object[] {e.getKey(), e.getValue()});
         }
-        return redact(String.valueOf(value));
+        List<Key> keys = new ArrayList<>();
+        boolean jwk = enclosingJwk;
+        for (Object[] e : entries) {
+            Key key = readKey(e[0], enclosingJwk);
+            keys.add(key);
+            jwk = jwk || key.kty();
+        }
+        Map<Object, Object> out = new LinkedHashMap<>();
+        for (int i = 0; i < entries.size(); i++) {
+            Key key = keys.get(i);
+            Object name = key.name();
+            Object v = entries.get(i)[1];
+            boolean privateMember = !key.asGiven() || name instanceof String s && JWK_PRIVATE_MEMBERS.contains(s);
+            out.put(name, jwk && privateMember ? maskField(String.valueOf(name), v) : redactTree(String.valueOf(name), v, jwk, path));
+        }
+        return Collections.unmodifiableMap(out);
+    }
+
+    /**
+     * Reads a key by the rule for values. A text-bearing key whose text is exactly {@code kty} is that name; any other
+     * that may name {@code kty}, declares a {@code kty} field or sits under a JWK is masked. A key that cannot be read
+     * is masked and taken to name {@code kty}, so its map is read as a JWK.
+     */
+    @SuppressWarnings("java:S1181") // As in redactTree: no exception a key's toString throws may leave.
+    private static Key readKey(Object k, boolean enclosingJwk) {
+        try {
+            if (k == null || KEPT_SCALARS.contains(k.getClass())) {
+                return new Key(k, false, true);
+            }
+            boolean text = k instanceof String;
+            String raw = text ? (String) k : textOf(k);
+            boolean kty = !text && declaresKty(k.getClass()) || WholeTextGuard.mayNameKty(raw);
+            if (!text && !raw.equals("kty") && (enclosingJwk || kty)) {
+                return new Key(MASK, true, false);
+            }
+            String name = redact(raw);
+            return new Key(name, kty || WholeTextGuard.mayNameKty(name), name.equals(raw));
+        } catch (Throwable e) {
+            return new Key(MASK, true, false);
+        }
+    }
+
+    /** Whether {@code type} or a superclass declares a field named {@code kty}, in any case (a record component is one). */
+    private static boolean declaresKty(Class<?> type) {
+        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+            for (Field f : c.getDeclaredFields()) {
+                if (f.getName().equalsIgnoreCase("kty")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static boolean isSecretKey(String key) {
@@ -2614,38 +2719,6 @@ public final class Redactor {
             return redactHeaderValue("Authorization", s);
         }
         return MASK;
-    }
-
-    /**
-     * Rebuilds a record from its redacted components. A secret-named component that cannot hold the
-     * mask (not a string) becomes {@code null}, or {@code 0} or {@code false} for a primitive.
-     */
-    private static Record redactRecord(Record record) {
-        RecordComponent[] components = record.getClass().getRecordComponents();
-        Object[] values = new Object[components.length];
-        Class<?>[] types = new Class<?>[components.length];
-        try {
-            for (int i = 0; i < components.length; i++) {
-                Method accessor = components[i].getAccessor();
-                accessor.trySetAccessible();
-                types[i] = components[i].getType();
-                values[i] = fitting(types[i], redactTree(components[i].getName(), accessor.invoke(record)));
-            }
-            Constructor<? extends Record> canonical = record.getClass().getDeclaredConstructor(types);
-            canonical.trySetAccessible();
-            return canonical.newInstance(values);
-        } catch (ReflectiveOperationException e) {
-            // Not chained: the cause's message is the record's own and may quote what it holds, unredacted.
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            throw new IllegalArgumentException("Cannot redact a " + record.getClass().getName() + " ("
-                    + cause.getClass().getName() + ")");
-        }
-    }
-
-    /** {@code value} if a component of {@code type} can hold it, otherwise that type's empty value. */
-    private static Object fitting(Class<?> type, Object value) {
-        Object empty = type.isPrimitive() ? Array.get(Array.newInstance(type, 1), 0) : null;
-        return (empty == null ? type : empty.getClass()).isInstance(value) ? value : empty;
     }
 
     private static String redactHeaderValue(String name, String value) {

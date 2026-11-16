@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.core;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -70,6 +71,27 @@ final class WholeTextGuard {
             view = next;
         }
         // Decoding still changes the text past the levels read: undecided, so it may hold anything there.
+        return true;
+    }
+
+    /**
+     * Whether {@code text} may name {@code kty}, in any case and any spelling {@link #KTY} finds, in the text or in it
+     * decoded loosely up to one level past the levels the canonical reading reads; where decoding still changes it past
+     * those levels, it may. {@link Redactor#redactTree(Object)} masks the string form of an object that may, as it
+     * would a JWK.
+     */
+    static boolean mayNameKty(String text) {
+        String view = text;
+        for (int level = 0; level <= Redactor.NESTED_LEVELS + 1; level++) {
+            if (KTY.matcher(view.toLowerCase(Locale.ROOT)).find()) {
+                return true;
+            }
+            String next = view.indexOf('\\') < 0 ? view : looselyDecoded(view);
+            if (next.equals(view)) {
+                return false;
+            }
+            view = next;
+        }
         return true;
     }
 

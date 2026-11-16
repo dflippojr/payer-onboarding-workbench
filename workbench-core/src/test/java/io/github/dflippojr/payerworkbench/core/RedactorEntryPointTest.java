@@ -1,12 +1,11 @@
 package io.github.dflippojr.payerworkbench.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,8 +15,8 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Every entry point of {@link Redactor}, {@link StepResult} and {@link HttpExchange} that keeps caller text sends it
  * through the whole-text rule (#360, security round 3 on #361): an Authorization-style value keeps only a registered
- * scheme word, and a map key, a header name, an exchange's method and URL, a step's id and the message of a failed
- * record rebuild are redacted as any other text is. Each case puts a JWK with a private member, stringified 0 to 17
+ * scheme word, and a map key, a header name, an exchange's method and URL and a step's id are redacted as any other
+ * text is, and a record whose accessor throws lets no exception out. Each case puts a JWK with a private member, stringified 0 to 17
  * times (within the levels the Redactor reads, at the last one and past it), in the kept place and checks that no
  * character of the dummy secret is left there.
  */
@@ -128,13 +127,12 @@ class RedactorEntryPointTest {
 
     @Test
     void keepsNoCallerTextInTheErrorOfARecordItCannotRebuild() {
+        // Records are no longer rebuilt through their accessors (#360, owner decision 2026-11-16): this one becomes its
+        // record form, masked whole as it names kty, and no exception, so no message, leaves.
         jwkTexts().forEach((label, jwk) -> {
-            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Redactor.redactTree(new Failing(jwk)));
-            List<String> messages = new ArrayList<>();
-            for (Throwable t = e; t != null; t = t.getCause()) {
-                messages.add(String.valueOf(t.getMessage()));
-            }
-            assertNoSecret(messages, label + ", error");
+            Object out = assertDoesNotThrow(() -> Redactor.redactTree(new Failing(jwk)));
+            assertEquals(Redactor.MASK, out, label);
+            assertNoSecret(out, label + ", output");
         });
     }
 }

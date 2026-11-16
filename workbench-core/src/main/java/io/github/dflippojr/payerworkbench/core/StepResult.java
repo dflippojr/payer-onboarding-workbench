@@ -20,7 +20,9 @@ import java.util.Objects;
  * @param summary one-line human-readable outcome, redacted
  * @param details extra step-specific values for display; must not contain secret material.
  *     Copied, through {@link Redactor#redactTree(Object)}, into an unmodifiable map that keeps
- *     insertion order; keys at every depth are redacted as text too.
+ *     insertion order; keys at every depth are redacted as text too. Only strings, maps, lists and
+ *     exact JDK scalars keep their shape: any other value, a record or an enum included, becomes
+ *     its redacted text, so callers pass the JSON form.
  */
 public record StepResult(
         String stepId,
