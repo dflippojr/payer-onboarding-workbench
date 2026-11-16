@@ -1,7 +1,7 @@
 name: Automated Code Review
 
 # Thin caller for the shared review workflow in dflippojr/agent-harness, so fixes to the reviewer reach this repository
-# without a copy. The workflow and its tooling (tooling_ref) are both pinned to the review-v3 tag: the spec-aware review
+# without a copy. The workflow and its tooling (tooling_ref) are both pinned to the review-v5 tag: the spec-aware review
 # that checks each pull request against the acceptance criteria of the issues it closes. See agent-harness
 # docs/CI-CD.md, "Adopting the review workflow".
 #
@@ -50,10 +50,10 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
-    uses: dflippojr/agent-harness/.github/workflows/review.yml@review-v4
+    uses: dflippojr/agent-harness/.github/workflows/review.yml@review-v5
     with:
       pr_number: ${{ inputs.pr_number || github.event.pull_request.number }}
       backend: ${{ inputs.backend || 'auto' }}
       mode: ${{ inputs.mode || 'full' }}
       runs_on: '["self-hosted","Linux","X64","payer-onboarding-workbench-review"]'
-      tooling_ref: review-v4
+      tooling_ref: review-v5
