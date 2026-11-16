@@ -41,8 +41,9 @@ public record StepResult(
         details = details == null ? Map.of() : redactedDetails(details);
     }
 
+    /** The redacted details, or one masked entry where the details as a whole could not be read. */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> redactedDetails(Map<String, Object> details) {
-        return (Map<String, Object>) Redactor.redactTree(details);
+        return Redactor.redactTree(details) instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of("details", Redactor.MASK);
     }
 }

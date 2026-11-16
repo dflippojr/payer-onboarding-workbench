@@ -193,5 +193,11 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
   The walk is its own fail-closed boundary: whatever reading a value throws masks that value, and no exception or message
   leaves; a map or list that holds itself, or sits more than 128 levels deep, is masked. Callers pass the JSON form: the
   runner converts each step's details to it before `StepResult` redacts them, so the JSON a run is served as is unchanged.
+- Amendment of 2026-11-16 (owner, after security round 5 on #361): a private member is found by its key's text whatever
+  type holds the key. A map's own JWK context is worked out from all its keys, each key's text read once, before any key
+  is redacted, and it applies to keys as well as values: in a JWK, and under one, a key keeps its text only if it is a
+  plain member name. One outermost fail-closed boundary wraps every public entry point (the `Redactor` public methods,
+  `HttpExchange` construction, and the runner's conversion of step details, its JSON conversion included): any
+  `Throwable` gives a masked placeholder, and nothing of the exception is kept or logged.
 - The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,
   allowlist or threshold changed.

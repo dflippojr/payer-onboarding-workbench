@@ -36,18 +36,31 @@ public record HttpExchange(
     /** {@link #status()} value when no HTTP response was received. */
     public static final int NO_RESPONSE = 0;
 
+    @SuppressWarnings("java:S1181") // The outermost boundary (#360): any Throwable masks the exchange's text.
     public HttpExchange {
+        // These two name a missing parameter only, in a fixed message; they read no caller text.
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
-        // The method and URL are caller text too: a URL may carry a credential in its query or user info.
-        method = Redactor.redact(method);
-        url = Redactor.redact(url);
         latency = latency == null ? Duration.ZERO : latency;
-        requestHeaders = Redactor.redactHeaders(requestHeaders);
-        requestBody = Redactor.redact(requestBody);
-        responseHeaders = Redactor.redactHeaders(responseHeaders);
-        responseBody = Redactor.redact(responseBody);
-        transportError = Redactor.redact(transportError);
+        try {
+            // The method and URL are caller text too: a URL may carry a credential in its query or user info.
+            method = Redactor.redact(method);
+            url = Redactor.redact(url);
+            requestHeaders = Redactor.redactHeaders(requestHeaders);
+            requestBody = Redactor.redact(requestBody);
+            responseHeaders = Redactor.redactHeaders(responseHeaders);
+            responseBody = Redactor.redact(responseBody);
+            transportError = Redactor.redact(transportError);
+        } catch (Throwable e) {
+            // The outermost fail-closed boundary: every text is masked, and nothing of the exception is kept.
+            method = Redactor.MASK;
+            url = Redactor.MASK;
+            requestHeaders = Redactor.MASKED_HEADERS;
+            requestBody = Redactor.MASK;
+            responseHeaders = Redactor.MASKED_HEADERS;
+            responseBody = Redactor.MASK;
+            transportError = Redactor.MASK;
+        }
     }
 
     /** Whether an HTTP response (of any status) was received. */

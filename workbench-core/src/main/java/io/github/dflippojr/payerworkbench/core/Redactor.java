@@ -389,7 +389,7 @@ public final class Redactor {
 
     /**
      * Returns {@code text} with credential material masked, or {@code null} if
-     * {@code text} is {@code null}.
+     * {@code text} is {@code null}. Inside the outermost fail-closed boundary: anything thrown gives the mask.
      */
     public static String redact(String text) {
         return redact(text, null);
@@ -399,6 +399,7 @@ public final class Redactor {
      * {@link #redact(String)}, adding to {@code reads}, unless it is {@code null}, each read JWK discovery makes:
      * at which escape level, and how much of that level's budget was left before and after it.
      */
+    @SuppressWarnings("java:S1181") // The outermost boundary (#360): any Throwable, an Error included, gives the mask.
     static String redact(String text, List<DiscoveryRead> reads) {
         if (text == null || text.isEmpty()) {
             return text;
@@ -424,7 +425,7 @@ public final class Redactor {
                 return MASK;
             }
             return out;
-        } catch (RuntimeException | StackOverflowError e) {
+        } catch (Throwable e) {
             return MASK;
         }
     }
@@ -2513,23 +2514,45 @@ public final class Redactor {
      * all match.
      */
     public static boolean isSecretField(String name) {
-        return name != null
-                && SECRET_FIELDS.contains(name.toLowerCase(Locale.ROOT).replace("_", "").replace("-", ""));
+        return failClosed(() -> name != null
+                && SECRET_FIELDS.contains(name.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "")), true);
     }
 
     /** Whether a header with this name carries credentials and must never be shown verbatim. */
     public static boolean isSensitiveHeader(String name) {
-        return name != null && SENSITIVE_HEADERS.contains(name.toLowerCase(Locale.ROOT));
+        return failClosed(() -> name != null && SENSITIVE_HEADERS.contains(name.toLowerCase(Locale.ROOT)), true);
     }
+
+    /**
+     * The outermost fail-closed boundary around every public entry point (#360, owner amendment of 2026-11-16): whatever
+     * {@code body} throws, any {@link Throwable}, gives {@code placeholder}; the exception, its message and its cause go
+     * nowhere, neither out nor to a log.
+     */
+    @SuppressWarnings("java:S1181") // Throwable on purpose: an Error or a sneaky checked exception may quote caller text.
+    static <T> T failClosed(java.util.function.Supplier<T> body, T placeholder) {
+        try {
+            return body.get();
+        } catch (Throwable e) {
+            return placeholder;
+        }
+    }
+
+    /** What {@link #redactHeaders} gives for headers it cannot read: one masked name with one masked value. */
+    static final Map<String, List<String>> MASKED_HEADERS = Map.of(MASK, List.of(MASK));
 
     /**
      * Returns an unmodifiable copy of {@code headers} (iteration order kept) in
      * which credential headers are masked and every other value is passed through
      * {@link #redact(String)}, as is every name. For {@code Authorization}-style headers
      * a registered scheme is kept ({@code Bearer [REDACTED]}) so diagnostics can still
-     * tell which scheme was sent. Names that redact to the same text share one list.
+     * tell which scheme was sent. Names that redact to the same text share one list. Headers that cannot be read (the
+     * map or a list throws) give {@link #MASKED_HEADERS}; nothing is thrown.
      */
     public static Map<String, List<String>> redactHeaders(Map<String, List<String>> headers) {
+        return failClosed(() -> redactHeadersInside(headers), MASKED_HEADERS);
+    }
+
+    private static Map<String, List<String>> redactHeadersInside(Map<String, List<String>> headers) {
         if (headers == null || headers.isEmpty()) {
             return Map.of();
         }
@@ -2560,18 +2583,21 @@ public final class Redactor {
      * walked or kept: maps keep their iteration order and lists their order, both read once. Every other object, an
      * enum, a record, a set, an array, an {@link Optional}, a custom number or temporal value, becomes its
      * {@link String#valueOf(Object) string form} (an array's shows what it holds) put through {@link #redact(String)},
-     * and is masked whole where it
-     * carries JWK context: it sits under a JWK, declares a {@code kty} field, or its string form may name {@code kty}.
-     * Map keys follow the same rule (a key that holds text becomes its redacted text, which the field-name and JWK
-     * decisions read). In a map with a key that may name {@code kty} (a JWK), and in everything under it, the
-     * {@link #JWK_PRIVATE_MEMBERS} are masked, and so is the value of any key that does not read as itself. An
+     * and is masked whole where it carries JWK context: it sits under a JWK, declares a {@code kty} field, or its string
+     * form may name {@code kty}.
+     * Map keys follow the same rule: each key's text is read once, and a map's own JWK context (any key that may name
+     * {@code kty}, or a key that cannot be read) is worked out from all of them before any key is redacted. In a map with
+     * that context, and in everything under it, a key keeps its text only if it is a plain member name (otherwise it and
+     * its value are masked), and a value is masked where its key's text, whatever type holds the key, is one of the
+     * {@link #JWK_PRIVATE_MEMBERS}. Elsewhere a key becomes its redacted text, and a kept scalar key is kept. An
      * {@code Authorization}-style field keeps a registered scheme ({@code Bearer [REDACTED]}) and is otherwise masked
      * whole. Nothing is thrown: whatever reading a value throws, its string form or a map's or a list's iteration, masks
      * that value whole, as does a map or list that holds itself or sits more than {@link #TREE_LEVELS} deep, and no
-     * exception's message reaches the output.
+     * exception's message reaches the output. The whole call is inside the outermost fail-closed boundary
+     * ({@link #failClosed}), which gives the mask.
      */
     public static Object redactTree(Object value) {
-        return redactTree(null, value, false, Collections.newSetFromMap(new IdentityHashMap<>()));
+        return failClosed(() -> redactTree(null, value, false, Collections.newSetFromMap(new IdentityHashMap<>())), MASK);
     }
 
     /**
@@ -2641,57 +2667,94 @@ public final class Redactor {
         return Collections.unmodifiableList(out);
     }
 
-    /** A map key as the walk reads it: its redacted form, whether it may name {@code kty}, and whether it reads as itself. */
-    private record Key(Object name, boolean kty, boolean asGiven) {
+    /**
+     * A map key as the walk first reads it, before any key of its map is redacted: the key, its text (read once; for a
+     * kept scalar its JDK string form), whether that text could be read, and whether the key may name {@code kty}.
+     */
+    private record KeyText(Object key, String text, boolean readable, boolean kty) {
     }
 
+    /** A map key as it comes out: its redacted form, and whether that form is its text as read. */
+    private record Key(Object name, boolean asGiven) {
+    }
+
+    /**
+     * The text of a key a JWK keeps as it is: a plain member name. Any other key of a JWK, or of a map under one, is
+     * masked with its value, whatever type holds it.
+     */
+    private static final Pattern PLAIN_MEMBER_NAME = Pattern.compile("[A-Za-z0-9_.#:-]{1,64}");
+
     private static Map<Object, Object> redactMap(Map<?, ?> map, boolean enclosingJwk, Set<Object> path) {
-        // Read once: each entry's key and value are taken one time, so a map cannot show one key to the JWK decision and
-        // another to the output.
+        // Read once: each entry's key and value are taken one time, and each key's text is read one time, so a map cannot
+        // show one key to the JWK decision and another to the output.
         List<Object[]> entries = new ArrayList<>();
         for (Map.Entry<?, ?> e : map.entrySet()) {
             entries.add(new Object[] {e.getKey(), e.getValue()});
         }
-        List<Key> keys = new ArrayList<>();
+        // The map's own JWK context comes first, from every key's text, and applies to its keys as well as its values.
+        List<KeyText> texts = new ArrayList<>();
         boolean jwk = enclosingJwk;
         for (Object[] e : entries) {
-            Key key = readKey(e[0], enclosingJwk);
-            keys.add(key);
-            jwk = jwk || key.kty();
+            KeyText text = readKeyText(e[0]);
+            texts.add(text);
+            jwk = jwk || text.kty();
         }
         Map<Object, Object> out = new LinkedHashMap<>();
         for (int i = 0; i < entries.size(); i++) {
-            Key key = keys.get(i);
+            KeyText text = texts.get(i);
+            Key key = redactKey(text, jwk);
             Object name = key.name();
             Object v = entries.get(i)[1];
-            boolean privateMember = !key.asGiven() || name instanceof String s && JWK_PRIVATE_MEMBERS.contains(s);
+            // A private member is found by the key's text, whatever type holds the key.
+            boolean privateMember = !key.asGiven() || text.text() != null && JWK_PRIVATE_MEMBERS.contains(text.text());
             out.put(name, jwk && privateMember ? maskField(String.valueOf(name), v) : redactTree(String.valueOf(name), v, jwk, path));
         }
         return Collections.unmodifiableMap(out);
     }
 
     /**
-     * Reads a key by the rule for values. A text-bearing key whose text is exactly {@code kty} is that name; any other
-     * that may name {@code kty}, declares a {@code kty} field or sits under a JWK is masked. A key that cannot be read
-     * is masked and taken to name {@code kty}, so its map is read as a JWK.
+     * Reads a key's text once: a string is its own text, a kept scalar its JDK string form, any other object its string
+     * form. A key may name {@code kty} when its text may, in any spelling, or its type declares a {@code kty} field. A key
+     * whose text cannot be read is taken to name {@code kty}, so its map is read as a JWK.
      */
     @SuppressWarnings("java:S1181") // As in redactTree: no exception a key's toString throws may leave.
-    private static Key readKey(Object k, boolean enclosingJwk) {
+    private static KeyText readKeyText(Object k) {
         try {
-            if (k == null || KEPT_SCALARS.contains(k.getClass())) {
-                return new Key(k, false, true);
+            if (k == null) {
+                return new KeyText(null, null, true, false);
             }
-            boolean text = k instanceof String;
-            String raw = text ? (String) k : textOf(k);
-            boolean kty = !text && declaresKty(k.getClass()) || WholeTextGuard.mayNameKty(raw);
-            if (!text && !raw.equals("kty") && (enclosingJwk || kty)) {
-                return new Key(MASK, true, false);
+            if (KEPT_SCALARS.contains(k.getClass())) {
+                return new KeyText(k, String.valueOf(k), true, false);
             }
-            String name = redact(raw);
-            return new Key(name, kty || WholeTextGuard.mayNameKty(name), name.equals(raw));
+            boolean string = k instanceof String;
+            String text = string ? (String) k : textOf(k);
+            if (text == null) {
+                return new KeyText(k, null, false, true);
+            }
+            return new KeyText(k, text, true, !string && declaresKty(k.getClass()) || WholeTextGuard.mayNameKty(text));
         } catch (Throwable e) {
-            return new Key(MASK, true, false);
+            return new KeyText(k, null, false, true);
         }
+    }
+
+    /**
+     * Redacts a key from its text as read, under its map's JWK context. A key that could not be read is masked. A kept
+     * scalar is kept. In a JWK, or under one, a key keeps its text only where it is a plain member name; any other is
+     * masked. Elsewhere a key becomes its redacted text.
+     */
+    private static Key redactKey(KeyText text, boolean jwk) {
+        if (!text.readable()) {
+            return new Key(MASK, false);
+        }
+        Object k = text.key();
+        if (k == null || KEPT_SCALARS.contains(k.getClass())) {
+            return new Key(k, true);
+        }
+        if (jwk && !PLAIN_MEMBER_NAME.matcher(text.text()).matches()) {
+            return new Key(MASK, false);
+        }
+        String name = redact(text.text());
+        return new Key(name, name.equals(text.text()));
     }
 
     /** Whether {@code type} or a superclass declares a field named {@code kty}, in any case (a record component is one). */
