@@ -49,7 +49,9 @@ final class WholeTextGuard {
      * Whether {@code text} may hold a JWK private member: a {@code kty} name and a quoted private member name, each in
      * any spelling, in the text or in it decoded loosely ({@link #looselyDecoded}) up to one level past the levels the
      * canonical reading reads. Loose decoding reads every escape, in a string or not, so a name whose own escape is
-     * spelled as escapes a level up is found where it decodes.
+     * spelled as escapes a level up is found where it decodes. Only decoding that no longer changes the text decides
+     * that it holds none: where decoding still changes it past those levels, neither name may have shown yet, so the
+     * text may hold one.
      */
     static boolean mayHoldPrivateMember(String text) {
         boolean kty = false;
@@ -61,13 +63,14 @@ final class WholeTextGuard {
             if (kty && name) {
                 return true;
             }
-            if (view.indexOf('\\') < 0) {
+            String next = view.indexOf('\\') < 0 ? view : looselyDecoded(view);
+            if (next.equals(view)) {
                 return false;
             }
-            view = looselyDecoded(view);
+            view = next;
         }
-        // Escapes still left past the levels read: the text may hold anything there.
-        return kty || name;
+        // Decoding still changes the text past the levels read: undecided, so it may hold anything there.
+        return true;
     }
 
     /** Whether {@code view} holds a {@link #QUOTED_NAME} that decodes to a private member name. */

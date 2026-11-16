@@ -1842,8 +1842,8 @@ const quotesPrivateName = view => {
 
 /**
  * Whether `text` may hold a JWK private member: a kty name and a quoted private member name in any spelling, found in the
- * text or in it decoded loosely, level after level, one level past those read. With escapes still left there, either one
- * is enough.
+ * text or in it decoded loosely, level after level, one level past those read. Only decoding that no longer changes the
+ * text says it holds none: where decoding still changes it there, neither name may have shown yet, so it may hold one.
  */
 const mayHoldJwkPrivateMember = text => {
   let kty = false;
@@ -1853,10 +1853,11 @@ const mayHoldJwkPrivateMember = text => {
     kty ||= ktyCount(view) > 0;
     name ||= quotesPrivateName(view);
     if (kty && name) return true;
-    if (!view.includes('\\')) return false;
-    view = decodeLoosely(view);
+    const next = view.includes('\\') ? decodeLoosely(view) : view;
+    if (next === view) return false;
+    view = next;
   }
-  return kty || name;
+  return true;
 };
 
 /**

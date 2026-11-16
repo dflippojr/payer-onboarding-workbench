@@ -2244,7 +2244,7 @@ test('reads deeply nested arrays without recursion, and finds a kty and a privat
   for (const text of ['{"kty":1,"n":2}x', '{"d":2}x', '{"kty":1,"dpq":2}x', '{"kty":1,"D":2}x']) {
     assert.ok(!findTextLeaks(text).some(leak => leak.check === WHOLE_TEXT), text);
   }
-  // Escapes still left past the levels read: a kty is enough.
+  // Decoding still changing the text past the levels read: undecided, so the rule applies.
   assert.ok(findTextLeaks(`"kty" ${b.repeat(1 << 18)}`).some(leak => leak.check === WHOLE_TEXT));
 });
 

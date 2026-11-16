@@ -174,7 +174,9 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
   level holds a quote, within the 16 levels the Redactor reads. A string with no quote at any level holds no member name,
   so it is not read further. Every member counts, a repeated name too.
 - The rule applies to a text that may hold a JWK private member: a `kty` and a quoted private member name, each in any
-  spelling, at any escape level. Other texts are not changed by it.
+  spelling, at any escape level. Only escape decoding that no longer changes the text decides that it holds neither; a
+  text whose decoding still changes past the levels searched is undecided and the rule applies to it. Other texts are not
+  changed by it.
 - The Redactor checks its input and its output: the output must read completely with every JWK private member masked.
   Its earlier passes stay as a second line (`redactParts`), and tests still pin what they do on their own.
 - The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,

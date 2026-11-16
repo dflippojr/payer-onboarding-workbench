@@ -361,7 +361,7 @@ class RedactorEarlyExitTest {
                 "{\"kty\":1,\"D\":2}")) {
             assertFalse(WholeTextGuard.mayHoldPrivateMember(text), text);
         }
-        // Escapes still left past the levels read: either name is enough.
+        // Decoding still changing the text past the levels read: undecided, so it may hold one.
         String chain = b.repeat(1 << 18);
         assertTrue(WholeTextGuard.mayHoldPrivateMember("kty " + chain));
         assertEquals("a\n\r\t\b\f\"/" + b + "u" + b, WholeTextGuard.looselyDecoded("a" + b + "n" + b + "r" + b + "t" + b + "b" + b + "f"
