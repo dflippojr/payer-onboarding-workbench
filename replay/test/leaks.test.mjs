@@ -2203,12 +2203,28 @@ test('pins the verdicts on the generic-field separator forms #351 resolved (#348
 
 test('flags a generic secret field whose separator the Redactor reads as whitespace only in its views, through all three entry points (#348)', () => {
   // A secret-named field whose separator before the colon only the Redactor's view readings read as whitespace, in plain
-  // JSON and in escaped copies, with and without a stray quote and a raw line break before it. The Redactor masks 5,781
-  // of these texts and keeps 810, among them the forms where that whitespace is spelled another way, no value starts
-  // after it, a value runs into the next member or ends in a lone backslash cut off. RedactorTest checks the committed
-  // outputs. The scanner must flag exactly the texts the Redactor masks, at every entry point, and accept every output.
+  // JSON and in escaped copies, with and without a stray quote and a raw line break before it. The Redactor masks 5,847
+  // of these texts and keeps 864, among them the forms where that whitespace is spelled another way, no value starts
+  // after it, a value runs into the next member or ends in a cut. RedactorTest checks the committed outputs. The
+  // scanner must flag exactly the texts the Redactor masks, at every entry point, and accept every output.
   const pairs = redactorGrid('generic-separator-miss-grid');
-  assert.equal(pairs.length, 6_591);
+  assert.equal(pairs.length, 6_711);
   const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('ends such a field\'s value where the Redactor does before a cut note, at the top level and in its report form (#348)', () => {
+  // Review on 0413e7c: the same fields at the top level, whose value ends in a cut before a note. Each text's report form
+  // is a row of its own, since the Redactor reads it differently: it masks 99 of these texts and keeps 45. The text and
+  // the JSON field entry points must match its verdict on each row, and every output must be accepted.
+  const pairs = redactorGrid('generic-separator-note-grid');
+  assert.equal(pairs.length, 144);
+  const wrong = [];
+  for (const [input, out] of pairs) {
+    const masked = out !== input;
+    const verdicts = [findTextLeaks(input), findJsonLeaks({ responseBody: input })].map(leaks => leaks.length > 0);
+    if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
+    if (findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
+  }
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
