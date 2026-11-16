@@ -1774,6 +1774,38 @@ class RedactorTest {
         assertScannerGrid("escape-chain-grid", pairs);
     }
 
+    @Test
+    void writesTheGenericFieldSeparatorGridsForTheScanner() throws Exception {
+        // #348: secret-named fields with an unusual separator between the name and its colon, in escaped copies and plain
+        // JSON. The pin grid holds the 57 forms of #344's probe whose verdicts main already gets right: since #351 the
+        // Redactor masks 48 of them and keeps 9. The miss grid holds the separator class the scanner missed, with the
+        // forms around it that the Redactor keeps. Their inputs are the committed files' own, so the exact forms stay
+        // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
+        Map<String, int[]> counts = Map.of("generic-separator-pin-grid", new int[] {48, 9},
+                "generic-separator-miss-grid", new int[] {5781, 810});
+        for (Map.Entry<String, int[]> grid : counts.entrySet()) {
+            List<String[]> pairs = new ArrayList<>();
+            int masked = 0;
+            for (List<String> pair : committedScannerGrid(grid.getKey())) {
+                String out = Redactor.redact(pair.get(0));
+                pairs.add(new String[] {pair.get(0), out});
+                masked += out.equals(pair.get(0)) ? 0 : 1;
+            }
+            assertEquals(grid.getValue()[0], masked, grid.getKey() + ": masked");
+            assertEquals(grid.getValue()[1], pairs.size() - masked, grid.getKey() + ": kept");
+            assertScannerGrid(grid.getKey(), pairs);
+        }
+    }
+
+    /** The input and output pairs of the committed {@code src/test/resources/scanner-grids/<name>.json.gz}. */
+    private static List<List<String>> committedScannerGrid(String name) throws java.io.IOException {
+        java.nio.file.Path grid = java.nio.file.Path.of("src", "test", "resources", "scanner-grids", name + ".json.gz");
+        try (var in = new java.util.zip.GZIPInputStream(java.nio.file.Files.newInputStream(grid))) {
+            return JSON.readValue(new String(in.readAllBytes(), StandardCharsets.UTF_8),
+                    new tools.jackson.core.type.TypeReference<>() { });
+        }
+    }
+
     /**
      * Checks that the committed {@code src/test/resources/scanner-grids/<name>.json.gz} holds exactly these input and
      * output pairs. replay/test/leaks.test.mjs checks that the scanner accepts every output; it reads the committed file

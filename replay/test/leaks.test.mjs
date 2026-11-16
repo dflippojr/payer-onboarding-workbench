@@ -2176,3 +2176,39 @@ test('reads the rest of a secret field\'s object once for all its secret fields,
     assert.ok(scanWork.characters <= 40 * text.length, `read ${scanWork.characters} characters of a ${text.length}-character text`);
   }
 });
+
+/** For each [input, Redactor output] pair: the inputs whose verdict differs from the Redactor's, and the flagged outputs. */
+function separatorGridWrong(pairs) {
+  const wrong = [];
+  for (const [input, out] of pairs) {
+    const masked = out !== input;
+    const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
+      .map(leaks => leaks.length > 0);
+    if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
+    if (findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
+  }
+  return wrong;
+}
+
+test('pins the verdicts on the generic-field separator forms #351 resolved (#348)', () => {
+  // #344's probe of generic secret fields with an unusual separator around the colon, in an escaped copy after a stray
+  // quote and a raw line break, which the Redactor kept then. Since #351 it masks 48 of them and keeps 9, and the
+  // scanner flags exactly the 48, through all three entry points. RedactorTest checks the committed outputs; the
+  // other 3 forms of that probe are in the miss grid below.
+  const pairs = redactorGrid('generic-separator-pin-grid');
+  assert.equal(pairs.length, 57);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('flags a generic secret field whose separator the Redactor reads as whitespace only in its views, through all three entry points (#348)', () => {
+  // A secret-named field whose separator before the colon only the Redactor's view readings read as whitespace, in plain
+  // JSON and in escaped copies, with and without a stray quote and a raw line break before it. The Redactor masks 5,781
+  // of these texts and keeps 810, among them the forms where that whitespace is spelled another way, no value starts
+  // after it, a value runs into the next member or ends in a lone backslash cut off. RedactorTest checks the committed
+  // outputs. The scanner must flag exactly the texts the Redactor masks, at every entry point, and accept every output.
+  const pairs = redactorGrid('generic-separator-miss-grid');
+  assert.equal(pairs.length, 6_591);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
