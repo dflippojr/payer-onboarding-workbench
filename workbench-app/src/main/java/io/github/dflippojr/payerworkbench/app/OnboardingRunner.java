@@ -21,6 +21,7 @@ import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.JwtClaims;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
 import io.github.dflippojr.payerworkbench.core.RedactedConnection;
+import io.github.dflippojr.payerworkbench.core.Redactor;
 import io.github.dflippojr.payerworkbench.core.RunObservations;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
@@ -1191,9 +1192,25 @@ public class OnboardingRunner {
                 .updatedAt(r.updatedAt());
     }
 
-    /** {@code details} in the JSON form a run is served as; see {@link #DETAILS_JSON}. */
-    @SuppressWarnings("unchecked")
+    /**
+     * {@code details} in the JSON form a run is served as; see {@link #DETAILS_JSON}. The conversion runs caller code (a
+     * record's accessors, a key's string form) before {@link StepResult} redacts anything, so it sits inside the
+     * outermost fail-closed boundary (#360): whatever it throws, the details become one masked entry beside the status
+     * the runner set, and the exception, its message and its cause go nowhere, neither out nor to a log.
+     */
+    @SuppressWarnings({"unchecked", "java:S1181"})
     static Map<String, Object> asJson(Map<String, Object> details) {
-        return DETAILS_JSON.convertValue(details, LinkedHashMap.class);
+        Object status = null;
+        try {
+            status = details.get("status");
+            return DETAILS_JSON.convertValue(details, LinkedHashMap.class);
+        } catch (Throwable e) {
+            Map<String, Object> masked = new LinkedHashMap<>();
+            masked.put("details", Redactor.MASK);
+            if (status instanceof String s) {
+                masked.put("status", s);
+            }
+            return masked;
+        }
     }
 }
