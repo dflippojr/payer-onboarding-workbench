@@ -1,5 +1,6 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -2553,23 +2554,63 @@ public final class Redactor {
     }
 
     private static Map<String, List<String>> redactHeadersInside(Map<String, List<String>> headers) {
-        if (headers == null || headers.isEmpty()) {
-            return Map.of();
-        }
+        // Snapshot first (#360): the caller's map and lists are read once, here, into new JDK data; everything after works on
+        // that copy, and no caller object is kept or called again.
+        List<Map.Entry<String, List<String>>> copy = copyHeaders(headers);
         Map<String, List<String>> out = new LinkedHashMap<>();
-        headers.forEach((name, values) -> {
-            List<String> safe = values == null ? List.of() : values.stream()
-                    .map(v -> redactHeaderValue(name, v))
-                    .toList();
-            out.merge(redact(name), safe, (a, b) -> java.util.stream.Stream.concat(a.stream(), b.stream()).toList());
-        });
-        return Collections.unmodifiableMap(out);
+        for (Map.Entry<String, List<String>> header : copy) {
+            String name = header.getKey();
+            List<String> safe = new ArrayList<>();
+            for (String v : header.getValue()) {
+                safe.add(redactHeaderValue(name, v));
+            }
+            out.merge(redact(name), Collections.unmodifiableList(safe), (a, b) -> {
+                List<String> both = new ArrayList<>(a);
+                both.addAll(b);
+                return Collections.unmodifiableList(both);
+            });
+        }
+        return out.isEmpty() ? Map.of() : Collections.unmodifiableMap(out);
     }
 
     /**
-     * The scalar classes {@link #redactTree(Object)} keeps as they are: JDK classes whose string form is made by the JDK
-     * from a number, a flag, one character or a date or time, so it holds no caller text. Matched by exact class, never
-     * by {@code instanceof}, so no subclass (of {@link BigDecimal} or {@link BigInteger}, which are not final) passes.
+     * The snapshot of caller headers: the map's entries read once, each name as the string it is (any other key, possible
+     * only through unchecked types, is the mask), and each value list iterated once, by this method itself, into a new
+     * list of strings (any other element the mask). The caller's own stream, spliterator or list methods are never used
+     * to build the copy, and nothing of the caller's is kept.
+     */
+    private static List<Map.Entry<String, List<String>>> copyHeaders(Map<?, ?> headers) {
+        List<Map.Entry<String, List<String>>> out = new ArrayList<>();
+        if (headers == null) {
+            return out;
+        }
+        // A list shared by several names is still iterated once: copies are kept by identity.
+        Map<Object, List<String>> copies = new IdentityHashMap<>();
+        for (Map.Entry<?, ?> e : headers.entrySet()) {
+            Object key = e.getKey();
+            Object values = e.getValue();
+            List<String> copy = copies.get(values);
+            if (copy == null) {
+                copy = new ArrayList<>();
+                if (values instanceof List<?> list) {
+                    for (Object v : list) {
+                        copy.add(v == null || v instanceof String ? (String) v : MASK);
+                    }
+                } else if (values != null) {
+                    copy.add(MASK);
+                }
+                copies.put(values, copy);
+            }
+            out.add(new java.util.AbstractMap.SimpleImmutableEntry<>(key instanceof String name ? name : MASK, copy));
+        }
+        return out;
+    }
+
+    /**
+     * The scalar classes {@link #redactTree(Object)} keeps: JDK classes whose string form is made by the JDK from a number,
+     * a flag, one character or a date or time, so it holds no caller text. Matched by exact class, never by
+     * {@code instanceof}, so no subclass (of {@link BigDecimal} or {@link BigInteger}, which are not final) passes; the
+     * snapshot copies those two into new instances, and keeps the others, which are final and immutable, as they are.
      */
     private static final Set<Class<?>> KEPT_SCALARS = Set.of(Boolean.class, Character.class, Byte.class, Short.class,
             Integer.class, Long.class, Float.class, Double.class, BigInteger.class, BigDecimal.class, Instant.class,
@@ -2579,25 +2620,31 @@ public final class Redactor {
     /**
      * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)} and the value
      * of every field named like a secret or a credential header is masked, recursively, or {@code null} if
-     * {@code value} is {@code null}. Only strings, maps, lists and {@link #KEPT_SCALARS} (matched by exact class) are
-     * walked or kept: maps keep their iteration order and lists their order, both read once. Every other object, an
-     * enum, a record, a set, an array, an {@link Optional}, a custom number or temporal value, becomes its
-     * {@link String#valueOf(Object) string form} (an array's shows what it holds) put through {@link #redact(String)},
-     * and is masked whole where it carries JWK context: it sits under a JWK, declares a {@code kty} field, or its string
-     * form may name {@code kty}.
-     * Map keys follow the same rule: each key's text is read once, and a map's own JWK context (any key that may name
-     * {@code kty}, or a key that cannot be read) is worked out from all of them before any key is redacted. In a map with
-     * that context, and in everything under it, a key keeps its text only if it is a plain member name (otherwise it and
-     * its value are masked), and a value is masked where its key's text, whatever type holds the key, is one of the
-     * {@link #JWK_PRIVATE_MEMBERS}. Elsewhere a key becomes its redacted text, and a kept scalar key is kept. An
-     * {@code Authorization}-style field keeps a registered scheme ({@code Bearer [REDACTED]}) and is otherwise masked
-     * whole. Nothing is thrown: whatever reading a value throws, its string form or a map's or a list's iteration, masks
-     * that value whole, as does a map or list that holds itself or sits more than {@link #TREE_LEVELS} deep, and no
-     * exception's message reaches the output. The whole call is inside the outermost fail-closed boundary
-     * ({@link #failClosed}), which gives the mask.
+     * {@code value} is {@code null}.
+     *
+     * <p>Snapshot first (#360, owner amendment of 2026-11-16): the first step copies the caller's value once into plain
+     * JDK data ({@link #snapshot}): strings, {@link #KEPT_SCALARS}, and new unmodifiable maps and lists, each caller map
+     * and list read once. Every other object, an enum, a record, a set, an array, an {@link Optional}, a custom number or
+     * temporal value, becomes its {@link String#valueOf(Object) string form} (an array's shows what it holds), read once,
+     * and is the mask instead where it carries JWK context: it sits under a JWK, declares a {@code kty} field, or its
+     * string form may name {@code kty}. A map key is read once the same way, and a map whose key may name {@code kty} (in
+     * its text, or by a declared {@code kty} field only the original carries) or cannot be read is recorded as a JWK
+     * while it is copied. Everything after the snapshot works on the copy alone: no caller object is called or kept.
+     *
+     * <p>The redaction then walks the copy. In a JWK, and in everything under it, a key keeps its text only if it is a
+     * plain member name (otherwise it and its value are masked), and a value is masked where its key's text, whatever
+     * type holds the key, is one of the {@link #JWK_PRIVATE_MEMBERS}. Elsewhere a key becomes its redacted text, and a
+     * kept scalar key is kept. An {@code Authorization}-style field keeps a registered scheme ({@code Bearer [REDACTED]})
+     * and is otherwise masked whole. Nothing is thrown: whatever reading a value throws masks that value whole, as does a
+     * map or list that holds itself or sits more than {@link #TREE_LEVELS} deep, and the whole call is inside the
+     * outermost fail-closed boundary ({@link #failClosed}), which gives the mask.
      */
     public static Object redactTree(Object value) {
-        return failClosed(() -> redactTree(null, value, false, Collections.newSetFromMap(new IdentityHashMap<>())), MASK);
+        return failClosed(() -> {
+            Copying copying = new Copying();
+            Object copy = snapshot(value, false, copying);
+            return redactTree(null, copy, false, Collections.newSetFromMap(new IdentityHashMap<>()), copying.jwks);
+        }, MASK);
     }
 
     /**
@@ -2606,20 +2653,235 @@ public final class Redactor {
      */
     static final int TREE_LEVELS = 128;
 
+    // ---- the snapshot: the only code that reads caller objects ----
+
     /**
-     * The fail-closed boundary of the walk, around every value: whatever reading it throws, including what a caller's
-     * own {@code toString}, map or list throws, checked or not, masks it whole, and no exception leaves.
+     * The state of one snapshot. Every caller object is read once, whatever number of places it sits in: its read (a
+     * map's entries, a list's items, an object's text) is kept by identity in {@code reads}, and a read that threw is kept
+     * as {@link #UNREADABLE}. {@code path} holds the maps and lists on the current path (a cycle check), and {@code jwks}
+     * the copied maps that are JWKs. All three are identity sets or maps, so using them runs no caller code.
+     */
+    private static final class Copying {
+        final Map<Object, Object> reads = new IdentityHashMap<>();
+        final Set<Object> path = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<Object> jwks = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        /** {@code read} applied to {@code original} the first time, inside its own boundary; its result after that. */
+        @SuppressWarnings("java:S1181") // Throwable on purpose, as in snapshot.
+        Object once(Object original, java.util.function.Function<Object, Object> read) {
+            Object done = reads.get(original);
+            if (done == null && !reads.containsKey(original)) {
+                try {
+                    done = read.apply(original);
+                } catch (Throwable e) {
+                    done = UNREADABLE;
+                }
+                reads.put(original, done);
+            }
+            return done;
+        }
+    }
+
+    /** What {@link Copying#once} keeps for a caller object whose read threw. */
+    private static final Object UNREADABLE = new Object();
+
+    /** A caller map's entries, each key and value taken once. */
+    private static List<Object[]> entriesOf(Object map) {
+        List<Object[]> entries = new ArrayList<>();
+        for (Map.Entry<?, ?> e : ((Map<?, ?>) map).entrySet()) {
+            entries.add(new Object[] {e.getKey(), e.getValue()});
+        }
+        return entries;
+    }
+
+    /** A caller list's items, iterated once by this method itself. */
+    private static List<Object> itemsOf(Object list) {
+        List<Object> items = new ArrayList<>();
+        for (Object v : (List<?>) list) {
+            items.add(v);
+        }
+        return items;
+    }
+
+    /**
+     * Copies {@code value} into plain JDK data, reading each caller map, list and object once; {@code jwk} is whether it
+     * sits under a JWK. Maps of the copy that are JWKs are added to {@code jwks} (by identity: they are new maps). The
+     * per-value fail-closed boundary: whatever reading the value throws gives the mask.
      */
     @SuppressWarnings("java:S1181") // Throwable on purpose: an Error or a sneaky checked exception may quote caller text.
-    private static Object redactTree(String key, Object value, boolean jwk, Set<Object> path) {
+    private static Object snapshot(Object value, boolean jwk, Copying copying) {
         try {
-            return redactNode(key, value, jwk, path);
+            return snapshotNode(value, jwk, copying);
         } catch (Throwable e) {
             return MASK;
         }
     }
 
-    private static Object redactNode(String key, Object value, boolean jwk, Set<Object> path) {
+    private static Object snapshotNode(Object value, boolean jwk, Copying copying) {
+        if (value == null || value instanceof String) {
+            return value;
+        }
+        Class<?> type = value.getClass();
+        if (KEPT_SCALARS.contains(type)) {
+            return copyScalar(value);
+        }
+        if (value instanceof Map<?, ?> || value instanceof List<?>) {
+            // A map or list already on the path (a cycle), or past the levels walked, is masked whole. The path is an
+            // identity set, so checking it runs no caller code.
+            if (copying.path.size() >= TREE_LEVELS || !copying.path.add(value)) {
+                return MASK;
+            }
+            try {
+                return value instanceof Map<?, ?> ? snapshotMap(value, jwk, copying) : snapshotList(value, jwk, copying);
+            } finally {
+                copying.path.remove(value);
+            }
+        }
+        // Any other object: its JWK context is worked out from the original here, and it becomes its text, read once.
+        if (jwk || declaresKty(type)) {
+            return MASK;
+        }
+        Object text = copying.once(value, v -> textOf(v, copying));
+        return !(text instanceof String t) || WholeTextGuard.mayNameKty(t) ? MASK : t;
+    }
+
+    /** A new instance of a kept scalar that is not final ({@link BigInteger}, {@link BigDecimal}); the others as they are. */
+    private static Object copyScalar(Object value) {
+        if (value instanceof BigInteger b) {
+            return new BigInteger(b.toByteArray());
+        }
+        if (value instanceof BigDecimal d) {
+            return new BigDecimal(new BigInteger(d.unscaledValue().toByteArray()), d.scale());
+        }
+        return value;
+    }
+
+    private static Object snapshotList(Object list, boolean jwk, Copying copying) {
+        if (!(copying.once(list, Redactor::itemsOf) instanceof List<?> items)) {
+            return MASK;
+        }
+        List<Object> out = new ArrayList<>();
+        for (Object v : items) {
+            out.add(snapshot(v, jwk, copying));
+        }
+        return Collections.unmodifiableList(out);
+    }
+
+    /** A map key as the snapshot reads it, once: its copy, and whether it may name {@code kty} or could not be read. */
+    private record KeyCopy(Object key, boolean kty) {
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object snapshotMap(Object map, boolean enclosingJwk, Copying copying) {
+        // Read once: each entry's key and value are taken one time, and each key's text is read one time.
+        if (!(copying.once(map, Redactor::entriesOf) instanceof List<?> read)) {
+            return MASK;
+        }
+        List<Object[]> entries = (List<Object[]>) read;
+        // The map's own JWK context comes from every original key before any value is copied, so it reaches them all.
+        boolean jwk = enclosingJwk;
+        List<Object> keys = new ArrayList<>();
+        for (Object[] e : entries) {
+            KeyCopy key = copyKey(e[0], copying);
+            keys.add(key.key());
+            jwk = jwk || key.kty();
+        }
+        Map<Object, Object> out = new LinkedHashMap<>();
+        for (int i = 0; i < entries.size(); i++) {
+            out.put(keys.get(i), snapshot(entries.get(i)[1], jwk, copying));
+        }
+        Map<Object, Object> copy = Collections.unmodifiableMap(out);
+        if (jwk) {
+            copying.jwks.add(copy);
+        }
+        return copy;
+    }
+
+    /**
+     * Copies a key once: a string as it is, a kept scalar as {@link #copyScalar} does, any other object as its text. It may
+     * name {@code kty} when its text may, in any spelling, or its type declares a {@code kty} field. A key that cannot be
+     * read is the mask and is taken to name {@code kty}, so its map is read as a JWK.
+     */
+    @SuppressWarnings("java:S1181") // As in snapshot: no exception a key's toString throws may leave.
+    private static KeyCopy copyKey(Object k, Copying copying) {
+        try {
+            if (k == null) {
+                return new KeyCopy(null, false);
+            }
+            if (k instanceof String s) {
+                return new KeyCopy(s, WholeTextGuard.mayNameKty(s));
+            }
+            Class<?> type = k.getClass();
+            if (KEPT_SCALARS.contains(type)) {
+                return new KeyCopy(copyScalar(k), false);
+            }
+            if (!(copying.once(k, v -> textOf(v, copying)) instanceof String text)) {
+                return new KeyCopy(MASK, true);
+            }
+            return new KeyCopy(text, declaresKty(type) || WholeTextGuard.mayNameKty(text));
+        } catch (Throwable e) {
+            return new KeyCopy(MASK, true);
+        }
+    }
+
+    /**
+     * The string form of {@code value}. An array's shows what it holds, as {@link Arrays#deepToString} writes it, built
+     * here element by element so each element that is a caller object is read once through {@code copying} too; an
+     * element whose text cannot be read makes the whole array unreadable.
+     */
+    private static String textOf(Object value, Copying copying) {
+        if (!value.getClass().isArray()) {
+            return String.valueOf(value);
+        }
+        StringBuilder out = new StringBuilder();
+        arrayText(value, copying, out, Collections.newSetFromMap(new IdentityHashMap<>()));
+        return out.toString();
+    }
+
+    private static void arrayText(Object array, Copying copying, StringBuilder out, Set<Object> open) {
+        if (!open.add(array)) {
+            out.append("[...]");
+            return;
+        }
+        out.append('[');
+        int n = Array.getLength(array);
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                out.append(", ");
+            }
+            Object e = Array.get(array, i);
+            if (e == null) {
+                out.append("null");
+            } else if (e.getClass().isArray()) {
+                arrayText(e, copying, out, open);
+            } else if (e instanceof String || KEPT_SCALARS.contains(e.getClass())) {
+                out.append(e);
+            } else if (copying.once(e, v -> textOf(v, copying)) instanceof String text) {
+                out.append(text);
+            } else {
+                throw new IllegalStateException("An element cannot be read");
+            }
+        }
+        out.append(']');
+        open.remove(array);
+    }
+
+    // ---- the redaction: works on the snapshot alone ----
+
+    /**
+     * The fail-closed boundary of the walk over the snapshot, around every value: whatever reading it throws masks it
+     * whole. {@code jwks} holds the snapshot's maps that are JWKs by context only their originals carried.
+     */
+    @SuppressWarnings("java:S1181") // Throwable on purpose, as in snapshot.
+    private static Object redactTree(String key, Object value, boolean jwk, Set<Object> path, Set<Object> jwks) {
+        try {
+            return redactNode(key, value, jwk, path, jwks);
+        } catch (Throwable e) {
+            return MASK;
+        }
+    }
+
+    private static Object redactNode(String key, Object value, boolean jwk, Set<Object> path, Set<Object> jwks) {
         if (key != null && isSecretKey(key)) {
             return value instanceof List<?> list ? redactList(list, v -> maskField(key, v)) : maskField(key, value);
         }
@@ -2630,35 +2892,22 @@ public final class Redactor {
             return redact(s);
         }
         if (value instanceof Map<?, ?> || value instanceof List<?>) {
-            // A map or list already on the path (a cycle), or past the levels walked, is masked whole.
             if (path.size() >= TREE_LEVELS || !path.add(value)) {
                 return MASK;
             }
             try {
                 return value instanceof Map<?, ?> map
-                        ? redactMap(map, jwk, path)
-                        : redactList((List<?>) value, v -> redactTree(null, v, jwk, path));
+                        ? redactMap(map, jwk || jwks.contains(map), path, jwks)
+                        : redactList((List<?>) value, v -> redactTree(null, v, jwk, path, jwks));
             } finally {
                 path.remove(value);
             }
         }
-        if (jwk || declaresKty(value.getClass())) {
-            return MASK;
-        }
-        String text = textOf(value);
-        return WholeTextGuard.mayNameKty(text) ? MASK : redact(text);
+        // The snapshot holds nothing else; anything else is masked.
+        return MASK;
     }
 
-    /** The string form of {@code value}; an array's shows what it holds, as {@link Arrays#deepToString} does. */
-    private static String textOf(Object value) {
-        if (value.getClass().isArray()) {
-            String text = Arrays.deepToString(new Object[] {value});
-            return text.substring(1, text.length() - 1);
-        }
-        return String.valueOf(value);
-    }
-
-    /** {@code list} read once, each item through {@code item}. */
+    /** {@code list}, a snapshot list, each item through {@code item}. */
     private static List<Object> redactList(List<?> list, java.util.function.UnaryOperator<Object> item) {
         List<Object> out = new ArrayList<>();
         for (Object v : list) {
@@ -2667,94 +2916,51 @@ public final class Redactor {
         return Collections.unmodifiableList(out);
     }
 
-    /**
-     * A map key as the walk first reads it, before any key of its map is redacted: the key, its text (read once; for a
-     * kept scalar its JDK string form), whether that text could be read, and whether the key may name {@code kty}.
-     */
-    private record KeyText(Object key, String text, boolean readable, boolean kty) {
-    }
-
-    /** A map key as it comes out: its redacted form, and whether that form is its text as read. */
+    /** A snapshot key as it comes out: its redacted form, and whether that form is its text. */
     private record Key(Object name, boolean asGiven) {
     }
 
     /**
      * The text of a key a JWK keeps as it is: a plain member name. Any other key of a JWK, or of a map under one, is
-     * masked with its value, whatever type holds it.
+     * masked with its value, whatever type held the key.
      */
     private static final Pattern PLAIN_MEMBER_NAME = Pattern.compile("[A-Za-z0-9_.#:-]{1,64}");
 
-    private static Map<Object, Object> redactMap(Map<?, ?> map, boolean enclosingJwk, Set<Object> path) {
-        // Read once: each entry's key and value are taken one time, and each key's text is read one time, so a map cannot
-        // show one key to the JWK decision and another to the output.
+    private static Map<Object, Object> redactMap(Map<?, ?> map, boolean ownJwk, Set<Object> path, Set<Object> jwks) {
         List<Object[]> entries = new ArrayList<>();
-        for (Map.Entry<?, ?> e : map.entrySet()) {
-            entries.add(new Object[] {e.getKey(), e.getValue()});
-        }
-        // The map's own JWK context comes first, from every key's text, and applies to its keys as well as its values.
-        List<KeyText> texts = new ArrayList<>();
-        boolean jwk = enclosingJwk;
+        map.forEach((k, v) -> entries.add(new Object[] {k, v}));
+        // The map's JWK context, from the snapshot's record and every key's text, before any key is redacted.
+        boolean jwk = ownJwk;
         for (Object[] e : entries) {
-            KeyText text = readKeyText(e[0]);
-            texts.add(text);
-            jwk = jwk || text.kty();
+            jwk = jwk || e[0] instanceof String s && WholeTextGuard.mayNameKty(s);
         }
         Map<Object, Object> out = new LinkedHashMap<>();
-        for (int i = 0; i < entries.size(); i++) {
-            KeyText text = texts.get(i);
-            Key key = redactKey(text, jwk);
+        for (Object[] e : entries) {
+            String text = e[0] == null ? null : String.valueOf(e[0]);
+            Key key = redactKey(e[0], text, jwk);
             Object name = key.name();
-            Object v = entries.get(i)[1];
-            // A private member is found by the key's text, whatever type holds the key.
-            boolean privateMember = !key.asGiven() || text.text() != null && JWK_PRIVATE_MEMBERS.contains(text.text());
-            out.put(name, jwk && privateMember ? maskField(String.valueOf(name), v) : redactTree(String.valueOf(name), v, jwk, path));
+            // A private member is found by the key's text, whatever type held the key.
+            boolean privateMember = !key.asGiven() || text != null && JWK_PRIVATE_MEMBERS.contains(text);
+            out.put(name, jwk && privateMember ? maskField(String.valueOf(name), e[1])
+                    : redactTree(String.valueOf(name), e[1], jwk, path, jwks));
         }
         return Collections.unmodifiableMap(out);
     }
 
     /**
-     * Reads a key's text once: a string is its own text, a kept scalar its JDK string form, any other object its string
-     * form. A key may name {@code kty} when its text may, in any spelling, or its type declares a {@code kty} field. A key
-     * whose text cannot be read is taken to name {@code kty}, so its map is read as a JWK.
+     * Redacts a snapshot key (a string, a kept scalar or {@code null}) under its map's JWK context. A kept scalar is kept.
+     * In a JWK, or under one, a key keeps its text only where it is a plain member name; any other is masked. Elsewhere a
+     * key becomes its redacted text.
      */
-    @SuppressWarnings("java:S1181") // As in redactTree: no exception a key's toString throws may leave.
-    private static KeyText readKeyText(Object k) {
-        try {
-            if (k == null) {
-                return new KeyText(null, null, true, false);
-            }
-            if (KEPT_SCALARS.contains(k.getClass())) {
-                return new KeyText(k, String.valueOf(k), true, false);
-            }
-            boolean string = k instanceof String;
-            String text = string ? (String) k : textOf(k);
-            if (text == null) {
-                return new KeyText(k, null, false, true);
-            }
-            return new KeyText(k, text, true, !string && declaresKty(k.getClass()) || WholeTextGuard.mayNameKty(text));
-        } catch (Throwable e) {
-            return new KeyText(k, null, false, true);
-        }
-    }
-
-    /**
-     * Redacts a key from its text as read, under its map's JWK context. A key that could not be read is masked. A kept
-     * scalar is kept. In a JWK, or under one, a key keeps its text only where it is a plain member name; any other is
-     * masked. Elsewhere a key becomes its redacted text.
-     */
-    private static Key redactKey(KeyText text, boolean jwk) {
-        if (!text.readable()) {
-            return new Key(MASK, false);
-        }
-        Object k = text.key();
+    private static Key redactKey(Object k, String text, boolean jwk) {
         if (k == null || KEPT_SCALARS.contains(k.getClass())) {
             return new Key(k, true);
         }
-        if (jwk && !PLAIN_MEMBER_NAME.matcher(text.text()).matches()) {
+        if (!(k instanceof String) || jwk && !PLAIN_MEMBER_NAME.matcher(text).matches()) {
             return new Key(MASK, false);
         }
-        String name = redact(text.text());
-        return new Key(name, name.equals(text.text()));
+        String name = redact(text);
+        return new Key(name, name.equals(text));
     }
 
     /** Whether {@code type} or a superclass declares a field named {@code kty}, in any case (a record component is one). */
