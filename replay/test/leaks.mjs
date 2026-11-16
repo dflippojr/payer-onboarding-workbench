@@ -1043,6 +1043,14 @@ const repairedOffsets = (span, ctx, length) => {
 };
 
 /**
+ * Whether `span` ends in half an escape: a lone backslash, or a \u with fewer than four hex digits (halfEscapeAt). A span
+ * that ends the text so was cut there, and withoutPartialEscape drops what was cut, so the view read from it carries
+ * the cut instead: Redactor masks the value open there, the cut escape with it (security round on 29d7191: a lone
+ * backslash was dropped without the cut, and the bare mask passed).
+ */
+const endsMidEscape = span => backslashesBefore(span, span.length) % 2 === 1 || halfEscapeAt(span) >= 0;
+
+/**
  * Reads the spans of `text` that decodeString left out and scanJson did not decode (`unread`), each as the content of
  * one more string, one level down: decoded whole if JSON reads it as one, else its unicode escapes. A string's whole
  * content is read as such (WHOLE); every other span, as a view main does not read (UNREAD).
@@ -1057,20 +1065,20 @@ function readUnread(text, unread, level, ctx, toRoot, cut = false) {
       // decodeString decoded a string's whole content already.
       decoded = content;
       at = repairedOffsets(span, ctx, decoded.length);
-      const wholeCut = to >= text.length && (cut || halfEscapeAt(span) >= 0);
+      const wholeCut = to >= text.length && (cut || endsMidEscape(span));
       if (decoded !== span) readNested(decoded, level, ctx, j => toRoot(from + at(j)), WHOLE, wholeCut ? cutOf(span, decoded) : 0);
       continue;
     }
     ctx.work += span.length;
-    // A view that ends where this one was cut, or one that cut half an escape off its own end, ends inside whatever
-    // value is open there.
+    // A view that ends where this one was cut, or one that cut half an escape or a lone backslash off its own end, ends
+    // inside whatever value is open there.
     let spanCut = cut && to >= text.length;
     try {
       // A span cut off at the end of the text may end in half an escape (a lone backslash, or a \u with fewer than four
       // hex digits), which Redactor's parser stops at and JSON cannot read: it is dropped (automated review on 5ca573a).
       decoded = JSON.parse(`"${escapeControls(withoutPartialEscape(span))}"`);
       at = repairedOffsets(span, ctx, decoded.length);
-      spanCut ||= halfEscapeAt(span) >= 0;
+      spanCut ||= endsMidEscape(span);
     } catch {
       const parts = [];
       const offsets = [];
