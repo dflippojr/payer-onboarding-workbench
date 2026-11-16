@@ -7,12 +7,12 @@ import java.util.Objects;
 
 /**
  * One HTTP request/response pair observed during a run. The constructor redacts
- * credential headers (see {@link Redactor#redactHeaders(Map)}) and passes both
- * bodies through {@link Redactor#redact(String)}, so an instance never holds a
- * token, client secret or private key.
+ * credential headers (see {@link Redactor#redactHeaders(Map)}) and passes the method,
+ * the URL, both bodies and the transport error through {@link Redactor#redact(String)},
+ * so an instance never holds a token, client secret or private key.
  *
- * @param method HTTP method, e.g. {@code GET}
- * @param url the full request URL
+ * @param method HTTP method, e.g. {@code GET}, redacted
+ * @param url the full request URL, redacted
  * @param status HTTP status code, or {@link #NO_RESPONSE} if no response arrived
  * @param latency time from sending the request to receiving the full response (or failing)
  * @param requestHeaders request headers, redacted
@@ -39,6 +39,9 @@ public record HttpExchange(
     public HttpExchange {
         Objects.requireNonNull(method, "method");
         Objects.requireNonNull(url, "url");
+        // The method and URL are caller text too: a URL may carry a credential in its query or user info.
+        method = Redactor.redact(method);
+        url = Redactor.redact(url);
         latency = latency == null ? Duration.ZERO : latency;
         requestHeaders = Redactor.redactHeaders(requestHeaders);
         requestBody = Redactor.redact(requestBody);

@@ -11,16 +11,16 @@ import java.util.Objects;
  *
  * <p>The summary and details often quote what the payer sent, which may echo the credentials it
  * received, so the constructor passes both through {@link Redactor} as a safety net, as
- * {@link Finding} does its text.
+ * {@link Finding} does its text, and the step id too, as caller text.
  *
- * @param stepId stable identifier of the step, e.g. {@code discovery}
+ * @param stepId stable identifier of the step, e.g. {@code discovery}, redacted
  * @param startedAt when the step started
  * @param elapsed how long it took
  * @param ok whether the step completed successfully
  * @param summary one-line human-readable outcome, redacted
  * @param details extra step-specific values for display; must not contain secret material.
  *     Copied, through {@link Redactor#redactTree(Object)}, into an unmodifiable map that keeps
- *     insertion order.
+ *     insertion order; keys at every depth are redacted as text too.
  */
 public record StepResult(
         String stepId,
@@ -34,6 +34,7 @@ public record StepResult(
         Objects.requireNonNull(stepId, "stepId");
         Objects.requireNonNull(startedAt, "startedAt");
         Objects.requireNonNull(elapsed, "elapsed");
+        stepId = Redactor.redact(stepId);
         summary = Redactor.redact(summary);
         details = details == null ? Map.of() : redactedDetails(details);
     }
