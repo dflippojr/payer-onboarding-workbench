@@ -2230,3 +2230,14 @@ test('ends such a field\'s value where the Redactor does before a cut note, at t
   }
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
+
+test('flags a generic secret field with such a separator whose name and value are quoted at different escape levels, through all three entry points (#348)', () => {
+  // Security round 1 at 42d0b14: the name quoted at one escape level and the value at another, with the separator
+  // between, as plain text, in escaped copies up to four layers deep, and after a stray quote and a line break or prose.
+  // A view that reads the name has lost the value to decoding there; the Redactor still masks it. It masks 1,600 of these
+  // texts and keeps 2,600, the masked values among them. RedactorTest checks the committed outputs.
+  const pairs = redactorGrid('generic-separator-mixed-grid');
+  assert.equal(pairs.length, 4_200);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
