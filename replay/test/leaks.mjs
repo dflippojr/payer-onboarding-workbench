@@ -816,16 +816,35 @@ const firstBareQuote = (text, ctx) => {
  * is not a unicode one is kept. With no such escape to decode, `body` itself is returned: there is no other view.
  * Returns the decoded text, a function from an index in it to where that character starts in `body`, and `unread`:
  * the spans [from, to) of the strings it left out that no literal scanJson decoded in `body` (`read`) holds, which
- * nothing else decodes, and the content of each such string as a whole, with that content decoded (readUnread). A
- * quote no backslash escapes means JSON.parse cannot read `body`, so the scan reads only up to it to know.
+ * nothing else decodes, and the content of each such string as a whole, with that content decoded (readUnread); and
+ * `repaired`, the body decoded once its cut end is repaired, when only that end kept JSON.parse from reading it
+ * (readRepaired), else null. A quote no backslash escapes means JSON.parse cannot read `body`, so the scan reads only up
+ * to it to know.
  */
 const decodeString = (body, ctx, read = []) => {
   const quote = firstBareQuote(body, ctx);
+  let repaired = null;
   if (quote < 0) {
-    ctx.work += body.length;
+    // A copy cut off in the middle of an escape at its end (half a \u escape, a malformed \u or a lone backslash) is
+    // the content of a string as Redactor reads it, once its end is repaired as a cut literal's is (repairedEnd): its \"
+    // escapes are decoded and the member open at the end is read (#350). It is read besides the loose decode below,
+    // which main reads, as a view main does not read (`repaired`, readRepaired). Half an escape or a lone backslash cut
+    // off makes it a cut view (`cut`), whose open value lost bytes. Such a body cannot be parsed as it is, so it is not
+    // tried.
+    const end = repairedEnd(body);
+    ctx.work += end.body.length;
     try {
-      const decoded = JSON.parse(`"${escapeControls(body)}"`);
-      return { decoded, at: sourceOffsets(body, ctx, decoded.length), unread: [] };
+      const decoded = JSON.parse(`"${escapeControls(end.body)}"`);
+      const inRepaired = sourceOffsets(end.body, ctx, decoded.length);
+      if (end.body === body) return { decoded, at: inRepaired, unread: [], repaired };
+      const at = end.removed < 0 ? inRepaired : j => {
+        const r = inRepaired(j);
+        return r >= end.removed ? r + 1 : r;
+      };
+      repaired = { decoded, at, cut: end.lone || end.cutEscape };
+      // With no quote, the loose decode leaves no string out, and with no \u before the repaired end it decodes nothing:
+      // it is the body itself.
+      if (!end.body.includes('\\u')) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread: [], repaired };
     } catch { /* not the content of a string: its unicode escapes outside strings are decoded below */ }
   }
   ctx.work += body.length;
@@ -897,8 +916,8 @@ const decodeString = (body, ctx, read = []) => {
   for (const [from, to] of gaps) {
     if (to - from > 1 && body.slice(from, to).includes('\\')) unread.push([from, to]);
   }
-  if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread };
-  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread };
+  if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread, repaired };
+  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread, repaired };
 };
 
 /**
@@ -1065,6 +1084,27 @@ function readUnread(text, unread, level, ctx, toRoot, cut = false) {
 }
 
 /**
+ * Reads the copy decodeString decoded from `text` once its cut end was repaired (`repaired`, or null), one level down,
+ * as a view main does not read, cut inside whatever value is open at its end if half an escape or a lone backslash was
+ * cut off (#350). Main read only the loose decode of such a copy, which keeps its \" escapes, so no view held the
+ * member open at the end. The copy is read on top of what main's views may spend, as a FLAT copy is (readFlatCopy): the
+ * budget grows by what reading it spends, up to FLAT_ALLOWANCE times its length, so a copy main read within the budget
+ * is not failed closed for it (a masked JWK after a long pad, copied 3 deep and cut, spent the budget). A copy read
+ * inside another one's reading adds nothing more, so the budget stays linear in the text.
+ */
+function readRepaired(text, repaired, level, ctx, toRoot) {
+  if (repaired === null) return;
+  const outer = !ctx.repairing;
+  const allowance = outer ? FLAT_ALLOWANCE * repaired.decoded.length : 0;
+  ctx.repairing = true;
+  ctx.budget += allowance;
+  const before = ctx.work;
+  readNested(repaired.decoded, level, ctx, j => toRoot(repaired.at(j)), UNREAD, repaired.cut ? cutOf(text, repaired.decoded) : 0);
+  ctx.budget -= Math.max(0, allowance - (ctx.work - before));
+  if (outer) ctx.repairing = false;
+}
+
+/**
  * The JSON string literal whose opening quote is at `start`: where it ends (its closing quote, or the end of
  * the text or of a line, for a string cut off there, as Redactor writes a truncated body) and its content. A
  * backslash always takes the next character with it, so no run of backslashes is counted. A raw line break
@@ -1104,6 +1144,27 @@ function readLiteral(text, start, ctx, value = false) {
 }
 
 /**
+ * `body`, the end of a text that may be cut off there, repaired as Redactor leaves such a cut: a lone backslash at the
+ * end is dropped (`lone`), then a last \u within six characters of the end without four hex digits after it, and an even
+ * run of backslashes before it, is dropped if it has zero to three hex digits and nothing after them, half an escape
+ * (`cutEscape`), else (\uZ, \u00G) only its backslash is, at index `removed` (-1 if none). Only the end is repaired: a
+ * malformed escape before it still leaves the text undecodable.
+ */
+const repairedEnd = body => {
+  let out = body;
+  const lone = backslashesBefore(out, out.length) % 2 === 1;
+  if (lone) out = out.slice(0, -1);
+  const partial = out.lastIndexOf('\\u');
+  if (partial < 0 || partial <= out.length - 6 || backslashesBefore(out, partial) % 2 !== 0
+      || /^[0-9A-Fa-f]{4}/.test(out.slice(partial + 2))) {
+    return { body: out, lone, cutEscape: false, removed: -1 };
+  }
+  const cutEscape = /^[0-9A-Fa-f]{0,3}$/.test(out.slice(partial + 2));
+  return cutEscape ? { body: out.slice(0, partial), lone, cutEscape, removed: -1 }
+    : { body: out.slice(0, partial) + out.slice(partial + 1), lone, cutEscape, removed: partial };
+};
+
+/**
  * A literal's content decoded with JSON.parse, or null if it does not decode. A string cut off by the end of
  * the text may end in half an escape, which is dropped first, as Redactor leaves such a cut. A malformed last \u
  * within six characters of the end (\uZ, \u00G) loses only its backslash, as the loose decode repairs the same
@@ -1115,14 +1176,13 @@ function decodeLiteral(literal, ctx) {
   // With no backslash (readLiteral saw none) and no quote, JSON.parse would return the content as it is.
   if (!literal.escaped) return body;
   if (!literal.terminated) {
-    if (backslashesBefore(body, body.length) % 2 === 1) body = body.slice(0, -1);
-    const partial = body.lastIndexOf('\\u');
-    if (partial >= 0 && partial > body.length - 6 && backslashesBefore(body, partial) % 2 === 0
-        && !/^[0-9A-Fa-f]{4}/.test(body.slice(partial + 2))) {
-      // Half an escape cut off loses bytes of the value open there (halfEscapeAt): the literal is judged unmasked.
-      literal.cutEscape = /^[0-9A-Fa-f]{0,3}$/.test(body.slice(partial + 2));
-      body = literal.cutEscape ? body.slice(0, partial) : body.slice(0, partial) + body.slice(partial + 1);
-    }
+    const end = repairedEnd(body);
+    // Half an escape cut off loses bytes of the value open there (halfEscapeAt): the literal is judged unmasked. So
+    // does a lone backslash (`lone`), unless the view's source spells it as an escaped one before half a \u escape
+    // (scanJson's pending).
+    if (end.cutEscape) literal.cutEscape = true;
+    if (end.lone) literal.lone = true;
+    body = end.body;
   }
   ctx.work += body.length;
   try {
@@ -1347,7 +1407,7 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
   const below = mode === MAIN ? MAIN : UNREAD;
   // A FLAT copy is read in place only (see FLAT).
   if (!decoded.includes('\\') || mode === FLAT) return;
-  const { decoded: unescaped, at: inDecoded, unread } = decodeString(decoded, ctx, read);
+  const { decoded: unescaped, at: inDecoded, unread, repaired } = decodeString(decoded, ctx, read);
   if (unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'))) {
     if (level >= MAX_LEVELS) {
       failClosed(ctx, 'JSON nested past 17 levels', decoded);
@@ -1355,6 +1415,7 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
     }
     readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped) : 0);
   }
+  readRepaired(decoded, repaired, level + 1, ctx, toRoot);
   // Only a string with a quote has strings to leave unread, and one at the level cap has failed closed above.
   readUnread(decoded, unread, level + 1, ctx, toRoot, cut !== 0);
 }
@@ -1379,25 +1440,32 @@ const escapedLineBreak = (root, lineBreak) => {
 };
 
 /**
- * The cut a view carries (readNested): none; CUT_ESCAPED, a cut after a lone backslash its source spells as an escaped
- * one (\\ before the half escape), where Redactor matches no value and keeps the text (automated review on b9d6038);
- * or CUT, any other. Each finds at least what the one before it finds.
+ * The cut a view carries (readNested): none; CUT_ESCAPED, a cut of half a \u escape after a lone backslash its source
+ * spells as an escaped one (\\ before the half escape), where Redactor matches no value and keeps the text (automated
+ * review on b9d6038); CUT_UNICODE, the same with the backslash spelled as a \u005c escape, where Redactor masks a
+ * secret field's value but its JWK search matches no member and keeps the text (automated review on 73e4411); or CUT,
+ * any other, a lone backslash cut off after an escaped one among them, which Redactor masks with the value (#350). Each
+ * finds at least what the one before it finds.
  */
 const CUT_ESCAPED = 1;
-const CUT = 2;
+const CUT_UNICODE = 2;
+const CUT = 3;
 
 /**
- * The cut a view `decoded` from `source` carries, where `source` was cut at its end: CUT_ESCAPED if the view ends in a
- * lone backslash that `source` spells as an escaped one, else CUT. A backslash spelled as a \u005c escape is CUT,
- * which Redactor masks (automated review on 73e4411). Only the end of each text is read, at each level as its view is
- * made, so no offsets are mapped back (automated review on d79595f: mapping them spent the budget at depth 3).
+ * The cut a view `decoded` from `source` carries, where `source` was cut at its end: CUT_ESCAPED or CUT_UNICODE if the
+ * view ends in a lone backslash that `source` spells as an escaped one or as a \u005c escape before half a \u escape,
+ * else CUT. Only the end of each text is read, at each level as its view is made, so no offsets are mapped back
+ * (automated review on d79595f: mapping them spent the budget at depth 3).
  */
 const cutOf = (source, decoded) => {
   if (backslashesBefore(decoded, decoded.length) % 2 === 0) return CUT;
   const half = halfEscapeAt(source);
-  const end = half >= 0 ? half : source.length - (backslashesBefore(source, source.length) % 2);
+  // A lone backslash cut off the source after the escaped one, with no half \u escape, Redactor masks with the value
+  // (#350). A source that ends in an escaped backslash itself passes on the cut of the text it was decoded from.
+  if (half < 0 && backslashesBefore(source, source.length) % 2 === 1) return CUT;
+  const end = half >= 0 ? half : source.length;
   const unicode = /\\u005[cC]$/.test(source.slice(Math.max(0, end - 6), end)) && backslashesBefore(source, end - 6) % 2 === 0;
-  return unicode ? CUT : CUT_ESCAPED;
+  return unicode ? CUT_UNICODE : CUT_ESCAPED;
 };
 
 /** The line breaks Java's regex dot does not match: Redactor's escape takes any character but these. */
@@ -1477,9 +1545,12 @@ function unmaskedPrivateFields(text, ctx, toRoot, cut) {
         value = content;
       }
       ctx.work += content.length;
-      // In a view cut inside a value (readNested), a value open at its end lost bytes there. One that ends in a lone
-      // backslash Redactor does not match (automated review on b9d6038), so the loop above stops before it, at a mask.
-      const open = cut && end >= text.length;
+      // In a view cut inside a value (readNested), a value open at its end lost bytes there. The loop above stops before a
+      // lone backslash at the end, which lost the rest of its escape too (#350), unless the view's source spells it as an
+      // escaped one, or as a \u005c escape, before half a \u escape: there Redactor's JWK search matches no member
+      // (automated reviews on b9d6038 and 73e4411), and the value is read up to it.
+      const open = (cut && end >= text.length)
+        || (end === text.length - 1 && text[end] === '\\' && cut !== CUT_ESCAPED && cut !== CUT_UNICODE);
       if (open || (value !== MASK && value !== '')) fields.push([at, text.slice(at, end + 1), 'JSON secret field']);
     } else if (/^(?:-?\d|true\b|false\b)/.test(text.slice(v, v + 6))) {
       fields.push([at, text.slice(at, v + 40), 'JSON secret field']);
@@ -1647,12 +1718,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const view = views.find(v => v.read !== null && v.mode <= mode && v.cut >= cut && v.decoded === rest);
     return view ? view.read : null;
   };
-  // Whether a literal's value lost bytes to a cut: half an escape decodeLiteral cut off its end, or, in a view cut inside
-  // a value (readNested), the literal is still open at the view's end, unless the view ends in a lone backslash its
-  // source spells as an escaped one (CUT_ESCAPED).
+  // Whether a literal's value lost bytes to a cut: half an escape or a lone backslash decodeLiteral cut off its end at the
+  // view's, or, in a view cut inside a value (readNested), the literal is still open at the view's end; in either, unless
+  // the view ends in a lone backslash its source spells as an escaped one before half a \u escape (CUT_ESCAPED) (#350).
   const pending = literal => literal.cutEscape === true
+    || (literal.lone === true && literal.end >= text.length && cut !== CUT_ESCAPED)
     || (cut !== 0 && !literal.terminated && literal.end >= text.length
-      && (cut === CUT || backslashesBefore(text, text.length) % 2 === 0));
+      && (cut >= CUT_UNICODE || backslashesBefore(text, text.length) % 2 === 0));
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
@@ -1813,7 +1885,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
 function textLeaks(text, level) {
   // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
   // read: the views readNested has read, by level and span in the text.
-  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text, strictNames: new Set() };
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text, strictNames: new Set(), repairing: false };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {
@@ -1831,8 +1903,9 @@ function textLeaks(text, level) {
   // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too, loosely
   // when quoted prose around it makes it no string's content (decodeString).
   if (text.includes('\\')) {
-    const { decoded, at, unread } = decodeString(text, ctx, read);
+    const { decoded, at, unread, repaired } = decodeString(text, ctx, read);
     if (decoded !== text) readNested(decoded, level + 1, ctx, at);
+    readRepaired(text, repaired, level + 1, ctx, j => j);
     readUnread(text, unread, level + 1, ctx, j => j);
   }
   // Where each kty name starts in the text is mapped back only at a level with two or more of them: with fewer,

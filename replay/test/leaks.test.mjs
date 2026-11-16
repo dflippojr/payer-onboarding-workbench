@@ -986,6 +986,31 @@ test('flags an escaped JWK copy that starts the text and is cut off mid-escape, 
       }
     }
   }
+  // The issue's own form: a masked k with no kty, closed, then a malformed \u. Redactor keeps it.
+  assertAccepted('{\\"k\\":\\"[REDACTED]\\"\\uZ');
+});
+test('reads a masked JWK after a long pad, copied 3 deep at the start and cut mid-escape, within the scan budget (#350)', () => {
+  // Reading the cut copy costs what reading it uncut costs, on top of what main read of it. Without its own allowance
+  // (readRepaired), the masked form failed closed with a 1,270-character pad, which main accepts at every pad.
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  for (const close of ['"}', '']) {
+    for (const tail of ['\\', '\\u005', '\\uZ']) {
+      const nest = (k, pad) => {
+        let text = `{"pad":"${'x'.repeat(pad)}","kty":"oct","k":"${k}${close}`;
+        for (let i = 0; i < 3; i++) text = copy(text);
+        return text + tail;
+      };
+      for (const pad of [2_000, 20_000]) {
+        // Closed, the masked copy is Redactor's; still open at the cut, it is not, and is flagged for its value.
+        const masked = findTextLeaks(nest(MASK, pad));
+        if (close) assert.deepEqual(masked, [], `${tail} ${pad}`);
+        else assert.deepEqual(masked.map(leak => leak.check), ['JSON secret field'], `${tail} ${pad}`);
+        const leaked = findTextLeaks(nest('FAKE_JWK_K_350', pad));
+        assert.ok(leaked.some(leak => leak.check === 'JSON secret field'), `${close} ${tail} ${pad}`);
+        assert.ok(!leaked.some(leak => leak.check === 'scan budget spent'), `${close} ${tail} ${pad}`);
+      }
+    }
+  }
 });
 test('flags a plain JWK private member whose open value ends the text in a lone backslash, as Redactor masks it (#350)', () => {
   // The masked or empty value of a private member, still open at the end of the text, then one backslash: half an
