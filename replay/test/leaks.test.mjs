@@ -2203,13 +2203,13 @@ test('pins the verdicts on the generic-field separator forms #351 resolved (#348
 
 test('flags a generic secret field whose separator the Redactor reads as whitespace only in its views, through all three entry points (#348)', () => {
   // A secret-named field whose separator before the colon only the Redactor's view readings read as whitespace, in plain
-  // JSON and in escaped copies, with and without a stray quote and a raw line break before it. The Redactor masks 6,063
-  // of these texts and keeps 1,278, among them the forms where that whitespace is spelled another way or only a deeper
+  // JSON and in escaped copies, with and without a stray quote and a raw line break before it. The Redactor masks 6,111
+  // of these texts and keeps 1,326, among them the forms where that whitespace is spelled another way or only a deeper
   // level would read it, no value starts after it, a value runs into the next member or ends in a cut. RedactorTest
   // checks the committed outputs. The scanner must flag exactly the texts the Redactor masks, at every entry point, and
   // accept every output.
   const pairs = redactorGrid('generic-separator-miss-grid');
-  assert.equal(pairs.length, 7_341);
+  assert.equal(pairs.length, 7_437);
   const wrong = separatorGridWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
