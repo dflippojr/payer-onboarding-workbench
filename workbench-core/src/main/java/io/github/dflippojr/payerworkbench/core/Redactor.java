@@ -411,7 +411,9 @@ public final class Redactor {
             if (mayHold && discovery.stopped) {
                 return MASK;
             }
-            if (WholeTextGuard.mayHoldPrivateMember(out) && !WholeTextGuard.readsMasked(out)) {
+            // Whenever the input may hold one, not only while the output still names one: passes that mask a JWK whole
+            // take its names with it, and the output must still read completely.
+            if ((mayHold || WholeTextGuard.mayHoldPrivateMember(out)) && !WholeTextGuard.readsMasked(out)) {
                 return MASK;
             }
             return out;

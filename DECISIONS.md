@@ -178,6 +178,8 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
   text whose decoding still changes past the levels searched is undecided and the rule applies to it. Other texts are not
   changed by it.
 - The Redactor checks its input and its output: the output must read completely with every JWK private member masked.
+  The output check applies whenever the input may hold a private member, even when the passes took the JWK's names
+  with them.
   Its earlier passes stay as a second line (`redactParts`), and tests still pin what they do on their own.
 - The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,
   allowlist or threshold changed.
