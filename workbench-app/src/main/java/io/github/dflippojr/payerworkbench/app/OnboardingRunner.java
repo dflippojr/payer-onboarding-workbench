@@ -42,7 +42,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -50,7 +49,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
-import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -124,12 +122,6 @@ public class OnboardingRunner {
 
     private static final Logger LOG = LoggerFactory.getLogger(OnboardingRunner.class);
 
-    /**
-     * Turns a step's details into the JSON form (maps, lists, strings, numbers, booleans) before {@link StepResult}
-     * redacts them: {@code Redactor.redactTree} keeps only that form and turns any other object, such as the records the
-     * steps put there, into text (#360). The JSON a run is served as stays the same.
-     */
-    private static final JsonMapper DETAILS_JSON = JsonMapper.builder().build();
 
     private final SyntheticPayers payers;
     private final SampleCatalog samples;
@@ -560,7 +552,7 @@ public class OnboardingRunner {
                 audit.authType = record.authType();
                 audit.overrides = applied.keySet().stream().map(io.github.dflippojr.payerworkbench.core.AuditEvent.OverrideField::valueOf).toList();
             }
-            details.put("connection", RedactedConnection.of(record));
+            details.put("connection", StepDetails.of(RedactedConnection.of(record)));
             details.put("edited", applied);
             details.put("credential", record.authType() == AuthType.NONE ? "none (no authentication)"
                     : credentials.peek(record.credentialRef()).isPresent()
@@ -591,7 +583,7 @@ public class OnboardingRunner {
                 if (!events.isEmpty()) {
                     discovery = ExchangeRecorder.adapt(events.getLast());
                 }
-                details.put("exchanges", exchangeViews(PayerCallPhase.DISCOVERY));
+                details.put("exchanges", StepDetails.exchanges(exchangeViews(PayerCallPhase.DISCOVERY)));
             }
             // The SDK maps a null entry to null rather than rejecting it.
             if (services == null || services.stream().anyMatch(Objects::isNull)) {
@@ -691,7 +683,7 @@ public class OnboardingRunner {
                                 + ") for aud " + serviceUrl());
             }
             if (clientAssertion != null) {
-                details.put("clientAssertionClaims", clientAssertion);
+                details.put("clientAssertionClaims", StepDetails.of(clientAssertion));
             }
             return clientCredentials(details);
         }
@@ -718,7 +710,7 @@ public class OnboardingRunner {
 
         private Outcome clientCredentials(Map<String, Object> details) {
             List<PayerExchange> tokens = recorder.events(PayerCallPhase.TOKEN);
-            details.put("exchanges", exchangeViews(PayerCallPhase.TOKEN));
+            details.put("exchanges", StepDetails.exchanges(exchangeViews(PayerCallPhase.TOKEN)));
             if (tokens.isEmpty()) {
                 return Outcome.fail("The SDK could not authenticate: " + failureMessage());
             }
@@ -790,7 +782,7 @@ public class OnboardingRunner {
         private Outcome sendHook(Map<String, Object> details) {
             details.put("sample", sample.id());
             details.put("prefetchVariant", prefetchKeys.contains("coverageBundle") ? "PAYER_B" : "STANDARD");
-            details.put("exchanges", exchangeViews(PayerCallPhase.HOOK));
+            details.put("exchanges", StepDetails.exchanges(exchangeViews(PayerCallPhase.HOOK)));
             if (callFailure instanceof PayerCallException e) {
                 return callFailed("Hook call to " + serviceId, e);
             }
@@ -1092,10 +1084,11 @@ public class OnboardingRunner {
         }
     }
 
-    private static Map<Severity, Long> counts(List<Finding> findings) {
-        Map<Severity, Long> counts = new EnumMap<>(Severity.class);
+    /** Findings per severity, by the severity's name, in severity order: the JSON form step details hold. */
+    private static Map<String, Long> counts(List<Finding> findings) {
+        Map<String, Long> counts = new LinkedHashMap<>();
         for (Severity severity : Severity.values()) {
-            counts.put(severity, findings.stream().filter(f -> f.severity() == severity).count());
+            counts.put(severity.name(), findings.stream().filter(f -> f.severity() == severity).count());
         }
         return counts;
     }
@@ -1193,24 +1186,16 @@ public class OnboardingRunner {
     }
 
     /**
-     * {@code details} in the JSON form a run is served as; see {@link #DETAILS_JSON}. The conversion runs caller code (a
-     * record's accessors, a key's string form) before {@link StepResult} redacts anything, so it sits inside the
-     * outermost fail-closed boundary (#360): whatever it throws, the details become one masked entry beside the status
-     * the runner set, and the exception, its message and its cause go nowhere, neither out nor to a log.
+     * A step's details, redacted, in the JSON form a run is served as. Snapshot first (#360, owner amendment of
+     * 2026-11-16): {@link Redactor#redactTree} copies the details once into plain JDK data before anything else, reading
+     * each caller object once inside its fail-closed boundary, and redacts that copy; nothing serialises the originals,
+     * so a JWK context only an original carries (a key's type) is worked out from it while it is copied. The steps put
+     * only that form into their details ({@link StepDetails}), so it comes out with the same shape. Details that cannot be
+     * read at all become one masked entry.
      */
-    @SuppressWarnings({"unchecked", "java:S1181"})
+    @SuppressWarnings("unchecked")
     static Map<String, Object> asJson(Map<String, Object> details) {
-        Object status = null;
-        try {
-            status = details.get("status");
-            return DETAILS_JSON.convertValue(details, LinkedHashMap.class);
-        } catch (Throwable e) {
-            Map<String, Object> masked = new LinkedHashMap<>();
-            masked.put("details", Redactor.MASK);
-            if (status instanceof String s) {
-                masked.put("status", s);
-            }
-            return masked;
-        }
+        return Redactor.redactTree(details) instanceof Map<?, ?> map ? (Map<String, Object>) map
+                : Map.of("details", Redactor.MASK);
     }
 }
