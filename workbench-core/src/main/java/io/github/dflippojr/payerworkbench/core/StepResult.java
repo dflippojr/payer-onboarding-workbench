@@ -32,13 +32,22 @@ public record StepResult(
         String summary,
         Map<String, Object> details
 ) {
+    @SuppressWarnings("java:S1181") // The outermost boundary (#360): any Throwable masks the step's text.
     public StepResult {
+        // These three name a missing parameter only, in a fixed message; they read no caller text.
         Objects.requireNonNull(stepId, "stepId");
         Objects.requireNonNull(startedAt, "startedAt");
         Objects.requireNonNull(elapsed, "elapsed");
-        stepId = Redactor.redact(stepId);
-        summary = Redactor.redact(summary);
-        details = details == null ? Map.of() : redactedDetails(details);
+        try {
+            stepId = Redactor.redact(stepId);
+            summary = Redactor.redact(summary);
+            details = details == null ? Map.of() : redactedDetails(details);
+        } catch (Throwable e) {
+            // The outermost fail-closed boundary: every text is masked, and nothing of the exception is kept.
+            stepId = Redactor.MASK;
+            summary = Redactor.MASK;
+            details = Map.of("details", Redactor.MASK);
+        }
     }
 
     /** The redacted details, or one masked entry where the details as a whole could not be read. */
