@@ -1002,6 +1002,26 @@ test('flags an escaped JWK copy that starts the text and is cut off mid-escape, 
     }
   }
 });
+test('flags an open private member cut after a lone backslash in an unread copy, at every nesting (#350, security round)', () => {
+  // An escaped JWK copy read only as an unread span, whose open masked or empty private member ends the text in a lone
+  // backslash. The unread reads dropped that backslash without keeping the cut, so the bare mask passed: 192 forms (8
+  // names x 1-4 escape layers x 3 prefixes x 2 values), missed on main at all three entry points. Redactor masks the
+  // value, backslash and all; a value closed before the backslash it keeps.
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  const nest = (text, layers) => {
+    let out = text;
+    for (let i = 0; i < layers; i++) out = copy(out);
+    return out;
+  };
+  for (const prefix of ['he said "\n', 'he said "\r\n', '"\n']) {
+    for (const name of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
+      for (let layers = 1; layers <= 4; layers++) {
+        for (const value of [MASK, '']) assertFlagged(`${prefix}${nest(`{"kty":"RSA","${name}":"${value}`, layers)}\\`);
+        for (const close of ['"', '"}']) assertAccepted(`${prefix}${nest(`{"kty":"RSA","${name}":"${MASK}${close}`, layers)}\\`);
+      }
+    }
+  }
+});
 test('reads a masked JWK after a long pad, copied 3 deep at the start and cut mid-escape, within the scan budget (#350)', () => {
   // Reading the cut copy costs what reading it uncut costs, on top of what main read of it. Without its own allowance
   // (readRepaired), the masked form failed closed with a 1,270-character pad, which main accepts at every pad.
