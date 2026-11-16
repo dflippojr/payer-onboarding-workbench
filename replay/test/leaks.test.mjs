@@ -1022,6 +1022,28 @@ test('flags an open private member cut after a lone backslash in an unread copy,
     }
   }
 });
+test('keeps a lone-backslash cut through later decodes of an unread copy, for longer odd backslash runs (#350, misses round 2)', () => {
+  // An unread JWK copy escaped 1-4 times whose open masked or empty private member ends the text in an odd run of
+  // backslashes. A cut that began with a lone backslash was read again at a later level as the escaped-backslash
+  // exception, which only half a \u escape cut off justifies, and the value went unjudged: 144 forms (runs of 5, 9 and
+  // 17 at 2, 3 and 4 layers, 8 names, 3 prefixes, 2 values) accepted at 691e1fb, flagged at 29d7191. Redactor masks
+  // every form here.
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  const nest = (text, layers) => {
+    let out = text;
+    for (let i = 0; i < layers; i++) out = copy(out);
+    return out;
+  };
+  for (const prefix of ['he said "\n', 'he said "\r\n', '"\n']) {
+    for (const name of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
+      for (let layers = 1; layers <= 4; layers++) {
+        for (const run of [1, 3, 5, 7, 9, 17]) {
+          for (const value of [MASK, '']) assertFlagged(`${prefix}${nest(`{"kty":"RSA","${name}":"${value}`, layers)}${'\\'.repeat(run)}`);
+        }
+      }
+    }
+  }
+});
 test('reads a masked JWK after a long pad, copied 3 deep at the start and cut mid-escape, within the scan budget (#350)', () => {
   // Reading the cut copy costs what reading it uncut costs, on top of what main read of it. Without its own allowance
   // (readRepaired), the masked form failed closed with a 1,270-character pad, which main accepts at every pad.
