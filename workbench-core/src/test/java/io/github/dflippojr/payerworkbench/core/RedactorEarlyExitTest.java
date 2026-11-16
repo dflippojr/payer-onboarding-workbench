@@ -378,4 +378,60 @@ class RedactorEarlyExitTest {
         assertFalse(WholeTextGuard.readsMasked(text));
         assertTrue(WholeTextGuard.readsMasked(Redactor.redact(text)));
     }
+
+    /**
+     * {@code name} with each letter spelled so that loose decoding first shows it, as a unicode escape, only
+     * {@code depth} levels down: the escape's backslash and its {@code u} are each unicode escapes chained through
+     * {@code depth} levels of escaped backslashes.
+     */
+    static String hiddenUntil(String name, int depth) {
+        StringBuilder out = new StringBuilder();
+        for (char c : name.toCharArray()) {
+            out.append(B).append("u005c".repeat(depth));
+            out.append(B).append("u005c".repeat(depth - 1)).append("u0075");
+            out.append(String.format("00%02x", (int) c));
+        }
+        return out.toString();
+    }
+
+    /**
+     * A JWK whose {@code kty} and private member names are both {@link #hiddenUntil} {@code depth}, in each enclosing text
+     * that does not read completely: after prose, before trailing text, and cut off in the private member's value.
+     */
+    static List<String> hiddenNames(List<Integer> depths, List<String> members) {
+        List<String> texts = new ArrayList<>();
+        for (int depth : depths) {
+            for (String m : members) {
+                String jwk = "{\"" + hiddenUntil("kty", depth) + "\":\"oct\",\"" + hiddenUntil(m, depth) + "\":\""
+                        + SECRET + "\"}";
+                texts.add("payer note: " + jwk);
+                texts.add(jwk + " end of note");
+                texts.add(jwk.substring(0, jwk.length() - 2));
+            }
+        }
+        return texts;
+    }
+
+    @Test
+    void treatsDecodingStillChangingAtThePrefilterBoundAsMayHoldingAPrivateMember() {
+        // Neither name shows within the levels the prefilter decodes: that is undecided, not "no JWK".
+        for (int depth : List.of(Redactor.NESTED_LEVELS + 2, Redactor.NESTED_LEVELS + 3, Redactor.NESTED_LEVELS + 4)) {
+            assertTrue(WholeTextGuard.mayHoldPrivateMember("{\"" + hiddenUntil("kty", depth) + "\":1,\""
+                    + hiddenUntil("d", depth) + "\":2}"), "depth " + depth);
+        }
+        // Decoding that no longer changes the text decides it: a lone backslash at the end holds nothing more.
+        assertFalse(WholeTextGuard.mayHoldPrivateMember("plain prose ending in a backslash " + B));
+        assertFalse(WholeTextGuard.mayHoldPrivateMember("{\"kty\":1,\"n\":2} " + B));
+    }
+
+    @Test
+    void masksTheWholeTextWhereBothNamesStayHiddenPastThePrefilterBound() {
+        // One level within the bound, as a control, and three past it; every enclosing text, every private member.
+        List<Integer> depths = List.of(Redactor.NESTED_LEVELS + 1, Redactor.NESTED_LEVELS + 2,
+                Redactor.NESTED_LEVELS + 3, Redactor.NESTED_LEVELS + 4);
+        List<String> texts = hiddenNames(depths, MEMBERS);
+        for (int i = 0; i < texts.size(); i++) {
+            assertMaskedWhole(texts.get(i), "hidden names case " + i);
+        }
+    }
 }

@@ -2247,3 +2247,28 @@ test('reads deeply nested arrays without recursion, and finds a kty and a privat
   // Escapes still left past the levels read: a kty is enough.
   assert.ok(findTextLeaks(`"kty" ${b.repeat(1 << 18)}`).some(leak => leak.check === WHOLE_TEXT));
 });
+
+// Round 1 of the security review on #361: the name in each letter of the kty and of the private member shows, as a
+// unicode escape, only `depth` levels down in loose decoding, past where the prefilter stops decoding. Decoding that
+// still changes the text there is undecided, so the whole-text rule applies, as RedactorEarlyExitTest.hiddenUntil.
+const hiddenUntil = (name, depth) => [...name].map(c => `${EB}${'u005c'.repeat(depth)}${EB}${'u005c'.repeat(depth - 1)}u0075`
+  + `00${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join('');
+const hiddenNames = (depths, members) => depths.flatMap(depth => members.flatMap(m => {
+  const jwk = `{"${hiddenUntil('kty', depth)}":"oct","${hiddenUntil(m, depth)}":"${EARLY_SECRET}"}`;
+  return [`payer note: ${jwk}`, `${jwk} end of note`, jwk.slice(0, -2)];
+}));
+
+test('flags the whole text where both names stay hidden past the prefilter bound (#361 security round 1 class)', () => {
+  // One level within the bound, as a control, and three past it; every enclosing text, every private member.
+  hiddenNames([17, 18, 19, 20], EARLY_MEMBERS).forEach((text, i) => {
+    const label = `hidden names case ${i}`;
+    assert.ok(findTextLeaks(text).some(leak => leak.check === WHOLE_TEXT), `${label}: not flagged whole`);
+    assert.ok(findTextLeaks(reportForm(text)).some(leak => leak.check === WHOLE_TEXT), `${label}: report form not flagged whole`);
+    assert.ok(findJsonLeaks({ responseBody: text }).some(leak => leak.check === WHOLE_TEXT), `${label}: field not flagged whole`);
+  });
+  assertAccepted('[REDACTED]');
+  // Decoding that no longer changes the text decides it: a lone backslash at the end holds nothing more.
+  for (const text of [`plain prose ending in a backslash ${EB}`, `{"kty":1,"n":2} ${EB}`]) {
+    assert.ok(!findTextLeaks(text).some(leak => leak.check === WHOLE_TEXT), text);
+  }
+});
