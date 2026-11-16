@@ -181,5 +181,9 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
   The output check applies whenever the input may hold a private member, even when the passes took the JWK's names
   with them.
   Its earlier passes stay as a second line (`redactParts`), and tests still pin what they do on their own.
+- Every other entry point that keeps caller text sends it through `redact` too (security round 3 on #361): map keys of any
+  type, header names, an exchange's method and URL, and a step's id. An `Authorization`-style value keeps only a
+  registered scheme word, otherwise it is masked whole, and a record that cannot be rebuilt reports its type and the
+  cause's type, not the cause's message.
 - The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,
   allowlist or threshold changed.
