@@ -379,6 +379,21 @@ class RedactorEarlyExitTest {
         assertTrue(WholeTextGuard.readsMasked(Redactor.redact(text)));
     }
 
+    @Test
+    void masksTheWholeTextWhereThePassesLeaveOutputThatNoLongerReadsCompletelyOrHoldsAJwkName() {
+        // The output check applies whenever the input may hold a private member, not only while the output still names
+        // one: here a secret-named field masks the JWK whole, taking its names, and the key block's mask writes raw line
+        // breaks into a sibling string, so the output no longer reads completely.
+        String text = "{\"private_key\":{\"kty\":\"RSA\",\"d\":\"" + SECRET + "\"},\"note\":\"-----BEGIN PRIVATE KEY-----"
+                + B + "nFAKEKEYMATERIAL" + B + "n-----END PRIVATE KEY-----\"}";
+        assertTrue(WholeTextGuard.readsCompletely(text));
+        assertFalse(WholeTextGuard.readsCompletely(Redactor.redactParts(text, null)));
+        // Not assertMaskedWhole: the key block's own header holds a letter of the secret.
+        String out = Redactor.redact(text);
+        assertFalse(out.contains(SECRET), "the secret is left");
+        assertTrue(Redactor.MASK.equals(out), "not the mask alone");
+    }
+
     /**
      * {@code name} with each letter spelled so that loose decoding first shows it, as a unicode escape, only
      * {@code depth} levels down: the escape's backslash and its {@code u} are each unicode escapes chained through
