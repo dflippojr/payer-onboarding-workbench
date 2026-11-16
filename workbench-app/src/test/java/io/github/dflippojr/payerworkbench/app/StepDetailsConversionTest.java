@@ -120,4 +120,129 @@ class StepDetailsConversionTest {
         details.put("status", "passed");
         return details;
     }
+
+    // ---- round 6 class: a key whose type carries JWK context, through a conversion that succeeds ----
+
+    /** A map key whose type declares a {@code kty} field while its text names a private member. */
+    static final class TypedKey {
+        @SuppressWarnings("unused") // Its declaration is the JWK context the key carries.
+        private final String kty = "oct";
+        private final String name;
+
+        TypedKey(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    /** The dummy secret as a JSON string value stringified {@code depth} times more. */
+    private static String secretAt(int depth) {
+        String text = SECRET;
+        for (int i = 0; i < depth; i++) {
+            text = JSON.writeValueAsString(text);
+        }
+        return text;
+    }
+
+    @Test
+    void keepsTheJwkContextAKeysTypeCarriesThroughTheRunnersConversion() {
+        List<String> misses = new ArrayList<>();
+        int total = 0;
+        for (String m : MEMBERS) {
+            for (int depth = 0; depth <= LEVELS + 1; depth++) {
+                String value = secretAt(depth);
+                Map<String, Map<String, Object>> forms = new LinkedHashMap<>();
+                Map<Object, Object> own = new LinkedHashMap<>();
+                own.put(new TypedKey(m), value);
+                forms.put("in a nested map", details("nested", own));
+                forms.put("in a map in a list", details("nested", List.of(Map.of("deep", own))));
+                Map<String, Object> top = new LinkedHashMap<>();
+                rawPut(top, new TypedKey(m), value);
+                top.put("status", "passed");
+                forms.put("in the details", top);
+                for (Map.Entry<String, Map<String, Object>> form : forms.entrySet()) {
+                    for (boolean runner : List.of(true, false)) {
+                        total++;
+                        String label = "member " + m + " depth " + depth + ", " + form.getKey()
+                                + (runner ? ", through the runner" : ", straight to the step");
+                        try {
+                            StepResult step = runner ? recorded(form.getValue())
+                                    : new StepResult("discovery", Instant.EPOCH, Duration.ZERO, true, "ok", form.getValue());
+                            if (leaks(step.details()) || leaks(JSON.writeValueAsString(step.details()))) {
+                                misses.add(label + ": a character of the secret is left");
+                            }
+                        } catch (Throwable e) {
+                            misses.add(label + ": threw " + e.getClass().getSimpleName());
+                        }
+                    }
+                }
+            }
+        }
+        int count = total;
+        assertTrue(misses.isEmpty(), () -> misses.size() + " of " + count + " cases leaked or threw, first: "
+                + misses.subList(0, Math.min(5, misses.size())));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void rawPut(Map<String, Object> map, Object key, Object value) {
+        ((Map<Object, Object>) (Map<?, ?>) map).put(key, value);
+    }
+
+    // ---- general: the runner's conversion runs each caller method at most once and keeps no caller object ----
+
+    /** A caller object that counts its calls and holds text. */
+    static final class CountingText {
+        private final Map<String, Integer> calls;
+        private final String text;
+
+        CountingText(Map<String, Integer> calls, String text) {
+            this.calls = calls;
+            this.text = text;
+        }
+
+        @Override
+        public String toString() {
+            calls.merge("toString", 1, Integer::sum);
+            return text;
+        }
+
+        @Override
+        public int hashCode() {
+            calls.merge("hashCode", 1, Integer::sum);
+            return 1;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            calls.merge("equals", 1, Integer::sum);
+            return o == this;
+        }
+    }
+
+    @Test
+    void runsEachCallerMethodOfTheDetailsAtMostOnceAndKeepsNoCallerObject() {
+        List<String> misses = new ArrayList<>();
+        for (Map.Entry<String, String> jwk : jwkTexts().entrySet()) {
+            Map<String, Integer> calls = new LinkedHashMap<>();
+            CountingText value = new CountingText(calls, jwk.getValue());
+            Map<String, Object> details = details("nested", List.of(value));
+            StepResult step = recorded(details);
+            Map<String, Integer> during = Map.copyOf(calls);
+            String shown = String.valueOf(step.details()) + step.details().hashCode() + JSON.writeValueAsString(step.details());
+            if (during.values().stream().anyMatch(n -> n > 1)) {
+                misses.add(jwk.getKey() + ": a caller method ran more than once: " + during);
+            } else if (!calls.equals(during)) {
+                misses.add(jwk.getKey() + ": a caller method ran after the conversion returned");
+            } else if (leaks(shown)) {
+                misses.add(jwk.getKey() + ": a character of the secret is left");
+            } else if (step.details().get("nested") instanceof List<?> list && list.stream().anyMatch(o -> o == value)) {
+                misses.add(jwk.getKey() + ": a caller object is kept");
+            }
+        }
+        assertTrue(misses.isEmpty(), () -> misses.size() + " cases missed, first: " + misses.subList(0, Math.min(5, misses.size())));
+    }
 }
