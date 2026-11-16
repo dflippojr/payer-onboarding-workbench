@@ -1128,9 +1128,11 @@ function readRepaired(repaired, level, ctx, toRoot, inherited = 0) {
  * backslash always takes the next character with it, so no run of backslashes is counted. A raw line break
  * inside it means the quote opens no JSON string: then only where that line break is ({aborted, end}). A
  * member's value (`value`) is read through raw line breaks to its closing quote, or to the end of the text, as
- * Redactor reads and masks it, so no part of it goes unjudged.
+ * Redactor reads and masks it, so no part of it goes unjudged. With `endsAt`, a member's value also ends at a
+ * backslash before a line break, raw or as escapeControls spells one, for which endsAt(index of that backslash) holds,
+ * as a cut value does.
  */
-function readLiteral(text, start, ctx, value = false) {
+function readLiteral(text, start, ctx, value = false, endsAt = null) {
   let i = start + 1;
   let terminated = false;
   let escaped = false;
@@ -1147,7 +1149,9 @@ function readLiteral(text, start, ctx, value = false) {
     if (c === '\\') {
       escaped = true;
       // A backslash before a line break: a value cut there, before a note appended to the cut body.
-      if (!value && (text[i + 1] === '\n' || text[i + 1] === '\r')) {
+      if (value ? endsAt !== null && (LINE_BREAKS.includes(text[i + 1]) || ESCAPED_LINE_BREAK.test(text.slice(i, i + 6)))
+          && endsAt(i)
+        : text[i + 1] === '\n' || text[i + 1] === '\r') {
         i++;
         break;
       }
@@ -1498,6 +1502,9 @@ const cutOf = (source, decoded, inherited = 0) => {
 /** The line breaks Java's regex dot does not match: Redactor's escape takes any character but these. */
 const LINE_BREAKS = '\n\r\u0085\u2028\u2029';
 
+/** A unicode escape of one of LINE_BREAKS, as escapeControls writes a raw one, from its backslash. */
+const ESCAPED_LINE_BREAK = /^\\u(?:000[aAdD]|0085|202[89])/;
+
 /**
  * Whether `text` from `from` to `to` holds a form feed the scanned text spells as a \f escape. Redactor's whitespace
  * in an escaped copy is a raw one or an escaped line break or tab, so such a form feed ends a name's whitespace there,
@@ -1533,9 +1540,17 @@ const ESCAPED_JAVA_SPACE = /\\(?:[nrt]|u00(?:0[9a-dA-D]|20))/y;
 const spelledAsJavaSpace = (i, ctx, toRoot) => {
   const from = toRoot(i);
   let r = from;
-  while (ctx.text[r] === '\\') r++;
-  ctx.work += r - from + 1;
-  return r === from || 'unrt'.includes(ctx.text[r]);
+  for (;;) {
+    while (ctx.text[r] === '\\') r++;
+    // A unicode escape of a backslash spells one more backslash of the run; any other is whitespace only when it escapes
+    // a character Java's \s takes (review on 0413e7c: an escaped backslash then a short escape is none).
+    const unicode = ctx.text[r] === 'u' && r > from ? /^u00(?:5[cC]|(0[9a-dA-D]|20))/.exec(ctx.text.slice(r, r + 5)) : null;
+    if (unicode === null || unicode[1] !== undefined) {
+      ctx.work += r - from + 1;
+      return r === from || unicode !== null || 'nrt'.includes(ctx.text[r]);
+    }
+    r += 5;
+  }
 };
 
 /**
@@ -1805,6 +1820,15 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   const spacedPending = literal => literal.cutEscape === true
     || (cut !== 0 && cut !== CUT_LONE && !literal.terminated && literal.end >= text.length
       && (cut >= CUT_UNICODE || backslashesBefore(text, text.length) % 2 === 0));
+  // Whether the scanned text spells the backslash at `j` and the line break after it as backslashes and a raw line break
+  // (readLiteral's endsAt): the form the Redactor's view of the field's level holds as a backslash before a line break.
+  const endsAtRawLineBreak = j => {
+    const from = toRoot(j);
+    let r = from;
+    while (ctx.text[r] === '\\') r++;
+    ctx.work += r - from + 1;
+    return r > from && LINE_BREAKS.includes(ctx.text[r]);
+  };
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
@@ -1830,7 +1854,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     }
     const c = text[i];
     if (c === '"' && i >= quotesFrom) {
-      const literal = readLiteral(text, i, ctx, member !== null);
+      const literal = readLiteral(text, i, ctx, member !== null, member?.viewEnds ? endsAtRawLineBreak : null);
       if (literal.aborted) {
         // A string (no member's value: that reads through line breaks) cut off at a line break: JSON in it is
         // read like any other.
@@ -1853,10 +1877,15 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       // A secret name's whitespace before its colon is read as Redactor's view readings read it, which take more than
       // JSON's (#348); its whitespace after the colon is then read the same way. Any other name's is read as before.
       let spaced = false;
+      let viewEnds = false;
       if (literal.terminated && (text[next] === '\x0B' || text[next] === '\f' || text[next] === '\\')
           && isSecretKey(decoded ?? literal.body)) {
         const colon = javaSpaceEnd(text, next, ctx, toRoot);
         if (text[colon] === ':') {
+          // At the top level, or with the separator still spelled as an escape here, only the Redactor's plain view
+          // reading finds the field. Its value ends at a backslash before a line break the scanned text spells raw
+          // (review on 0413e7c). Elsewhere its embedded reading may find the field and read on, and so does the scanner.
+          viewEnds = level === 0 || text.slice(next, colon).includes('\\');
           next = colon;
           spaced = true;
         }
@@ -1875,7 +1904,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         const o = owner();
         // In a view main does not read, jwkLeaks decides the JWKs.
         if (name === 'kty' && o.object && mode === MAIN) o.kty = true;
-        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', spaced };
+        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', spaced, viewEnds };
         // A secret name whose value the strict reading of its level consumed and found masked (unconsumedSecretNames)
         // is judged there: here its quotes may be read at two levels.
         // Mapping a position back builds offset maps, charged to the work, so only a secret name is looked up.
