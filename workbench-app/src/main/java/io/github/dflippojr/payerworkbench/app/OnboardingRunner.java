@@ -41,6 +41,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -121,6 +122,13 @@ public class OnboardingRunner {
     static final String MDC_PAYER = "payer";
 
     private static final Logger LOG = LoggerFactory.getLogger(OnboardingRunner.class);
+
+    /**
+     * Turns a step's details into the JSON form (maps, lists, strings, numbers, booleans) before {@link StepResult}
+     * redacts them: {@code Redactor.redactTree} keeps only that form and turns any other object, such as the records the
+     * steps put there, into text (#360). The JSON a run is served as stays the same.
+     */
+    private static final JsonMapper DETAILS_JSON = JsonMapper.builder().build();
 
     private final SyntheticPayers payers;
     private final SampleCatalog samples;
@@ -1014,7 +1022,8 @@ public class OnboardingRunner {
         /** Whether the step recorded an HTTP response from the payer. */
         private static boolean answered(StepResult step) {
             return step.details().get("exchanges") instanceof List<?> exchanges && exchanges.stream()
-                    .anyMatch(e -> e instanceof ExchangeView view && view.status() != HttpExchange.NO_RESPONSE);
+                    .anyMatch(e -> e instanceof Map<?, ?> view && view.get("status") instanceof Number status
+                            && status.intValue() != HttpExchange.NO_RESPONSE);
         }
 
         // ---- helpers ----
@@ -1043,7 +1052,7 @@ public class OnboardingRunner {
                 }
             }
             details.put("status", outcome.ok() ? "passed" : "failed");
-            add(new StepResult(id, startedAt, elapsed, outcome.ok(), outcome.summary(), details));
+            add(new StepResult(id, startedAt, elapsed, outcome.ok(), outcome.summary(), asJson(details)));
             return outcome.ok();
         }
 
@@ -1180,5 +1189,11 @@ public class OnboardingRunner {
                 .contactInfo(r.contactInfo())
                 .createdAt(r.createdAt())
                 .updatedAt(r.updatedAt());
+    }
+
+    /** {@code details} in the JSON form a run is served as; see {@link #DETAILS_JSON}. */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> asJson(Map<String, Object> details) {
+        return DETAILS_JSON.convertValue(details, LinkedHashMap.class);
     }
 }

@@ -21,6 +21,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -64,6 +66,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         "workbench.latency-fail=600ms",
         "workbench.slow-response-delay=900ms"})
 class OnboardingFlowTest {
+
+    private static final JsonMapper DETAILS_JSON = JsonMapper.builder().build();
 
     private static final String HEALTHY_SAMPLE = "order-sign-hospital-bed";
     /** prefetch-missing-400 only fires when the client leaves out prefetch it could have sent. */
@@ -325,10 +329,10 @@ class OnboardingFlowTest {
                 .map(Map.Entry::getValue).findFirst().orElse(List.of());
     }
 
-    @SuppressWarnings("unchecked")
+    /** A step's exchanges, read back from the JSON form step details hold (#360) into the view the UI shows. */
     private static List<ExchangeView> exchanges(OnboardingRun run, String step) {
-        return (List<ExchangeView>) run.steps().stream().filter(s -> s.stepId().equals(step))
-                .findFirst().orElseThrow().details().get("exchanges");
+        return DETAILS_JSON.convertValue(run.steps().stream().filter(s -> s.stepId().equals(step))
+                .findFirst().orElseThrow().details().get("exchanges"), new TypeReference<List<ExchangeView>>() { });
     }
 
     static Stream<Arguments> failingCalls() {
@@ -390,7 +394,8 @@ class OnboardingFlowTest {
     @Test
     void tailspinRecordsClaimsAndDiagnosesExpectedAndSentAudience() {
         OnboardingRun healthy = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of()));
-        var claims = (io.github.dflippojr.payerworkbench.core.JwtClaims) healthy.steps().get(2).details().get("clientAssertionClaims");
+        var claims = DETAILS_JSON.convertValue(healthy.steps().get(2).details().get("clientAssertionClaims"),
+                io.github.dflippojr.payerworkbench.core.JwtClaims.class);
         assertEquals(SyntheticPayers.CLIENT_ID, claims.iss());
         assertEquals(claims.iss(), claims.sub());
         assertEquals(List.of(payers.store().findByPayerIdAndEnvironment(TAILSPIN_ID, Environment.SANDBOX)

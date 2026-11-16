@@ -124,9 +124,9 @@ class FaultCopyContractTest {
         return run.steps().stream()
                 .filter(step -> step.stepId().equals(call.stepId))
                 .map(StepResult::details)
-                .map(details -> (List<ExchangeView>) details.getOrDefault("exchanges", List.of()))
+                .map(details -> (List<Map<String, Object>>) details.getOrDefault("exchanges", List.of()))
                 .flatMap(List::stream)
-                .flatMap(exchange -> exchange.responseHeaders().entrySet().stream())
+                .flatMap(exchange -> ((Map<String, List<String>>) exchange.get("responseHeaders")).entrySet().stream())
                 .anyMatch(header -> header.getKey().equalsIgnoreCase(MockPayer.FAULT_HEADER)
                         && header.getValue().contains(fault.id()));
     }
