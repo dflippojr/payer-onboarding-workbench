@@ -72,7 +72,7 @@ These are smaller calls made while building the skeleton, recorded for the same 
 
 ## Implementation choices made in #6
 
-- **Reports redact again, field by field.** `RunReport` passes every string through `Redactor` and masks any field named like a secret before any format renders. All three formats render from that one sanitized model. Since #211 `StepResult` applies the same `Redactor.redactTree` to its details when a step is recorded, so the live run (`POST /api/runs`, `GET /api/runs/{id}`, `RunStore`, the UI) shows what the reports show; the report's pass is now a second safety net. `redactTree` fails closed: a value of a type it does not walk (not a string, number, boolean, character, enum, date, duration, map, collection, array, `Optional` or record) becomes its redacted string form rather than passing through, so a later detail such as a raw JSON tree cannot carry a secret past it.
+- **Reports redact again, field by field.** `RunReport` passes every string through `Redactor` and masks any field named like a secret before any format renders. All three formats render from that one sanitized model. Since #211 `StepResult` applies the same `Redactor.redactTree` to its details when a step is recorded, so the live run (`POST /api/runs`, `GET /api/runs/{id}`, `RunStore`, the UI) shows what the reports show; the report's pass is now a second safety net. `redactTree` fails closed: a value of a type it does not walk (since #360, anything but a string, map, list or an exact JDK scalar class) becomes its redacted string form rather than passing through, so a later detail such as a raw JSON tree cannot carry a secret past it.
 - **Workbench version from `build-info`.** The Spring Boot plugin's `build-info` goal writes `META-INF/build-info.properties`; reports read `build.version` from it (falling back to the jar manifest, then `unknown`).
 - **The demo starts the app on port 0** and reads the port from the startup log, so it never collides with anything already listening. The Node demo script checks findings from the JSON report (#74), using built-in `fetch` and `JSON.parse` without additional dependencies.
 - **The demo keeps the default latency budgets**, so the `slow-response` run takes about 11 s but shows what a real slow payer looks like.
@@ -183,7 +183,15 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
   Its earlier passes stay as a second line (`redactParts`), and tests still pin what they do on their own.
 - Every other entry point that keeps caller text sends it through `redact` too (security round 3 on #361): map keys of any
   type, header names, an exchange's method and URL, and a step's id. An `Authorization`-style value keeps only a
-  registered scheme word, otherwise it is masked whole, and a record that cannot be rebuilt reports its type and the
-  cause's type, not the cause's message.
+  registered scheme word, otherwise it is masked whole.
+- `redactTree` no longer rebuilds objects (owner decision of 2026-11-16 on #360, after security round 4 on #361). It walks
+  only strings, maps and lists, read once each, and keeps as they are only an explicit set of JDK scalar classes matched
+  by exact class (boxed primitives, `BigInteger`, `BigDecimal` and the `java.time` value classes without a region zone).
+  Every other object, an enum, a record, a set, an array, an `Optional`, a custom number or temporal type, becomes its
+  string form put through `redact`, keys as well as values. That object is masked whole where it carries JWK context:
+  it sits in or under a map with a `kty` key, declares a `kty` field, or its string form may name `kty` in any spelling.
+  The walk is its own fail-closed boundary: whatever reading a value throws masks that value, and no exception or message
+  leaves; a map or list that holds itself, or sits more than 128 levels deep, is masked. Callers pass the JSON form: the
+  runner converts each step's details to it before `StepResult` redacts them, so the JSON a run is served as is unchanged.
 - The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,
   allowlist or threshold changed.
