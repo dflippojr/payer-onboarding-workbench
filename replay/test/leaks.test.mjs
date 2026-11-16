@@ -988,6 +988,19 @@ test('flags an escaped JWK copy that starts the text and is cut off mid-escape, 
   }
   // The issue's own form: a masked k with no kty, closed, then a malformed \u. Redactor keeps it.
   assertAccepted('{\\"k\\":\\"[REDACTED]\\"\\uZ');
+  // The issue's two examples, secret-named fields: flagged since #351's check that no strict reading reads the value.
+  assertFlagged('{\\"password\\":\\"FAKE_V\\u005');
+  assertFlagged('{"password":"[REDACTED]\\');
+  // An escaped backslash, then a malformed \u, ends the open value where Redactor's JWK search matches no member, as
+  // half a \u escape there does: a masked or empty value is kept, and an unmasked one is still flagged (automated review
+  // on 57c7d4b: dropping only the malformed escape's backslash left \uZ in the value, and the masked form was flagged).
+  for (const head of heads) {
+    for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+      assertAccepted(`${copy(head(MASK))}\\\\${tail}`);
+      assertAccepted(`${copy(head(''))}\\\\${tail}`);
+      assertFlagged(`${copy(head('FAKE_JWK_K_350'))}\\\\${tail}`);
+    }
+  }
 });
 test('reads a masked JWK after a long pad, copied 3 deep at the start and cut mid-escape, within the scan budget (#350)', () => {
   // Reading the cut copy costs what reading it uncut costs, on top of what main read of it. Without its own allowance

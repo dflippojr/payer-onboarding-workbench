@@ -832,19 +832,27 @@ const decodeString = (body, ctx, read = []) => {
     // off makes it a cut view (`cut`), whose open value lost bytes. Such a body cannot be parsed as it is, so it is not
     // tried.
     const end = repairedEnd(body);
-    ctx.work += end.body.length;
+    // A malformed \u after a backslash, an escaped one (\\) or one spelled \u005c, would leave that backslash before
+    // \uZ when only its own backslash is dropped, an escape again one level down: it is cut off whole, so the view ends
+    // in that lone backslash, a value Redactor's JWK search matches no member in, as after half a \u escape (cutOf;
+    // automated review on 57c7d4b).
+    const afterBackslash = end.removed >= 0 && (backslashesBefore(body, end.removed) > 0
+      || (/\\u005[cC]$/.test(body.slice(Math.max(0, end.removed - 6), end.removed))
+        && backslashesBefore(body, end.removed - 6) % 2 === 0));
+    const fixed = afterBackslash ? body.slice(0, end.removed) : end.body;
+    ctx.work += fixed.length;
     try {
-      const decoded = JSON.parse(`"${escapeControls(end.body)}"`);
-      const inRepaired = sourceOffsets(end.body, ctx, decoded.length);
-      if (end.body === body) return { decoded, at: inRepaired, unread: [], repaired };
-      const at = end.removed < 0 ? inRepaired : j => {
+      const decoded = JSON.parse(`"${escapeControls(fixed)}"`);
+      const inRepaired = sourceOffsets(fixed, ctx, decoded.length);
+      if (fixed === body) return { decoded, at: inRepaired, unread: [], repaired };
+      const at = end.removed < 0 || afterBackslash ? inRepaired : j => {
         const r = inRepaired(j);
         return r >= end.removed ? r + 1 : r;
       };
-      repaired = { decoded, at, cut: end.lone || end.cutEscape };
+      repaired = { decoded, at, cut: end.lone || end.cutEscape || afterBackslash, source: afterBackslash ? fixed : body };
       // With no quote, the loose decode leaves no string out, and with no \u before the repaired end it decodes nothing:
       // it is the body itself.
-      if (!end.body.includes('\\u')) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread: [], repaired };
+      if (!fixed.includes('\\u')) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread: [], repaired };
     } catch { /* not the content of a string: its unicode escapes outside strings are decoded below */ }
   }
   ctx.work += body.length;
@@ -1092,14 +1100,14 @@ function readUnread(text, unread, level, ctx, toRoot, cut = false) {
  * is not failed closed for it (a masked JWK after a long pad, copied 3 deep and cut, spent the budget). A copy read
  * inside another one's reading adds nothing more, so the budget stays linear in the text.
  */
-function readRepaired(text, repaired, level, ctx, toRoot) {
+function readRepaired(repaired, level, ctx, toRoot) {
   if (repaired === null) return;
   const outer = !ctx.repairing;
   const allowance = outer ? FLAT_ALLOWANCE * repaired.decoded.length : 0;
   ctx.repairing = true;
   ctx.budget += allowance;
   const before = ctx.work;
-  readNested(repaired.decoded, level, ctx, j => toRoot(repaired.at(j)), UNREAD, repaired.cut ? cutOf(text, repaired.decoded) : 0);
+  readNested(repaired.decoded, level, ctx, j => toRoot(repaired.at(j)), UNREAD, repaired.cut ? cutOf(repaired.source, repaired.decoded) : 0);
   ctx.budget -= Math.max(0, allowance - (ctx.work - before));
   if (outer) ctx.repairing = false;
 }
@@ -1415,7 +1423,7 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0) {
     }
     readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped) : 0);
   }
-  readRepaired(decoded, repaired, level + 1, ctx, toRoot);
+  readRepaired(repaired, level + 1, ctx, toRoot);
   // Only a string with a quote has strings to leave unread, and one at the level cap has failed closed above.
   readUnread(decoded, unread, level + 1, ctx, toRoot, cut !== 0);
 }
@@ -1905,7 +1913,7 @@ function textLeaks(text, level) {
   if (text.includes('\\')) {
     const { decoded, at, unread, repaired } = decodeString(text, ctx, read);
     if (decoded !== text) readNested(decoded, level + 1, ctx, at);
-    readRepaired(text, repaired, level + 1, ctx, j => j);
+    readRepaired(repaired, level + 1, ctx, j => j);
     readUnread(text, unread, level + 1, ctx, j => j);
   }
   // Where each kty name starts in the text is mapped back only at a level with two or more of them: with fewer,
