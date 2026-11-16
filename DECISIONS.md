@@ -199,5 +199,11 @@ Keep the app's JWKS endpoint on loopback HTTP: it serves only the public JWT ver
   plain member name. One outermost fail-closed boundary wraps every public entry point (the `Redactor` public methods,
   `HttpExchange` construction, and the runner's conversion of step details, its JSON conversion included): any
   `Throwable` gives a masked placeholder, and nothing of the exception is kept or logged.
+- Amendment of 2026-11-16 (owner, after security round 6 on #361): snapshot first. Inside that boundary, every public
+  entry point's first step copies caller input once into plain JDK data (strings, kept JDK scalars, new unmodifiable maps
+  and lists), reading each caller object once by identity and working out any JWK context only the original carries (a
+  key's declared `kty` field) while copying. Redaction, the runner's step-detail conversion and what records store use
+  only the copy; no caller object is called again or kept. The runner builds its own records' JSON form field by field
+  and redacts that, instead of serialising objects first.
 - The scanner's reading is its own code and shares nothing with the Redactor's `WholeTextGuard`. No other scanner rule,
   allowlist or threshold changed.
