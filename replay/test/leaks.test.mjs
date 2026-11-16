@@ -2213,12 +2213,13 @@ test('flags a generic secret field whose separator the Redactor reads as whitesp
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
-test('ends such a field\'s value where the Redactor does before a cut note, at the top level and in its report form (#348)', () => {
-  // Review on 0413e7c: the same fields at the top level, whose value ends in a cut before a note. Each text's report form
-  // is a row of its own, since the Redactor reads it differently: it masks 99 of these texts and keeps 45. The text and
-  // the JSON field entry points must match its verdict on each row, and every output must be accepted.
+test('ends such a field\'s value where the Redactor does before a cut note, at the top level, in its report form and in escaped copies (#348)', () => {
+  // Review on 0413e7c: the same fields whose value ends in a cut before a note, at the top level (each text's report
+  // form a row of its own, since the Redactor reads it differently) and in escaped copies with the cut's line break
+  // spelled several ways. The Redactor masks 369 of these texts and keeps 180. The text and the JSON field entry points
+  // must match its verdict on each row, and every output must be accepted.
   const pairs = redactorGrid('generic-separator-note-grid');
-  assert.equal(pairs.length, 144);
+  assert.equal(pairs.length, 549);
   const wrong = [];
   for (const [input, out] of pairs) {
     const masked = out !== input;
