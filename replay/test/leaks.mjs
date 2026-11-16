@@ -2048,7 +2048,7 @@ export function findTextLeaks(text) {
 /**
  * Walks parsed JSON for secret-named fields and sensitive headers whose values are not
  * masked. String values that are themselves JSON (recorded request/response bodies)
- * are walked too, up to the levels the text scan reads. A header list under a *headers map
+ * are walked too, up to the levels the text scan reads, and so is every property name. A header list under a *headers map
  * is left to the sensitive-header check.
  */
 export function findJsonLeaks(value, path = '$') {
@@ -2075,6 +2075,9 @@ export function findJsonLeaks(value, path = '$') {
     if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${p}[${i}]`, false, level)); return; }
     if (!v || typeof v !== 'object') return;
     for (const [k, x] of Object.entries(v)) {
+      // The name is text at this level too: JSON or prose serialized into it is read as a string value is, the
+      // whole-text rule included, before its value.
+      walk(k, `${p}.<name>`, false, level);
       const key = k.toLowerCase();
       // Redactor.redactTree masks a header-named list item by item (authorization: ["Bearer [REDACTED]"]).
       const maskedHeaderList = SENSITIVE_HEADERS.has(key) && Array.isArray(x)

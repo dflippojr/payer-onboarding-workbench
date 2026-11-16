@@ -359,11 +359,22 @@ test('reads every property name of a parsed object as text at its level, as a st
       const form = { [`payer note: ${nestedIn(leaked(m), depth)}`]: 1 };
       assert.ok(findJsonLeaks(form).some(leak => leak.check === WHOLE_TEXT), `member ${m}, prose, depth ${depth}: not flagged whole`);
     }
-    // Masked, within the levels read: accepted, so reading names adds no flag of its own.
+    // Masked, within the levels read (the serialized form adds one): accepted, so reading names adds no flag of its own.
     for (let depth = 0; depth <= 14; depth++) {
       forms(nestedIn(masked(m), depth)).forEach((form, f) => {
+        if (f === 2 && depth === 14) return;
         assert.deepEqual(findJsonLeaks(form), [], `member ${m}, masked, depth ${depth}, form ${f}`);
       });
+    }
+    // At the level bound and past it a name reads as a value at the same place does, masked or not.
+    for (let depth = 12; depth <= 17; depth++) {
+      for (const jwk of [leaked(m), masked(m)]) {
+        const name = nestedIn(jwk, depth);
+        const checks = v => findJsonLeaks(v).map(leak => leak.check);
+        assert.deepEqual(checks({ [name]: 'x' }), checks({ v: name }), `member ${m}, depth ${depth}: name and value differ`);
+        assert.deepEqual(checks({ responseBody: JSON.stringify({ [name]: 'x' }) }), checks({ responseBody: JSON.stringify({ v: name }) }),
+          `member ${m}, depth ${depth}, serialized: name and value differ`);
+      }
     }
   }
   // Ordinary names are untouched.
