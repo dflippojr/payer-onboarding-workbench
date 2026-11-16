@@ -1783,7 +1783,7 @@ class RedactorTest {
         // cut before a note, each also in its report form, which the Redactor reads differently. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.of("generic-separator-pin-grid", new int[] {48, 9},
-                "generic-separator-miss-grid", new int[] {5847, 864}, "generic-separator-note-grid", new int[] {369, 180});
+                "generic-separator-miss-grid", new int[] {6063, 1278}, "generic-separator-note-grid", new int[] {369, 180});
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
             int masked = 0;
