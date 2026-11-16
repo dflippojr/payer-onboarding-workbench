@@ -1516,6 +1516,54 @@ const escapedFormFeed = (text, from, to, ctx, toRoot) => {
   return false;
 };
 
+/** Java's \s, ASCII only, as Redactor's patterns read whitespace. */
+const isJavaSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\x0B' || c === '\f';
+
+/**
+ * An escape of a view that Redactor's view readings read as whitespace there: an escaped line break or tab, as its
+ * EMBEDDED_SPACE takes, or a unicode escape of a character Java's \s takes, which its view decodes at the name's level.
+ */
+const ESCAPED_JAVA_SPACE = /\\(?:[nrt]|u00(?:0[9a-dA-D]|20))/y;
+
+/**
+ * Whether the scanned text spells the whitespace at `i` in `text`, a view, as Redactor's view readings read it: raw, or
+ * after backslashes as a unicode escape or an escaped line break or tab. Any other short escape, or a backslash before
+ * a raw character (which JSON.parse here reads only once escapeControls has escaped it), is no whitespace there.
+ */
+const spelledAsJavaSpace = (i, ctx, toRoot) => {
+  const from = toRoot(i);
+  let r = from;
+  while (ctx.text[r] === '\\') r++;
+  ctx.work += r - from + 1;
+  return r === from || 'unrt'.includes(ctx.text[r]);
+};
+
+/**
+ * Where the whitespace after `from` in `text`, a view, ends, as Redactor's view readings read a secret field's whitespace
+ * (#348): Java's \s, or an escape ESCAPED_JAVA_SPACE takes, each spelled as spelledAsJavaSpace says. The characters
+ * read are charged to the work.
+ */
+const javaSpaceEnd = (text, from, ctx, toRoot) => {
+  let i = from;
+  while (i < text.length) {
+    let end = i + 1;
+    if (text[i] === '\\') {
+      ESCAPED_JAVA_SPACE.lastIndex = i;
+      if (!ESCAPED_JAVA_SPACE.test(text)) break;
+      end = ESCAPED_JAVA_SPACE.lastIndex;
+    } else if (!isJavaSpace(text[i])) {
+      break;
+    }
+    if (!spelledAsJavaSpace(i, ctx, toRoot)) break;
+    i = end;
+  }
+  ctx.work += i - from;
+  return i;
+};
+
+/** The start of a value Redactor's view readings read after a field's colon and whitespace (VIEW_JSON_FIELD). */
+const VIEW_VALUE_START = /^(?:["{[]|-?\d|true\b|false\b)/;
+
 /** A name with its \u escapes decoded. */
 const decodedName = name => name.replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
 
@@ -1752,6 +1800,11 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     || (literal.lone === true && literal.end >= text.length && cut !== CUT_ESCAPED)
     || (cut !== 0 && !literal.terminated && literal.end >= text.length
       && (cut >= CUT_UNICODE || backslashesBefore(text, text.length) % 2 === 0));
+  // pending, for a field read with Redactor's view whitespace: a lone backslash cut off, here or at a level above
+  // (CUT_LONE), loses nothing its view readings read (#348).
+  const spacedPending = literal => literal.cutEscape === true
+    || (cut !== 0 && cut !== CUT_LONE && !literal.terminated && literal.end >= text.length
+      && (cut >= CUT_UNICODE || backslashesBefore(text, text.length) % 2 === 0));
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
@@ -1797,6 +1850,17 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       let next = literal.end + 1;
       while (next < text.length && isSpace(text[next])) next++;
       ctx.work += next - literal.end;
+      // A secret name's whitespace before its colon is read as Redactor's view readings read it, which take more than
+      // JSON's (#348); its whitespace after the colon is then read the same way. Any other name's is read as before.
+      let spaced = false;
+      if (literal.terminated && (text[next] === '\x0B' || text[next] === '\f' || text[next] === '\\')
+          && isSecretKey(decoded ?? literal.body)) {
+        const colon = javaSpaceEnd(text, next, ctx, toRoot);
+        if (text[colon] === ':') {
+          next = colon;
+          spaced = true;
+        }
+      }
       if (literal.terminated && text[next] === ':') {
         // A value with a colon after it is still the member's value (Redactor masks it and keeps the colon).
         if (member) {
@@ -1811,7 +1875,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         const o = owner();
         // In a view main does not read, jwkLeaks decides the JWKs.
         if (name === 'kty' && o.object && mode === MAIN) o.kty = true;
-        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\' };
+        member = { name, owner: o, malformed: decoded === null || text[literal.start - 1] === '\\', spaced };
         // A secret name whose value the strict reading of its level consumed and found masked (unconsumedSecretNames)
         // is judged there: here its quotes may be read at two levels.
         // Mapping a position back builds offset maps, charged to the work, so only a secret name is looked up.
@@ -1819,13 +1883,23 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         // A name is a string too: JSON serialized into one is read like any other.
         nested(decoded, literal);
         i = next + 1;
+        if (spaced && member) {
+          // Redactor's view readings mask such a field's value only where one starts after that whitespace: a string,
+          // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
+          i = javaSpaceEnd(text, i, ctx, toRoot);
+          if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) member = null;
+        }
         continue;
       }
       const stray = literal.terminated && !endsValue(text[next]);
       if (member) {
         member.owner.values.push({
           name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1),
-          cutShort: (literal.terminated && !endsValue(text[literal.end + 1])) || pending(literal),
+          // A field read with Redactor's view whitespace (spaced) is one its fail-closed rule never masks to the end of a
+          // string: its view readings end the value at its closing quote, whatever follows, or before a lone backslash
+          // cut off at the end, and so does the scanner (#348). The fail-closed check reads such a name on its own.
+          cutShort: member.spaced ? spacedPending(literal)
+            : (literal.terminated && !endsValue(text[literal.end + 1])) || pending(literal),
         });
         member = null;
       } else if (stack.length > 0 && stack[stack.length - 1].list) {
