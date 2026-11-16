@@ -1129,8 +1129,8 @@ function readRepaired(repaired, level, ctx, toRoot, inherited = 0) {
  * inside it means the quote opens no JSON string: then only where that line break is ({aborted, end}). A
  * member's value (`value`) is read through raw line breaks to its closing quote, or to the end of the text, as
  * Redactor reads and masks it, so no part of it goes unjudged. With `endsAt`, a member's value also ends at a
- * backslash before a line break, raw or as escapeControls spells one, for which endsAt(index of that backslash) holds,
- * as a cut value does.
+ * backslash before a line break, raw or as escapeControls spells one, or at a bare line break, for which endsAt(its
+ * index) holds, as a cut value does.
  */
 function readLiteral(text, start, ctx, value = false, endsAt = null) {
   let i = start + 1;
@@ -1142,6 +1142,8 @@ function readLiteral(text, start, ctx, value = false, endsAt = null) {
       terminated = true;
       break;
     }
+    // A line break a level above spelled after a backslash, which escapeControls and decoding left bare here.
+    if (value && endsAt !== null && LINE_BREAKS.includes(c) && endsAt(i)) break;
     if ((c === '\n' || c === '\r') && !value) {
       ctx.work += i - start;
       return { aborted: true, start, end: i, terminated: false, escaped, body: text.slice(start + 1, i) };
@@ -1502,6 +1504,40 @@ const cutOf = (source, decoded, inherited = 0) => {
 /** The line breaks Java's regex dot does not match: Redactor's escape takes any character but these. */
 const LINE_BREAKS = '\n\r\u0085\u2028\u2029';
 
+/**
+ * The Redactor's view, `depth` levels down, of the backslash run in `text` from `from` and what follows it, as its
+ * readNestedLevels builds each view: unicode escapes ending an odd backslash run decoded (an escaped backslash or quote
+ * to its escape), then, for each level below the first, one level of escaped backslashes and quotes taken off. Only the
+ * run and what follows it are read, and charged to the work; null when the run reaches the end of the text or is longer
+ * than any spelling the Redactor's 17 levels read (#348, review on 0413e7c).
+ */
+function redactorViewAt(text, from, depth, ctx) {
+  // The run: backslashes, and unicode escapes of one after a backslash; then room for one escape or character.
+  let end = from;
+  while (end < text.length && end - from <= 4096) {
+    if (text[end] === '\\') end++;
+    else if (text[end - 1] === '\\' && /^u005[cC]/.test(text.slice(end, end + 5))) end += 5;
+    else break;
+  }
+  ctx.work += (end - from + 6) * depth;
+  if (end >= text.length || end - from > 4096) return null;
+  let view = text.slice(from, end + 6);
+  const normalized = v => v.replace(/\\+/g, (run, at) => {
+    if (run.length % 2 === 0 || !/^u[0-9A-Fa-f]{4}/.test(v.slice(at + run.length, at + run.length + 5))) return run;
+    return `${run.slice(1)}\u0000`;
+  }).replace(/\u0000u([0-9A-Fa-f]{4})/g, (_, hex) => {
+    const c = String.fromCharCode(Number.parseInt(hex, 16));
+    return c === '\\' || c === '"' ? `\\${c}` : c;
+  });
+  const unescaped = v => v.replace(/\\+("?)/g, (run, quote) => {
+    const n = run.length - quote.length;
+    return '\\'.repeat(n >> 1) + (n % 2 === 1 ? (quote ? '"' : '\\') : quote);
+  });
+  view = normalized(view);
+  for (let level = 1; level < depth; level++) view = normalized(unescaped(view));
+  return view;
+}
+
 /** A unicode escape of one of LINE_BREAKS, as escapeControls writes a raw one, from its backslash. */
 const ESCAPED_LINE_BREAK = /^\\u(?:000[aAdD]|0085|202[89])/;
 
@@ -1820,14 +1856,15 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   const spacedPending = literal => literal.cutEscape === true
     || (cut !== 0 && cut !== CUT_LONE && !literal.terminated && literal.end >= text.length
       && (cut >= CUT_UNICODE || backslashesBefore(text, text.length) % 2 === 0));
-  // Whether the scanned text spells the backslash at `j` and the line break after it as backslashes and a raw line break
-  // (readLiteral's endsAt): the form the Redactor's view of the field's level holds as a backslash before a line break.
+  // Whether the Redactor's plain view reading of this level ends a value at `j` (readLiteral's endsAt): where its view
+  // of the scanned text there holds an odd run of backslashes and then a line break (redactorViewAt), as it does at a
+  // backslash before a line break the scanned text spells raw, but not at one spelled as an escape.
   const endsAtRawLineBreak = j => {
-    const from = toRoot(j);
-    let r = from;
-    while (ctx.text[r] === '\\') r++;
-    ctx.work += r - from + 1;
-    return r > from && LINE_BREAKS.includes(ctx.text[r]);
+    let from = toRoot(j);
+    while (from > 0 && ctx.text[from - 1] === '\\') from--;
+    const view = redactorViewAt(ctx.text, from, level + 1, ctx);
+    const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
+    return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
   const nested = (decoded, literal) => {
     if (decoded === null) {
@@ -1917,6 +1954,8 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
           i = javaSpaceEnd(text, i, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) member = null;
+          // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
+          else if (text.slice(next + 1, i).includes('\\')) member.viewEnds = true;
         }
         continue;
       }
