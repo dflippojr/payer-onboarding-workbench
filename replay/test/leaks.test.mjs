@@ -340,6 +340,35 @@ test('reads JSON serialized into a member name', () => {
   assertFlagged('{"body":"{\\"password\\":\\"LEAKED\\"}\n[truncated at 1 MB]');
   assertAccepted('{"body":"{\\"password\\":\\"[REDACTED]\\"}\n[truncated at 1 MB]');
 });
+// #361 security round 2: the property names of an already-parsed object reach the same text analysis as its string
+// values, at the same level, the whole-text rule included: before, only their role as a field name was checked.
+test('reads every property name of a parsed object as text at its level, as a string value is read (#361 security round 2 class)', () => {
+  const secret = 'JGVWXZJGVWXZ';
+  const leaked = m => `{"kty":"oct","${m}":"${secret}"}`;
+  const masked = m => `{"kty":"oct","${m}":"[REDACTED]"}`;
+  const forms = name => [{ [name]: 1 }, { a: { b: [{ [name]: null }] } }, { responseBody: JSON.stringify({ [name]: 'x' }) }];
+  for (const m of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k', 'oth']) {
+    // Stringified 0 to 17 times: within the levels read, at the last one and past it.
+    for (let depth = 0; depth <= 17; depth++) {
+      forms(nestedIn(leaked(m), depth)).forEach((form, f) => {
+        assert.ok(findJsonLeaks(form).length > 0, `member ${m}, depth ${depth}, form ${f}: not flagged`);
+      });
+    }
+    // Not JSON as a whole (prose before it): the whole-text rule flags it, as the Redactor masks it whole.
+    for (let depth = 0; depth <= 3; depth++) {
+      const form = { [`payer note: ${nestedIn(leaked(m), depth)}`]: 1 };
+      assert.ok(findJsonLeaks(form).some(leak => leak.check === WHOLE_TEXT), `member ${m}, prose, depth ${depth}: not flagged whole`);
+    }
+    // Masked, within the levels read: accepted, so reading names adds no flag of its own.
+    for (let depth = 0; depth <= 14; depth++) {
+      forms(nestedIn(masked(m), depth)).forEach((form, f) => {
+        assert.deepEqual(findJsonLeaks(form), [], `member ${m}, masked, depth ${depth}, form ${f}`);
+      });
+    }
+  }
+  // Ordinary names are untouched.
+  assert.deepEqual(findJsonLeaks({ 'items[0]': 1, 'a\\b': 2, '{}': 3, kty: 'oct', n: 'x' }), []);
+});
 test('r4: a scalar does not swallow the member after it', () => {
   assertFlagged('{"x":0"password":"FAKE_SECRET_293"}');
   assertFlagged('{"kty":"oct","x":true"k":"FAKE_PRIVATE_KEY_293"}');
