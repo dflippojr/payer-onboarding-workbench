@@ -2518,9 +2518,9 @@ public final class Redactor {
     /**
      * Returns an unmodifiable copy of {@code headers} (iteration order kept) in
      * which credential headers are masked and every other value is passed through
-     * {@link #redact(String)}. For {@code Authorization}-style headers the scheme
-     * is kept ({@code Bearer [REDACTED]}) so diagnostics can still tell which
-     * scheme was sent.
+     * {@link #redact(String)}, as is every name. For {@code Authorization}-style headers
+     * a registered scheme is kept ({@code Bearer [REDACTED]}) so diagnostics can still
+     * tell which scheme was sent. Names that redact to the same text share one list.
      */
     public static Map<String, List<String>> redactHeaders(Map<String, List<String>> headers) {
         if (headers == null || headers.isEmpty()) {
@@ -2531,7 +2531,7 @@ public final class Redactor {
             List<String> safe = values == null ? List.of() : values.stream()
                     .map(v -> redactHeaderValue(name, v))
                     .toList();
-            out.put(name, safe);
+            out.merge(redact(name), safe, (a, b) -> java.util.stream.Stream.concat(a.stream(), b.stream()).toList());
         });
         return Collections.unmodifiableMap(out);
     }
@@ -2539,14 +2539,16 @@ public final class Redactor {
     /**
      * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
      * and the value of every field named like a secret or a credential header is masked, recursively,
-     * or {@code null} if {@code value} is {@code null}. Maps keep their iteration order, and their string
-     * keys are redacted too; sets are copied, other collections and arrays become lists, and an
+     * or {@code null} if {@code value} is {@code null}. Maps keep their iteration order, and every key is
+     * redacted as a value is (a key that holds text becomes its redacted text, which the field-name and JWK
+     * decisions read); sets are copied, other collections and arrays become lists, and an
      * {@link Optional} keeps its redacted value; a record is rebuilt through its canonical constructor
      * from redacted components, so it keeps its type. Numbers, booleans, characters, enums, dates and
      * durations are returned as they are. Any other value, such as a {@code StringBuilder} or a parsed
      * JSON tree, becomes its redacted {@link String#valueOf(Object) string form}, so it cannot carry a
-     * secret through unredacted. An {@code Authorization}-style field keeps its scheme
-     * ({@code Bearer [REDACTED]}). In a map with a {@code kty} key (a JWK) the
+     * secret through unredacted. An {@code Authorization}-style field keeps a registered scheme
+     * ({@code Bearer [REDACTED]}) and is otherwise masked whole. A record that cannot be rebuilt throws an
+     * {@link IllegalArgumentException} naming its type and the cause's type only. In a map with a {@code kty} key (a JWK) the
      * {@link #JWK_PRIVATE_MEMBERS} are masked too.
      */
     public static Object redactTree(Object value) {
@@ -2565,12 +2567,18 @@ public final class Redactor {
             return redact(s);
         }
         if (value instanceof Map<?, ?> map) {
+            // A key is redacted as a value is: a string, or any key that holds text (a StringBuilder, a parsed JSON
+            // tree), becomes its redacted text, and the field-name and JWK decisions read that text.
+            Map<Object, Object> keys = new LinkedHashMap<>();
+            map.keySet().forEach(k -> keys.put(k, redactTree(null, k)));
+            boolean jwk = keys.values().stream().anyMatch("kty"::equals);
             Map<Object, Object> out = new LinkedHashMap<>();
-            boolean jwk = map.keySet().stream().anyMatch("kty"::equals);
-            map.forEach((k, v) -> out.put(k instanceof String s ? redact(s) : k,
-                    jwk && k instanceof String name && JWK_PRIVATE_MEMBERS.contains(name)
-                            ? maskField(name, v)
-                            : redactTree(String.valueOf(k), v)));
+            map.forEach((k, v) -> {
+                Object name = keys.get(k);
+                out.put(name, jwk && name instanceof String s && JWK_PRIVATE_MEMBERS.contains(s)
+                        ? maskField(s, v)
+                        : redactTree(String.valueOf(name), v));
+            });
             return Collections.unmodifiableMap(out);
         }
         if (value instanceof Set<?> set) {
@@ -2627,7 +2635,10 @@ public final class Redactor {
             canonical.trySetAccessible();
             return canonical.newInstance(values);
         } catch (ReflectiveOperationException e) {
-            throw new IllegalArgumentException("Cannot redact a " + record.getClass().getName(), e);
+            // Not chained: the cause's message is the record's own and may quote what it holds, unredacted.
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            throw new IllegalArgumentException("Cannot redact a " + record.getClass().getName() + " ("
+                    + cause.getClass().getName() + ")");
         }
     }
 
@@ -2646,10 +2657,11 @@ public final class Redactor {
         }
         String lower = name.toLowerCase(Locale.ROOT);
         if (lower.equals("authorization") || lower.equals("proxy-authorization")) {
-            String trimmed = value.strip();
-            int space = trimmed.indexOf(' ');
-            if (space > 0) {
-                return trimmed.substring(0, space) + " " + MASK;
+            // Only a registered scheme word is kept, so no caller text is: any other first word may be the credential
+            // itself, or text the whole-text rule would have to read, and the value is masked whole.
+            Matcher scheme = SCHEME.matcher(value);
+            if (scheme.lookingAt() && AUTH_SCHEMES.contains(scheme.group(1).toLowerCase(Locale.ROOT))) {
+                return scheme.group(1) + " " + MASK;
             }
         }
         return MASK;
