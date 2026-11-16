@@ -2545,6 +2545,49 @@ class RedactorTest {
     }
 
     @Test
+    void masksAnEscapedJwkCopyAtTheStartCutOffMidEscape() {
+        // #350: the leak scanner's test of the same form relies on these outputs. A JWK copied from inside a string, once
+        // or twice, with no stray quote before it, whose open private member ends the text mid-escape: the member's
+        // value is masked, cut escape and all, and closed. Cut after the closing quote or the object, it is kept.
+        List<String> heads = List.of("{\"kty\":\"oct\",\"k\":\"", "{\"kty\":\"RSA\",\"n\":\"AQAB\",\"d\":\"",
+                "{\"kty\":\"EC\",\"crv\":\"P-256\",\"d\":\"");
+        List<String> tails = List.of("\\", "\\u", "\\u0", "\\u00", "\\u005", "\\uZ", "\\u0Z", "\\u00G", "\\\\\\");
+        for (String head : heads) {
+            String once = escapedForJson(head + "[REDACTED]\"");
+            String twice = escapedForJson(once);
+            for (String tail : tails) {
+                for (String value : List.of("FAKE_JWK_K_350", "[REDACTED]", "")) {
+                    assertEquals(once, Redactor.redact(escapedForJson(head + value) + tail));
+                    assertEquals(twice, Redactor.redact(escapedForJson(escapedForJson(head + value)) + tail));
+                }
+                for (String close : List.of("\"", "\"}")) {
+                    String kept = escapedForJson(head + "[REDACTED]" + close) + tail;
+                    assertEquals(kept, Redactor.redact(kept));
+                    String keptTwice = escapedForJson(escapedForJson(head + "[REDACTED]" + close)) + tail;
+                    assertEquals(keptTwice, Redactor.redact(keptTwice));
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksAPlainJwkPrivateMemberCutOffAfterALoneBackslash() {
+        // #350: the leak scanner's test of the same form relies on these outputs. A private member's value open at the
+        // end of the text, then one backslash, is masked, backslash and all, and closed; a closed value is kept.
+        List<String> heads = new ArrayList<>();
+        for (String name : List.of("d", "p", "q", "dp", "dq", "qi", "oth", "k")) heads.add("{\"kty\":\"RSA\",\"" + name + "\":\"");
+        heads.addAll(List.of("{\"kty\":\"oct\",\"k\":\"", "{\"kty\":\"EC\",\"crv\":\"P-256\",\"d\":\"", "{\"keys\":[{\"kty\":\"oct\",\"k\":\""));
+        for (String head : heads) {
+            for (String value : List.of("FAKE_JWK_K_350", "[REDACTED]", "")) {
+                assertEquals(head + "[REDACTED]\"", Redactor.redact(head + value + "\\"));
+            }
+            for (String close : List.of("\"\\", "\"}\\")) {
+                assertEquals(head + "[REDACTED]" + close, Redactor.redact(head + "[REDACTED]" + close));
+            }
+        }
+    }
+
+    @Test
     void masksACopiedSecretFieldCutOffInHalfAUnicodeEscapeAfterAUnicodeBackslash() {
         // #342 (automated review on 73e4411): the leak scanner's test of the same form relies on these outputs. A
         // backslash spelled as a unicode escape before half an escape at the end is masked with a secret field's value;

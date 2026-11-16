@@ -959,6 +959,162 @@ test('reads a nested copy cut in half a \\u escape after an escaped backslash wi
     }
   }
 });
+test('flags an escaped JWK copy that starts the text and is cut off mid-escape, as Redactor masks it (#350)', () => {
+  // A JWK copied from inside a string (escaped once or twice), with no stray quote before it, whose open private member
+  // ends the text in half a \u escape, a malformed \u or a lone backslash. Main accepted every one: the whole-text
+  // decode could not parse the cut copy, so its \" escapes were kept and no view held the member. Redactor masks the
+  // member's value, cut escape and all, and closes it (RedactorTest.masksAnEscapedJwkCopyAtTheStartCutOffMidEscape).
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  const heads = [
+    v => `{"kty":"oct","k":"${v}`,
+    v => `{"kty":"RSA","n":"AQAB","d":"${v}`,
+    v => `{"kty":"EC","crv":"P-256","d":"${v}`,
+  ];
+  const tails = ['\\', '\\u', '\\u0', '\\u00', '\\u005', '\\uZ', '\\u0Z', '\\u00G', '\\\\\\'];
+  for (const head of heads) {
+    for (const value of ['FAKE_JWK_K_350', MASK, '']) {
+      for (const tail of tails) {
+        assertFlagged(copy(head(value)) + tail);
+        assertFlagged(copy(copy(head(value))) + tail);
+      }
+    }
+    // A cut after the masked value's closing quote, or after the object, loses nothing of it: Redactor keeps the text.
+    for (const close of ['"', '"}']) {
+      for (const tail of tails) {
+        assertAccepted(copy(head(MASK) + close) + tail);
+        assertAccepted(copy(copy(head(MASK) + close)) + tail);
+      }
+    }
+  }
+  // The issue's own form: a masked k with no kty, closed, then a malformed \u. Redactor keeps it.
+  assertAccepted('{\\"k\\":\\"[REDACTED]\\"\\uZ');
+  // The issue's two examples, secret-named fields: flagged since #351's check that no strict reading reads the value.
+  assertFlagged('{\\"password\\":\\"FAKE_V\\u005');
+  assertFlagged('{"password":"[REDACTED]\\');
+  // An escaped backslash, then a malformed \u, ends the open value where Redactor's JWK search matches no member, as
+  // half a \u escape there does: a masked or empty value is kept, and an unmasked one is still flagged (automated review
+  // on 57c7d4b: dropping only the malformed escape's backslash left \uZ in the value, and the masked form was flagged).
+  for (const head of heads) {
+    for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+      assertAccepted(`${copy(head(MASK))}\\\\${tail}`);
+      assertAccepted(`${copy(head(''))}\\\\${tail}`);
+      assertFlagged(`${copy(head('FAKE_JWK_K_350'))}\\\\${tail}`);
+    }
+  }
+  // The same at deeper copies, the backslash spelled with backslashes and \ escapes of any depth: Redactor keeps a
+  // masked or empty value where the spelling is a backslash at the copy's own level, and masks it where it is not
+  // (automated review on c0836bb: a \ escaped once more before a malformed \u, in a copy escaped twice, was
+  // flagged). An unmasked value is flagged either way.
+  const deep = (text, layers) => {
+    let out = text;
+    for (let i = 0; i < layers; i++) out = copy(out);
+    return out;
+  };
+  const kept = { 1: ['\\\\'], 2: ['\\\\u005c', '\\\\\\\\', '\\u005C\\u005c'], 3: ['\\\\\\\\u005c'] };
+  const masked = {
+    1: ['\\\\u005c', '\\\\\\\\', '\\\\\\\\u005c', '\\u005C\\u005c'],
+    2: ['\\\\', '\\u005c', '\\\\\\\\u005c'],
+    3: ['\\\\', '\\u005c', '\\\\u005c', '\\\\\\\\', '\\\\\\u005c', '\\u005C\\u005c'],
+  };
+  for (const head of heads) {
+    for (const layers of [1, 2, 3]) {
+      for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+        for (const backslash of kept[layers]) {
+          assertAccepted(`${deep(head(MASK), layers)}${backslash}${tail}`);
+          assertAccepted(`${deep(head(''), layers)}${backslash}${tail}`);
+          assertFlagged(`${deep(head('FAKE_JWK_K_350'), layers)}${backslash}${tail}`);
+        }
+        for (const backslash of masked[layers]) {
+          for (const value of [MASK, '', 'FAKE_JWK_K_350']) assertFlagged(`${deep(head(value), layers)}${backslash}${tail}`);
+        }
+      }
+    }
+  }
+});
+test('flags an open private member cut after a lone backslash in an unread copy, at every nesting (#350, security round)', () => {
+  // An escaped JWK copy read only as an unread span, whose open masked or empty private member ends the text in a lone
+  // backslash. The unread reads dropped that backslash without keeping the cut, so the bare mask passed: 192 forms (8
+  // names x 1-4 escape layers x 3 prefixes x 2 values), missed on main at all three entry points. Redactor masks the
+  // value, backslash and all; a value closed before the backslash it keeps.
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  const nest = (text, layers) => {
+    let out = text;
+    for (let i = 0; i < layers; i++) out = copy(out);
+    return out;
+  };
+  for (const prefix of ['he said "\n', 'he said "\r\n', '"\n']) {
+    for (const name of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
+      for (let layers = 1; layers <= 4; layers++) {
+        for (const value of [MASK, '']) assertFlagged(`${prefix}${nest(`{"kty":"RSA","${name}":"${value}`, layers)}\\`);
+        for (const close of ['"', '"}']) assertAccepted(`${prefix}${nest(`{"kty":"RSA","${name}":"${MASK}${close}`, layers)}\\`);
+      }
+    }
+  }
+});
+test('keeps a lone-backslash cut through later decodes of an unread copy, for longer odd backslash runs (#350, misses round 2)', () => {
+  // An unread JWK copy escaped 1-4 times whose open masked or empty private member ends the text in an odd run of
+  // backslashes. A cut that began with a lone backslash was read again at a later level as the escaped-backslash
+  // exception, which only half a \u escape cut off justifies, and the value went unjudged: 144 forms (runs of 5, 9 and
+  // 17 at 2, 3 and 4 layers, 8 names, 3 prefixes, 2 values) accepted at 691e1fb, flagged at 29d7191. Redactor masks
+  // every form here.
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  const nest = (text, layers) => {
+    let out = text;
+    for (let i = 0; i < layers; i++) out = copy(out);
+    return out;
+  };
+  for (const prefix of ['he said "\n', 'he said "\r\n', '"\n']) {
+    for (const name of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k']) {
+      for (let layers = 1; layers <= 4; layers++) {
+        for (const run of [1, 3, 5, 7, 9, 17]) {
+          for (const value of [MASK, '']) assertFlagged(`${prefix}${nest(`{"kty":"RSA","${name}":"${value}`, layers)}${'\\'.repeat(run)}`);
+        }
+      }
+    }
+  }
+});
+test('reads a masked JWK after a long pad, copied 3 deep at the start and cut mid-escape, within the scan budget (#350)', () => {
+  // Reading the cut copy costs what reading it uncut costs, on top of what main read of it. Without its own allowance
+  // (readRepaired), the masked form failed closed with a 1,270-character pad, which main accepts at every pad.
+  const copy = text => JSON.stringify(text).slice(1, -1);
+  for (const close of ['"}', '']) {
+    for (const tail of ['\\', '\\u005', '\\uZ']) {
+      const nest = (k, pad) => {
+        let text = `{"pad":"${'x'.repeat(pad)}","kty":"oct","k":"${k}${close}`;
+        for (let i = 0; i < 3; i++) text = copy(text);
+        return text + tail;
+      };
+      for (const pad of [2_000, 20_000]) {
+        // Closed, the masked copy is Redactor's; still open at the cut, it is not, and is flagged for its value.
+        const masked = findTextLeaks(nest(MASK, pad));
+        if (close) assert.deepEqual(masked, [], `${tail} ${pad}`);
+        else assert.deepEqual(masked.map(leak => leak.check), ['JSON secret field'], `${tail} ${pad}`);
+        const leaked = findTextLeaks(nest('FAKE_JWK_K_350', pad));
+        assert.ok(leaked.some(leak => leak.check === 'JSON secret field'), `${close} ${tail} ${pad}`);
+        assert.ok(!leaked.some(leak => leak.check === 'scan budget spent'), `${close} ${tail} ${pad}`);
+      }
+    }
+  }
+});
+test('flags a plain JWK private member whose open value ends the text in a lone backslash, as Redactor masks it (#350)', () => {
+  // The masked or empty value of a private member, still open at the end of the text, then one backslash: half an
+  // escape, which loses at most a backslash of the value. Main dropped the backslash and judged the bare mask masked.
+  // Redactor masks the value, backslash and all, and closes it
+  // (RedactorTest.masksAPlainJwkPrivateMemberCutOffAfterALoneBackslash).
+  const forms = [
+    ...['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'].map(name => v => `{"kty":"RSA","${name}":"${v}`),
+    v => `{"kty":"oct","k":"${v}`,
+    v => `{"kty":"EC","crv":"P-256","d":"${v}`,
+    v => `{"keys":[{"kty":"oct","k":"${v}`,
+  ];
+  for (const form of forms) {
+    for (const value of [MASK, '']) assertFlagged(`${form(value)}\\`);
+    assertFlagged(`${form('FAKE_JWK_K_350')}\\`);
+    // Closed, the value is Redactor's, a backslash after it or not.
+    assertAccepted(`${form(MASK)}"\\`);
+    assertAccepted(`${form(MASK)}"}\\`);
+  }
+});
 test('checks each private member name for a form feed in time that grows with the text, not its square (#342)', () => {
   // Codex security round 2 at 8a06f7e, finding 2: the check of a member name's whitespace for an escaped form feed
   // searched from the name to the end of the view, for every private member, work the scan budget did not count. With
