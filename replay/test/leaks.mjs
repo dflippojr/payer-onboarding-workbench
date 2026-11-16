@@ -1569,32 +1569,24 @@ const isJavaSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r' || 
 const ESCAPED_JAVA_SPACE = /\\(?:[nrt]|u00(?:0[9a-dA-D]|20))/y;
 
 /**
- * Whether the scanned text spells the whitespace at `i` in `text`, a view, as Redactor's view readings read it: raw, or
- * after backslashes as a unicode escape or an escaped line break or tab. Any other short escape, or a backslash before
- * a raw character (which JSON.parse here reads only once escapeControls has escaped it), is no whitespace there.
+ * Whether the Redactor's view `depth` levels down (redactorViewAt) holds whitespace where the scanned text spells the
+ * character at `i` of a view: a character Java's \s takes, or one backslash and an n, r or t, as its EMBEDDED_SPACE
+ * takes. A short escape it keeps as one, a backslash before a raw character, or a unicode escape whose backslash run is
+ * longer than one escape at the field's level (review on e8e09c4) leaves something else there.
  */
-const spelledAsJavaSpace = (i, ctx, toRoot) => {
-  const from = toRoot(i);
-  let r = from;
-  for (;;) {
-    while (ctx.text[r] === '\\') r++;
-    // A unicode escape of a backslash spells one more backslash of the run; any other is whitespace only when it escapes
-    // a character Java's \s takes (review on 0413e7c: an escaped backslash then a short escape is none).
-    const unicode = ctx.text[r] === 'u' && r > from ? /^u00(?:5[cC]|(0[9a-dA-D]|20))/.exec(ctx.text.slice(r, r + 5)) : null;
-    if (unicode === null || unicode[1] !== undefined) {
-      ctx.work += r - from + 1;
-      return r === from || unicode !== null || 'nrt'.includes(ctx.text[r]);
-    }
-    r += 5;
-  }
+const spelledAsJavaSpace = (i, depth, ctx, toRoot) => {
+  let from = toRoot(i);
+  while (from > 0 && ctx.text[from - 1] === '\\') from--;
+  const view = redactorViewAt(ctx.text, from, depth, ctx);
+  return view !== null && (isJavaSpace(view[0]) || /^\\[nrt]/.test(view));
 };
 
 /**
  * Where the whitespace after `from` in `text`, a view, ends, as Redactor's view readings read a secret field's whitespace
- * (#348): Java's \s, or an escape ESCAPED_JAVA_SPACE takes, each spelled as spelledAsJavaSpace says. The characters
- * read are charged to the work.
+ * (#348): Java's \s, or an escape ESCAPED_JAVA_SPACE takes, each where spelledAsJavaSpace finds whitespace in the
+ * Redactor's view `depth` levels down. The characters read are charged to the work.
  */
-const javaSpaceEnd = (text, from, ctx, toRoot) => {
+const javaSpaceEnd = (text, from, depth, ctx, toRoot) => {
   let i = from;
   while (i < text.length) {
     let end = i + 1;
@@ -1605,7 +1597,7 @@ const javaSpaceEnd = (text, from, ctx, toRoot) => {
     } else if (!isJavaSpace(text[i])) {
       break;
     }
-    if (!spelledAsJavaSpace(i, ctx, toRoot)) break;
+    if (!spelledAsJavaSpace(i, depth, ctx, toRoot)) break;
     i = end;
   }
   ctx.work += i - from;
@@ -1917,7 +1909,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       let viewEnds = false;
       if (literal.terminated && (text[next] === '\x0B' || text[next] === '\f' || text[next] === '\\')
           && isSecretKey(decoded ?? literal.body)) {
-        const colon = javaSpaceEnd(text, next, ctx, toRoot);
+        const colon = javaSpaceEnd(text, next, level + 1, ctx, toRoot);
         if (text[colon] === ':') {
           // At the top level, or with the separator still spelled as an escape here, only the Redactor's plain view
           // reading finds the field. Its value ends at a backslash before a line break the scanned text spells raw
@@ -1952,7 +1944,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         if (spaced && member) {
           // Redactor's view readings mask such a field's value only where one starts after that whitespace: a string,
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
-          i = javaSpaceEnd(text, i, ctx, toRoot);
+          i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) member = null;
           // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
           else if (text.slice(next + 1, i).includes('\\')) member.viewEnds = true;
