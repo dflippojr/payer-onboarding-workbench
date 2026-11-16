@@ -1001,6 +1001,35 @@ test('flags an escaped JWK copy that starts the text and is cut off mid-escape, 
       assertFlagged(`${copy(head('FAKE_JWK_K_350'))}\\\\${tail}`);
     }
   }
+  // The same at deeper copies, the backslash spelled with backslashes and \ escapes of any depth: Redactor keeps a
+  // masked or empty value where the spelling is a backslash at the copy's own level, and masks it where it is not
+  // (automated review on c0836bb: a \ escaped once more before a malformed \u, in a copy escaped twice, was
+  // flagged). An unmasked value is flagged either way.
+  const deep = (text, layers) => {
+    let out = text;
+    for (let i = 0; i < layers; i++) out = copy(out);
+    return out;
+  };
+  const kept = { 1: ['\\\\'], 2: ['\\\\u005c', '\\\\\\\\', '\\u005C\\u005c'], 3: ['\\\\\\\\u005c'] };
+  const masked = {
+    1: ['\\\\u005c', '\\\\\\\\', '\\\\\\\\u005c', '\\u005C\\u005c'],
+    2: ['\\\\', '\\u005c', '\\\\\\\\u005c'],
+    3: ['\\\\', '\\u005c', '\\\\u005c', '\\\\\\\\', '\\\\\\u005c', '\\u005C\\u005c'],
+  };
+  for (const head of heads) {
+    for (const layers of [1, 2, 3]) {
+      for (const tail of ['\\uZ', '\\u0Z', '\\u00G']) {
+        for (const backslash of kept[layers]) {
+          assertAccepted(`${deep(head(MASK), layers)}${backslash}${tail}`);
+          assertAccepted(`${deep(head(''), layers)}${backslash}${tail}`);
+          assertFlagged(`${deep(head('FAKE_JWK_K_350'), layers)}${backslash}${tail}`);
+        }
+        for (const backslash of masked[layers]) {
+          for (const value of [MASK, '', 'FAKE_JWK_K_350']) assertFlagged(`${deep(head(value), layers)}${backslash}${tail}`);
+        }
+      }
+    }
+  }
 });
 test('flags an open private member cut after a lone backslash in an unread copy, at every nesting (#350, security round)', () => {
   // An escaped JWK copy read only as an unread span, whose open masked or empty private member ends the text in a lone
