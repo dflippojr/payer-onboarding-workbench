@@ -1296,11 +1296,14 @@ const opensMask = (name, text, i) => {
 };
 
 /** Whether a quote spelled \u0022 by one backslash starts at index `i` of `text`. */
-const opensLoneUnicodeQuote = (text, i) => opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0;
+const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
+  ? /^\\u0022/i.test(text.slice(i, i + 6)) && backslashesBefore(text, i) === 0 : false;
 
-/** Whether a quote spelled \u0022 (either hex case) starts at index `i` of `text`, after any backslashes. */
-const opensUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
-  && /^\\u0022/i.test(text.slice(i, i + 6));
+/**
+ * Whether a quote spelled \u0022 starts at index `i` of `text`, after any backslashes, with a lowercase u as the
+ * Redactor's unicode escape takes it: it reads \U0022 as an escaped U and four digits (review on 98a6d37).
+ */
+const opensUnicodeQuote = (text, i) => text[i] === '\\' && text.startsWith('u0022', i + 1);
 
 /** scanJson's quote state of a view's own level (#374): outside every string, in a value or a name a bare quote opened, or in a string a \u0022 opened. */
 const QUOTES_OUTSIDE = 0;
@@ -2183,7 +2186,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
           i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) {
-            if (mode !== FLAT && opensLoneUnicodeQuote(text, i) && outsideStringsAt(i)) {
+            if (mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0 && outsideStringsAt(i)) {
               // A value that opens with a \u0022 is one the Redactor's flattened reading turns bare where the quotes of
               // this view's own level before it leave it outside every string (#374), in a view of any mode: a string
               // read whole after a stray quote too (#373).
