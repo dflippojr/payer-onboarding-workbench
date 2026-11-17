@@ -1794,8 +1794,10 @@ class RedactorTest {
         // stray quote left open, a colon following it (review on 010df1f); the level-cut grid holds such a value with a quote of a
         // shallower level inside it, in a text cut at its end, whose Redactor output the scanner must accept; the level-escape
         // grid holds a secret name spelled with unicode escapes after an earlier name closed early (Codex security round 1 on
-        // ddfd74c), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard against main
-        // reads. Their inputs are the committed files' own, so the exact forms stay
+        // ddfd74c), the level-deeper grid holds such fields whose name opens with a quote of a deeper level than the view
+        // that reads its value, closed with either spelling, with masked values ending in a quote, a cut escape or nothing
+        // (#374, option A), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
+        // against main reads. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.ofEntries(
                 Map.entry("generic-separator-pin-grid", new int[] {48, 9}),
@@ -1810,6 +1812,7 @@ class RedactorTest {
                 Map.entry("generic-separator-level-flat-grid", new int[] {4960, 1440}),
                 Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}),
                 Map.entry("generic-separator-level-escape-grid", new int[] {3920, 12400}),
+                Map.entry("generic-separator-level-deeper-grid", new int[] {960, 11820}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {6940, 11260}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
