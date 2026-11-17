@@ -2241,3 +2241,26 @@ test('flags a generic secret field with such a separator whose name and value ar
   const wrong = separatorGridWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
+
+test('flags such a field after a stray quote whose name is escaped and whose value is escaped one level more, through all three entry points (#373, #374)', () => {
+  // #373: after a stray quote and a raw line break (LF or CRLF), a generic secret field whose name is quoted one or two
+  // escape levels down, either spelling, and whose value is quoted one level below the name, with both #348 separator
+  // spellings at the name's level or one below it. The Redactor masks 320 of these texts, where the value's quote is
+  // a unicode escape, and keeps 960. The view that holds the name and value together is a string read whole after the
+  // stray quote, which no flattened copy reads.
+  const pairs = redactorGrid('generic-separator-level-miss-grid');
+  assert.equal(pairs.length, 1_280);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('accepts such a field whose value is escaped one level below a plain-quoted name where a stray quote leaves that value inside a string, through all three entry points (#374)', () => {
+  // #374's over-flag: a plain-quoted generic secret name, a #348 separator and a value quoted one level down, bare, in
+  // prose, after a stray quote and a line break, after two quotes, and inside a string value with bare inner quotes.
+  // The Redactor turns the value's unicode-escaped quote bare only where the bare quotes before it leave it outside
+  // every string: it masks 90 of these texts and keeps 870.
+  const pairs = redactorGrid('generic-separator-level-over-grid');
+  assert.equal(pairs.length, 960);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});

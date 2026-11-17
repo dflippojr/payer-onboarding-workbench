@@ -1781,11 +1781,16 @@ class RedactorTest {
         // Redactor masks 48 of them and keeps 9. The miss grid holds the separator class the scanner missed, with the
         // forms around it that the Redactor keeps. The note grid holds such fields at the top level whose value ends in a
         // cut before a note, each also in its report form, which the Redactor reads differently. The mixed grid holds such
-        // fields whose name and value are quoted at different escape levels (security round 1 at 42d0b14). Their inputs are the committed files' own, so the exact forms stay
+        // fields whose name and value are quoted at different escape levels (security round 1 at 42d0b14). #374's level
+        // grids hold such fields after a stray quote or inside a string value, where the bare quotes before the value
+        // decide whether its unicode-escaped quote opens it: the level-miss grid has the name one or two levels down and
+        // the value one level below it (#373), the level-over grid a plain-quoted name and the value one level down. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.of("generic-separator-pin-grid", new int[] {48, 9},
                 "generic-separator-miss-grid", new int[] {6111, 1326}, "generic-separator-note-grid", new int[] {369, 180},
-                "generic-separator-mixed-grid", new int[] {1600, 2600});
+                "generic-separator-mixed-grid", new int[] {1600, 2600},
+                "generic-separator-level-miss-grid", new int[] {320, 960},
+                "generic-separator-level-over-grid", new int[] {90, 870});
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
             int masked = 0;
