@@ -2388,7 +2388,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2441,6 +2441,19 @@ test('reads the quotes of a string read whole after a stray quote at the level t
   assert.equal(pairs.length, 6_440);
   const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-whole-grid', pairs);
   assert.equal(keptAsMain, 1_380, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('reads the quote a string starts behind in every spelling and at any depth, through all three entry points (#374, review on 537c8ea)', () => {
+  // Review on 537c8ea: the quote a view starts behind was read only with plain backslashes, and at most 64 of them, so a
+  // quote spelled through escaped backslashes, or nested deeply, left the view's quote state outside its string. The
+  // level-slice grid's inputs and outputs with each unicode-escaped quote spelled through an escaped backslash (either
+  // case), and a tenth of them nested five or seven times: the 6,288 forms the scanner gets right. The Redactor masks
+  // 1,536 and keeps 4,752; main flags 1,206 verdicts on the kept texts, and so does the head.
+  const pairs = redactorGrid('generic-separator-level-spelled-grid');
+  assert.equal(pairs.length, 6_288);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-spelled-grid', pairs);
+  assert.equal(keptAsMain, 1_206, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
