@@ -2176,3 +2176,68 @@ test('reads the rest of a secret field\'s object once for all its secret fields,
     assert.ok(scanWork.characters <= 40 * text.length, `read ${scanWork.characters} characters of a ${text.length}-character text`);
   }
 });
+
+/** For each [input, Redactor output] pair: the inputs whose verdict differs from the Redactor's, and the flagged outputs. */
+function separatorGridWrong(pairs) {
+  const wrong = [];
+  for (const [input, out] of pairs) {
+    const masked = out !== input;
+    const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
+      .map(leaks => leaks.length > 0);
+    if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
+    if (findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
+  }
+  return wrong;
+}
+
+test('pins the verdicts on the generic-field separator forms #351 resolved (#348)', () => {
+  // #344's probe of generic secret fields with an unusual separator around the colon, in an escaped copy after a stray
+  // quote and a raw line break, which the Redactor kept then. Since #351 it masks 48 of them and keeps 9, and the
+  // scanner flags exactly the 48, through all three entry points. RedactorTest checks the committed outputs; the
+  // other 3 forms of that probe are in the miss grid below.
+  const pairs = redactorGrid('generic-separator-pin-grid');
+  assert.equal(pairs.length, 57);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('flags a generic secret field whose separator the Redactor reads as whitespace only in its views, through all three entry points (#348)', () => {
+  // A secret-named field whose separator before the colon only the Redactor's view readings read as whitespace, in plain
+  // JSON and in escaped copies, with and without a stray quote and a raw line break before it. The Redactor masks 6,111
+  // of these texts and keeps 1,326, among them the forms where that whitespace is spelled another way or only a deeper
+  // level would read it, no value starts after it, a value runs into the next member or ends in a cut. RedactorTest
+  // checks the committed outputs. The scanner must flag exactly the texts the Redactor masks, at every entry point, and
+  // accept every output.
+  const pairs = redactorGrid('generic-separator-miss-grid');
+  assert.equal(pairs.length, 7_437);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('ends such a field\'s value where the Redactor does before a cut note, at the top level, in its report form and in escaped copies (#348)', () => {
+  // Review on 0413e7c: the same fields whose value ends in a cut before a note, at the top level (each text's report
+  // form a row of its own, since the Redactor reads it differently) and in escaped copies with the cut's line break
+  // spelled several ways. The Redactor masks 369 of these texts and keeps 180. The text and the JSON field entry points
+  // must match its verdict on each row, and every output must be accepted.
+  const pairs = redactorGrid('generic-separator-note-grid');
+  assert.equal(pairs.length, 549);
+  const wrong = [];
+  for (const [input, out] of pairs) {
+    const masked = out !== input;
+    const verdicts = [findTextLeaks(input), findJsonLeaks({ responseBody: input })].map(leaks => leaks.length > 0);
+    if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
+    if (findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
+  }
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('flags a generic secret field with such a separator whose name and value are quoted at different escape levels, through all three entry points (#348)', () => {
+  // Security round 1 at 42d0b14: the name quoted at one escape level and the value at another, with the separator
+  // between, as plain text, in escaped copies up to four layers deep, and after a stray quote and a line break or prose.
+  // A view that reads the name has lost the value to decoding there; the Redactor still masks it. It masks 1,600 of these
+  // texts and keeps 2,600, the masked values among them. RedactorTest checks the committed outputs.
+  const pairs = redactorGrid('generic-separator-mixed-grid');
+  assert.equal(pairs.length, 4_200);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
