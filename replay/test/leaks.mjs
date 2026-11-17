@@ -1608,6 +1608,59 @@ const javaSpaceEnd = (text, from, depth, ctx, toRoot) => {
   return i;
 };
 
+/** Whitespace in the scanned text as any escape level spells it, then the start of a value quoted any way, or not. */
+const SPELLED_VALUE_START = /(?:\s|\\+(?:[nrt]|u00(?:0[9a-dA-D]|20)))*((\\*(?:"|u0022))|[{[]|-?\d|true\b|false\b)/y;
+
+/** How the scanned text spells the quote at `at` of a view: the backslash run before it and the quote or its u0022 escape. */
+const QUOTE_SPELLING = /\\*(?:"|u0022)/y;
+const nameQuoteSpelling = (at, ctx, toRoot) => {
+  let r = toRoot(at);
+  while (r > 0 && ctx.text[r - 1] === '\\') r--;
+  QUOTE_SPELLING.lastIndex = r;
+  const m = QUOTE_SPELLING.exec(ctx.text);
+  ctx.work += m === null ? 1 : m[0].length;
+  return m === null ? null : m[0];
+};
+
+/** From a masked value's opening quote: the mask, after a scheme, in group 1, then how it ends, in group 2 if not the text's. */
+const MASKED_CONTENT = new RegExp(String.raw`((?:${SCHEME} )?\[REDACTED\])(?:$|\\*(?=[\n\r\u0085\u2028\u2029])|\\*$|(\\*(?:"|u0022)))`, 'y');
+
+/**
+ * Judges the value of secret field `name` that a view left out after its colon at `colon`, where the view holds no value
+ * start at `at` (scanJson): the scanned text from the colon's place up to that of the character at `at`, or on from the
+ * colon where the view ends there, holds what decoding dropped. A value there, quoted at any escape level or not, is a
+ * leak unless it is the mask closed by the quote that opens it, as the Redactor leaves a value it masks (security round
+ * 1 at 42d0b14). Only the whitespace, the opening quote and what it quotes are read, and charged to the work.
+ */
+function droppedValueLeaks(name, text, colon, at, ctx, toRoot, nameClose) {
+  const from = toRoot(colon) + 1;
+  const to = at < text.length ? toRoot(at) : ctx.text.length;
+  if (to <= from) return;
+  SPELLED_VALUE_START.lastIndex = from;
+  const start = SPELLED_VALUE_START.exec(ctx.text);
+  ctx.work += start === null ? 1 : start[0].length;
+  if (start === null || SPELLED_VALUE_START.lastIndex > to) return;
+  const quote = start[2];
+  if (quote !== undefined) {
+    // The mask (after a scheme, for an Authorization-style name), then where the Redactor leaves a masked value ending:
+    // the end of the text; backslashes of a cut escape before the end or a line break; or a quote at the opening
+    // quote's escape level or above it, or the name's own closing quote, with which its mixed reading closes the mask.
+    // Any other quote at a deeper level is part of the value.
+    MASKED_CONTENT.lastIndex = SPELLED_VALUE_START.lastIndex;
+    const mask = MASKED_CONTENT.exec(ctx.text);
+    ctx.work += mask === null ? 1 : mask[0].length;
+    if (mask !== null && isMaskedValue(name, mask[1])) {
+      const end = MASKED_CONTENT.lastIndex;
+      if (end > to) return failClosed(ctx, 'JSON secret field', ctx.text.slice(from, from + 80));
+      if (mask[2] === undefined || mask[2] === nameQuoteSpelling(nameClose, ctx, toRoot)) return;
+      const level = quoteLevelOf(mask[2]);
+      if (level >= 0 && level <= quoteLevelOf(quote)) return;
+    }
+  }
+  failClosed(ctx, quote === undefined && /[{[]/.test(start[1]) ? 'JSON secret structure' : 'JSON secret field',
+    ctx.text.slice(from, from + 80));
+}
+
 /** The start of a value Redactor's view readings read after a field's colon and whitespace (VIEW_JSON_FIELD). */
 const VIEW_VALUE_START = /^(?:["{[]|-?\d|true\b|false\b)/;
 
@@ -1949,9 +2002,16 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // Redactor's view readings mask such a field's value only where one starts after that whitespace: a string,
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
           i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
-          if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) member = null;
-          // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
-          else if (text.slice(next + 1, i).includes('\\')) member.viewEnds = true;
+          if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) {
+            // Decoding may have left out of this view a value quoted at another escape level than the name, which the
+            // Redactor's mixed reading still masks: it is judged where the scanned text holds it (security round 1 at
+            // 42d0b14).
+            droppedValueLeaks(member.name, text, next, i, ctx, toRoot, literal.end);
+            member = null;
+          } else if (text.slice(next + 1, i).includes('\\')) {
+            // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
+            member.viewEnds = true;
+          }
         }
         continue;
       }
