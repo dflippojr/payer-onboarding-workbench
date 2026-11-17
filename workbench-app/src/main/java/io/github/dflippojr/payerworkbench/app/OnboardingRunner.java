@@ -144,22 +144,21 @@ public class OnboardingRunner {
         MockPayer payer = validated.payer();
         String runId = UUID.randomUUID().toString();
         AuditContext audit = AuditContext.current();
-        PayerLease lease = leases.acquire(request.payerId(), payer);
-        if (audit != null) { audit.runId = runId; }
-        try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
-             MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId())) {
-            lease.setUp(validated.faults(), validated.slowResponseDelay());
-            try (HttpClient http = HttpClient.newBuilder()
-                    .sslContext(payers.tls().clientContext())
-                    .connectTimeout(Duration.ofSeconds(5))
-                    .followRedirects(HttpClient.Redirect.NEVER)
-                    .build()) {
-                return new RunAttempt(services, runId, request, validated.sample(), http, payers.credentials(), null,
-                        recordMetrics).run();
+        return leases.hold(request.payerId(), payer, lease -> {
+            if (audit != null) { audit.runId = runId; }
+            try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
+                 MDC.MDCCloseable payerId = MDC.putCloseable(MDC_PAYER, request.payerId())) {
+                lease.setUp(validated.faults(), validated.slowResponseDelay());
+                try (HttpClient http = HttpClient.newBuilder()
+                        .sslContext(payers.tls().clientContext())
+                        .connectTimeout(Duration.ofSeconds(5))
+                        .followRedirects(HttpClient.Redirect.NEVER)
+                        .build()) {
+                    return new RunAttempt(services, runId, request, validated.sample(), http, payers.credentials(),
+                            null, recordMetrics).run();
+                }
             }
-        } finally {
-            lease.release();
-        }
+        });
     }
 
     /**
