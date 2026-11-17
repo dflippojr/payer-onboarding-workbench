@@ -1945,13 +1945,15 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
     return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
+  // The escape level of the quotes this view holds bare (bareQuoteLevel), once the quote state needs it.
+  let ownLevel = level;
   // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
-  // than this view's: a quote of a string around this level's JSON, not one of its own.
+  // than this view's own quotes: a quote of a string around this level's JSON, not one of its own.
   const shallowerQuote = j => {
     if (level === 0) return false;
     const spelling = nameQuoteSpelling(j, ctx, toRoot);
     const quoteLevel = spelling === null ? -1 : quoteLevelOf(spelling);
-    return quoteLevel >= 0 && quoteLevel < level;
+    return quoteLevel >= 0 && quoteLevel < ownLevel;
   };
   // The quote state of this view's own level before each index (#374), as the Redactor's flattened reading tracks it
   // to tell which quotes spelled \u0022 it turns bare: outside every string (QUOTES_OUTSIDE), in a value a bare quote
@@ -2038,6 +2040,16 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   };
   // The current quote state, packed with whether a name being read is valid (QUOTES_VALID_NAME).
   const packedQuotes = () => quotes.state | (quotes.state === QUOTES_NAME && quotes.validName ? QUOTES_VALID_NAME : 0);
+  // The escape level of the first quote this view holds bare, as the scanned text spells it, or the view's level when it
+  // holds none. Only the text up to that quote is read.
+  const bareQuoteLevel = () => {
+    let j = text.indexOf('"');
+    while (j >= 0 && backslashesBefore(text, j) % 2 === 1) j = text.indexOf('"', j + 1);
+    ctx.work += j < 0 ? text.length : j + 1;
+    const spelling = j < 0 ? null : nameQuoteSpelling(j, ctx, toRoot);
+    const found = spelling === null ? -1 : quoteLevelOf(spelling);
+    return found < 0 ? level : found;
+  };
   // Whether the Redactor's flattened reading turns bare the \u0022 at `at`: the quote state before it, read as far as it.
   const flattenedAt = at => {
     const work = ctx.work;
@@ -2048,12 +2060,15 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       // quote may, starts inside the string that quote opens, as the Redactor's flattened reading of the level counts it:
       // a name, since no colon is read before it. After a quote this level spells \u0022, one the Redactor turns bare
       // outside every string, it starts in the string that quote opens (review on d931f68).
+      // The level is that of the quotes this view holds bare, as the scanned text spells its first one: a string read
+      // whole after a stray quote may hold them a level shallower than the view's own count (review on 8f48a35).
+      if (level > 0) ownLevel = bareQuoteLevel();
       const before = level > 0 ? quoteEndingAt(ctx, toRoot(0)) : null;
-      if (before !== null && quoteLevelOf(before) === level) {
+      if (before !== null && quoteLevelOf(before) === ownLevel) {
         quotes.state = QUOTES_NAME;
         quotes.validName = closesAsNameAt(0);
         quotes.before = '"';
-      } else if (before === '\\'.repeat(2 ** level) + 'u0022') {
+      } else if (before === '\\'.repeat(2 ** ownLevel) + 'u0022') {
         quotes.state = QUOTES_ESCAPED;
         quotes.before = '"';
       }
