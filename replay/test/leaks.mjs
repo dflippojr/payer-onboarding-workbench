@@ -1302,10 +1302,14 @@ const opensLoneUnicodeQuote = (text, i) => opensUnicodeQuote(text, i) && backsla
 const opensUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
   && /^\\u0022/i.test(text.slice(i, i + 6));
 
-/** scanJson's quote state of a view's own level (#374): outside every string, or in one a bare or a \u0022 quote opened. */
+/** scanJson's quote state of a view's own level (#374): outside every string, in a value or a name a bare quote opened, or in a string a \u0022 opened. */
 const QUOTES_OUTSIDE = 0;
-const QUOTES_BARE = 1;
-const QUOTES_ESCAPED = 2;
+const QUOTES_VALUE = 1;
+const QUOTES_NAME = 2;
+const QUOTES_ESCAPED = 3;
+
+/** Java's Character.isWhitespace, as the Redactor's flattened reading reads whitespace: no no-break space. */
+const isJavaWhitespace = c => /[\t\n\x0B\f\r\x1C-\x1F]/.test(c) || (/[\p{Zs}\p{Zl}\p{Zp}]/u.test(c) && !'\u00A0\u2007\u202F'.includes(c));
 
 /**
  * Reads `text`, a MAIN view, once more with each quote it spells \u0022 by one backslash written as a quote: the
@@ -1932,14 +1936,17 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const quoteLevel = spelling === null ? -1 : quoteLevelOf(spelling);
     return quoteLevel >= 0 && quoteLevel < level;
   };
-  // The quote state of this view's own level before each index (#374), filled from the start of the view as far as
-  // a query has needed, so each index is read once however the scan moves back over a stray quote's span: outside
-  // every string (QUOTES_OUTSIDE), in one a bare quote opened (QUOTES_BARE), or in one a \u0022 opened (QUOTES_ESCAPED).
-  // A bare quote opens or closes a string, a \u0022 does only outside a string a bare quote opened, as the Redactor's
-  // flattened reading turns one bare only there, and a quote of a shallower level ends every string of this one.
+  // The quote state of this view's own level before each index (#374), as the Redactor's flattened reading tracks it
+  // to tell which quotes spelled \u0022 it turns bare: outside every string (QUOTES_OUTSIDE), in a value a bare quote
+  // opens after a colon or as an array item (QUOTES_VALUE), in a name a bare quote opens (QUOTES_NAME), or in a string
+  // a \u0022 opened (QUOTES_ESCAPED). A bare quote opens or closes a string. A \u0022 opens one outside every string,
+  // closes one it opened, and closes a name a bare quote opened where a colon follows it, unless that name closes with
+  // a bare quote and a colon of its own and its part before the \u0022 is no secret name (review on fc94026). A quote
+  // of a shallower level ends every string of this one. The state is filled from the start of the view as far as a
+  // query has needed, so each index is read once however the scan moves back over a stray quote's span.
   let quoteStates = null;
   let quotesRead = 0;
-  let quoteState = QUOTES_OUTSIDE;
+  const quotes = { state: QUOTES_OUTSIDE, depth: 0, arrays: [false], before: '', validName: false, nameStart: 0 };
   // The quote state and the values it opens are read on top of what the other views may spend, as a FLAT copy is
   // (readFlatCopy): the budget grows by what they spend, up to FLAT_ALLOWANCE times this view's length, so text the
   // other views read within the budget is not failed closed for them. That keeps the budget linear: each view may add
@@ -1950,25 +1957,83 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     quoteAllowance -= grant;
     ctx.budget += grant;
   };
+  // Whether the next character from `from` that is not Java whitespace is a colon. Only the whitespace is read.
+  const beforeColonAt = from => {
+    let i = from;
+    while (i < text.length && isJavaWhitespace(text[i])) i++;
+    ctx.work += i - from + 1;
+    return text[i] === ':';
+  };
+  // Whether the name a bare quote opens before `from` closes with a bare quote a colon follows: a valid name. It reads
+  // to the first bare quote, the one the walk reaches next, so each name's span is read once more at most.
+  const closesAsNameAt = from => {
+    let i = from;
+    while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    ctx.work += i - from;
+    return i < text.length && beforeColonAt(i + 1);
+  };
+  // Reads one character that is no escape, or one a unicode escape decodes to that is neither a quote nor a backslash.
+  const readQuoteChar = (c, at) => {
+    if (c === '"' && shallowerQuote(at)) {
+      quotes.state = QUOTES_OUTSIDE;
+      quotes.depth = 0;
+      quotes.before = '';
+    } else if (c === '"') {
+      const value = quotes.before === ':' || (quotes.arrays[quotes.depth] && (quotes.before === '[' || quotes.before === ','));
+      quotes.state = quotes.state !== QUOTES_OUTSIDE ? QUOTES_OUTSIDE : value ? QUOTES_VALUE : QUOTES_NAME;
+      quotes.validName = quotes.state === QUOTES_NAME && closesAsNameAt(at + 1);
+      quotes.nameStart = at + 1;
+      quotes.before = c;
+    } else if (quotes.state === QUOTES_OUTSIDE) {
+      if (c === '{' || c === '[') {
+        quotes.depth++;
+        quotes.arrays[quotes.depth] = c === '[';
+      } else if ((c === '}' || c === ']') && quotes.depth > 0) {
+        quotes.depth--;
+      }
+      if (!isJavaWhitespace(c)) quotes.before = c;
+    }
+  };
+  // Reads a quote spelled \u0022 that ends at `after`: it opens, closes or is a string's own (see quoteStates).
+  const readUnicodeQuote = after => {
+    let flattens = quotes.state === QUOTES_OUTSIDE || quotes.state === QUOTES_ESCAPED;
+    if (!flattens && quotes.state === QUOTES_NAME && beforeColonAt(after)) {
+      const escape = after - 6;
+      // A secret name has at most 64 characters, each at most a six-character escape: a longer part is none, and is not
+      // decoded, so a name holding many such quotes is read in linear work, as in the Redactor.
+      const part = escape - quotes.nameStart;
+      if (quotes.validName && part <= 6 * 64) ctx.work += part;
+      flattens = !quotes.validName || (part <= 6 * 64 && isSecretKey(decodedName(text.slice(quotes.nameStart, escape))));
+    }
+    if (flattens) {
+      quotes.state = quotes.state === QUOTES_OUTSIDE ? QUOTES_ESCAPED : QUOTES_OUTSIDE;
+      quotes.before = '"';
+    }
+  };
   const outsideStringsAt = at => {
     const work = ctx.work;
     quoteStates ??= new Uint8Array(text.length + 1);
     let k = quotesRead;
     while (k < at) {
       const start = k;
-      const before = quoteState;
+      const before = quotes.state;
       if (text[k] === '\\') {
-        if (opensUnicodeQuote(text, k)) {
-          if (quoteState !== QUOTES_BARE) quoteState = quoteState === QUOTES_OUTSIDE ? QUOTES_ESCAPED : QUOTES_OUTSIDE;
-          k += 6;
+        // As the Redactor reads a view: an odd backslash run ends in a unicode escape or escapes the character after
+        // it, which is not read; an even one is escaped backslashes, and the character after it is read as it is.
+        let run = k;
+        while (run < text.length && text[run] === '\\') run++;
+        if ((run - k) % 2 === 0) {
+          k = run;
+        } else if (/^u[0-9A-Fa-f]{4}/.test(text.slice(run, run + 5))) {
+          const c = String.fromCharCode(Number.parseInt(text.slice(run + 1, run + 5), 16));
+          if (c === '"') readUnicodeQuote(run + 5);
+          else if (c !== '\\') readQuoteChar(c, run - 1);
+          k = run + 5;
         } else {
-          k += 2;
+          k = run + 1;
         }
       } else {
-        if (text[k] === '"') {
-          if (shallowerQuote(k)) quoteState = QUOTES_OUTSIDE;
-          else quoteState = quoteState === QUOTES_OUTSIDE ? QUOTES_BARE : QUOTES_OUTSIDE;
-        }
+        readQuoteChar(text[k], k);
         k++;
       }
       quoteStates.fill(before, start, Math.min(k, text.length));
@@ -1976,7 +2041,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     ctx.work += Math.max(0, k - quotesRead);
     if (k > quotesRead) {
       quotesRead = Math.min(k, text.length);
-      quoteStates[quotesRead] = quoteState;
+      quoteStates[quotesRead] = quotes.state;
     }
     allowQuoteWork(work);
     return quoteStates[at] === QUOTES_OUTSIDE;
