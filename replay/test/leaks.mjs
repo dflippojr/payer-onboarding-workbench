@@ -1310,6 +1310,9 @@ const QUOTES_OUTSIDE = 0;
 const QUOTES_VALUE = 1;
 const QUOTES_NAME = 2;
 const QUOTES_ESCAPED = 3;
+/** scanJson's quote states packed with the state in QUOTES_STATE and, in a name, whether it is valid. */
+const QUOTES_STATE = 3;
+const QUOTES_VALID_NAME = 4;
 
 /** Java's Character.isWhitespace, as the Redactor's flattened reading reads whitespace: no no-break space. */
 const isJavaWhitespace = c => /[\t\n\x0B\f\r\x1C-\x1F]/.test(c) || (/[\p{Zs}\p{Zl}\p{Zp}]/u.test(c) && !'\u00A0\u2007\u202F'.includes(c));
@@ -1953,6 +1956,8 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   // of a shallower level ends every string of this one. The state is filled from the start of the view as far as a
   // query has needed, so each index is read once however the scan moves back over a stray quote's span.
   let quoteStates = null;
+  // For each index in a name a bare quote opened: where the name starts (quoteStates holds whether it is valid).
+  let nameStarts = null;
   let quotesRead = 0;
   const quotes = { state: QUOTES_OUTSIDE, depth: 0, arrays: [false], before: '', validName: false, nameStart: 0 };
   // The quote state and the values it opens are read on top of what the other views may spend, as a FLAT copy is
@@ -2002,29 +2007,41 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       if (!isJavaWhitespace(c)) quotes.before = c;
     }
   };
+  // Whether the Redactor's flattened reading turns bare the quote spelled \u0022 that ends at `after`, in quote state
+  // `state` (with, in a name, whether it is valid and where it starts): outside every string, where it opens one; in a
+  // string a \u0022 opened, which it closes; or in a name a bare quote opened, with a colon after it, unless the name is
+  // valid and its part before the quote is no secret name.
+  const flattensAt = (after, state, validName, nameStart) => {
+    if (state === QUOTES_OUTSIDE || state === QUOTES_ESCAPED) return true;
+    if (state !== QUOTES_NAME || !beforeColonAt(after)) return false;
+    if (!validName) return true;
+    const escape = after - 6;
+    // A secret name has at most 64 characters, each at most a six-character escape: a longer part is none, and is not
+    // decoded, so a name holding many such quotes is read in linear work, as in the Redactor.
+    const part = escape - nameStart;
+    if (part > 6 * 64) return false;
+    ctx.work += part;
+    return isSecretKey(decodedName(text.slice(nameStart, escape)));
+  };
   // Reads a quote spelled \u0022 that ends at `after`: it opens, closes or is a string's own (see quoteStates).
   const readUnicodeQuote = after => {
-    let flattens = quotes.state === QUOTES_OUTSIDE || quotes.state === QUOTES_ESCAPED;
-    if (!flattens && quotes.state === QUOTES_NAME && beforeColonAt(after)) {
-      const escape = after - 6;
-      // A secret name has at most 64 characters, each at most a six-character escape: a longer part is none, and is not
-      // decoded, so a name holding many such quotes is read in linear work, as in the Redactor.
-      const part = escape - quotes.nameStart;
-      if (quotes.validName && part <= 6 * 64) ctx.work += part;
-      flattens = !quotes.validName || (part <= 6 * 64 && isSecretKey(decodedName(text.slice(quotes.nameStart, escape))));
-    }
-    if (flattens) {
+    if (flattensAt(after, quotes.state, quotes.validName, quotes.nameStart)) {
       quotes.state = quotes.state === QUOTES_OUTSIDE ? QUOTES_ESCAPED : QUOTES_OUTSIDE;
       quotes.before = '"';
     }
   };
-  const outsideStringsAt = at => {
+  // The current quote state, packed with whether a name being read is valid (QUOTES_VALID_NAME).
+  const packedQuotes = () => quotes.state | (quotes.state === QUOTES_NAME && quotes.validName ? QUOTES_VALID_NAME : 0);
+  // Whether the Redactor's flattened reading turns bare the \u0022 at `at`: the quote state before it, read as far as it.
+  const flattenedAt = at => {
     const work = ctx.work;
     quoteStates ??= new Uint8Array(text.length + 1);
+    nameStarts ??= new Int32Array(text.length + 1);
     let k = quotesRead;
     while (k < at) {
       const start = k;
-      const before = quotes.state;
+      const before = packedQuotes();
+      const nameStart = quotes.nameStart;
       if (text[k] === '\\') {
         // As the Redactor reads a view: an odd backslash run ends in a unicode escape or escapes the character after
         // it, which is not read; an even one is escaped backslashes, and the character after it is read as it is.
@@ -2045,14 +2062,18 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         k++;
       }
       quoteStates.fill(before, start, Math.min(k, text.length));
+      if ((before & QUOTES_STATE) === QUOTES_NAME) nameStarts.fill(nameStart, start, Math.min(k, text.length));
     }
     ctx.work += Math.max(0, k - quotesRead);
     if (k > quotesRead) {
       quotesRead = Math.min(k, text.length);
-      quoteStates[quotesRead] = quotes.state;
+      quoteStates[quotesRead] = packedQuotes();
+      nameStarts[quotesRead] = quotes.nameStart;
     }
+    const packed = quoteStates[at];
+    const flattens = flattensAt(at + 6, packed & QUOTES_STATE, (packed & QUOTES_VALID_NAME) !== 0, nameStarts[at]);
     allowQuoteWork(work);
-    return quoteStates[at] === QUOTES_OUTSIDE;
+    return flattens;
   };
   // Judges the value of secret field `name` whose opening quote is the \u0022 at `from`, a quote the Redactor's
   // flattened reading turns bare (#374). The value ends where a field read with the Redactor's view whitespace ends
@@ -2186,7 +2207,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
           i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) {
-            if (mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0 && outsideStringsAt(i)) {
+            if (mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0 && flattenedAt(i)) {
               // A value that opens with a \u0022 is one the Redactor's flattened reading turns bare where the quotes of
               // this view's own level before it leave it outside every string (#374), in a view of any mode: a string
               // read whole after a stray quote too (#373).
