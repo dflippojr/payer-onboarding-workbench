@@ -1791,17 +1791,21 @@ class RedactorTest {
         // are already right (review on bc95162); the level-case grid holds the level grids' unmasked forms with the value's
         // opening or closing escape spelled with an uppercase U, which the Redactor reads as no escape (review on 98a6d37); the level-flat
         // grid holds a plain-named field whose value's unicode-escaped quote the Redactor turns bare where it closes a name a
-        // stray quote left open, a colon following it (review on 010df1f). Their inputs are the committed files' own, so the exact forms stay
+        // stray quote left open, a colon following it (review on 010df1f); the level-cut grid holds such a value with a quote of a
+        // shallower level inside it, in a text cut at its end, whose Redactor output the scanner must accept. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
-        Map<String, int[]> counts = Map.of("generic-separator-pin-grid", new int[] {48, 9},
-                "generic-separator-miss-grid", new int[] {6111, 1326}, "generic-separator-note-grid", new int[] {369, 180},
-                "generic-separator-mixed-grid", new int[] {1600, 2600},
-                "generic-separator-level-miss-grid", new int[] {640, 1920},
-                "generic-separator-level-over-grid", new int[] {180, 1740},
-                "generic-separator-level-name-grid", new int[] {680, 2200},
-                "generic-separator-level-spelling-grid", new int[] {800, 3640},
-                "generic-separator-level-case-grid", new int[] {1340, 1220},
-                "generic-separator-level-flat-grid", new int[] {4960, 1440});
+        Map<String, int[]> counts = Map.ofEntries(
+                Map.entry("generic-separator-pin-grid", new int[] {48, 9}),
+                Map.entry("generic-separator-miss-grid", new int[] {6111, 1326}),
+                Map.entry("generic-separator-note-grid", new int[] {369, 180}),
+                Map.entry("generic-separator-mixed-grid", new int[] {1600, 2600}),
+                Map.entry("generic-separator-level-miss-grid", new int[] {640, 1920}),
+                Map.entry("generic-separator-level-over-grid", new int[] {180, 1740}),
+                Map.entry("generic-separator-level-name-grid", new int[] {680, 2200}),
+                Map.entry("generic-separator-level-spelling-grid", new int[] {800, 3640}),
+                Map.entry("generic-separator-level-case-grid", new int[] {1340, 1220}),
+                Map.entry("generic-separator-level-flat-grid", new int[] {4960, 1440}),
+                Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
             int masked = 0;

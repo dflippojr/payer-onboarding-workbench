@@ -2314,6 +2314,17 @@ test('reads a value whose unicode-escaped quote closes a name a stray quote left
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('accepts the Redactor output of such a value that holds a quote of a shallower level in a text cut at its end, through all three entry points (#374)', () => {
+  // A differential fuzz on ad9cba6: the Redactor ends a masked value at a quote of a shallower level inside it, and a
+  // view a level down then ends there too, but carries the cut of the text's end. Such fields after stray quotes, with
+  // the name one or two levels down, for every generic secret name, the text cut at its end or not. The Redactor masks
+  // all 2,880; the scanner must flag each and accept each output.
+  const pairs = redactorGrid('generic-separator-level-cut-grid');
+  assert.equal(pairs.length, 2_880);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
