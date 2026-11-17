@@ -982,9 +982,9 @@ const WHOLE = 2;
  * quotes. It is read in place only, for secret-named fields only: the strings it holds and the loose decodes of its
  * text are the views of the MAIN view it was copied from, and the JWKs are judged where Redactor's JWK search finds
  * them. A value there that opens with a quote spelled \u0022 behind more backslashes, a quote of a deeper level, is left
- * to the deeper view that reads it. So is a value whose quote the copy turned bare after a separator still spelled as
- * an escape: the MAIN view judges it by the quote state of its own level (scanJson, #374). So a FLAT copy only adds
- * to what the other views flag, and each MAIN view adds one read of its own length (#339).
+ * to the deeper view that reads it. So is a secret field the MAIN view judged by the quote state of its own level, with
+ * its value opening at the same place (scanJson's ctx.flatJudged, #374); any other field the copy reads as main does.
+ * So a FLAT copy only adds to what the other views flag, and each MAIN view adds one read of its own length (#339).
  */
 const FLAT = 3;
 
@@ -1934,11 +1934,9 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
     return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
-  // Whether the quote at `j` of a FLAT copy is one it turned bare: the scanned text spells it deeper than this level.
-  const flattenedQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') > level;
-  // Whether the quote at `j` is one of this level's own: the scanned text spells it at this level, not at a deeper one
-  // or at none (a quote behind escaped backslashes), which the view a FLAT copy was made from does not read as a quote.
-  const ownQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') === level;
+  // The field of secret name `name` whose value opens at `j`, as a view and its FLAT copies both name it: this level, and
+  // where the scanned text holds the value's opening quote (ctx.flatJudged).
+  const judgedField = (j, name) => `${level}:${toRoot(j)}:${name}`;
   // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
   // than this view's: a quote of a string around this level's JSON, not one of its own.
   const shallowerQuote = j => {
@@ -2218,7 +2216,11 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
           i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) {
-            if (mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0 && flattenedAt(i)) {
+            const unicodeValue = mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0;
+            // This view judges the field whose value opens with a \u0022 here, either way below: a FLAT copy of it defers
+            // that same field, and only that one, to this reading (judgedField).
+            if (unicodeValue) ctx.flatJudged.add(judgedField(i, member.name));
+            if (unicodeValue && flattenedAt(i)) {
               // A value that opens with a \u0022 is one the Redactor's flattened reading turns bare where the quotes of
               // this view's own level before it leave it outside every string (#374), in a view of any mode: a string
               // read whole after a stray quote too (#373).
@@ -2230,13 +2232,11 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
               droppedValueLeaks(member.name, text, next, i, ctx, toRoot, literal.end);
             }
             member = null;
-          } else if (mode === FLAT && text[i] === '"' && text.slice(literal.end + 1, i).includes('\\')
-              && flattenedQuote(i) && ownQuote(literal.start) && ownQuote(literal.end)) {
-            // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and the separator still
-            // holds an escape: the view's own reading of its quote state judges the field there (#374). Read here, it
-            // would be judged wherever a stray quote leaves that \u0022 inside a string, which the Redactor keeps.
-            // Only where the name's own quotes are quotes of this level there too: a name quoted with a \u0022 at either end only this
-            // copy reads, so it is judged here (review on bc95162).
+          } else if (mode === FLAT && text[i] === '"' && ctx.flatJudged.has(judgedField(i, member.name))) {
+            // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and that view judged this
+            // same field by its quote state (#374): read here, it would be judged wherever a stray quote leaves that \u0022
+            // inside a string, which the Redactor keeps. Any field the view did not judge, as one whose name only this copy
+            // reads, is read here as main reads it (reviews on bc95162, Codex security round 1 on ddfd74c).
             member = null;
           } else if (text.slice(next + 1, i).includes('\\')) {
             // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
@@ -2340,7 +2340,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
 function textLeaks(text, level) {
   // kty: where in the text each kty name the texts read at each level hold starts (scanJson).
   // read: the views readNested has read, by level and span in the text.
-  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text, strictNames: new Set(), repairing: false };
+  const ctx = { leaks: [], work: 0, budget: 40 * text.length + 4096, spent: false, unowned: [], kty: [], read: new Map(), text, strictNames: new Set(), repairing: false, flatJudged: new Set() };
   if (level === 0) {
     for (const check of TEXT_CHECKS) {
       if (check.scan) {
