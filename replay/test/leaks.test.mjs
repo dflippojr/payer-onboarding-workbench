@@ -2290,6 +2290,18 @@ test('pins the verdicts main gets right on such a field whose own name is quoted
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('reads a value escape spelled with an uppercase U as no quote, as the Redactor does, through all three entry points (#374, review on 98a6d37)', () => {
+  // Review on 98a6d37: the Redactor's unicode escape takes a lowercase u only, so a value opened or closed with an
+  // uppercase-U escape is not one its flattened reading quotes. The level grids' unmasked forms with that escape spelled
+  // so, at the value's opening or its closing quote: the 2,560 forms the scanner gets right. The Redactor masks 1,340 of
+  // them and keeps 1,220. The other 1,120 such forms, all in the level-over and level-name contexts with the opening
+  // quote so spelled, are kept texts that main flags too.
+  const pairs = redactorGrid('generic-separator-level-case-grid');
+  assert.equal(pairs.length, 2_560);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
