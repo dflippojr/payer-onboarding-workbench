@@ -2220,7 +2220,10 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
             // of this view's own level before it leave it outside every string (#374), in a view of any mode: a string
             // read whole after a stray quote too (#373). That reading only adds to what the scan flags: no other
             // reading of the field is dropped for it, so the scan flags every text main flags (owner decision on #374).
-            if (mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0 && flattenedAt(i)) flatValueLeaks(member.name, i);
+            // A name whose opening quote this view holds escaped is a deeper level's, which the Redactor reads no field of
+            // at this one (its opensAtItsLevel).
+            if (mode !== FLAT && backslashesBefore(text, literal.start) % 2 === 0 && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0
+              && flattenedAt(i)) flatValueLeaks(member.name, i);
             member = null;
           } else if (text.slice(next + 1, i).includes('\\')) {
             // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
