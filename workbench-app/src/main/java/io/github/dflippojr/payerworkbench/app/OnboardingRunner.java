@@ -296,7 +296,7 @@ public class OnboardingRunner {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unknown sampleId: " + request.sampleId()));
         if (!request.faults().isEmpty()) {
-            throw new IllegalArgumentException("Faults only apply to the synthetic payers");
+            throw refuseCustom("Faults only apply to the synthetic payers");
         }
         EndpointGuard guard = new EndpointGuard();
         InMemoryCredentials credentials = new InMemoryCredentials();
@@ -339,6 +339,16 @@ public class OnboardingRunner {
             scope.log.emit(scope, action, "success", "payer", payerId,
                     AuditEvent.Metadata.ofFaults(null, null, payerId, change.audit()));
         }
+    }
+
+    /**
+     * Audits a refused custom endpoint as {@code invalid_custom_endpoint} at the point it is refused, so a run that
+     * passed these checks and then fails with a server error is audited {@code request_failed} instead (#378).
+     */
+    private static IllegalArgumentException refuseCustom(String message) {
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.reasonCode = "invalid_custom_endpoint"; }
+        return new IllegalArgumentException(message);
     }
 
     private static java.net.URI approveDestination(EndpointGuard guard, String label, String url) {
@@ -413,7 +423,7 @@ public class OnboardingRunner {
         AuthType auth = endpoint.authType() == null ? AuthType.NONE : endpoint.authType();
         if (auth != AuthType.NONE && auth != AuthType.OAUTH2_CLIENT_CREDENTIALS && auth != AuthType.CDS_HOOKS_JWT
                 && auth != AuthType.OAUTH2_PRIVATE_KEY_JWT) {
-            throw new IllegalArgumentException("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS, CDS_HOOKS_JWT or OAUTH2_PRIVATE_KEY_JWT");
+            throw refuseCustom("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS, CDS_HOOKS_JWT or OAUTH2_PRIVATE_KEY_JWT");
         }
         String baseUrl = approveDestination(guard, "Base URL", endpoint.baseUrl()).toString();
         ConnectionRecord.Builder builder = ConnectionRecord.builder()
@@ -426,15 +436,15 @@ public class OnboardingRunner {
                 .contactInfo("user-supplied endpoint");
         if (auth == AuthType.NONE) {
             if (isSet(endpoint.credential())) {
-                throw new IllegalArgumentException("authType NONE takes no credential");
+                throw refuseCustom("authType NONE takes no credential");
             }
             return builder.build();
         }
         if (!isSet(endpoint.clientId())) {
-            throw new IllegalArgumentException("clientId is required for " + auth);
+            throw refuseCustom("clientId is required for " + auth);
         }
         if (!isSet(endpoint.credential())) {
-            throw new IllegalArgumentException("credential is required for " + auth);
+            throw refuseCustom("credential is required for " + auth);
         }
         builder.clientId(endpoint.clientId().trim());
         if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
@@ -442,7 +452,7 @@ public class OnboardingRunner {
         }
         if (auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
             if (!isSet(endpoint.keyId())) {
-                throw new IllegalArgumentException("keyId is required for " + auth);
+                throw refuseCustom("keyId is required for " + auth);
             }
             builder.keyId(endpoint.keyId().trim());
         }

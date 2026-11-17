@@ -149,7 +149,8 @@ public class WorkbenchApiController {
         if (request.payerId() == null || request.sampleId() == null) { audit.reasonCode = "missing_input"; }
         else if (audit.sampleId == null) { audit.reasonCode = "unknown_sample"; }
         else if (request.customEndpoint() != null) {
-            audit.reasonCode = properties.customEndpoints().enabled() ? "invalid_custom_endpoint" : "custom_disabled";
+            // The runner sets invalid_custom_endpoint where it refuses the endpoint, so a server error reads request_failed.
+            if (!properties.customEndpoints().enabled()) { audit.reasonCode = "custom_disabled"; }
         } else if (audit.payerId == null) { audit.reasonCode = "unknown_payer"; }
         else if (request.faults().stream().anyMatch(id -> Fault.fromId(id).isEmpty())) { audit.reasonCode = "unknown_fault"; }
     }
