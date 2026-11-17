@@ -101,6 +101,8 @@ class CustomEndpointAuditReasonTest {
                 "clientId", "synthetic-client", "credential", "synthetic-credential")));
         refused.put("credential with NONE", custom(Map.of("baseUrl", UNREACHABLE, "authType", "NONE",
                 "credential", "synthetic-credential")));
+        refused.put("unsupported authType", custom(Map.of("baseUrl", UNREACHABLE, "authType", "API_KEY",
+                "clientId", "synthetic-client", "credential", "synthetic-credential")));
         Map<String, Object> faulted = new LinkedHashMap<>(custom(Map.of("baseUrl", UNREACHABLE, "authType", "NONE")));
         faulted.put("faults", List.of("discovery-500"));
         refused.put("faults on a custom run", faulted);
