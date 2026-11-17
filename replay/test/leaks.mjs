@@ -1928,13 +1928,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
     return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
-  // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
-  // than this view's: a quote of a string around this level's JSON, not one of its own.
   // Whether the quote at `j` of a FLAT copy is one it turned bare: the scanned text spells it deeper than this level.
   const flattenedQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') > level;
   // Whether the quote at `j` is one of this level's own: the scanned text spells it at this level, not at a deeper one
   // or at none (a quote behind escaped backslashes), which the view a FLAT copy was made from does not read as a quote.
   const ownQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') === level;
+  // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
+  // than this view's: a quote of a string around this level's JSON, not one of its own.
   const shallowerQuote = j => {
     if (level === 0) return false;
     const spelling = nameQuoteSpelling(j, ctx, toRoot);
