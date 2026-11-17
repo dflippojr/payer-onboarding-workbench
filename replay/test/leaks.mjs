@@ -1551,21 +1551,61 @@ function redactorViewAt(text, from, depth, ctx) {
   }
   ctx.work += (end - from + 6) * depth;
   if (end >= text.length || end - from > 4096) return null;
-  let view = text.slice(from, end + 6);
-  const normalized = v => v.replace(/\\+/g, (run, at) => {
-    if (run.length % 2 === 0 || !/^u[0-9A-Fa-f]{4}/.test(v.slice(at + run.length, at + run.length + 5))) return run;
-    return `${run.slice(1)}\u0000`;
-  }).replace(/\u0000u([0-9A-Fa-f]{4})/g, (_, hex) => {
-    const c = String.fromCharCode(Number.parseInt(hex, 16));
-    return c === '\\' || c === '"' ? `\\${c}` : c;
-  });
-  const unescaped = v => v.replace(/\\+("?)/g, (run, quote) => {
-    const n = run.length - quote.length;
-    return '\\'.repeat(n >> 1) + (n % 2 === 1 ? (quote ? '"' : '\\') : quote);
-  });
-  view = normalized(view);
-  for (let level = 1; level < depth; level++) view = normalized(unescaped(view));
+  return redactorView(text.slice(from, end + 6), depth);
+}
+
+/** One level of the Redactor's view (redactorViewAt): unicode escapes ending an odd backslash run decoded. */
+const normalizedView = v => v.replace(/\\+/g, (run, at) => {
+  if (run.length % 2 === 0 || !/^u[0-9A-Fa-f]{4}/.test(v.slice(at + run.length, at + run.length + 5))) return run;
+  return `${run.slice(1)}\u0000`;
+}).replace(/\u0000u([0-9A-Fa-f]{4})/g, (_, hex) => {
+  const c = String.fromCharCode(Number.parseInt(hex, 16));
+  return c === '\\' || c === '"' ? `\\${c}` : c;
+});
+
+/** The Redactor's view one level further down (redactorViewAt): one level of escaped backslashes and quotes taken off. */
+const unescapedView = v => v.replace(/\\+("?)/g, (run, quote) => {
+  const n = run.length - quote.length;
+  return '\\'.repeat(n >> 1) + (n % 2 === 1 ? (quote ? '"' : '\\') : quote);
+});
+
+/** `spelling` as the Redactor's view `depth` levels down reads it (redactorViewAt), all of it. */
+function redactorView(spelling, depth) {
+  let view = normalizedView(spelling);
+  for (let level = 1; level < depth; level++) view = normalizedView(unescapedView(view));
   return view;
+}
+
+/**
+ * The escape level at which the Redactor's view of each level (redactorViewAt) first reads `spelling`, a quote's
+ * spelling with its run of backslashes, as a bare quote, or -1. A spelling of no one level (quoteLevelOf), as \\" (an
+ * escaped backslash, then a quote), is read so: its run halved at each level, \\" at the level \\\" is.
+ */
+function viewQuoteLevel(spelling, ctx) {
+  let view = normalizedView(spelling);
+  for (let depth = 1; depth <= MAX_LEVELS; depth++) {
+    ctx.work += view.length;
+    if (view.startsWith('"')) return depth - 1;
+    view = normalizedView(unescapedView(view));
+  }
+  return -1;
+}
+
+/**
+ * Whether the Redactor's view of some level (redactorViewAt) reads `spelling`, a quote's run of backslashes and its
+ * bare quote, as one escaped backslash, then one u005c, then the bare quote: a run whose u005c the view one level down
+ * holds as text, before a quote of a shallower level. A run with more before it holds them in the value, as the
+ * Redactor's mask, which ends before that part of the run, shows. Read up to the level where it is a bare quote.
+ */
+function viewsAsEscapedBackslashes(spelling, ctx) {
+  let view = normalizedView(spelling);
+  for (let depth = 1; depth <= MAX_LEVELS; depth++) {
+    ctx.work += view.length;
+    if (view.startsWith('"')) return false;
+    if (/^\\\\u005[cC]"$/.test(view)) return true;
+    view = normalizedView(unescapedView(view));
+  }
+  return false;
 }
 
 /** A unicode escape of one of LINE_BREAKS, as escapeControls writes a raw one, from its backslash. */
@@ -2074,9 +2114,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       // outside every string, it starts in the string that quote opens (review on d931f68).
       // The level is that of the quotes this view holds bare, as the scanned text spells its first one: a string read
       // whole after a stray quote may hold them a level shallower than the view's own count (review on 8f48a35).
+      // A quote spelled at no one level, an escaped backslash before it, as \\" or \u005c" spell one, is read as the
+      // Redactor's view of each level reads it (redactorViewAt), its run of backslashes halved at each level: \\" is a
+      // quote of the level \\\" is (review on e7f8ff1).
       if (level > 0) ownLevel = bareQuoteLevel();
       const before = level > 0 ? quoteEndingAt(ctx, toRoot(0)) : null;
-      if (before !== null && quoteLevelOf(before) === ownLevel) {
+      const beforeLevel = before === null ? -1 : quoteLevelOf(before);
+      if (before !== null && (beforeLevel === ownLevel || (beforeLevel < 0 && viewQuoteLevel(before, ctx) === ownLevel))) {
         quotes.state = QUOTES_NAME;
         quotes.validName = closesAsNameAt(0);
         quotes.before = '"';
@@ -2161,24 +2205,28 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       return k < end ? k : -1;
     }
     // The view's own closing quote at `end`, or the quote the scanned text holds just after a view that ends inside the
-    // value: where its run (quoteRunStartAt), decoded to the level of the quote its plain backslashes spell, is escaped
-    // backslashes, then one u005c, then that bare quote, which the view decodes into the value, the run is the quote's
-    // spelling, as the Redactor's mask ends before it, and the value ends where it starts. Any other run there, plain
-    // backslashes or a u005c escape before an escaped quote, is the value's own, as the Redactor reads it.
+    // value, where its run (quoteRunStartAt) starts before the place of `end` and holds a u005c escape there, which the
+    // view decodes into the value: the run is the quote's spelling, as the Redactor's mask ends before it, and the value
+    // ends where it starts, when the whole run is a quote that closes the value by the rule above, whether it ends in a
+    // bare quote or u0022 (review on e7f8ff1), or when the Redactor's view of some level reads it as one escaped
+    // backslash, then one u005c, then a bare quote (viewsAsEscapedBackslashes). Any other run there, plain backslashes or a u005c
+    // escape before an escaped quote of the value's level, is the value's own, as the Redactor reads it.
     if (!closes && end < text.length) return -1;
+    // A u005c or u0022 is one of the run where a backslash or another u005c escape comes before it.
+    const escaped = at => source[at - 1] === '\\' || endsBackslashEscape(source, at);
     let q = to;
-    while (source[q] === '\\' || (q > to && /^u005[cC]/.test(source.slice(q, q + 5)))) q += source[q] === '\\' ? 1 : 5;
+    while (source[q] === '\\' || (/^u005[cC]/.test(source.slice(q, q + 5)) && escaped(q))) q += source[q] === '\\' ? 1 : 5;
     ctx.work += q - to + 1;
-    if (source[q] !== '"' && !(q > to && source.startsWith('u0022', q))) return -1;
+    if (source[q] !== '"' && !(source.startsWith('u0022', q) && escaped(q))) return -1;
     const runStart = quoteRunStartAt(source, q);
-    ctx.work += q - runStart;
-    if (source[q] !== '"') return -1;
-    let plain = q;
-    while (plain > runStart && source[plain - 1] === '\\') plain--;
-    const runLevel = quoteLevelOf(source.slice(plain, q + 1));
-    const run = runLevel < 0 ? null : decodedTo(source.slice(runStart, q + 1), runLevel);
-    ctx.work += (q + 1 - runStart) * (runLevel + 1);
-    if (run === null || !/^(?:\\\\)+u005[cC]"$/.test(run)) return -1;
+    const runEnd = q + (source[q] === '"' ? 1 : 5);
+    ctx.work += (runEnd - runStart) * 2;
+    if (runStart >= to || !/u005[cC]/.test(source.slice(runStart, to))) return -1;
+    const spelling = source.slice(runStart, runEnd);
+    const quoteLevel = quoteLevelOf(spelling);
+    if (quoteLevel < 0 || quoteLevel > openingLevel || (quoteLevel === openingLevel && decodedTo(spelling, openingLevel - 1) !== '\\u0022')) {
+      if (source[q] !== '"' || !viewsAsEscapedBackslashes(spelling, ctx)) return -1;
+    }
     while (k < end && toRoot(k) < runStart) {
       ctx.work++;
       k++;
