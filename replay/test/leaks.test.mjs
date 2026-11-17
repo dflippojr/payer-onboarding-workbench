@@ -2190,6 +2190,37 @@ function separatorGridWrong(pairs) {
   return wrong;
 }
 
+/**
+ * Main's verdicts (at f1eb21a, before #374) on each row of #374's level grids and mixed-level probe, a digit per row:
+ * bit 0 for findTextLeaks(text), bit 1 for findTextLeaks of its report form, bit 2 for findJsonLeaks({responseBody}).
+ */
+function mainVerdicts() {
+  const url = new URL('./main-verdicts-374.json.gz', import.meta.url);
+  return JSON.parse(gunzipSync(readFileSync(fileURLToPath(url))).toString('utf8'));
+}
+
+/**
+ * separatorGridWrong for one of #374's level grids, where the scanner keeps every verdict main flags (the owner's
+ * decision on #374, option A): at each entry point the verdict must be the Redactor's, except on a kept text main flags
+ * there, which must stay flagged. Returns the wrong rows and how many verdicts are such kept texts main flags (pinned).
+ */
+function levelGridWrong(name, pairs) {
+  const digits = mainVerdicts()[name];
+  assert.equal(digits.length, pairs.length, name);
+  const wrong = [];
+  let keptAsMain = 0;
+  pairs.forEach(([input, out], row) => {
+    const masked = out !== input;
+    const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
+      .map(leaks => leaks.length > 0);
+    const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0);
+    if (verdicts.some((flagged, entry) => flagged !== expected[entry])) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
+    if (!masked) keptAsMain += expected.filter(Boolean).length;
+    if (masked && findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
+  });
+  return { wrong, keptAsMain };
+}
+
 test('pins the verdicts on the generic-field separator forms #351 resolved (#348)', () => {
   // #344's probe of generic secret fields with an unusual separator around the colon, in an escaped copy after a stray
   // quote and a raw line break, which the Redactor kept then. Since #351 it masks 48 of them and keeps 9, and the
@@ -2250,18 +2281,21 @@ test('flags such a field after a stray quote whose name is escaped and whose val
   // stray quote, which no flattened copy reads.
   const pairs = redactorGrid('generic-separator-level-miss-grid');
   assert.equal(pairs.length, 2_560);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-miss-grid', pairs);
+  assert.equal(keptAsMain, 0, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
-test('accepts such a field whose value is escaped one level below a plain-quoted name where a stray quote leaves that value inside a string, through all three entry points (#374)', () => {
+test('flags such a field whose value is escaped one level below a plain-quoted name where the Redactor masks it, and no kept form main accepts, through all three entry points (#374)', () => {
   // #374's over-flag: a plain-quoted generic secret name, a #348 separator and a value quoted one level down, bare, in
   // prose, after a stray quote and a line break, after two quotes, and inside a string value with bare inner quotes.
   // The Redactor turns the value's unicode-escaped quote bare only where the bare quotes before it leave it outside
-  // every string: for every generic secret name, it masks 180 of these texts and keeps 1,740.
+  // every string: for every generic secret name, it masks 180 of these texts and keeps 1,740. Main flags 300 of the kept
+  // texts at every entry point, and so does the head: removing that over-flag moved to #383 (owner decision on #374).
   const pairs = redactorGrid('generic-separator-level-over-grid');
   assert.equal(pairs.length, 1_920);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-over-grid', pairs);
+  assert.equal(keptAsMain, 900, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -2271,10 +2305,12 @@ test('reads such a field after a name a plain quote opens and a unicode-escaped 
   // its part before that quote is no secret name. After such a name, a generic secret field with a #348 separator and a
   // value quoted one level down is outside every string. Forms: such names, valid and not, secret-named and not, before
   // the field, bare, after a stray quote, in prose and inside a string value, for every generic secret name. The
-  // Redactor masks 680 of these texts and keeps 2,200.
+  // Redactor masks 680 of these texts and keeps 2,200; main flags 280 of the kept texts at every entry point, and so does
+  // the head (#383).
   const pairs = redactorGrid('generic-separator-level-name-grid');
   assert.equal(pairs.length, 2_880);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-name-grid', pairs);
+  assert.equal(keptAsMain, 840, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -2286,7 +2322,8 @@ test('pins the verdicts main gets right on such a field whose own name is quoted
   // whose verdicts main already gets right at every entry point. The Redactor masks 800 of them and keeps 3,640.
   const pairs = redactorGrid('generic-separator-level-spelling-grid');
   assert.equal(pairs.length, 4_440);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-spelling-grid', pairs);
+  assert.equal(keptAsMain, 0, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -2295,10 +2332,12 @@ test('reads a value escape spelled with an uppercase U as no quote, as the Redac
   // uppercase-U escape is not one its flattened reading quotes. The level grids' unmasked forms with that escape spelled
   // so, at the value's opening or its closing quote: the 2,560 forms the scanner gets right. The Redactor masks 1,340 of
   // them and keeps 1,220. The other 1,120 such forms, all in the level-over and level-name contexts with the opening
-  // quote so spelled, are kept texts that main flags too.
+  // quote so spelled, are kept texts that main flags too. Main also flags 580 of this grid's kept texts at every entry
+  // point, and so does the head (#383).
   const pairs = redactorGrid('generic-separator-level-case-grid');
   assert.equal(pairs.length, 2_560);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-case-grid', pairs);
+  assert.equal(keptAsMain, 1_740, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -2307,10 +2346,11 @@ test('reads a value whose unicode-escaped quote closes a name a stray quote left
   // string but also where it closes a name a bare quote opened, a colon following it, or a string another such quote
   // opened. Plain-named fields with a #348 separator and a value so quoted, starting with a colon or not, closed either
   // way or cut, after stray quotes and other prefixes, for every generic secret name. The Redactor masks 4,960 of these
-  // texts and keeps 1,440.
+  // texts and keeps 1,440; main flags 800 of the kept texts at every entry point, and so does the head (#383).
   const pairs = redactorGrid('generic-separator-level-flat-grid');
   assert.equal(pairs.length, 6_400);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-flat-grid', pairs);
+  assert.equal(keptAsMain, 2_400, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -2321,7 +2361,8 @@ test('accepts the Redactor output of such a value that holds a quote of a shallo
   // all 2,880; the scanner must flag each and accept each output.
   const pairs = redactorGrid('generic-separator-level-cut-grid');
   assert.equal(pairs.length, 2_880);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-cut-grid', pairs);
+  assert.equal(keptAsMain, 0, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -2331,47 +2372,34 @@ test('reads a secret name spelled with unicode escapes after a name closed early
   // name starts with an escaped character, and never reads the field; the copy deferred it all the same. Such names, the
   // first character, a middle one or both escaped, in the level-name grid's contexts, for every generic secret name,
   // values closed or cut: the 16,320 forms the scanner gets right. The Redactor masks 3,920 and keeps 12,400. The other
-  // 960 forms main gets wrong too: 800 kept texts it flags and 160 masked texts it misses.
+  // 960 forms main gets wrong too: 800 kept texts it flags and 160 masked texts it misses. Main also flags 720 of this
+  // grid's kept texts at every entry point, and so does the head (#383).
   const pairs = redactorGrid('generic-separator-level-escape-grid');
   assert.equal(pairs.length, 16_320);
-  const wrong = separatorGridWrong(pairs);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-escape-grid', pairs);
+  assert.equal(keptAsMain, 2_160, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
-/**
- * Main's verdicts (at f1eb21a, before #374) on each row of #374's level grids and mixed-level probe, a digit per row:
- * bit 0 for findTextLeaks(text), bit 1 for findTextLeaks of its report form, bit 2 for findJsonLeaks({responseBody}).
- */
-function mainVerdicts() {
-  const url = new URL('./main-verdicts-374.json.gz', import.meta.url);
-  return JSON.parse(gunzipSync(readFileSync(fileURLToPath(url))).toString('utf8'));
-}
-
-test('flags at the head every verdict main flags on the mixed-level probe and the level grids, but the over-flags #374 removes (#374, Codex security round 1 on ddfd74c)', () => {
+test('flags at the head every verdict main flags on the mixed-level probe and the level grids (#374, Codex security round 1 on ddfd74c)', () => {
   // The liaison's guard after Codex security round 1 on ddfd74c: the head flags a superset of what main flags, at all
   // three entry points, over the whole probe and every level grid, so a new miss of the family fails here whatever its
-  // spelling. Main may lose a verdict only on a text the Redactor keeps: an over-flag this PR removes, pinned by count
-  // per grid (the plain-named value one level down after a stray quote or in a string, a name closed early before it,
-  // an uppercase-U escape, a value quote that closes an open name, and escaped secret names after early-closed names).
-  const removed = { probe: 180, miss: 0, over: 900, name: 840, spelling: 0, case: 1_740, flat: 2_400, cut: 0, escape: 2_160 };
+  // spelling. Since the owner's decision on #374 (option A) the scanner only adds readings, so it loses no verdict main
+  // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const [grid, expected] of Object.entries(removed)) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
     assert.equal(digits.length, pairs.length, name);
     const lost = [];
-    let dropped = 0;
     pairs.forEach(([input, out], row) => {
       for (let entry = 0; entry < 3; entry++) {
-        if ((Number(digits[row]) & (1 << entry)) === 0 || entries[entry](input).length > 0) continue;
-        if (out === input) dropped++;
-        else lost.push(`entry ${entry}: ${input}`);
+        if ((Number(digits[row]) & (1 << entry)) !== 0 && entries[entry](input).length === 0) lost.push(`${out === input ? 'kept' : 'masked'} entry ${entry}: ${input}`);
       }
     });
-    assert.deepEqual(lost.slice(0, 5), [], `${name}: ${lost.length} verdicts main flags on masked texts are lost`);
-    assert.equal(dropped, expected, `${name}: over-flags removed`);
+    assert.deepEqual(lost.slice(0, 5), [], `${name}: ${lost.length} verdicts main flags are lost`);
   }
 });
 
@@ -2392,7 +2420,7 @@ function quoteStateTexts() {
   return [
     ['many masked fields after a stray quote', stray + `${masked},`.repeat(n), false],
     ['many masked fields, then an unmasked one', stray + `${masked},`.repeat(n) + unmasked, true],
-    ['many plain-named fields inside a string value', `"x":"${`${overIn},`.repeat(n)}"`, false],
+    ['many plain-named fields inside a string value', `"x":"${`${overIn},`.repeat(n)}"`, true],
     ['many masked plain-named fields', `${overOut},`.repeat(n), false],
     ['a long stray-quote chain, then an unmasked field', 'a "b\n'.repeat(n) + unmasked, true],
     ['a long stray-quote chain, then a masked field', 'a "b\n'.repeat(n) + masked, false],
@@ -2400,7 +2428,7 @@ function quoteStateTexts() {
     ['plain-named fields each after a stray quote', `a "b\n${overIn}\n`.repeat(n), true],
     ['a run of quotes, then an unmasked field', `${'"'.repeat(n)}\n${unmasked}`, true],
     ['masked fields nested six levels deep', nest(stray + `${masked},`.repeat(200), 6), false],
-    ['plain-named fields in a string nested six levels deep', nest(`"x":"${`${overIn},`.repeat(200)}"`, 6), false],
+    ['plain-named fields in a string nested six levels deep', nest(`"x":"${`${overIn},`.repeat(200)}"`, 6), true],
     ['many names closed early by a unicode-escaped quote, each before a field', `{${`${closedIn},`.repeat(n)}"n":1}`, true],
     ['many names closed early by a unicode-escaped quote, each before a masked field', `{${`${closedOut},`.repeat(n)}"n":1}`, false],
     ['a long name holding many unicode-escaped quotes before colons, then a masked field', `{"${`a${'\\'}u0022:`.repeat(n)}":1,${closedOut}}`, false],
@@ -2409,7 +2437,8 @@ function quoteStateTexts() {
 
 test('reads the quote state of each view in linear work, on long texts with many such fields, deep nesting and long stray-quote chains (#374)', () => {
   // The quote state is filled once per view as far as a field needs it, so a view's stray quotes, read again from the
-  // character after each, cost no more. Each verdict is the Redactor's on the same text.
+  // character after each, cost no more. Each verdict is the Redactor's on the same text, but the plain-named fields inside
+  // a string value, nested or not, which main flags too (#383).
   for (const [name, text, flagged] of quoteStateTexts()) {
     scanWork.characters = 0;
     const leaks = findTextLeaks(text);
