@@ -2264,3 +2264,42 @@ test('accepts such a field whose value is escaped one level below a plain-quoted
   const wrong = separatorGridWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
+
+/**
+ * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
+ * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
+ * forms stay in data. Each comes as [name, text, whether it must be flagged].
+ */
+function quoteStateTexts() {
+  const stray = 'he said "\n';
+  const [missIn, missOut] = redactorGrid('generic-separator-level-miss-grid').find(([input, out]) => input !== out && input.startsWith(stray));
+  const [overIn, overOut] = redactorGrid('generic-separator-level-over-grid').find(([input, out]) => input !== out && input.startsWith('{'));
+  const [unmasked, masked] = [missIn, missOut].map(t => t.slice(stray.length));
+  const nest = (t, levels) => (levels === 0 ? t : nest(JSON.stringify({ body: t }), levels - 1));
+  const n = 4_000;
+  return [
+    ['many masked fields after a stray quote', stray + `${masked},`.repeat(n), false],
+    ['many masked fields, then an unmasked one', stray + `${masked},`.repeat(n) + unmasked, true],
+    ['many plain-named fields inside a string value', `"x":"${`${overIn},`.repeat(n)}"`, false],
+    ['many masked plain-named fields', `${overOut},`.repeat(n), false],
+    ['a long stray-quote chain, then an unmasked field', 'a "b\n'.repeat(n) + unmasked, true],
+    ['a long stray-quote chain, then a masked field', 'a "b\n'.repeat(n) + masked, false],
+    ['masked fields each after a stray quote', `a "b\n${masked}\n`.repeat(n), false],
+    ['plain-named fields each after a stray quote', `a "b\n${overIn}\n`.repeat(n), true],
+    ['a run of quotes, then an unmasked field', `${'"'.repeat(n)}\n${unmasked}`, true],
+    ['masked fields nested six levels deep', nest(stray + `${masked},`.repeat(200), 6), false],
+    ['plain-named fields in a string nested six levels deep', nest(`"x":"${`${overIn},`.repeat(200)}"`, 6), false],
+  ];
+}
+
+test('reads the quote state of each view in linear work, on long texts with many such fields, deep nesting and long stray-quote chains (#374)', () => {
+  // The quote state is filled once per view as far as a field needs it, so a view's stray quotes, read again from the
+  // character after each, cost no more. Each verdict is the Redactor's on the same text.
+  for (const [name, text, flagged] of quoteStateTexts()) {
+    scanWork.characters = 0;
+    const leaks = findTextLeaks(text);
+    assert.equal(leaks.length > 0, flagged, `${name}: ${JSON.stringify(leaks.slice(0, 2))}`);
+    assert.ok(!leaks.some(leak => leak.check === 'scan budget spent'), name);
+    assert.ok(scanWork.characters <= 40 * text.length + 4096, `${name}: read ${scanWork.characters} of ${text.length}`);
+  }
+});

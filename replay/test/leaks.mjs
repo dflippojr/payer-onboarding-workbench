@@ -982,8 +982,9 @@ const WHOLE = 2;
  * quotes. It is read in place only, for secret-named fields only: the strings it holds and the loose decodes of its
  * text are the views of the MAIN view it was copied from, and the JWKs are judged where Redactor's JWK search finds
  * them. A value there that opens with a quote spelled \u0022 behind more backslashes, a quote of a deeper level, is left
- * to the deeper view that reads it. So a FLAT copy only adds to what the other views flag, and each MAIN view adds
- * one read of its own length (#339).
+ * to the deeper view that reads it. So is a value whose quote the copy turned bare after a separator still spelled as
+ * an escape: the MAIN view judges it by the quote state of its own level (scanJson, #374). So a FLAT copy only adds
+ * to what the other views flag, and each MAIN view adds one read of its own length (#339).
  */
 const FLAT = 3;
 
@@ -1295,8 +1296,16 @@ const opensMask = (name, text, i) => {
 };
 
 /** Whether a quote spelled \u0022 by one backslash starts at index `i` of `text`. */
-const opensLoneUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
-  ? /^\\u0022/i.test(text.slice(i, i + 6)) && backslashesBefore(text, i) === 0 : false;
+const opensLoneUnicodeQuote = (text, i) => opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0;
+
+/** Whether a quote spelled \u0022 (either hex case) starts at index `i` of `text`, after any backslashes. */
+const opensUnicodeQuote = (text, i) => text[i] === '\\' && (text[i + 1] === 'u' || text[i + 1] === 'U')
+  && /^\\u0022/i.test(text.slice(i, i + 6));
+
+/** scanJson's quote state of a view's own level (#374): outside every string, or in one a bare or a \u0022 quote opened. */
+const QUOTES_OUTSIDE = 0;
+const QUOTES_BARE = 1;
+const QUOTES_ESCAPED = 2;
 
 /**
  * Reads `text`, a MAIN view, once more with each quote it spells \u0022 by one backslash written as a quote: the
@@ -1915,6 +1924,107 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
     return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
+  // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
+  // than this view's: a quote of a string around this level's JSON, not one of its own.
+  const shallowerQuote = j => {
+    if (level === 0) return false;
+    const spelling = nameQuoteSpelling(j, ctx, toRoot);
+    const quoteLevel = spelling === null ? -1 : quoteLevelOf(spelling);
+    return quoteLevel >= 0 && quoteLevel < level;
+  };
+  // The quote state of this view's own level before each index (#374), filled from the start of the view as far as
+  // a query has needed, so each index is read once however the scan moves back over a stray quote's span: outside
+  // every string (QUOTES_OUTSIDE), in one a bare quote opened (QUOTES_BARE), or in one a \u0022 opened (QUOTES_ESCAPED).
+  // A bare quote opens or closes a string, a \u0022 does only outside a string a bare quote opened, as the Redactor's
+  // flattened reading turns one bare only there, and a quote of a shallower level ends every string of this one.
+  let quoteStates = null;
+  let quotesRead = 0;
+  let quoteState = QUOTES_OUTSIDE;
+  // The quote state and the values it opens are read on top of what the other views may spend, as a FLAT copy is
+  // (readFlatCopy): the budget grows by what they spend, up to FLAT_ALLOWANCE times this view's length, so text the
+  // other views read within the budget is not failed closed for them. That keeps the budget linear: each view may add
+  // at most a fixed multiple of its length, which reading it has already spent.
+  let quoteAllowance = FLAT_ALLOWANCE * text.length;
+  const allowQuoteWork = before => {
+    const grant = Math.min(Math.max(0, ctx.work - before), quoteAllowance);
+    quoteAllowance -= grant;
+    ctx.budget += grant;
+  };
+  const outsideStringsAt = at => {
+    const work = ctx.work;
+    quoteStates ??= new Uint8Array(text.length + 1);
+    let k = quotesRead;
+    while (k < at) {
+      const start = k;
+      const before = quoteState;
+      if (text[k] === '\\') {
+        if (opensUnicodeQuote(text, k)) {
+          if (quoteState !== QUOTES_BARE) quoteState = quoteState === QUOTES_OUTSIDE ? QUOTES_ESCAPED : QUOTES_OUTSIDE;
+          k += 6;
+        } else {
+          k += 2;
+        }
+      } else {
+        if (text[k] === '"') {
+          if (shallowerQuote(k)) quoteState = QUOTES_OUTSIDE;
+          else quoteState = quoteState === QUOTES_OUTSIDE ? QUOTES_BARE : QUOTES_OUTSIDE;
+        }
+        k++;
+      }
+      quoteStates.fill(before, start, Math.min(k, text.length));
+    }
+    ctx.work += Math.max(0, k - quotesRead);
+    if (k > quotesRead) {
+      quotesRead = Math.min(k, text.length);
+      quoteStates[quotesRead] = quoteState;
+    }
+    allowQuoteWork(work);
+    return quoteStates[at] === QUOTES_OUTSIDE;
+  };
+  // Judges the value of secret field `name` whose opening quote is the \u0022 at `from`, a quote the Redactor's
+  // flattened reading turns bare (#374). The value ends where a field read with the Redactor's view whitespace ends
+  // (#348): at a closing quote of either spelling; at a backslash before a line break, or at a bare line break, where the
+  // Redactor's view of this level ends a value there (endsAtRawLineBreak), as readLiteral ends one; or before a lone
+  // backslash cut off at the end, which loses nothing its view readings read. Half an escape cut off at the end, or a
+  // value open at the end of a view cut inside it, loses bytes (spacedPending), and so is judged unmasked.
+  const flatValueLeaks = (name, from) => {
+    const work = ctx.work;
+    let k = from + 6;
+    let terminated = false;
+    while (k < text.length) {
+      const c = text[k];
+      if (c === '"' || opensUnicodeQuote(text, k)) {
+        terminated = true;
+        break;
+      }
+      if (LINE_BREAKS.includes(c) && endsAtRawLineBreak(k)) break;
+      if (c === '\\') {
+        if ((LINE_BREAKS.includes(text[k + 1]) || ESCAPED_LINE_BREAK.test(text.slice(k, k + 6))) && endsAtRawLineBreak(k)) break;
+        k += 2;
+      } else {
+        k++;
+      }
+    }
+    const end = Math.min(k, text.length);
+    ctx.work += end - from;
+    let body = text.slice(from + 6, end);
+    let cutEscape = false;
+    if (!terminated) {
+      const repaired = repairedEnd(body);
+      cutEscape = repaired.cutEscape;
+      body = repaired.body;
+    }
+    let value = null;
+    try {
+      value = JSON.parse(`"${escapeControls(body)}"`);
+    } catch {
+      // Undecodable: judged unmasked.
+    }
+    if (value === null || !isMaskedValue(name, value) || spacedPending({ cutEscape, terminated, end })) {
+      failClosed(ctx, 'JSON secret field', text.slice(from, from + 80));
+    }
+    allowQuoteWork(work);
+  };
   const nested = (decoded, literal) => {
     if (decoded === null) {
       // A string that does not decode but may hold JSON cannot be read: a leak, failing closed.
@@ -2003,10 +2113,23 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // an object or array, a number, true or false. Anywhere else they find no field, and neither does main.
           i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) {
-            // Decoding may have left out of this view a value quoted at another escape level than the name, which the
-            // Redactor's mixed reading still masks: it is judged where the scanned text holds it (security round 1 at
-            // 42d0b14).
-            droppedValueLeaks(member.name, text, next, i, ctx, toRoot, literal.end);
+            if (mode !== FLAT && opensLoneUnicodeQuote(text, i) && outsideStringsAt(i)) {
+              // A value that opens with a \u0022 is one the Redactor's flattened reading turns bare where the quotes of
+              // this view's own level before it leave it outside every string (#374), in a view of any mode: a string
+              // read whole after a stray quote too (#373).
+              flatValueLeaks(member.name, i);
+            } else {
+              // Decoding may have left out of this view a value quoted at another escape level than the name, which the
+              // Redactor's mixed reading still masks: it is judged where the scanned text holds it (security round 1 at
+              // 42d0b14).
+              droppedValueLeaks(member.name, text, next, i, ctx, toRoot, literal.end);
+            }
+            member = null;
+          } else if (mode === FLAT && text[i] === '"' && text.slice(literal.end + 1, i).includes('\\')
+              && quoteLevelOf(nameQuoteSpelling(i, ctx, toRoot) ?? '') > level) {
+            // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and the separator still
+            // holds an escape: the view's own reading of its quote state judges the field there (#374). Read here, it
+            // would be judged wherever a stray quote leaves that \u0022 inside a string, which the Redactor keeps.
             member = null;
           } else if (text.slice(next + 1, i).includes('\\')) {
             // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
