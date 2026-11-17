@@ -143,9 +143,12 @@ public class OnboardingRunner {
     /**
      * Runs the steps for {@code request}.
      *
-     * @throws IllegalArgumentException if the payer, sample or a fault id is unknown, or the
-     *                                  {@code slow-response} delay is past {@link WorkbenchProperties#maxSlowResponseDelay()}
-     * @throws PayerBusyException       if another run held the synthetic payer for all of {@code workbench.request-timeout}
+     * @throws RunRejection       if the request is refused before any run starts: a missing or unknown payer, sample
+     *                            or fault id, a {@code slow-response} delay past
+     *                            {@link WorkbenchProperties#maxSlowResponseDelay()}, a refused connection edit or
+     *                            custom endpoint; it carries the audit reason code and the HTTP status
+     * @throws PayerBusyException if another run held the synthetic payer for all of {@code workbench.request-timeout}
+     * @throws RunsBusyException  if {@code workbench.max-concurrent-runs} custom runs are already in flight
      */
     public OnboardingRun run(RunRequest request) {
         return run(request, true);
@@ -184,22 +187,13 @@ public class OnboardingRunner {
     }
 
     private OnboardingRun runScoped(RunRequest request, boolean recordMetrics) {
-        if (request.customEndpoint() != null) {
-            return runCustom(request);
-        }
-        MockPayer payer = payers.payer(request.payerId())
-                .orElseThrow(() -> new IllegalArgumentException("Unknown payerId: " + request.payerId()));
-        SampleMetadata sample = samples.list().stream()
-                .filter(s -> s.id().equals(request.sampleId()))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("Unknown sampleId: " + request.sampleId()));
-        List<Fault> faults = request.faults().stream()
-                .map(id -> Fault.fromId(id).orElseThrow(() -> new IllegalArgumentException("Unknown fault: " + id)))
-                .toList();
-        checkSlowResponseDelay(request);
-        checkSuffix(request, payers.store().findByPayerIdAndEnvironment(request.payerId(), request.environment())
-                .map(ConnectionRecord::baseUrl).orElse(null));
+        ValidatedRun run = validate(request);
+        return run.custom() != null ? runCustom(run) : runSynthetic(run, recordMetrics);
+    }
 
+    private OnboardingRun runSynthetic(ValidatedRun validated, boolean recordMetrics) {
+        RunRequest request = validated.request();
+        MockPayer payer = validated.payer();
         String runId = UUID.randomUUID().toString();
         AuditContext audit = AuditContext.current();
         // Fair, so runs get the payer in the order they asked for it. The wait is at most request-timeout, the
@@ -214,7 +208,8 @@ public class OnboardingRunner {
             held = false;
         }
         if (!held) {
-            throw payerBusy(audit, request.payerId());
+            // The payer was still held when the wait ended, or the wait was interrupted: no run is started.
+            throw new PayerBusyException(request.payerId());
         }
         if (audit != null) { audit.runId = runId; }
         try (MDC.MDCCloseable id = MDC.putCloseable(MDC_RUN_ID, runId);
@@ -224,11 +219,9 @@ public class OnboardingRunner {
             try {
                 setup = payer.faults().change(() -> {
                     payer.faults().clear();
-                    for (Fault fault : faults) {
+                    for (Fault fault : validated.faults()) {
                         if (fault == Fault.SLOW_RESPONSE) {
-                            payer.faults().slowResponse(request.slowResponseDelayMs() == null
-                                    ? properties.slowResponseDelay()
-                                    : Duration.ofMillis(request.slowResponseDelayMs()));
+                            payer.faults().slowResponse(validated.slowResponseDelay());
                         } else {
                             payer.faults().enable(fault);
                         }
@@ -244,7 +237,8 @@ public class OnboardingRunner {
                     .connectTimeout(Duration.ofSeconds(5))
                     .followRedirects(HttpClient.Redirect.NEVER)
                     .build()) {
-                return new Attempt(runId, request, sample, http, payers.credentials(), null, recordMetrics).run();
+                return new Attempt(runId, request, validated.sample(), http, payers.credentials(), null, recordMetrics)
+                        .run();
             }
         } finally {
             try {
@@ -256,56 +250,17 @@ public class OnboardingRunner {
     }
 
     /**
-     * Refuses a {@code slowResponseDelayMs} outside 0 to {@link WorkbenchProperties#maxSlowResponseDelay()}. Above the
-     * maximum, the workbench gives up on the hook call at {@code workbench.request-timeout} but the mock payer would
-     * keep sleeping for the whole delay. A negative delay reaches the mock payer's fault setup, which refuses it only
-     * after the payer lock and once a run id exists (#210), so both bounds are checked here, before any run starts.
-     */
-    private void checkSlowResponseDelay(RunRequest request) {
-        Long delay = request.slowResponseDelayMs();
-        long max = properties.maxSlowResponseDelay().toMillis();
-        if (delay == null || (delay >= 0 && delay <= max)) { return; }
-        AuditContext audit = AuditContext.current();
-        if (audit != null) { audit.reasonCode = "invalid_slow_response_delay"; }
-        throw new IllegalArgumentException(delay < 0
-                ? "slowResponseDelayMs must be between 0 and " + max + " (workbench.request-timeout plus 1 s)"
-                : "slowResponseDelayMs must be at most " + max + " (workbench.request-timeout plus 1 s)");
-    }
-
-    /** The payer was still held when the wait ended, or the wait was interrupted: no run is started. */
-    private static PayerBusyException payerBusy(AuditContext audit, String payerId) {
-        if (audit != null) { audit.reasonCode = "payer_busy"; }
-        return new PayerBusyException(payerId);
-    }
-
-    /**
-     * Runs the steps against a payer the user named. The destination is checked first and the
-     * credential lives in a store made for this run alone, so it is gone when the run returns.
+     * Runs the steps against a payer the user named. The destination was checked when the request was validated,
+     * and the credential lives in a store made for this run alone, so it is gone when the run returns.
      *
-     * @throws IllegalArgumentException if custom endpoints are off, or the endpoint, sample or
-     *                                  credential is not acceptable
-     * @throws RunsBusyException        if {@code workbench.max-concurrent-runs} custom runs are already in flight
+     * @throws RunsBusyException if {@code workbench.max-concurrent-runs} custom runs are already in flight
      */
-    private OnboardingRun runCustom(RunRequest request) {
-        if (!properties.customEndpoints().enabled()) {
-            throw new IllegalArgumentException("Custom endpoints are disabled. Set "
-                    + "workbench.custom-endpoints.enabled=true to run against your own payer endpoint.");
-        }
-        SampleMetadata sample = samples.list().stream()
-                .filter(s -> s.id().equals(request.sampleId()))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("Unknown sampleId: " + request.sampleId()));
-        if (!request.faults().isEmpty()) {
-            throw refuseCustom("Faults only apply to the synthetic payers");
-        }
-        EndpointGuard guard = new EndpointGuard();
-        InMemoryCredentials credentials = new InMemoryCredentials();
-        ConnectionRecord custom = customRecord(request, guard, credentials);
-        checkSuffix(request, custom.baseUrl());
+    private OnboardingRun runCustom(ValidatedRun validated) {
+        RunRequest request = validated.request();
+        CustomEndpointSetup custom = validated.custom();
         AuditContext audit = AuditContext.current();
         if (!customRuns.tryAcquire()) {
-            credentials.remove(CUSTOM_CREDENTIAL_REF);
-            if (audit != null) { audit.reasonCode = "runs_busy"; }
+            custom.forgetCredential();
             throw new RunsBusyException(properties.maxConcurrentRuns());
         }
 
@@ -317,9 +272,10 @@ public class OnboardingRunner {
                      .connectTimeout(Duration.ofSeconds(5))
                      .followRedirects(HttpClient.Redirect.NEVER)
                      .build()) {
-            return new Attempt(runId, request, sample, guard.wrap(http), credentials, custom, true).run();
+            return new Attempt(runId, request, validated.sample(), custom.guard().wrap(http), custom.credentials(),
+                    custom.record(), true).run();
         } finally {
-            credentials.remove(CUSTOM_CREDENTIAL_REF);
+            custom.forgetCredential();
             customRuns.release();
         }
     }
@@ -341,23 +297,91 @@ public class OnboardingRunner {
         }
     }
 
+    // ---- validation ----
+
     /**
-     * Audits a refused custom endpoint as {@code invalid_custom_endpoint} at the point it is refused, so a run that
-     * passed these checks and then fails with a server error is audited {@code request_failed} instead (#378).
+     * A run request that passed every check, with what it names looked up: the synthetic payer, its faults and the
+     * {@code slow-response} delay, or the custom endpoint's setup. The connection edits stay on the request.
+     *
+     * @param payer             the synthetic payer, or null for a custom-endpoint run
+     * @param slowResponseDelay the delay a {@code slow-response} fault uses; null for a custom-endpoint run
+     * @param custom            the custom endpoint's guard, credential store and record, or null for a synthetic run
      */
-    private static IllegalArgumentException refuseCustom(String message) {
-        AuditContext audit = AuditContext.current();
-        if (audit != null) { audit.reasonCode = "invalid_custom_endpoint"; }
-        return new IllegalArgumentException(message);
+    record ValidatedRun(RunRequest request, SampleMetadata sample, MockPayer payer, List<Fault> faults,
+                        Duration slowResponseDelay, CustomEndpointSetup custom) {
     }
 
-    private static java.net.URI approveDestination(EndpointGuard guard, String label, String url) {
-        try { return guard.approve(label, url); }
-        catch (IllegalArgumentException e) {
-            AuditContext audit = AuditContext.current();
-            if (audit != null) { audit.reasonCode = "destination_rejected"; }
-            throw e;
+    static final String CUSTOM_DISABLED = "Custom endpoints are disabled. Set "
+            + "workbench.custom-endpoints.enabled=true to run against your own payer endpoint.";
+
+    /**
+     * Checks {@code request} in the order the workbench always has, and refuses it with the first rule it breaks.
+     * Each refusal carries its audit reason code, which {@link WorkbenchApiController} writes in one place.
+     *
+     * @throws RunRejection if the request breaks a rule
+     */
+    ValidatedRun validate(RunRequest request) {
+        if (request.payerId() == null || request.sampleId() == null) {
+            throw new RunRejection("missing_input", "payerId and sampleId are required");
         }
+        SampleMetadata sample = samples.list().stream()
+                .filter(s -> s.id().equals(request.sampleId()))
+                .findFirst()
+                .orElse(null);
+        return request.customEndpoint() != null ? validateCustom(request, sample) : validateSynthetic(request, sample);
+    }
+
+    private ValidatedRun validateSynthetic(RunRequest request, SampleMetadata sample) {
+        MockPayer payer = payers.payer(request.payerId()).orElse(null);
+        if (payer == null) {
+            // The detail names the payer, but an unknown sample has always been the audited reason (RunRejectionPinTest).
+            throw new RunRejection(sample == null ? "unknown_sample" : "unknown_payer",
+                    "Unknown payerId: " + request.payerId());
+        }
+        if (sample == null) {
+            throw new RunRejection("unknown_sample", "Unknown sampleId: " + request.sampleId());
+        }
+        List<Fault> faults = request.faults().stream()
+                .map(id -> Fault.fromId(id).orElseThrow(() -> new RunRejection("unknown_fault", "Unknown fault: " + id)))
+                .toList();
+        checkSlowResponseDelay(request);
+        checkSuffix(request, payers.store().findByPayerIdAndEnvironment(request.payerId(), request.environment())
+                .map(ConnectionRecord::baseUrl).orElse(null));
+        Duration delay = request.slowResponseDelayMs() == null
+                ? properties.slowResponseDelay()
+                : Duration.ofMillis(request.slowResponseDelayMs());
+        return new ValidatedRun(request, sample, payer, faults, delay, null);
+    }
+
+    private ValidatedRun validateCustom(RunRequest request, SampleMetadata sample) {
+        if (!properties.customEndpoints().enabled()) {
+            // The detail says custom endpoints are off, but an unknown sample has always been the audited reason.
+            throw new RunRejection(sample == null ? "unknown_sample" : "custom_disabled", CUSTOM_DISABLED);
+        }
+        if (sample == null) {
+            throw new RunRejection("unknown_sample", "Unknown sampleId: " + request.sampleId());
+        }
+        if (!request.faults().isEmpty()) {
+            throw CustomEndpointSetup.refuse("Faults only apply to the synthetic payers");
+        }
+        CustomEndpointSetup custom = new CustomEndpointSetup(request);
+        checkSuffix(request, custom.record().baseUrl());
+        return new ValidatedRun(request, sample, null, List.of(), null, custom);
+    }
+
+    /**
+     * Refuses a {@code slowResponseDelayMs} outside 0 to {@link WorkbenchProperties#maxSlowResponseDelay()}. Above the
+     * maximum, the workbench gives up on the hook call at {@code workbench.request-timeout} but the mock payer would
+     * keep sleeping for the whole delay. A negative delay reaches the mock payer's fault setup, which refuses it only
+     * after the payer lock and once a run id exists (#210), so both bounds are checked here, before any run starts.
+     */
+    private void checkSlowResponseDelay(RunRequest request) {
+        Long delay = request.slowResponseDelayMs();
+        long max = properties.maxSlowResponseDelay().toMillis();
+        if (delay == null || (delay >= 0 && delay <= max)) { return; }
+        throw new RunRejection("invalid_slow_response_delay", delay < 0
+                ? "slowResponseDelayMs must be between 0 and " + max + " (workbench.request-timeout plus 1 s)"
+                : "slowResponseDelayMs must be at most " + max + " (workbench.request-timeout plus 1 s)");
     }
 
     private static final String SUFFIX_RULE = "baseUrlSuffix may only add path segments to the base URL: "
@@ -374,9 +398,7 @@ public class OnboardingRunner {
         if (!isSet(suffix)) { return; }
         try { withSuffix(baseUrl == null ? "https://localhost" : baseUrl, suffix); }
         catch (IllegalArgumentException e) {
-            AuditContext audit = AuditContext.current();
-            if (audit != null) { audit.reasonCode = "invalid_connection_edit"; }
-            throw e;
+            throw new RunRejection("invalid_connection_edit", e.getMessage());
         }
     }
 
@@ -416,48 +438,99 @@ public class OnboardingRunner {
         return combined;
     }
 
-    private static final String CUSTOM_CREDENTIAL_REF = "custom-endpoint-credential";
+    // ---- custom endpoint setup ----
 
-    private static ConnectionRecord customRecord(RunRequest request, EndpointGuard guard, InMemoryCredentials credentials) {
-        RunRequest.CustomEndpoint endpoint = request.customEndpoint();
-        AuthType auth = endpoint.authType() == null ? AuthType.NONE : endpoint.authType();
-        if (auth != AuthType.NONE && auth != AuthType.OAUTH2_CLIENT_CREDENTIALS && auth != AuthType.CDS_HOOKS_JWT
-                && auth != AuthType.OAUTH2_PRIVATE_KEY_JWT) {
-            throw refuseCustom("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS, CDS_HOOKS_JWT or OAUTH2_PRIVATE_KEY_JWT");
+    /**
+     * What a custom-endpoint run needs before it starts: the guard that approves and pins its destinations, a
+     * credential store made for this run alone, and the connection record built from the request. Building it
+     * refuses an endpoint, authentication type or credential that is not acceptable.
+     */
+    static final class CustomEndpointSetup {
+        private static final String CREDENTIAL_REF = "custom-endpoint-credential";
+
+        private final EndpointGuard guard = new EndpointGuard();
+        private final InMemoryCredentials credentials = new InMemoryCredentials();
+        private final ConnectionRecord record;
+
+        /** @throws RunRejection if the endpoint, authentication type or credential is not acceptable */
+        CustomEndpointSetup(RunRequest request) {
+            this.record = customRecord(request, guard, credentials);
         }
-        String baseUrl = approveDestination(guard, "Base URL", endpoint.baseUrl()).toString();
-        ConnectionRecord.Builder builder = ConnectionRecord.builder()
-                .payerId(RunRequest.CUSTOM_PAYER_ID)
-                .displayName("Custom endpoint")
-                .environment(request.environment())
-                .baseUrl(baseUrl)
-                .authType(auth)
-                .igVersion(isSet(endpoint.igVersion()) ? endpoint.igVersion().trim() : "2.0.1")
-                .contactInfo("user-supplied endpoint");
-        if (auth == AuthType.NONE) {
-            if (isSet(endpoint.credential())) {
-                throw refuseCustom("authType NONE takes no credential");
+
+        EndpointGuard guard() {
+            return guard;
+        }
+
+        InMemoryCredentials credentials() {
+            return credentials;
+        }
+
+        ConnectionRecord record() {
+            return record;
+        }
+
+        /** Drops the run's credential; called when the run ends or is refused. */
+        void forgetCredential() {
+            credentials.remove(CREDENTIAL_REF);
+        }
+
+        /**
+         * A refused custom endpoint is audited {@code invalid_custom_endpoint}, so a run that passed these checks and
+         * then fails with a server error is audited {@code request_failed} instead (#378).
+         */
+        static RunRejection refuse(String message) {
+            return new RunRejection("invalid_custom_endpoint", message);
+        }
+
+        private static java.net.URI approveDestination(EndpointGuard guard, String label, String url) {
+            try { return guard.approve(label, url); }
+            catch (IllegalArgumentException e) {
+                throw new RunRejection("destination_rejected", e.getMessage());
             }
-            return builder.build();
         }
-        if (!isSet(endpoint.clientId())) {
-            throw refuseCustom("clientId is required for " + auth);
-        }
-        if (!isSet(endpoint.credential())) {
-            throw refuseCustom("credential is required for " + auth);
-        }
-        builder.clientId(endpoint.clientId().trim());
-        if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
-            builder.tokenEndpoint(approveDestination(guard, "Token endpoint", endpoint.tokenEndpoint()).toString());
-        }
-        if (auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
-            if (!isSet(endpoint.keyId())) {
-                throw refuseCustom("keyId is required for " + auth);
+
+        private static ConnectionRecord customRecord(RunRequest request, EndpointGuard guard,
+                                                     InMemoryCredentials credentials) {
+            RunRequest.CustomEndpoint endpoint = request.customEndpoint();
+            AuthType auth = endpoint.authType() == null ? AuthType.NONE : endpoint.authType();
+            if (auth != AuthType.NONE && auth != AuthType.OAUTH2_CLIENT_CREDENTIALS && auth != AuthType.CDS_HOOKS_JWT
+                    && auth != AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+                throw refuse("authType must be NONE, OAUTH2_CLIENT_CREDENTIALS, CDS_HOOKS_JWT or OAUTH2_PRIVATE_KEY_JWT");
             }
-            builder.keyId(endpoint.keyId().trim());
+            String baseUrl = approveDestination(guard, "Base URL", endpoint.baseUrl()).toString();
+            ConnectionRecord.Builder builder = ConnectionRecord.builder()
+                    .payerId(RunRequest.CUSTOM_PAYER_ID)
+                    .displayName("Custom endpoint")
+                    .environment(request.environment())
+                    .baseUrl(baseUrl)
+                    .authType(auth)
+                    .igVersion(isSet(endpoint.igVersion()) ? endpoint.igVersion().trim() : "2.0.1")
+                    .contactInfo("user-supplied endpoint");
+            if (auth == AuthType.NONE) {
+                if (isSet(endpoint.credential())) {
+                    throw refuse("authType NONE takes no credential");
+                }
+                return builder.build();
+            }
+            if (!isSet(endpoint.clientId())) {
+                throw refuse("clientId is required for " + auth);
+            }
+            if (!isSet(endpoint.credential())) {
+                throw refuse("credential is required for " + auth);
+            }
+            builder.clientId(endpoint.clientId().trim());
+            if (auth == AuthType.OAUTH2_CLIENT_CREDENTIALS || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+                builder.tokenEndpoint(approveDestination(guard, "Token endpoint", endpoint.tokenEndpoint()).toString());
+            }
+            if (auth == AuthType.CDS_HOOKS_JWT || auth == AuthType.OAUTH2_PRIVATE_KEY_JWT) {
+                if (!isSet(endpoint.keyId())) {
+                    throw refuse("keyId is required for " + auth);
+                }
+                builder.keyId(endpoint.keyId().trim());
+            }
+            credentials.put(CREDENTIAL_REF, endpoint.credential());
+            return builder.credentialRef(CREDENTIAL_REF).build();
         }
-        credentials.put(CUSTOM_CREDENTIAL_REF, endpoint.credential());
-        return builder.credentialRef(CUSTOM_CREDENTIAL_REF).build();
     }
 
     /** One run's state, passed from step to step. */
