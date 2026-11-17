@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 
 /**
  * One run's turn on a synthetic payer. Faults are switched on at the mock payer for the length of one run, so runs
@@ -30,12 +31,13 @@ final class PayerLease {
         }
 
         /**
-         * Waits for the payer's turn.
+         * Waits for the payer's turn, runs {@code run} with the lease, then resets the payer's faults and gives the
+         * payer to the next run, even if {@code run} or the reset fails.
          *
          * @throws PayerBusyException if the payer was still held when the wait ended, or the wait was interrupted:
          *                            no run is started
          */
-        PayerLease acquire(String payerId, MockPayer payer) {
+        <T> T hold(String payerId, MockPayer payer, Function<PayerLease, T> run) {
             // Fair, so runs get the payer in the order they asked for it. The wait is at most request-timeout, the
             // longest one call of the run ahead can hold the payer, so a queue of slow runs refuses the runs behind
             // it instead of stalling them.
@@ -50,18 +52,25 @@ final class PayerLease {
             if (!held) {
                 throw new PayerBusyException(payerId);
             }
-            return new PayerLease(payerId, payer, lock);
+            PayerLease lease = new PayerLease(payerId, payer);
+            try {
+                return run.apply(lease);
+            } finally {
+                try {
+                    lease.reset();
+                } finally {
+                    lock.unlock();
+                }
+            }
         }
     }
 
     private final String payerId;
     private final MockPayer payer;
-    private final ReentrantLock lock;
 
-    private PayerLease(String payerId, MockPayer payer, ReentrantLock lock) {
+    private PayerLease(String payerId, MockPayer payer) {
         this.payerId = payerId;
         this.payer = payer;
-        this.lock = lock;
     }
 
     /** Switches on the run's faults and nothing else, and audits the change as one snapshot. */
@@ -86,13 +95,9 @@ final class PayerLease {
         auditFaults("fault.run_setup", payerId, setup);
     }
 
-    /** Clears the payer's faults, audits the reset, and gives the payer to the next run, even if the reset fails. */
-    void release() {
-        try {
-            auditFaults("fault.run_reset", payerId, payer.faults().change(payer.faults()::clear));
-        } finally {
-            lock.unlock();
-        }
+    /** Clears the payer's faults and audits the reset. */
+    private void reset() {
+        auditFaults("fault.run_reset", payerId, payer.faults().change(payer.faults()::clear));
     }
 
     /** A setup that could not be applied changed nothing, so before and after are the same state. */
