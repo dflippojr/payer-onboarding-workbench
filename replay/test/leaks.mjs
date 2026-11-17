@@ -2123,12 +2123,75 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     allowQuoteWork(work);
     return flattens;
   };
+  // Where the scanned text closes a value whose body starts at index `start` of this view, which reads it up to `end`:
+  // at the first quote the scanned text holds there at a level shallower than the value's opening quote, or at its
+  // level spelled \u0022 one level down, as the opening quote is: a quote the Redactor's flattened reading turns bare,
+  // where one spelled \" stays an escaped quote inside the value. A quote whose backslash run spells it at no one level,
+  // as an escaped backslash before a shallower quote, ends it too: the Redactor's mask ends where such a run starts. A
+  // string read whole after a stray quote may decode such a quote to an escaped quote or an escaped backslash, or drop
+  // it with the empty string it opens, and the view then reads on past it (review on c3019ff). Where the view `closes`
+  // the value at `end` with a quote, or ends inside it before a quote of the scanned text, the value ends where that
+  // quote's whole run starts there, which may be before the place of `end`. Gives the index of the view where the value ends, or -1. The quotes are read from the
+  // scanned text between the places of the value's first character and of `end`, and charged to the work.
+  const sourceCloseIn = (start, end, closes) => {
+    if (end <= start) return -1;
+    const source = ctx.text;
+    const from = toRoot(start);
+    const opening = quoteEndingAt(ctx, from);
+    const openingLevel = opening === null ? -1 : quoteLevelOf(opening);
+    if (openingLevel < 1) return -1;
+    const to = end < text.length ? toRoot(end) : toRoot(end - 1) + 1;
+    let k = start;
+    for (let p = from; p < to; p++) {
+      ctx.work++;
+      let quoteEnd = -1;
+      if (source[p] === '"') quoteEnd = p + 1;
+      else if (source.startsWith('u0022', p) && (source[p - 1] === '\\' || endsBackslashEscape(source, p))) quoteEnd = p + 5;
+      if (quoteEnd < 0) continue;
+      const runStart = quoteRunStartAt(source, p);
+      ctx.work += (quoteEnd - runStart) * 2;
+      const spelling = source.slice(runStart, quoteEnd);
+      const quoteLevel = quoteLevelOf(spelling);
+      if (quoteLevel > openingLevel) continue;
+      if (quoteLevel === openingLevel && decodedTo(spelling, openingLevel - 1) !== '\\u0022') continue;
+      while (k < end && toRoot(k) < runStart) {
+        ctx.work++;
+        k++;
+      }
+      return k < end ? k : -1;
+    }
+    // The view's own closing quote at `end`, or the quote the scanned text holds just after a view that ends inside the
+    // value: where its run (quoteRunStartAt), decoded to the level of the quote its plain backslashes spell, is escaped
+    // backslashes, then one u005c, then that bare quote, which the view decodes into the value, the run is the quote's
+    // spelling, as the Redactor's mask ends before it, and the value ends where it starts. Any other run there, plain
+    // backslashes or a u005c escape before an escaped quote, is the value's own, as the Redactor reads it.
+    if (!closes && end < text.length) return -1;
+    let q = to;
+    while (source[q] === '\\' || (q > to && /^u005[cC]/.test(source.slice(q, q + 5)))) q += source[q] === '\\' ? 1 : 5;
+    ctx.work += q - to + 1;
+    if (source[q] !== '"' && !(q > to && source.startsWith('u0022', q))) return -1;
+    const runStart = quoteRunStartAt(source, q);
+    ctx.work += q - runStart;
+    if (source[q] !== '"') return -1;
+    let plain = q;
+    while (plain > runStart && source[plain - 1] === '\\') plain--;
+    const runLevel = quoteLevelOf(source.slice(plain, q + 1));
+    const run = runLevel < 0 ? null : decodedTo(source.slice(runStart, q + 1), runLevel);
+    ctx.work += (q + 1 - runStart) * (runLevel + 1);
+    if (run === null || !/^(?:\\\\)+u005[cC]"$/.test(run)) return -1;
+    while (k < end && toRoot(k) < runStart) {
+      ctx.work++;
+      k++;
+    }
+    return k < end ? k : -1;
+  };
   // Judges the value of secret field `name` whose opening quote is the \u0022 at `from`, a quote the Redactor's
   // flattened reading turns bare (#374). The value ends where a field read with the Redactor's view whitespace ends
   // (#348): at a closing quote of either spelling; at a backslash before a line break, or at a bare line break, where the
   // Redactor's view of this level ends a value there (endsAtRawLineBreak), as readLiteral ends one; or before a lone
   // backslash cut off at the end, which loses nothing its view readings read. Half an escape cut off at the end, or a
-  // value open at the end of a view cut inside it, loses bytes (spacedPending), and so is judged unmasked.
+  // value open at the end of a view cut inside it, loses bytes (spacedPending), and so is judged unmasked. It also ends,
+  // as a closed value, where the scanned text closes it before the view does (sourceCloseIn).
   const flatValueLeaks = (name, from) => {
     const work = ctx.work;
     let k = from + 6;
@@ -2147,8 +2210,13 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         k++;
       }
     }
-    const end = Math.min(k, text.length);
+    let end = Math.min(k, text.length);
     ctx.work += end - from;
+    const closed = sourceCloseIn(from + 6, end, terminated);
+    if (closed >= 0) {
+      end = closed;
+      terminated = true;
+    }
     let body = text.slice(from + 6, end);
     let cutEscape = false;
     if (!terminated) {
