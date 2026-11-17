@@ -1789,7 +1789,9 @@ class RedactorTest {
         // (review on fc94026), each for every generic secret name; the level-spelling grid pins such fields whose own name
         // opens and closes with the same or different quote spellings, or with a quote of no level, where main's verdicts
         // are already right (review on bc95162); the level-case grid holds the level grids' unmasked forms with the value's
-        // opening or closing escape spelled with an uppercase U, which the Redactor reads as no escape (review on 98a6d37). Their inputs are the committed files' own, so the exact forms stay
+        // opening or closing escape spelled with an uppercase U, which the Redactor reads as no escape (review on 98a6d37); the level-flat
+        // grid holds a plain-named field whose value's unicode-escaped quote the Redactor turns bare where it closes a name a
+        // stray quote left open, a colon following it (review on 010df1f). Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.of("generic-separator-pin-grid", new int[] {48, 9},
                 "generic-separator-miss-grid", new int[] {6111, 1326}, "generic-separator-note-grid", new int[] {369, 180},
@@ -1798,7 +1800,8 @@ class RedactorTest {
                 "generic-separator-level-over-grid", new int[] {180, 1740},
                 "generic-separator-level-name-grid", new int[] {680, 2200},
                 "generic-separator-level-spelling-grid", new int[] {800, 3640},
-                "generic-separator-level-case-grid", new int[] {1340, 1220});
+                "generic-separator-level-case-grid", new int[] {1340, 1220},
+                "generic-separator-level-flat-grid", new int[] {4960, 1440});
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
             int masked = 0;

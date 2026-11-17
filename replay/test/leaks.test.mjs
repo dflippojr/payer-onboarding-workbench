@@ -2302,6 +2302,18 @@ test('reads a value escape spelled with an uppercase U as no quote, as the Redac
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('reads a value whose unicode-escaped quote closes a name a stray quote left open, through all three entry points (#374, review on 010df1f)', () => {
+  // Review on 010df1f: the Redactor's flattened reading turns a value's unicode-escaped quote bare not only outside every
+  // string but also where it closes a name a bare quote opened, a colon following it, or a string another such quote
+  // opened. Plain-named fields with a #348 separator and a value so quoted, starting with a colon or not, closed either
+  // way or cut, after stray quotes and other prefixes, for every generic secret name. The Redactor masks 4,960 of these
+  // texts and keeps 1,440.
+  const pairs = redactorGrid('generic-separator-level-flat-grid');
+  assert.equal(pairs.length, 6_400);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
