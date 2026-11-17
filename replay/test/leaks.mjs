@@ -489,26 +489,38 @@ function quoteLevelOf(spelling) {
   let s = spelling;
   for (let level = 0; level <= MAX_LEVELS - 1 && s !== null; level++) {
     if (s === '"') return level;
-    const d = new Decoder(`${s}"`, 0, 1);
-    // Collected as codes and joined in chunks: a string grown by one character at a time is mostly garbage for a long
-    // chain of escapes, decoded once per level.
-    let codes = [];
-    for (let c = d.next(); c !== END; c = d.next()) {
-      if (c === BAD) {
-        codes = null;
-        break;
-      }
-      codes.push(c);
-    }
-    let out = null;
-    if (codes !== null) {
-      const chunks = [];
-      for (let i = 0; i < codes.length; i += 8192) chunks.push(String.fromCharCode(...codes.slice(i, i + 8192)));
-      out = chunks.join('');
-    }
-    s = out !== null && d.at() === s.length ? out : null;
+    s = decodeSpelling(s);
   }
   return -1;
+}
+
+/** `s`, part of a quote's spelling, with `levels` levels of escapes taken off, or null. */
+const decodedTo = (s, levels) => {
+  let out = s;
+  for (let k = 0; k < levels && out !== null; k++) out = decodeSpelling(out);
+  return out;
+};
+
+/** `s`, part of a quote's spelling, with one level of escapes taken off, or null where it holds no whole escape. */
+function decodeSpelling(s) {
+  const d = new Decoder(`${s}"`, 0, 1);
+  // Collected as codes and joined in chunks: a string grown by one character at a time is mostly garbage for a long
+  // chain of escapes, decoded once per level.
+  let codes = [];
+  for (let c = d.next(); c !== END; c = d.next()) {
+    if (c === BAD) {
+      codes = null;
+      break;
+    }
+    codes.push(c);
+  }
+  let out = null;
+  if (codes !== null) {
+    const chunks = [];
+    for (let i = 0; i < codes.length; i += 8192) chunks.push(String.fromCharCode(...codes.slice(i, i + 8192)));
+    out = chunks.join('');
+  }
+  return out !== null && d.at() === s.length ? out : null;
 }
 
 /**
@@ -1642,12 +1654,12 @@ const nameQuoteSpelling = (at, ctx, toRoot) => {
 
 /** How the scanned text spells the quote that ends just before index `r`, with the backslash run before it, or null. */
 const quoteEndingAt = (ctx, r) => {
-  let start;
-  if (r > 0 && ctx.text[r - 1] === '"') start = r - 1;
-  else if (r >= 6 && ctx.text.startsWith('u0022', r - 5) && ctx.text[r - 6] === '\\') start = r - 5;
+  let quote;
+  if (r > 0 && ctx.text[r - 1] === '"') quote = r - 1;
+  else if (r >= 6 && ctx.text.startsWith('u0022', r - 5) && (ctx.text[r - 6] === '\\' || endsBackslashEscape(ctx.text, r - 5))) quote = r - 5;
   else return null;
-  let from = start;
-  while (from > 0 && ctx.text[from - 1] === '\\' && start - from < 64) from--;
+  // Its whole backslash run, each backslash also spelled as a u005c escape (quoteRunStartAt; review on 537c8ea).
+  const from = quoteRunStartAt(ctx.text, quote);
   ctx.work += r - from;
   return ctx.text.slice(from, r);
 };
@@ -2068,7 +2080,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         quotes.state = QUOTES_NAME;
         quotes.validName = closesAsNameAt(0);
         quotes.before = '"';
-      } else if (before === '\\'.repeat(2 ** ownLevel) + 'u0022') {
+      } else if (before !== null && quoteLevelOf(before) === ownLevel + 1 && decodedTo(before, ownLevel) === '\\u0022') {
         quotes.state = QUOTES_ESCAPED;
         quotes.before = '"';
       }
