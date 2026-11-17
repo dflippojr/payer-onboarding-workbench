@@ -2390,7 +2390,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose', 'respelled']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2476,6 +2476,21 @@ test('ends a value where the scanned text closes it, though a string read whole 
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('reads such fields with every backslash spelled as a unicode escape as the Redactor does, through all three entry points (#374, review on e7f8ff1)', () => {
+  // Review on e7f8ff1: with every backslash of a text spelled \u005c, a value's closing quote ended a run spelled
+  // through u005c escapes, as u0022 or as the end of a view, which the value reading did not take as the quote's, and a
+  // stray quote after an escaped backslash, a quote of no one level, left a string read whole outside every string
+  // where the Redactor's view reads it at the level of its halved run, so the reading judged a field the Redactor does
+  // not read and its line break as part of the masked value. The level-loose and level-whole grids' inputs and outputs
+  // with every backslash spelled \u005c: the 15,100 forms the scanner gets right. The Redactor masks 5,500 and keeps
+  // 9,600; main flags 360 verdicts on the kept texts, and so does the head. The head at e7f8ff1 got 440 wrong.
+  const pairs = redactorGrid('generic-separator-level-respelled-grid');
+  assert.equal(pairs.length, 15_100);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-respelled-grid', pairs);
+  assert.equal(keptAsMain, 360, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
@@ -2494,6 +2509,8 @@ function quoteStateTexts() {
   // (the level-loose grid's first 4,000 forms start with a stray quote and a line break).
   const [dropped, closed] = [/\[REDACTED]\\"\\":$/, /\[REDACTED]\\{4}u0022,/].map(form => loose.find(out => form.test(out)).slice(2));
   const deepQuotes = `${'\\'.repeat(15)}"`.repeat(4_000);
+  // Review on e7f8ff1: the same with every backslash spelled \u005c, and a stray quote spelled so before the value.
+  const respelled = t => t.replaceAll('\\', '\\u005c');
   const n = 4_000;
   return [
     ['many masked fields after a stray quote', stray + `${masked},`.repeat(n), false],
@@ -2514,6 +2531,9 @@ function quoteStateTexts() {
     ['many masked values closed by their own quote, after a stray quote', `"\n${closed.repeat(n)}`, false],
     ['masked values a string read whole decodes past, nested six levels deep', nest(`"\n${`${dropped},`.repeat(200)}`, 6), false],
     ['a value holding many quotes deeper than its own, after a stray quote', `"\n${dropped.slice(0, dropped.indexOf('[REDACTED]'))}${deepQuotes}`, true],
+    ['many masked values with every backslash spelled as a unicode escape, after a stray quote', `"\n${`${respelled(dropped)},`.repeat(n)}`, false],
+    ['many masked values closed by their own quote spelled through unicode escapes', `"\n${respelled(closed).repeat(n)}`, false],
+    ['masked values after a stray quote spelled through a unicode escape, each to a line break', `${'\\'}u005c"\n${`${respelled(dropped)}\n`.repeat(n)}`, false],
   ];
 }
 

@@ -1803,8 +1803,9 @@ class RedactorTest {
         // their unicode-escaped quotes spelled through an escaped backslash, and some nested five or seven times (review on
         // 537c8ea), the level-loose grid holds such fields after a stray quote whose value's closing quote a string read
         // whole decodes past, held as an escaped quote or backslash or dropped with the empty string after it, or whose
-        // closing quote's backslash run holds a \\u005c escape the view decodes into the value (review on c3019ff), and
-        // the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
+        // closing quote's backslash run holds a \\u005c escape the view decodes into the value (review on c3019ff), the
+        // level-respelled grid holds the level-loose and level-whole grids' inputs and outputs with every backslash
+        // spelled \\u005c (review on e7f8ff1), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
         // against main reads. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.ofEntries(
@@ -1825,6 +1826,7 @@ class RedactorTest {
                 Map.entry("generic-separator-level-whole-grid", new int[] {2420, 4020}),
                 Map.entry("generic-separator-level-spelled-grid", new int[] {1536, 4752}),
                 Map.entry("generic-separator-level-loose-grid", new int[] {4900, 0}),
+                Map.entry("generic-separator-level-respelled-grid", new int[] {5500, 9600}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {6940, 11260}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
