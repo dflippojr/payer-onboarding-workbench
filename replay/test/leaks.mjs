@@ -982,8 +982,9 @@ const WHOLE = 2;
  * quotes. It is read in place only, for secret-named fields only: the strings it holds and the loose decodes of its
  * text are the views of the MAIN view it was copied from, and the JWKs are judged where Redactor's JWK search finds
  * them. A value there that opens with a quote spelled \u0022 behind more backslashes, a quote of a deeper level, is left
- * to the deeper view that reads it. So is a secret field the MAIN view judged by the quote state of its own level, with
- * its value opening at the same place (scanJson's ctx.flatJudged, #374); any other field the copy reads as main does.
+ * to the deeper view that reads it. So is a secret field an anchored view of its level judged by the quote state of that
+ * level, with its value opening at the same place (scanJson's ctx.flatJudged, #374); any other field the copy reads as
+ * main does.
  * So a FLAT copy only adds to what the other views flag, and each MAIN view adds one read of its own length (#339).
  */
 const FLAT = 3;
@@ -1218,7 +1219,8 @@ function decodeLiteral(literal, ctx) {
 }
 
 /** Records a leak the scan found, or a reason it could not read on (failing closed). */
-const failClosed = (ctx, check, text) => ctx.leaks.push({ check, match: text.slice(0, 80) });
+const failClosed = (ctx, check, text, deferKey = null) => ctx.leaks.push(deferKey === null ? { check, match: text.slice(0, 80) }
+  : { check, match: text.slice(0, 80), deferKey });
 
 /**
  * Judges the members a JSON object (or array, or the text around any) held, once it closes or the text ends:
@@ -1234,7 +1236,7 @@ function judge(owner, ctx, secretOnly = false) {
       const masked = value.kind === 'string' ? value.value !== null && isMaskedValue(value.name, value.value) && !value.cutShort
         : value.kind === 'scalar' ? value.value === 'null'
           : value.kind === 'array' && !value.nested && value.items.every(item => isMaskedItem(value.name, item));
-      if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text);
+      if (!masked) failClosed(ctx, value.kind === 'object' || value.kind === 'array' ? 'JSON secret structure' : 'JSON secret field', value.text, value.deferKey ?? null);
     } else if (!secretOnly && isPrivateName(value.name, value.malformed)) {
       const masked = value.kind === 'string' ? (value.value === MASK || value.value === '') && !value.cutShort
         : value.kind === 'scalar' && value.value === 'null';
@@ -1425,7 +1427,7 @@ const FLAT_ALLOWANCE = 8;
  * the scanned text up to it again for each view (Codex security round 1 at 0ab5aeb). A string with no quote and no
  * escape holds nothing to read, so it is neither compared nor kept.
  */
-function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = false) {
+function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = false, whole = false) {
   const quoted = decoded.includes('"');
   if (!quoted && !decoded.includes('\\')) return;
   const span = `${level}:${toRoot(0)}:${decoded.length}`;
@@ -1444,7 +1446,7 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = f
     failClosed(ctx, 'JSON nested past 17 levels', decoded);
     return;
   }
-  const read = quoted ? scanJson(decoded, level, ctx, toRoot, mode, cut) : [];
+  const read = quoted ? scanJson(decoded, level, ctx, toRoot, mode, cut, whole) : [];
   view.read = read;
   if (mode === MAIN) readFlattened(decoded, level, ctx, toRoot, cut);
   // What a view main does not read holds is not read by main either.
@@ -1457,7 +1459,7 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = f
       failClosed(ctx, 'JSON nested past 17 levels', decoded);
       return;
     }
-    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped, cut) : 0, looseView);
+    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped, cut) : 0, looseView, whole);
   }
   // The loose decode's own unicode escapes outside strings decoded may spell an escape Redactor does not read as one
   // (two \u005c escapes become an escaped backslash): the copy repaired at the end of such a view is not read
@@ -1884,7 +1886,7 @@ function jwkLeaks(text, ctx, toRoot, cut) {
  * something no string is) is read again from the character after it, so it cannot shift which quotes open
  * strings for the rest of the text.
  */
-function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
+function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0, whole = false) {
   // Where the scan stops: the end of the text, or where the rest of it is a view already scanned (coveredFrom).
   let stopAt = text.length;
   // Only a JSON object can be a JWK: kty in the text around any JSON, or in an array, makes nothing private, as in
@@ -1934,8 +1936,8 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
     return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
-  // The field of secret name `name` whose value opens at `j`, as a view and its FLAT copies both name it: this level, and
-  // where the scanned text holds the value's opening quote (ctx.flatJudged).
+  // The field of secret name `name` whose value opens at `j`, as every view of this level names it: the level, and where
+  // the scanned text holds the value's opening quote (ctx.flatJudged).
   const judgedField = (j, name) => `${level}:${toRoot(j)}:${name}`;
   // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
   // than this view's: a quote of a string around this level's JSON, not one of its own.
@@ -2138,7 +2140,16 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     // A FLAT copy is read in place only (see FLAT).
     if (mode === FLAT) return;
     const inBody = sourceOffsets(literal.body, ctx, literal.terminated ? decoded.length : Infinity);
-    readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)), mode === MAIN ? MAIN : UNREAD, pending(literal) ? cutOf(literal.body, decoded, literal.end >= text.length ? cut : 0) : 0);
+    // A string a quote of this level opens is anchored: one level down that quote is one of a shallower level, which
+    // resets the Redactor's flattened count, so the string's content starts that count where the Redactor's does
+    // (scanJson's ctx.flatJudged). A quote spelled deeper opens a string the Redactor reads no view of. It is looked up
+    // only when a view below records a field, once.
+    let anchoredAt = null;
+    const anchored = () => {
+      anchoredAt ??= mode === MAIN && quoteLevelOf(nameQuoteSpelling(literal.start, ctx, toRoot) ?? '') === level;
+      return anchoredAt;
+    };
+    readNested(decoded, level + 1, ctx, j => toRoot(literal.start + 1 + inBody(j)), mode === MAIN ? MAIN : UNREAD, pending(literal) ? cutOf(literal.body, decoded, literal.end >= text.length ? cut : 0) : 0, false, anchored);
   };
   let i = 0;
   // Quotes before this index were read as escaped ones inside a string a stray quote opened: a string opened at
@@ -2194,6 +2205,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         if (member) {
           member.owner.values.push({
             name: member.name, malformed: member.malformed, kind: 'string', value: decoded, text: text.slice(literal.start, literal.end + 1), cutShort: false,
+            deferKey: member.deferKey,
           });
         }
         const name = decoded ?? literal.body;
@@ -2217,9 +2229,15 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           i = javaSpaceEnd(text, i, level + 1, ctx, toRoot);
           if (!VIEW_VALUE_START.test(text.slice(i, i + 6))) {
             const unicodeValue = mode !== FLAT && opensUnicodeQuote(text, i) && backslashesBefore(text, i) === 0;
-            // This view judges the field whose value opens with a \u0022 here, either way below: a FLAT copy of it defers
-            // that same field, and only that one, to this reading (judgedField).
-            if (unicodeValue) ctx.flatJudged.add(judgedField(i, member.name));
+            // An anchored view counts the quotes before the field as the Redactor's flattened reading does at this level:
+            // the scanned text, a string a quote of the level above opens, which resets that count, or one decoded whole
+            // from either (`whole`). Where one judges the field whose value opens with a \u0022 here, either way below, a
+            // FLAT copy at this level defers that same field, and only that one, to this reading (judgedField). A view
+            // that starts anywhere else counts from a place the Redactor's reading does not, so it proves nothing (Codex
+            // security round 1 on ddfd74c).
+            if (unicodeValue && mode === MAIN && (whole === true || (typeof whole === 'function' && whole()))) {
+              ctx.flatJudged.add(judgedField(i, member.name));
+            }
             if (unicodeValue && flattenedAt(i)) {
               // A value that opens with a \u0022 is one the Redactor's flattened reading turns bare where the quotes of
               // this view's own level before it leave it outside every string (#374), in a view of any mode: a string
@@ -2232,15 +2250,19 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
               droppedValueLeaks(member.name, text, next, i, ctx, toRoot, literal.end);
             }
             member = null;
-          } else if (mode === FLAT && text[i] === '"' && ctx.flatJudged.has(judgedField(i, member.name))) {
-            // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and that view judged this
-            // same field by its quote state (#374): read here, it would be judged wherever a stray quote leaves that \u0022
-            // inside a string, which the Redactor keeps. Any field the view did not judge, as one whose name only this copy
-            // reads, is read here as main reads it (reviews on bc95162, Codex security round 1 on ddfd74c).
-            member = null;
-          } else if (text.slice(next + 1, i).includes('\\')) {
+          } else {
+            if (mode === FLAT && text[i] === '"' && text.slice(literal.end + 1, i).includes('\\')) {
+              // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and the separator still
+              // holds an escape. Where an anchored view of this level judged this same field by its quote state (#374), that
+              // reading stands: read here, the value would be judged wherever a stray quote leaves that \u0022 inside a
+              // string, which the Redactor keeps. The copy may be read before that view, so it judges the field as main
+              // does and its leak carries the field (deferKey); textLeaks drops such a leak only once that view has judged
+              // the field. Any field no whole view judged, as one whose name only this copy reads, stays flagged as main
+              // flags it (reviews on bc95162, Codex security round 1 on ddfd74c).
+              member.deferKey = judgedField(i, member.name);
+            }
             // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
-            member.viewEnds = true;
+            if (text.slice(next + 1, i).includes('\\')) member.viewEnds = true;
           }
         }
         continue;
@@ -2254,6 +2276,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
           // cut off at the end, and so does the scanner (#348). The fail-closed check reads such a name on its own.
           cutShort: member.spaced ? spacedPending(literal)
             : (literal.terminated && !endsValue(text[literal.end + 1])) || pending(literal),
+          deferKey: member.deferKey,
         });
         member = null;
       } else if (stack.length > 0 && stack[stack.length - 1].list) {
@@ -2352,14 +2375,14 @@ function textLeaks(text, level) {
       }
     }
   }
-  const read = scanJson(text, level, ctx);
+  const read = scanJson(text, level, ctx, j => j, MAIN, 0, true);
   readFlattened(text, level, ctx, j => j, 0);
   // Text with escapes may be the content of a JSON string: text copied from inside one ({\"kty\":...}) has
   // no bare quotes, and an escape chain (u005c after u005c) decodes one level at a time. Read it decoded too, loosely
   // when quoted prose around it makes it no string's content (decodeString).
   if (text.includes('\\')) {
     const { decoded, at, unread, repaired, loose = false } = decodeString(text, ctx, read);
-    if (decoded !== text) readNested(decoded, level + 1, ctx, at, MAIN, 0, loose);
+    if (decoded !== text) readNested(decoded, level + 1, ctx, at, MAIN, 0, loose, true);
     readRepaired(repaired, level + 1, ctx, j => j);
     readUnread(text, unread, level + 1, ctx, j => j);
   }
@@ -2371,7 +2394,9 @@ function textLeaks(text, level) {
     for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
   }
   scanWork.characters += ctx.work;
-  return ctx.leaks;
+  // A FLAT copy's leak on a field a whole view of its level judged by its quote state is that view's to decide (scanJson).
+  return ctx.leaks.filter(leak => leak.deferKey === undefined || !ctx.flatJudged.has(leak.deferKey))
+    .map(leak => (leak.deferKey === undefined ? leak : { check: leak.check, match: leak.match }));
 }
 
 /** Returns one {check, match} per suspected leak in `text`. */
