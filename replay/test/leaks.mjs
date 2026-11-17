@@ -1932,6 +1932,9 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   // than this view's: a quote of a string around this level's JSON, not one of its own.
   // Whether the quote at `j` of a FLAT copy is one it turned bare: the scanned text spells it deeper than this level.
   const flattenedQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') > level;
+  // Whether the quote at `j` is one of this level's own: the scanned text spells it at this level, not at a deeper one
+  // or at none (a quote behind escaped backslashes), which the view a FLAT copy was made from does not read as a quote.
+  const ownQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') === level;
   const shallowerQuote = j => {
     if (level === 0) return false;
     const spelling = nameQuoteSpelling(j, ctx, toRoot);
@@ -2193,11 +2196,11 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
             }
             member = null;
           } else if (mode === FLAT && text[i] === '"' && text.slice(literal.end + 1, i).includes('\\')
-              && flattenedQuote(i) && !flattenedQuote(literal.start) && !flattenedQuote(literal.end)) {
+              && flattenedQuote(i) && ownQuote(literal.start) && ownQuote(literal.end)) {
             // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and the separator still
             // holds an escape: the view's own reading of its quote state judges the field there (#374). Read here, it
             // would be judged wherever a stray quote leaves that \u0022 inside a string, which the Redactor keeps.
-            // Only where the name's own quotes are bare there too: a name quoted with a \u0022 at either end only this
+            // Only where the name's own quotes are quotes of this level there too: a name quoted with a \u0022 at either end only this
             // copy reads, so it is judged here (review on bc95162).
             member = null;
           } else if (text.slice(next + 1, i).includes('\\')) {
