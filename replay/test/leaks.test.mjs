@@ -2281,11 +2281,11 @@ test('reads such a field after a name a plain quote opens and a unicode-escaped 
 test('pins the verdicts main gets right on such a field whose own name is quoted the same or two ways, through all three entry points (#374, review on bc95162)', () => {
   // Review on bc95162: a FLAT copy left every field whose value quote it turned bare to the view it copies, but where
   // the field's name opens or closes with a unicode-escaped quote, only the copy reads it. Such fields, with both name
-  // quotes plain, both escaped or one of each, bare, after a stray quote, in prose, inside a string value and after a
-  // member, for every generic secret name: the 2,880 forms whose verdicts main already gets right at every entry point.
-  // The Redactor masks 680 of them and keeps 2,200.
+  // quotes plain, both escaped, one of each, or one a quote of no level (escaped behind escaped backslashes), bare, after
+  // a stray quote, in prose, inside a string value and after a member, for every generic secret name: the 4,440 forms
+  // whose verdicts main already gets right at every entry point. The Redactor masks 800 of them and keeps 3,640.
   const pairs = redactorGrid('generic-separator-level-spelling-grid');
-  assert.equal(pairs.length, 2_880);
+  assert.equal(pairs.length, 4_440);
   const wrong = separatorGridWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
