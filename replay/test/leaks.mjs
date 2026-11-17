@@ -1640,6 +1640,18 @@ const nameQuoteSpelling = (at, ctx, toRoot) => {
   return m === null ? null : m[0];
 };
 
+/** How the scanned text spells the quote that ends just before index `r`, with the backslash run before it, or null. */
+const quoteEndingAt = (ctx, r) => {
+  let start;
+  if (r > 0 && ctx.text[r - 1] === '"') start = r - 1;
+  else if (r >= 6 && ctx.text.startsWith('u0022', r - 5) && ctx.text[r - 6] === '\\') start = r - 5;
+  else return null;
+  let from = start;
+  while (from > 0 && ctx.text[from - 1] === '\\' && start - from < 64) from--;
+  ctx.work += r - from;
+  return ctx.text.slice(from, r);
+};
+
 /** From a masked value's opening quote: the mask, after a scheme, in group 1, then how it ends, in group 2 if not the text's. */
 const MASKED_CONTENT = new RegExp(String.raw`((?:${SCHEME} )?\[REDACTED\])(?:$|\\*(?=[\n\r\u0085\u2028\u2029])|\\*$|(\\*(?:"|u0022)))`, 'y');
 
@@ -2029,8 +2041,23 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   // Whether the Redactor's flattened reading turns bare the \u0022 at `at`: the quote state before it, read as far as it.
   const flattenedAt = at => {
     const work = ctx.work;
-    quoteStates ??= new Uint8Array(text.length + 1);
-    nameStarts ??= new Int32Array(text.length + 1);
+    if (quoteStates === null) {
+      quoteStates = new Uint8Array(text.length + 1);
+      nameStarts = new Int32Array(text.length + 1);
+      // A view that starts just after a quote of its own level in the scanned text, as a string read whole after a stray
+      // quote may, starts inside the string that quote opens, as the Redactor's flattened reading of the level counts it:
+      // a name, since no colon is read before it. After a quote this level spells \u0022, one the Redactor turns bare
+      // outside every string, it starts in the string that quote opens (review on d931f68).
+      const before = level > 0 ? quoteEndingAt(ctx, toRoot(0)) : null;
+      if (before !== null && quoteLevelOf(before) === level) {
+        quotes.state = QUOTES_NAME;
+        quotes.validName = closesAsNameAt(0);
+        quotes.before = '"';
+      } else if (before === '\\'.repeat(2 ** level) + 'u0022') {
+        quotes.state = QUOTES_ESCAPED;
+        quotes.before = '"';
+      }
+    }
     let k = quotesRead;
     while (k < at) {
       const start = k;
