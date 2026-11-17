@@ -2245,11 +2245,11 @@ test('flags a generic secret field with such a separator whose name and value ar
 test('flags such a field after a stray quote whose name is escaped and whose value is escaped one level more, through all three entry points (#373, #374)', () => {
   // #373: after a stray quote and a raw line break (LF or CRLF), a generic secret field whose name is quoted one or two
   // escape levels down, either spelling, and whose value is quoted one level below the name, with both #348 separator
-  // spellings at the name's level or one below it. The Redactor masks 320 of these texts, where the value's quote is
-  // a unicode escape, and keeps 960. The view that holds the name and value together is a string read whole after the
+  // spellings at the name's level or one below it, for every generic secret name. The Redactor masks 640 of these
+  // texts, where the value's quote is a unicode escape, and keeps 1,920. The view that holds the name and value together is a string read whole after the
   // stray quote, which no flattened copy reads.
   const pairs = redactorGrid('generic-separator-level-miss-grid');
-  assert.equal(pairs.length, 1_280);
+  assert.equal(pairs.length, 2_560);
   const wrong = separatorGridWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
@@ -2258,9 +2258,22 @@ test('accepts such a field whose value is escaped one level below a plain-quoted
   // #374's over-flag: a plain-quoted generic secret name, a #348 separator and a value quoted one level down, bare, in
   // prose, after a stray quote and a line break, after two quotes, and inside a string value with bare inner quotes.
   // The Redactor turns the value's unicode-escaped quote bare only where the bare quotes before it leave it outside
-  // every string: it masks 90 of these texts and keeps 870.
+  // every string: for every generic secret name, it masks 180 of these texts and keeps 1,740.
   const pairs = redactorGrid('generic-separator-level-over-grid');
-  assert.equal(pairs.length, 960);
+  assert.equal(pairs.length, 1_920);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('reads such a field after a name a plain quote opens and a unicode-escaped quote closes before its colon, through all three entry points (#374, review on fc94026)', () => {
+  // Review on fc94026: the Redactor's flattened reading also turns bare a unicode-escaped quote that closes a name a
+  // plain quote opened, where a colon follows it, unless the name closes with a plain quote and a colon of its own and
+  // its part before that quote is no secret name. After such a name, a generic secret field with a #348 separator and a
+  // value quoted one level down is outside every string. Forms: such names, valid and not, secret-named and not, before
+  // the field, bare, after a stray quote, in prose and inside a string value, for every generic secret name. The
+  // Redactor masks 680 of these texts and keeps 2,200.
+  const pairs = redactorGrid('generic-separator-level-name-grid');
+  assert.equal(pairs.length, 2_880);
   const wrong = separatorGridWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
@@ -2275,6 +2288,8 @@ function quoteStateTexts() {
   const [missIn, missOut] = redactorGrid('generic-separator-level-miss-grid').find(([input, out]) => input !== out && input.startsWith(stray));
   const [overIn, overOut] = redactorGrid('generic-separator-level-over-grid').find(([input, out]) => input !== out && input.startsWith('{'));
   const [unmasked, masked] = [missIn, missOut].map(t => t.slice(stray.length));
+  const [nameIn, nameOut] = redactorGrid('generic-separator-level-name-grid').find(([input, out]) => input !== out && input.startsWith('{"note'));
+  const [closedIn, closedOut] = [nameIn, nameOut].map(t => t.slice(1, -1));
   const nest = (t, levels) => (levels === 0 ? t : nest(JSON.stringify({ body: t }), levels - 1));
   const n = 4_000;
   return [
@@ -2289,6 +2304,9 @@ function quoteStateTexts() {
     ['a run of quotes, then an unmasked field', `${'"'.repeat(n)}\n${unmasked}`, true],
     ['masked fields nested six levels deep', nest(stray + `${masked},`.repeat(200), 6), false],
     ['plain-named fields in a string nested six levels deep', nest(`"x":"${`${overIn},`.repeat(200)}"`, 6), false],
+    ['many names closed early by a unicode-escaped quote, each before a field', `{${`${closedIn},`.repeat(n)}"n":1}`, true],
+    ['many names closed early by a unicode-escaped quote, each before a masked field', `{${`${closedOut},`.repeat(n)}"n":1}`, false],
+    ['a long name holding many unicode-escaped quotes before colons, then a masked field', `{"${`a${'\\'}u0022:`.repeat(n)}":1,${closedOut}}`, false],
   ];
 }
 
