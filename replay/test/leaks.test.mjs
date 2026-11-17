@@ -2388,7 +2388,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2414,6 +2414,19 @@ test('reads no such field whose name opens with a quote of a deeper level than i
   assert.equal(pairs.length, 12_780);
   const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-deeper-grid', pairs);
   assert.equal(keptAsMain, 7_335, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('counts the quote a string read after a stray quote starts behind, as the Redactor does, through all three entry points (#374, review on d931f68)', () => {
+  // Review on d931f68: a string read after a stray quote may start just after a quote of its own level, or one that level
+  // turns bare, and the Redactor's flattened reading counts that quote, so a field after it sits inside a string. Such
+  // fields after eight prefixes, with three name quote spellings, three separators, a masked value quoted one or two
+  // levels down and four endings, for every generic secret name: the 2,850 forms the scanner gets right. The Redactor
+  // masks 1,020 and keeps 1,830; main flags 1,035 verdicts on the kept texts, and so does the head.
+  const pairs = redactorGrid('generic-separator-level-slice-grid');
+  assert.equal(pairs.length, 2_850);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-slice-grid', pairs);
+  assert.equal(keptAsMain, 1_035, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 

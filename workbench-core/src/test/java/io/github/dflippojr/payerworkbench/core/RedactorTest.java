@@ -1796,7 +1796,8 @@ class RedactorTest {
         // grid holds a secret name spelled with unicode escapes after an earlier name closed early (Codex security round 1 on
         // ddfd74c), the level-deeper grid holds such fields whose name opens with a quote of a deeper level than the view
         // that reads its value, closed with either spelling, with masked values ending in a quote, a cut escape or nothing
-        // (#374, option A), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
+        // (#374, option A), the level-slice grid holds such fields in a string read after a stray quote and a quote of
+        // the string's own level or one it turns bare (review on d931f68), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
         // against main reads. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.ofEntries(
@@ -1813,6 +1814,7 @@ class RedactorTest {
                 Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}),
                 Map.entry("generic-separator-level-escape-grid", new int[] {3920, 12400}),
                 Map.entry("generic-separator-level-deeper-grid", new int[] {960, 11820}),
+                Map.entry("generic-separator-level-slice-grid", new int[] {1020, 1830}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {6940, 11260}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
