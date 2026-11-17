@@ -2278,6 +2278,18 @@ test('reads such a field after a name a plain quote opens and a unicode-escaped 
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('pins the verdicts main gets right on such a field whose own name is quoted the same or two ways, through all three entry points (#374, review on bc95162)', () => {
+  // Review on bc95162: a FLAT copy left every field whose value quote it turned bare to the view it copies, but where
+  // the field's name opens or closes with a unicode-escaped quote, only the copy reads it. Such fields, with both name
+  // quotes plain, both escaped or one of each, bare, after a stray quote, in prose, inside a string value and after a
+  // member, for every generic secret name: the 2,880 forms whose verdicts main already gets right at every entry point.
+  // The Redactor masks 680 of them and keeps 2,200.
+  const pairs = redactorGrid('generic-separator-level-spelling-grid');
+  assert.equal(pairs.length, 2_880);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
