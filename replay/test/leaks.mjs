@@ -2114,7 +2114,18 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     } catch {
       // Undecodable: judged unmasked.
     }
-    if (value === null || !isMaskedValue(name, value) || spacedPending({ cutEscape, terminated, end })) {
+    // A view cut inside a value may still end where the scanned text holds a quote at the value's opening level or above
+    // it, inside a value it reads whole: that quote closes the value, as the Redactor's mixed reading ends a masked value
+    // (MASKED_CONTENT), so it lost nothing to the cut (differential fuzz on ad9cba6).
+    let closedAfter = false;
+    if (!terminated && cut !== 0 && end >= text.length && end > from + 6) {
+      QUOTE_SPELLING.lastIndex = toRoot(end - 1) + 1;
+      const after = QUOTE_SPELLING.exec(ctx.text);
+      ctx.work += after === null ? 1 : after[0].length;
+      const quoteLevel = after === null ? -1 : quoteLevelOf(after[0]);
+      closedAfter = quoteLevel >= 0 && quoteLevel <= level + 1;
+    }
+    if (value === null || !isMaskedValue(name, value) || spacedPending({ cutEscape, terminated: terminated || closedAfter, end })) {
       failClosed(ctx, 'JSON secret field', text.slice(from, from + 80));
     }
     allowQuoteWork(work);
