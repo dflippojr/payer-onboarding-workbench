@@ -1930,6 +1930,8 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   };
   // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
   // than this view's: a quote of a string around this level's JSON, not one of its own.
+  // Whether the quote at `j` of a FLAT copy is one it turned bare: the scanned text spells it deeper than this level.
+  const flattenedQuote = j => quoteLevelOf(nameQuoteSpelling(j, ctx, toRoot) ?? '') > level;
   const shallowerQuote = j => {
     if (level === 0) return false;
     const spelling = nameQuoteSpelling(j, ctx, toRoot);
@@ -2191,10 +2193,12 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
             }
             member = null;
           } else if (mode === FLAT && text[i] === '"' && text.slice(literal.end + 1, i).includes('\\')
-              && quoteLevelOf(nameQuoteSpelling(i, ctx, toRoot) ?? '') > level) {
+              && flattenedQuote(i) && !flattenedQuote(literal.start) && !flattenedQuote(literal.end)) {
             // A FLAT copy turned this value's quote bare from a \u0022 of the view it copies, and the separator still
             // holds an escape: the view's own reading of its quote state judges the field there (#374). Read here, it
             // would be judged wherever a stray quote leaves that \u0022 inside a string, which the Redactor keeps.
+            // Only where the name's own quotes are bare there too: a name quoted with a \u0022 at either end only this
+            // copy reads, so it is judged here (review on bc95162).
             member = null;
           } else if (text.slice(next + 1, i).includes('\\')) {
             // A separator after the colon still spelled as an escape here leaves the field to the plain view reading too.
