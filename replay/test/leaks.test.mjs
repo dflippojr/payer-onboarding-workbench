@@ -2325,6 +2325,56 @@ test('accepts the Redactor output of such a value that holds a quote of a shallo
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('reads a secret name spelled with unicode escapes after a name closed early, through all three entry points (#374, Codex security round 1 on ddfd74c)', () => {
+  // Codex security round 1 on ddfd74c: after a name a plain quote opens and a unicode-escaped quote closes early, the
+  // view a FLAT copy was made from may read the next secret name's opening quote as that name's closing one, when the
+  // name starts with an escaped character, and never reads the field; the copy deferred it all the same. Such names, the
+  // first character, a middle one or both escaped, in the level-name grid's contexts, for every generic secret name,
+  // values closed or cut: the 16,320 forms the scanner gets right. The Redactor masks 3,920 and keeps 12,400. The other
+  // 960 forms main gets wrong too: 800 kept texts it flags and 160 masked texts it misses.
+  const pairs = redactorGrid('generic-separator-level-escape-grid');
+  assert.equal(pairs.length, 16_320);
+  const wrong = separatorGridWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+/**
+ * Main's verdicts (at f1eb21a, before #374) on each row of #374's level grids and mixed-level probe, a digit per row:
+ * bit 0 for findTextLeaks(text), bit 1 for findTextLeaks of its report form, bit 2 for findJsonLeaks({responseBody}).
+ */
+function mainVerdicts() {
+  const url = new URL('./main-verdicts-374.json.gz', import.meta.url);
+  return JSON.parse(gunzipSync(readFileSync(fileURLToPath(url))).toString('utf8'));
+}
+
+test('flags at the head every verdict main flags on the mixed-level probe and the level grids, but the over-flags #374 removes (#374, Codex security round 1 on ddfd74c)', () => {
+  // The liaison's guard after Codex security round 1 on ddfd74c: the head flags a superset of what main flags, at all
+  // three entry points, over the whole probe and every level grid, so a new miss of the family fails here whatever its
+  // spelling. Main may lose a verdict only on a text the Redactor keeps: an over-flag this PR removes, pinned by count
+  // per grid (the plain-named value one level down after a stray quote or in a string, a name closed early before it,
+  // an uppercase-U escape, a value quote that closes an open name, and escaped secret names after early-closed names).
+  const removed = { probe: 180, miss: 0, over: 900, name: 840, spelling: 0, case: 1_740, flat: 2_400, cut: 0, escape: 2_160 };
+  const verdictsByMain = mainVerdicts();
+  const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
+  for (const [grid, expected] of Object.entries(removed)) {
+    const name = `generic-separator-level-${grid}-grid`;
+    const pairs = redactorGrid(name);
+    const digits = verdictsByMain[name];
+    assert.equal(digits.length, pairs.length, name);
+    const lost = [];
+    let dropped = 0;
+    pairs.forEach(([input, out], row) => {
+      for (let entry = 0; entry < 3; entry++) {
+        if ((Number(digits[row]) & (1 << entry)) === 0 || entries[entry](input).length > 0) continue;
+        if (out === input) dropped++;
+        else lost.push(`entry ${entry}: ${input}`);
+      }
+    });
+    assert.deepEqual(lost.slice(0, 5), [], `${name}: ${lost.length} verdicts main flags on masked texts are lost`);
+    assert.equal(dropped, expected, `${name}: over-flags removed`);
+  }
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
