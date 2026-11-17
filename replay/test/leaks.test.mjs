@@ -2202,7 +2202,8 @@ function mainVerdicts() {
 /**
  * separatorGridWrong for one of #374's level grids, where the scanner keeps every verdict main flags (the owner's
  * decision on #374, option A): at each entry point the verdict must be the Redactor's, except on a kept text main flags
- * there, which must stay flagged. Returns the wrong rows and how many verdicts are such kept texts main flags (pinned).
+ * there, which must stay flagged, and each output the Redactor masks must be accepted at all three entry points (review
+ * on c3019ff). Returns the wrong rows and how many verdicts are such kept texts main flags (pinned).
  */
 function levelGridWrong(name, pairs) {
   const digits = mainVerdicts()[name];
@@ -2216,7 +2217,8 @@ function levelGridWrong(name, pairs) {
     const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0);
     if (verdicts.some((flagged, entry) => flagged !== expected[entry])) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
     if (!masked) keptAsMain += expected.filter(Boolean).length;
-    if (masked && findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
+    const outputFlags = [findTextLeaks(out), findTextLeaks(reportForm(out)), findJsonLeaks({ responseBody: out })].map(leaks => leaks.length > 0);
+    if (masked && outputFlags.some(Boolean)) wrong.push(`output flagged ${outputFlags}: ${out}`);
   });
   return { wrong, keptAsMain };
 }
@@ -2388,7 +2390,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2457,6 +2459,23 @@ test('reads the quote a string starts behind in every spelling and at any depth,
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('ends a value where the scanned text closes it, though a string read whole decodes past that quote, through all three entry points (#374, review on c3019ff)', () => {
+  // Review on c3019ff: in a string read whole after a stray quote, decoding may hold a secret value's closing quote, one
+  // of the value's own level, as an escaped quote or an escaped backslash, or drop a shallower quote with the empty
+  // string it opens. The value reading then read on past the quote that closes the value and flagged the Redactor's
+  // outputs, which main accepts. Such fields after a stray quote and a line break, the name quoted two levels down and
+  // the value three, its quotes spelled through \u005c escapes, closed by its own quote or not, then a shallower quote
+  // and an empty string or another field, for five generic secret names: 4,000 forms. With them, 900 forms whose value,
+  // one level below its name, ends in a quote whose run of backslashes holds a \u005c escape the view decodes into the
+  // value, where the Redactor's mask ends before the run (differential fuzz on the fix for that review). The Redactor masks all 4,900;
+  // the head at c3019ff flagged 2,700 of the outputs at all three entry points.
+  const pairs = redactorGrid('generic-separator-level-loose-grid');
+  assert.equal(pairs.length, 4_900);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-loose-grid', pairs);
+  assert.equal(keptAsMain, 0, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
@@ -2470,6 +2489,11 @@ function quoteStateTexts() {
   const [nameIn, nameOut] = redactorGrid('generic-separator-level-name-grid').find(([input, out]) => input !== out && input.startsWith('{"note'));
   const [closedIn, closedOut] = [nameIn, nameOut].map(t => t.slice(1, -1));
   const nest = (t, levels) => (levels === 0 ? t : nest(JSON.stringify({ body: t }), levels - 1));
+  const loose = redactorGrid('generic-separator-level-loose-grid').map(([, out]) => out).filter(out => out.startsWith('"\n'));
+  // Review on c3019ff: masked values followed by a shallower quote and an empty string, and closed by their own quote
+  // (the level-loose grid's first 4,000 forms start with a stray quote and a line break).
+  const [dropped, closed] = [/\[REDACTED]\\"\\":$/, /\[REDACTED]\\{4}u0022,/].map(form => loose.find(out => form.test(out)).slice(2));
+  const deepQuotes = `${'\\'.repeat(15)}"`.repeat(4_000);
   const n = 4_000;
   return [
     ['many masked fields after a stray quote', stray + `${masked},`.repeat(n), false],
@@ -2486,6 +2510,10 @@ function quoteStateTexts() {
     ['many names closed early by a unicode-escaped quote, each before a field', `{${`${closedIn},`.repeat(n)}"n":1}`, true],
     ['many names closed early by a unicode-escaped quote, each before a masked field', `{${`${closedOut},`.repeat(n)}"n":1}`, false],
     ['a long name holding many unicode-escaped quotes before colons, then a masked field', `{"${`a${'\\'}u0022:`.repeat(n)}":1,${closedOut}}`, false],
+    ['many masked values a string read whole decodes past, after a stray quote', `"\n${`${dropped},`.repeat(n)}`, false],
+    ['many masked values closed by their own quote, after a stray quote', `"\n${closed.repeat(n)}`, false],
+    ['masked values a string read whole decodes past, nested six levels deep', nest(`"\n${`${dropped},`.repeat(200)}`, 6), false],
+    ['a value holding many quotes deeper than its own, after a stray quote', `"\n${dropped.slice(0, dropped.indexOf('[REDACTED]'))}${deepQuotes}`, true],
   ];
 }
 
