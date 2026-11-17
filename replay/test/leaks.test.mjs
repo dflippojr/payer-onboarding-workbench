@@ -2388,7 +2388,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2427,6 +2427,20 @@ test('counts the quote a string read after a stray quote starts behind, as the R
   assert.equal(pairs.length, 2_850);
   const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-slice-grid', pairs);
   assert.equal(keptAsMain, 1_035, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('reads the quotes of a string read whole after a stray quote at the level they are spelled, through all three entry points (#374, review on 8f48a35)', () => {
+  // Review on 8f48a35: a string read whole after a stray quote may hold its quotes a level shallower than the view's own
+  // count, so the quote state took the view's own name quotes for a string around it, and did not count a stray quote of
+  // their level before the view. Such fields after a stray quote at the top level or one level down, with the name at
+  // three levels, the separator at two, a masked value quoted one to three levels down and four endings, for every
+  // generic secret name: the 6,440 forms the scanner gets right. The Redactor masks 2,420 and keeps 4,020; main flags
+  // 1,380 verdicts on the kept texts, and so does the head.
+  const pairs = redactorGrid('generic-separator-level-whole-grid');
+  assert.equal(pairs.length, 6_440);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-whole-grid', pairs);
+  assert.equal(keptAsMain, 1_380, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
