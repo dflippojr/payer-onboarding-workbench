@@ -370,6 +370,9 @@ public final class Redactor {
     /** A private key header, PEM or PGP; group 1 is its label, which the matching footer repeats. */
     private static final Pattern PRIVATE_KEY_HEADER = Pattern.compile("-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
 
+    /** The footer that closes a {@link #PRIVATE_KEY_HEADER} of the same label (group 1). */
+    private static final Pattern PRIVATE_KEY_FOOTER = Pattern.compile("-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
+
     /**
      * Whether {@code text} holds a private key header ({@link #PRIVATE_KEY_HEADER}) with no matching footer after it.
      * In one string of a JSON text, the key material may then be in the strings after it, which the structural path
@@ -379,11 +382,15 @@ public final class Redactor {
         if (!text.contains("-----BEGIN ")) {
             return false;
         }
-        Matcher header = PRIVATE_KEY_HEADER.matcher(text);
+        // Each label's last footer, found in one pass, so the work stays linear however many labels the text holds.
         Map<String, Integer> lastFooter = new HashMap<>();
+        Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
+        while (footer.find()) {
+            lastFooter.put(footer.group(1), footer.start());
+        }
+        Matcher header = PRIVATE_KEY_HEADER.matcher(text);
         while (header.find()) {
-            int footer = lastFooter.computeIfAbsent(header.group(1), label -> text.lastIndexOf("-----END " + label + "-----"));
-            if (footer < header.end()) {
+            if (lastFooter.getOrDefault(header.group(1), -1) < header.end()) {
                 return true;
             }
         }

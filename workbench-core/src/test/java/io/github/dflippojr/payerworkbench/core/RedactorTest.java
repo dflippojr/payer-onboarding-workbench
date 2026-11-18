@@ -1426,27 +1426,34 @@ class RedactorTest {
         // out of this test. Nested once with \\u0022, and twice in any way, main keeps it whole.
         List<UnaryOperator<String>> levels = List.of(RedactorTest::nested, RedactorTest::nestedEscapingQuotes,
                 RedactorTest::nestedEscapingBackslashes);
+        List<String> verdictsByText = new ArrayList<>();
         for (String text : List.of(
                 "{\"x\\\"password\":\"visible\",\"n\":1}",
                 "{\"note\":\"a\",\"x\\\"client_secret\":42}",
                 "{\"a\\\":\\\"password\":\"v\",\"n\":1}")) {
-            // Since #377 stage 1 the text engine also reads each string as the text spells it, and nested, that reading
-            // may mask the value, fail closed; nothing else changes.
+            // Since #377 stage 1 the text engine also reads each string that holds an escape as the text spells it, and
+            // in some of these forms that reading masks the value, fail closed; nothing else changes. The verdict of
+            // each form is pinned: K kept (the same JSON), M only the value masked; once with \\u0022, then each pair of
+            // levels in order.
             String valueMasked = text.replace(":\"visible\"", ":\"[REDACTED]\"").replace(":42", ":\"[REDACTED]\"")
                     .replace(":\"v\"", ":\"[REDACTED]\"");
-            String once = nestedEscapingQuotes(text);
-            String onceOut = Redactor.redact(once);
-            assertTrue(SameJson.same(once, onceOut) || SameJson.same(nestedEscapingQuotes(valueMasked), onceOut),
-                    () -> once + " => " + onceOut);
+            List<UnaryOperator<String>> forms = new ArrayList<>(List.of(RedactorTest::nestedEscapingQuotes));
             for (UnaryOperator<String> a : levels) {
                 for (UnaryOperator<String> b : levels) {
-                    String in = b.apply(a.apply(text));
-                    String out = Redactor.redact(in);
-                    assertTrue(SameJson.same(in, out) || SameJson.same(b.apply(a.apply(valueMasked)), out),
-                            () -> in + " => " + out);
+                    forms.add(t -> b.apply(a.apply(t)));
                 }
             }
+            StringBuilder verdicts = new StringBuilder();
+            for (UnaryOperator<String> form : forms) {
+                String in = form.apply(text);
+                String out = Redactor.redact(in);
+                verdicts.append(SameJson.same(in, out) ? 'K' : SameJson.same(form.apply(valueMasked), out) ? 'M' : '?');
+            }
+            verdictsByText.add(verdicts.toString());
         }
+        // main kept all 30. The inner level escaping quotes with \\u0022 keeps the value; with \\" or \\u005C the reading
+        // as spelled masks it.
+        assertEquals(List.of("KMMMKKKMMM", "KMMMKKKMMM", "KMMMKKKMMM"), verdictsByText);
     }
 
     @Test

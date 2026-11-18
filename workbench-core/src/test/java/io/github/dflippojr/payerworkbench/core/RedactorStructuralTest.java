@@ -272,6 +272,69 @@ class RedactorStructuralTest {
         assertEquals(Map.of("ONE", "ONE"), Redactor.redactTree(Map.of(Labelled.ONE, Labelled.ONE)));
     }
 
+    @Test
+    void copiesACallerObjectThatAppearsTwiceOnce() {
+        AtomicInteger entrySets = new AtomicInteger();
+        Map<String, Object> shared = new AbstractMap<>() {
+            @Override
+            public Set<Map.Entry<String, Object>> entrySet() {
+                entrySets.incrementAndGet();
+                return Map.<String, Object>of("access_token", SECRET).entrySet();
+            }
+        };
+        Map<String, Object> tree = new LinkedHashMap<>();
+        tree.put("a", shared);
+        tree.put("b", List.of(shared, shared));
+        Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
+        assertEquals(1, entrySets.get());
+        assertEquals(Map.of("access_token", Redactor.MASK), out.get("a"));
+        assertEquals(List.of(Map.of("access_token", Redactor.MASK), Map.of("access_token", Redactor.MASK)), out.get("b"));
+    }
+
+    @Test
+    void masksATreeWhoseSharedValuesExpandPastTheBoundQuickly() {
+        // 40 levels of a list holding the level below twice: 2^40 leaves read as a tree, 41 objects to copy.
+        AtomicInteger entrySets = new AtomicInteger();
+        Object level = new AbstractMap<String, Object>() {
+            @Override
+            public Set<Map.Entry<String, Object>> entrySet() {
+                entrySets.incrementAndGet();
+                return Map.<String, Object>of("m", "Bearer " + SECRET).entrySet();
+            }
+        };
+        for (int i = 0; i < 40; i++) {
+            level = List.of(level, level);
+        }
+        Object tree = level;
+        Object out = org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(Duration.ofSeconds(5),
+                () -> Redactor.redactTree(tree));
+        assertEquals(Redactor.MASK, out);
+        assertEquals(1, entrySets.get());
+        // Below the bound, sharing is kept as values: 2^10 leaves.
+        Object small = "Bearer " + SECRET;
+        for (int i = 0; i < 10; i++) {
+            small = List.of(small, small);
+        }
+        assertFalse(String.valueOf(Redactor.redactTree(small)).contains(SECRET));
+    }
+
+    @Test
+    void findsAnUnclosedPrivateKeyAmongManyLabelsInLinearTime() {
+        // Many closed blocks, each with its own label, then one header left open.
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < 16_000; i++) {
+            String label = "X" + Integer.toString(i, 26).toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9]", "")
+                    + " PRIVATE KEY";
+            text.append("-----BEGIN ").append(label).append("-----\\nm\\n-----END ").append(label).append("-----\\n");
+        }
+        String closed = "{\"k\":\"" + text + "\"}";
+        String open = "{\"k\":\"" + text + "-----BEGIN LAST PRIVATE KEY-----\",\"n\":\"" + SECRET + "\"}";
+        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+            assertTrue(Redactor.redact(closed).startsWith("{\"k\":\"-----BEGIN"));
+            assertEquals(Redactor.MASK, Redactor.redact(open));
+        });
+    }
+
     private static String quoted(String text) {
         return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
