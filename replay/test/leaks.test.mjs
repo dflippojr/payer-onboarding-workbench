@@ -2223,6 +2223,35 @@ function levelGridWrong(name, pairs) {
   return { wrong, keptAsMain };
 }
 
+/**
+ * levelGridWrong for #374's generated level grid, where the report form of a text is judged as the Redactor judges that
+ * form (review on dd53a50): where the grid also holds the report form of a kept text or of an output as an input the
+ * Redactor masks, the scanner must flag it at the report-form entry point too; every other output must be accepted at
+ * all three entry points. Returns the wrong rows and how many verdicts are kept texts main flags (pinned).
+ */
+function generatedGridWrong(name, pairs) {
+  const digits = mainVerdicts()[name];
+  assert.equal(digits.length, pairs.length, name);
+  const byInput = new Map(pairs);
+  const masksReportForm = text => byInput.has(reportForm(text)) && byInput.get(reportForm(text)) !== reportForm(text);
+  const wrong = [];
+  let keptAsMain = 0;
+  pairs.forEach(([input, out], row) => {
+    const masked = out !== input;
+    const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
+      .map(leaks => leaks.length > 0);
+    const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0
+      || (entry === 1 && masksReportForm(input)));
+    if (verdicts.some((flagged, entry) => flagged !== expected[entry])) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
+    if (!masked) keptAsMain += expected.filter((flagged, entry) => flagged && (Number(digits[row]) & (1 << entry)) !== 0).length;
+    if (!masked) return;
+    const outputFlags = [findTextLeaks(out), findTextLeaks(reportForm(out)), findJsonLeaks({ responseBody: out })].map(leaks => leaks.length > 0);
+    const outputExpected = [false, masksReportForm(out), false];
+    if (outputFlags.some((flagged, entry) => flagged !== outputExpected[entry])) wrong.push(`output ${outputFlags}: ${out}`);
+  });
+  return { wrong, keptAsMain };
+}
+
 test('pins the verdicts on the generic-field separator forms #351 resolved (#348)', () => {
   // #344's probe of generic secret fields with an unusual separator around the colon, in an escaped copy after a stray
   // quote and a raw line break, which the Redactor kept then. Since #351 it masks 48 of them and keeps 9, and the
@@ -2390,7 +2419,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose', 'respelled', 'chain', 'wrapped']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose', 'respelled', 'chain', 'wrapped', 'generated']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2526,6 +2555,33 @@ test('reads a name quote spelled through unicode-escaped backslashes at its leve
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('reads every spelling of a secret field\'s quotes and of a closing backslash run, at each level and before each kind of end, through all three entry points (#374, review on dd53a50)', () => {
+  // Review on dd53a50: a closing run of no one level whose last quote is one of the string around the value, as an
+  // escaped backslash before a bare quote, the view one level above the value's reads, was judged part of the value
+  // where the view ended inside it, though the Redactor's view of the value's level ends there with a lone backslash
+  // that its field reading drops; and the value reading ended a value at a raw line break only by reading a backslash
+  // run up to its first u005c escape, so a chain of them read as an even run and the line break was read into the value.
+  // Both flagged the Redactor's outputs, which main accepts. Since the liaison's decision after that review, one reader
+  // takes every backslash run, plain or spelled through u005c escapes in any chain (backslashRunAt), and both the closing
+  // check and its fallback read the run's canonical form. The grid is generated: a secret field after a stray quote, in
+  // prose or inside a string value, its name quoted two, three or four levels down and opened with either quote
+  // spelling, its value quoted at the name's level or one deeper, every backslash of the field plain, a u005c escape, or
+  // spelled so at every other level, before every kind of end: a closing quote of the value's or the name's level of
+  // either spelling, a bare quote, one or two backslashes at several levels before a shallower quote, a backslash
+  // chain before a raw line break, an escaped line break, the text's end and half an escape, with or without more text
+  // after it, values masked or not. Of its 166,560 forms these are the 3,096 the head at dd53a50 got wrong, 11,904
+  // of the others evenly spaced, and the report forms the Redactor masks of 1,018 of their kept texts and outputs, which
+  // the scanner must flag where the Redactor does (16,018). Left out, all shared with main and with the head at
+  // dd53a50: 38,061 masked inputs missed at some entry point, 7,014 outputs main flags, and 288 kept texts
+  // whose report form only the Redactor masks. The Redactor masks 11,890 and keeps 4,128; main flags 921 verdicts on
+  // the kept texts, and so does the head. The head at dd53a50 got 3,096 rows wrong, main 9,855.
+  const pairs = redactorGrid('generic-separator-level-generated-grid');
+  assert.equal(pairs.length, 16_018);
+  const { wrong, keptAsMain } = generatedGridWrong('generic-separator-level-generated-grid', pairs);
+  assert.equal(keptAsMain, 921, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
@@ -2551,6 +2607,12 @@ function quoteStateTexts() {
     let k = 0;
     return t.replaceAll('\\', () => (k++ % 2 === 1 ? '\\u005c' : '\\'));
   };
+  // Review on dd53a50: masked values closed by a run of no one level the view one level above the value's reads as an
+  // escaped backslash before a bare quote, and masked values ending in a chain of u005c escapes before a line break
+  // (the level-generated grid's first such outputs after a stray quote and a line break).
+  const generated = redactorGrid('generic-separator-level-generated-grid').map(([, out]) => out).filter(out => out.startsWith('"\n'));
+  const [noLevel, chainBreak] = [/\[REDACTED]\\u005c\\u005c\\u0022$/, /\[REDACTED]\\u005cu005cu005c\n$/]
+    .map(form => generated.find(out => form.test(out)).slice(2));
   const n = 4_000;
   return [
     ['many masked fields after a stray quote', stray + `${masked},`.repeat(n), false],
@@ -2579,6 +2641,8 @@ function quoteStateTexts() {
     ['masked values with every backslash spelled as a unicode escape, nested six levels deep', nest(`"\n${`${respelled(dropped)},`.repeat(200)}`, 6), false],
     ['a value holding many quotes spelled through chains of unicode-escaped backslashes', `"\n${dropped.slice(0, dropped.indexOf('[REDACTED]'))}${`${'\\'}${'u005c'.repeat(8)}u0022`.repeat(n)}`, true],
     ['many masked values with every backslash spelled as a unicode escape, cut inside an escape at the end', `"\n${`${respelled(dropped)},`.repeat(n)}`.slice(0, -3) + '\\u', false],
+    ['many masked values closed by a run of no one level, after a stray quote', `"\n${`${noLevel},`.repeat(n)}`, false],
+    ['many masked values ending in a chain of unicode-escaped backslashes before a line break', `"\n${chainBreak.repeat(n)}`, false],
   ];
 }
 

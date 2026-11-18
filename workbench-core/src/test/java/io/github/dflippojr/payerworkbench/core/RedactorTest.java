@@ -1808,7 +1808,9 @@ class RedactorTest {
         // spelled \\u005c (review on e7f8ff1), the level-chain grid holds such fields with every backslash spelled \\u005c cut
         // just after or inside a masked value's closing quote, and with every other backslash spelled so, the level-wrapped
         // grid holds such fields with their quotes spelled through \\u005c escapes wrapped in one more JSON string (review
-        // on 1e2b532), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
+        // on 1e2b532), the level-generated grid holds such fields generated over every quote and backslash spelling, the
+        // name's and the value's levels and each kind of end, with the report forms the Redactor masks of some kept texts
+        // and outputs (review on dd53a50), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
         // against main reads. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
         Map<String, int[]> counts = Map.ofEntries(
@@ -1832,6 +1834,7 @@ class RedactorTest {
                 Map.entry("generic-separator-level-respelled-grid", new int[] {5500, 9600}),
                 Map.entry("generic-separator-level-chain-grid", new int[] {4060, 3866}),
                 Map.entry("generic-separator-level-wrapped-grid", new int[] {2853, 11192}),
+                Map.entry("generic-separator-level-generated-grid", new int[] {11890, 4128}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {6940, 11260}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
