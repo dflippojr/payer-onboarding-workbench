@@ -1712,6 +1712,19 @@ function backslashRunEnd(ctx, r) {
 }
 
 /**
+ * The whole run of backslashes holding or ending just before index `r` of the scanned text, each plain or a u005c
+ * escape, through chains of them: from where it starts (quoteRunStartAt) to where it ends (backslashRunEnd), or null
+ * when it is longer than QUOTE_RUN_LIMIT: the run quoteSpellingAt reads before a quote, read the same way before a
+ * line break by #374's value reading (flatLineBreakEnds). The characters read are charged to the work.
+ */
+function backslashRunAt(ctx, r) {
+  const start = quoteRunStartAt(ctx.text, r);
+  const end = backslashRunEnd(ctx, start);
+  ctx.work += r - start;
+  return end - start > QUOTE_RUN_LIMIT ? null : { start, end };
+}
+
+/**
  * #374's quote reading, normalised first (owner decision on #374, after the review on 1e2b532): the whole spelling of
  * the quote whose spelling starts at or holds index `r` of the scanned text, read in one way wherever a quote's level is
  * judged. From `r` it reads on over backslashes and u005c escapes, each a unicode escape of one after a backslash or
@@ -2055,6 +2068,18 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
     const run = view === null ? 0 : view.length - view.replace(/^\\+/, '').length;
     return run % 2 === 1 && LINE_BREAKS.includes(view[run]);
   };
+  // endsAtRawLineBreak for #374's value reading (flatValueLeaks), read through the one run reader its quotes are read
+  // with (backslashRunAt): the whole run of backslashes before the line break, each plain or a u005c escape, through
+  // chains of them, as the Redactor's view of this level decodes it (review on dd53a50: read only to the first escape
+  // of a chain, the run looked even and the line break was read into the value).
+  const flatLineBreakEnds = j => {
+    const run = backslashRunAt(ctx, toRoot(j));
+    if (run === null) return false;
+    const view = redactorView(ctx.text.slice(run.start, run.end + 6), level + 1);
+    ctx.work += (run.end - run.start + 6) * (level + 1);
+    const backslashes = view.length - view.replace(/^\\+/, '').length;
+    return backslashes % 2 === 1 && LINE_BREAKS.includes(view[backslashes]);
+  };
   // The escape level of the quotes this view holds bare (bareQuoteLevel), once the quote state needs it.
   let ownLevel = level;
   // Whether the quote at `j`, which this view holds bare, is one the scanned text spells at a shallower escape level
@@ -2261,27 +2286,28 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
       return k < end ? k : -1;
     }
     // The view's own closing quote at `end`, or the quote the scanned text holds just after a view that ends inside the
-    // value, where its run (quoteRunStartAt) starts before the place of `end` and holds a u005c escape there, which the
-    // view decodes into the value: the run is the quote's spelling, as the Redactor's mask ends before it, and the value
-    // ends where it starts, when the whole run is a quote that closes the value by the rule above, whether it ends in a
-    // bare quote or u0022 (review on e7f8ff1), or when the Redactor's view of some level reads it as one escaped
-    // backslash, then one u005c, then a bare quote (viewsAsEscapedBackslashes), whichever way its last quote is spelled
-    // (review on 1e2b532). Any other run there, plain backslashes or a u005c escape before an escaped quote of the
-    // value's level, is the value's own, as the Redactor reads it.
+    // value, where its whole run (quoteSpellingAt) starts before the place of `end`, which the view decodes into the
+    // value: the run is the quote's spelling, as the Redactor's mask ends before it, and the value ends where it starts,
+    // when the run's canonical form (canonicalQuote) closes the value by the rule above, whether it ends in a bare quote
+    // or u0022 and whether its backslashes are plain or u005c escapes (reviews on e7f8ff1 and dd53a50); or when the
+    // Redactor's view of some level reads it as one escaped backslash, then one u005c, then a bare quote
+    // (viewsAsEscapedBackslashes), whichever way its last quote is spelled (review on 1e2b532); or, for a run of no one
+    // level, when the Redactor's view one level above the value's reads it as exactly one escaped backslash and a bare
+    // quote, a quote of the string around the value's, and the view decoded more of it than its first character: the
+    // view of the value's own level then ends at that quote with a lone backslash left, which the Redactor's field
+    // reading drops (its \\?+ before the end), so its mask ends where the run starts (review on dd53a50). Any other run
+    // of no one level holds part of the value there, as the Redactor's mask over it shows.
     if (!closes && end < text.length) return -1;
     const run = quoteSpellingAt(ctx, to);
     if (run === null || run.start >= to) return -1;
-    // The place of `end` is just after where the scanned text starts spelling the view's last character, so it may fall
-    // inside that character's own u005c escape, or just before one its backslash starts: such an escape is before it.
-    let before = to;
-    for (let u = Math.max(run.start + 1, to - 5); u <= to; u++) {
-      const escape = source.startsWith('u005', u) && (source[u + 4] === 'c' || source[u + 4] === 'C');
-      if (escape && escapedAt(source, u)) before = Math.max(before, u + 5);
-    }
-    if (!/u005[cC]/.test(source.slice(run.start, before))) return -1;
     ctx.work += (run.end - run.start) * 2;
     const quote = canonicalQuote(run, ctx);
-    if ((quote.level < 0 || !closesValue(quote)) && !viewsAsEscapedBackslashes(run.spelling, ctx)) return -1;
+    const viewAbove = () => {
+      ctx.work += (run.end - run.start) * (openingLevel - 1);
+      return redactorView(run.spelling, openingLevel - 1);
+    };
+    const dropsLoneBackslash = quote.level < 0 && openingLevel >= 2 && to - run.start > 1 && viewAbove() === '\\\\"';
+    if ((quote.level < 0 || !closesValue(quote)) && !dropsLoneBackslash && !viewsAsEscapedBackslashes(run.spelling, ctx)) return -1;
     const runStart = run.start;
     while (k < end && toRoot(k) < runStart) {
       ctx.work++;
@@ -2292,7 +2318,7 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
   // Judges the value of secret field `name` whose opening quote is the \u0022 at `from`, a quote the Redactor's
   // flattened reading turns bare (#374). The value ends where a field read with the Redactor's view whitespace ends
   // (#348): at a closing quote of either spelling; at a backslash before a line break, or at a bare line break, where the
-  // Redactor's view of this level ends a value there (endsAtRawLineBreak), as readLiteral ends one; or before a lone
+  // Redactor's view of this level ends a value there (flatLineBreakEnds), as readLiteral ends one; or before a lone
   // backslash cut off at the end, which loses nothing its view readings read. Half an escape cut off at the end, or a
   // value open at the end of a view cut inside it, loses bytes (spacedPending), and so is judged unmasked. It also ends,
   // as a closed value, where the scanned text closes it before the view does (sourceCloseIn).
@@ -2306,9 +2332,9 @@ function scanJson(text, level, ctx, toRoot = j => j, mode = MAIN, cut = 0) {
         terminated = true;
         break;
       }
-      if (LINE_BREAKS.includes(c) && endsAtRawLineBreak(k)) break;
+      if (LINE_BREAKS.includes(c) && flatLineBreakEnds(k)) break;
       if (c === '\\') {
-        if ((LINE_BREAKS.includes(text[k + 1]) || ESCAPED_LINE_BREAK.test(text.slice(k, k + 6))) && endsAtRawLineBreak(k)) break;
+        if ((LINE_BREAKS.includes(text[k + 1]) || ESCAPED_LINE_BREAK.test(text.slice(k, k + 6))) && flatLineBreakEnds(k)) break;
         k += 2;
       } else {
         k++;
