@@ -2574,7 +2574,8 @@ test('reads every spelling of a secret field\'s quotes and of a closing backslas
   // the scanner must flag where the Redactor does (16,018). Left out, all shared with main and with the head at
   // dd53a50: 38,061 masked inputs missed at some entry point, 7,014 outputs main flags, and 288 kept texts
   // whose report form only the Redactor masks. The Redactor masks 11,890 and keeps 4,128; main flags 921 verdicts on
-  // the kept texts, and so does the head. The head at dd53a50 got 3,096 rows wrong, main 9,855.
+  // the kept texts, and so does the head. The head at dd53a50 got 3,096 rows wrong (3,096 entries), main 12,848 rows
+  // (13,496 entries, counting a row's input and output apart).
   const pairs = redactorGrid('generic-separator-level-generated-grid');
   assert.equal(pairs.length, 16_018);
   const { wrong, keptAsMain } = generatedGridWrong('generic-separator-level-generated-grid', pairs);
