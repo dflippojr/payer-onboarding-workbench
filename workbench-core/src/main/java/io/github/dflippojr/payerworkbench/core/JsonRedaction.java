@@ -140,11 +140,8 @@ final class JsonRedaction {
         if (reader.opensAKey) {
             throw new UnterminatedKey();
         }
-        // Until stage 2, the text engine also reads each string as the text spells it (redactString); where it masks
-        // nothing in the whole text, it masks nothing in any string of it either.
-        boolean spelled = !Redactor.redact(text, null).equals(text);
         StringBuilder out = new StringBuilder(text.length() + 16);
-        write(redact(root, level, Place.ROOT, spelled), out);
+        write(redact(root, level, Place.ROOT), out);
         return out.append(text, endOfValue(text), text.length()).toString();
     }
 
@@ -314,15 +311,11 @@ final class JsonRedaction {
         }
     }
 
-    /**
-     * {@code node} redacted, at JSON-in-string level {@code level}, in its {@code place}; {@code spelled} if the text
-     * engine masks something in the whole text, so each string is also read as the text spells it.
-     */
-    private static Node redact(Node node, int level, Place place, boolean spelled) {
+    /** {@code node} redacted, at JSON-in-string level {@code level}, in its {@code place}. */
+    private static Node redact(Node node, int level, Place place) {
         if (node instanceof Scalar scalar) {
             return scalar.string()
-                    ? new Scalar(scalar.lead(), true,
-                            redactString(scalar.text(), spelled ? scalar.raw() : null, level, place), null)
+                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), scalar.raw(), level, place), null)
                     : scalar;
         }
         Container container = (Container) node;
@@ -331,7 +324,7 @@ final class JsonRedaction {
         Set<String> names = new HashSet<>();
         for (Member member : container.members()) {
             if (!container.object()) {
-                members.add(new Member(null, null, null, redact(member.value(), level, Place.ITEM, spelled)));
+                members.add(new Member(null, null, null, redact(member.value(), level, Place.ITEM)));
                 continue;
             }
             String name = member.name();
@@ -341,9 +334,9 @@ final class JsonRedaction {
             } else if (jwk && Redactor.JWK_PRIVATE_MEMBERS.contains(name)) {
                 value = maskPrivate(member.value());
             } else {
-                value = redact(member.value(), level, Place.VALUE, spelled);
+                value = redact(member.value(), level, Place.VALUE);
             }
-            String redactedName = redactString(name, spelled ? member.rawName() : null, level, Place.NAME);
+            String redactedName = redactString(name, member.rawName(), level, Place.NAME);
             if (!names.add(redactedName)) {
                 // Two names the redaction made one: the output would not read back as the same JSON.
                 throw new Unreadable();
@@ -362,11 +355,10 @@ final class JsonRedaction {
      * through a spelling that decoding removes (a quote spelled as an escape of an escape, say) is masked too. If it
      * masks anything there, the string it leaves is decoded and redacted instead, and if what it leaves is no longer one
      * JSON string in that place, the whole string is the mask. So no string keeps anything the text engine masks in it.
-     * With no {@code raw} spelling (the text engine masks nothing in the whole text), or one with no backslash (the
-     * decoded string in quotes), only the decoded string is read.
+     * A spelling with no backslash is the decoded string in quotes, so only the decoded string is read.
      */
     private static String redactString(String decoded, String raw, int level, Place place) {
-        if (raw == null || raw.indexOf('\\') < 0) {
+        if (raw.indexOf('\\') < 0) {
             // No escape in the spelling: it is the decoded string in quotes, with no spelling for decoding to remove.
             return Redactor.redactAt(decoded, level + 1);
         }
