@@ -2390,7 +2390,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
   // flags, on masked texts or kept ones (removing over-flags moved to #383).
   const verdictsByMain = mainVerdicts();
   const entries = [t => findTextLeaks(t), t => findTextLeaks(reportForm(t)), t => findJsonLeaks({ responseBody: t })];
-  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose', 'respelled']) {
+  for (const grid of ['probe', 'miss', 'over', 'name', 'spelling', 'case', 'flat', 'cut', 'escape', 'deeper', 'slice', 'whole', 'spelled', 'loose', 'respelled', 'chain', 'wrapped']) {
     const name = `generic-separator-level-${grid}-grid`;
     const pairs = redactorGrid(name);
     const digits = verdictsByMain[name];
@@ -2491,6 +2491,41 @@ test('reads such fields with every backslash spelled as a unicode escape as the 
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
+test('reads a closing quote spelled through chains of unicode-escaped backslashes past a cut as one quote, through all three entry points (#374, review on 1e2b532)', () => {
+  // Review on 1e2b532: where a view ends just after a masked value, cut there or inside its closing quote's spelling,
+  // the value reading read the quote after the cut only up to its first u005c escape, so it found no quote there and
+  // judged the value cut off; and a closing quote whose run mixes plain backslashes and u005c escapes before a u0022
+  // escape was not read as the run the Redactor's view reads as an escaped backslash before a shallower quote. Both
+  // flagged the Redactor's outputs, which main accepts. Since the owner's decision after that review, every quote's
+  // level is read from its whole spelling in one way and decoded to its canonical form first (quoteSpellingAt,
+  // canonicalQuote). The level-loose grid's first 50 forms with every backslash spelled \, inputs and outputs, cut
+  // 1 to 14 characters before their end, as they are or ending in a lone backslash or half a unicode escape (the 7,566
+  // the scanner gets right: 14 more are masked inputs main misses too), and the 360 forms of the level grids with every
+  // other backslash spelled \ that the head at 1e2b532 got wrong. The Redactor masks 4,060 and keeps 3,866; the
+  // head at 1e2b532 got 944 wrong.
+  const pairs = redactorGrid('generic-separator-level-chain-grid');
+  assert.equal(pairs.length, 7_926);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-chain-grid', pairs);
+  assert.equal(keptAsMain, 0, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
+test('reads a name quote spelled through unicode-escaped backslashes at its level, in a field wrapped in one more JSON string, through all three entry points (#374, review on 1e2b532)', () => {
+  // Review on 1e2b532: the level of the first quote a view holds bare was read from its plain backslashes only, so a
+  // run holding u005c escapes read as no quote and the view fell back to its own level, and the value reading judged a
+  // field the Redactor does not read once the text was wrapped in one more JSON string. The level-whole, level-slice
+  // and level-spelled grids' inputs and outputs with every backslash spelled \, each wrapped in one more JSON
+  // string (the 13,955 forms the scanner gets right: 1,859 masked inputs main misses too and 204 outputs main flags too
+  // are left out), and the 90 forms of the level-spelled grid wrapped as they are that the head at 1e2b532 got wrong.
+  // The Redactor masks 2,853 and keeps 11,192; main flags 2,232 verdicts on the kept texts, and so does the head. The
+  // head at 1e2b532 got 390 wrong.
+  const pairs = redactorGrid('generic-separator-level-wrapped-grid');
+  assert.equal(pairs.length, 14_045);
+  const { wrong, keptAsMain } = levelGridWrong('generic-separator-level-wrapped-grid', pairs);
+  assert.equal(keptAsMain, 2_232, 'verdicts on kept texts main flags too');
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
+});
+
 /**
  * Long texts for #374's linear work: the first form of each level grid the Redactor masks, and its output, repeated as
  * many fields, after long stray-quote chains and nested six levels deep. Built from the committed grids, so the exact
@@ -2511,6 +2546,11 @@ function quoteStateTexts() {
   const deepQuotes = `${'\\'.repeat(15)}"`.repeat(4_000);
   // Review on e7f8ff1: the same with every backslash spelled \u005c, and a stray quote spelled so before the value.
   const respelled = t => t.replaceAll('\\', '\\u005c');
+  // Review on 1e2b532: every other backslash spelled \u005c, and quotes spelled through chains of such escapes.
+  const mixed = t => {
+    let k = 0;
+    return t.replaceAll('\\', () => (k++ % 2 === 1 ? '\\u005c' : '\\'));
+  };
   const n = 4_000;
   return [
     ['many masked fields after a stray quote', stray + `${masked},`.repeat(n), false],
@@ -2534,6 +2574,11 @@ function quoteStateTexts() {
     ['many masked values with every backslash spelled as a unicode escape, after a stray quote', `"\n${`${respelled(dropped)},`.repeat(n)}`, false],
     ['many masked values closed by their own quote spelled through unicode escapes', `"\n${respelled(closed).repeat(n)}`, false],
     ['masked values after a stray quote spelled through a unicode escape, each to a line break', `${'\\'}u005c"\n${`${respelled(dropped)}\n`.repeat(n)}`, false],
+    ['many masked values with every other backslash spelled as a unicode escape, after a stray quote', `"\n${`${mixed(dropped)},`.repeat(n)}`, false],
+    ['many masked values closed by their own quote, every other backslash spelled as a unicode escape', `"\n${mixed(closed).repeat(n)}`, false],
+    ['masked values with every backslash spelled as a unicode escape, nested six levels deep', nest(`"\n${`${respelled(dropped)},`.repeat(200)}`, 6), false],
+    ['a value holding many quotes spelled through chains of unicode-escaped backslashes', `"\n${dropped.slice(0, dropped.indexOf('[REDACTED]'))}${`${'\\'}${'u005c'.repeat(8)}u0022`.repeat(n)}`, true],
+    ['many masked values with every backslash spelled as a unicode escape, cut inside an escape at the end', `"\n${`${respelled(dropped)},`.repeat(n)}`.slice(0, -3) + '\\u', false],
   ];
 }
 
