@@ -513,7 +513,8 @@ class CustomEndpointTest {
         assertTrue(hook.ok(), hook::summary);
         List<?> exchanges = (List<?>) hook.details().get("exchanges");
         assertEquals(1, exchanges.size());
-        assertEquals(200, ((ExchangeView) exchanges.getFirst()).status());
+        // Step details are plain data (#377): the ExchangeView is the map of its components.
+        assertEquals(200, ((Map<?, ?>) exchanges.getFirst()).get("status"));
         assertFalse(run.steps().get(4).ok(), run.steps().get(4)::summary);
         assertEquals("The hook response's " + entry + " is not a JSON object", run.steps().get(4).summary());
         assertEquals(OnboardingRunner.PARSE_RESPONSE, RunVerdict.of(run).brokeAt());
@@ -559,7 +560,7 @@ class CustomEndpointTest {
             OnboardingRun run = runner.run(custom(baseUrl, AuthType.NONE, null, null, null));
             List<?> exchanges = (List<?>) run.steps().get(3).details().get("exchanges");
             boolean kept = run.steps().get(2).ok() && run.steps().get(3).ok() && exchanges != null
-                    && exchanges.size() == 1 && ((ExchangeView) exchanges.getFirst()).status() == 200;
+                    && exchanges.size() == 1 && Integer.valueOf(200).equals(((Map<?, ?>) exchanges.getFirst()).get("status"));
             // ": null" is what a message-less exception's getMessage() would print.
             boolean unexpected = run.steps().stream().anyMatch(s -> s.summary().contains("Unexpected error")
                     || s.summary().endsWith(": null"));

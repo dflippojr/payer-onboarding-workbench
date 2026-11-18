@@ -19,8 +19,8 @@ import java.util.Objects;
  * @param ok whether the step completed successfully
  * @param summary one-line human-readable outcome, redacted
  * @param details extra step-specific values for display; must not contain secret material.
- *     Copied, through {@link Redactor#redactTree(Object)}, into an unmodifiable map that keeps
- *     insertion order.
+ *     Copied, through {@link Redactor#redactTree(Object)}, into an unmodifiable map of plain data that
+ *     keeps insertion order (a record becomes a map of its components, an enum its name).
  */
 public record StepResult(
         String stepId,
@@ -38,8 +38,11 @@ public record StepResult(
         details = details == null ? Map.of() : redactedDetails(details);
     }
 
+    /** The details as plain redacted data; if they cannot be copied, one {@code details} entry holding the mask. */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> redactedDetails(Map<String, Object> details) {
-        return (Map<String, Object>) Redactor.redactTree(details);
+        return Redactor.redactTree(details) instanceof Map<?, ?> safe
+                ? (Map<String, Object>) safe
+                : Map.of("details", Redactor.MASK);
     }
 }

@@ -1023,8 +1023,10 @@ public class OnboardingRunner {
 
         /** Whether the step recorded an HTTP response from the payer. */
         private static boolean answered(StepResult step) {
+            // Step details are plain data (#377): each exchange is the map of an ExchangeView's components.
             return step.details().get("exchanges") instanceof List<?> exchanges && exchanges.stream()
-                    .anyMatch(e -> e instanceof ExchangeView view && view.status() != HttpExchange.NO_RESPONSE);
+                    .anyMatch(e -> e instanceof Map<?, ?> view && view.get("status") instanceof Number status
+                            && status.intValue() != HttpExchange.NO_RESPONSE);
         }
 
         // ---- helpers ----

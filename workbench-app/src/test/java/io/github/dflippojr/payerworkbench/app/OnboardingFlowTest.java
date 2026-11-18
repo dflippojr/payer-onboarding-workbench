@@ -325,10 +325,8 @@ class OnboardingFlowTest {
                 .map(Map.Entry::getValue).findFirst().orElse(List.of());
     }
 
-    @SuppressWarnings("unchecked")
     private static List<ExchangeView> exchanges(OnboardingRun run, String step) {
-        return (List<ExchangeView>) run.steps().stream().filter(s -> s.stepId().equals(step))
-                .findFirst().orElseThrow().details().get("exchanges");
+        return StepExchanges.of(run.steps().stream().filter(s -> s.stepId().equals(step)).findFirst().orElseThrow());
     }
 
     static Stream<Arguments> failingCalls() {
@@ -390,11 +388,12 @@ class OnboardingFlowTest {
     @Test
     void tailspinRecordsClaimsAndDiagnosesExpectedAndSentAudience() {
         OnboardingRun healthy = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of()));
-        var claims = (io.github.dflippojr.payerworkbench.core.JwtClaims) healthy.steps().get(2).details().get("clientAssertionClaims");
-        assertEquals(SyntheticPayers.CLIENT_ID, claims.iss());
-        assertEquals(claims.iss(), claims.sub());
+        // Step details are plain data (#377): the JwtClaims record is the map of its components.
+        var claims = (Map<?, ?>) healthy.steps().get(2).details().get("clientAssertionClaims");
+        assertEquals(SyntheticPayers.CLIENT_ID, claims.get("iss"));
+        assertEquals(claims.get("iss"), claims.get("sub"));
         assertEquals(List.of(payers.store().findByPayerIdAndEnvironment(TAILSPIN_ID, Environment.SANDBOX)
-                .orElseThrow().tokenEndpoint()), claims.aud());
+                .orElseThrow().tokenEndpoint()), claims.get("aud"));
         assertEquals(Severity.PASS, healthy.findings().stream().filter(f -> f.checkId().equals("auth.client-assertion"))
                 .findFirst().orElseThrow().severity());
         OnboardingRun rejected = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of("wrong-audience-reject")));
@@ -403,7 +402,7 @@ class OnboardingFlowTest {
                 .findFirst().orElseThrow();
         assertEquals(Severity.FAIL, finding.severity());
         assertTrue(finding.evidence().contains(io.github.dflippojr.payerworkbench.mock.TailspinPayer.WRONG_AUDIENCE));
-        assertTrue(finding.evidence().contains(claims.aud().getFirst()));
+        assertTrue(finding.evidence().contains((String) ((List<?>) claims.get("aud")).getFirst()));
         for (OnboardingRun run : List.of(healthy, rejected)) {
             for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
                 String report = ReportRenderer.render(RunReport.of(run, TAILSPIN_ID, "2.2.1", java.time.Instant.now(), "test"), format);

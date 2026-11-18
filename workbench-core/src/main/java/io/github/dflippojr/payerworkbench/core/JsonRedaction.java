@@ -12,6 +12,7 @@ import tools.jackson.core.exc.StreamConstraintsException;
 import tools.jackson.core.exc.StreamReadException;
 import tools.jackson.core.io.JsonStringEncoder;
 import tools.jackson.core.json.JsonFactory;
+import tools.jackson.core.json.JsonReadFeature;
 
 /**
  * The structural path of {@link Redactor#redact(String)} (#377, stage 1): text that is one JSON value is read with
@@ -56,6 +57,14 @@ final class JsonRedaction {
                     .maxNameLength(MAX_CHARS)
                     .maxNumberLength(MAX_CHARS)
                     .build())
+            .build();
+
+    /**
+     * {@link #FACTORY} that also takes control characters in a string, as the text engine writes a line break into a
+     * masked private key block ({@link #decodedString}).
+     */
+    private static final JsonFactory LENIENT = FACTORY.rebuild()
+            .enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS)
             .build();
 
     private static final JsonStringEncoder ENCODER = JsonStringEncoder.getInstance();
@@ -353,10 +362,12 @@ final class JsonRedaction {
      * through a spelling that decoding removes (a quote spelled as an escape of an escape, say) is masked too. If it
      * masks anything there, the string it leaves is decoded and redacted instead, and if what it leaves is no longer one
      * JSON string in that place, the whole string is the mask. So no string keeps anything the text engine masks in it.
-     * With no {@code raw} spelling (the text engine masks nothing in the whole text), only the decoded string is read.
+     * With no {@code raw} spelling (the text engine masks nothing in the whole text), or one with no backslash (the
+     * decoded string in quotes), only the decoded string is read.
      */
     private static String redactString(String decoded, String raw, int level, Place place) {
-        if (raw == null) {
+        if (raw == null || raw.indexOf('\\') < 0) {
+            // No escape in the spelling: it is the decoded string in quotes, with no spelling for decoding to remove.
             return Redactor.redactAt(decoded, level + 1);
         }
         String spelled = place.before + raw + place.after;
@@ -371,9 +382,12 @@ final class JsonRedaction {
         return kept == null ? Redactor.MASK : Redactor.redactAt(kept, level + 1);
     }
 
-    /** The value of {@code text} if it is one JSON string, otherwise {@code null}. */
+    /**
+     * The value of {@code text} if it is one JSON string, otherwise {@code null}; the text engine's output, so a control
+     * character it wrote into the string is taken as it is.
+     */
     private static String decodedString(String text) {
-        try (JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
+        try (JsonParser parser = LENIENT.createParser(ObjectReadContext.empty(), text)) {
             if (parser.nextToken() != JsonToken.VALUE_STRING) {
                 return null;
             }
