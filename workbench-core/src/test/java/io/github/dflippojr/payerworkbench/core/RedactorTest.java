@@ -1781,11 +1781,61 @@ class RedactorTest {
         // Redactor masks 48 of them and keeps 9. The miss grid holds the separator class the scanner missed, with the
         // forms around it that the Redactor keeps. The note grid holds such fields at the top level whose value ends in a
         // cut before a note, each also in its report form, which the Redactor reads differently. The mixed grid holds such
-        // fields whose name and value are quoted at different escape levels (security round 1 at 42d0b14). Their inputs are the committed files' own, so the exact forms stay
+        // fields whose name and value are quoted at different escape levels (security round 1 at 42d0b14). #374's level
+        // grids hold such fields after a stray quote or inside a string value, where the bare quotes before the value
+        // decide whether its unicode-escaped quote opens it: the level-miss grid has the name one or two levels down and
+        // the value one level below it (#373), the level-over grid a plain-quoted name and the value one level down, and the
+        // level-name grid such a field after a name a plain quote opens and a unicode-escaped quote closes before its colon
+        // (review on fc94026), each for every generic secret name; the level-spelling grid pins such fields whose own name
+        // opens and closes with the same or different quote spellings, or with a quote of no level, where main's verdicts
+        // are already right (review on bc95162); the level-case grid holds the level grids' unmasked forms with the value's
+        // opening or closing escape spelled with an uppercase U, which the Redactor reads as no escape (review on 98a6d37); the level-flat
+        // grid holds a plain-named field whose value's unicode-escaped quote the Redactor turns bare where it closes a name a
+        // stray quote left open, a colon following it (review on 010df1f); the level-cut grid holds such a value with a quote of a
+        // shallower level inside it, in a text cut at its end, whose Redactor output the scanner must accept; the level-escape
+        // grid holds a secret name spelled with unicode escapes after an earlier name closed early (Codex security round 1 on
+        // ddfd74c), the level-deeper grid holds such fields whose name opens with a quote of a deeper level than the view
+        // that reads its value, closed with either spelling, with masked values ending in a quote, a cut escape or nothing
+        // (#374, option A), the level-slice grid holds such fields in a string read after a stray quote and a quote of
+        // the string's own level or one it turns bare (review on d931f68), the level-whole grid holds such fields after a
+        // stray quote of any spelling at the top level or one level down, with the name, separator and value quoted at
+        // several levels (review on 8f48a35), the level-spelled grid holds the level-slice grid's inputs and outputs with
+        // their unicode-escaped quotes spelled through an escaped backslash, and some nested five or seven times (review on
+        // 537c8ea), the level-loose grid holds such fields after a stray quote whose value's closing quote a string read
+        // whole decodes past, held as an escaped quote or backslash or dropped with the empty string after it, or whose
+        // closing quote's backslash run holds a \\u005c escape the view decodes into the value (review on c3019ff), the
+        // level-respelled grid holds the level-loose and level-whole grids' inputs and outputs with every backslash
+        // spelled \\u005c (review on e7f8ff1), the level-chain grid holds such fields with every backslash spelled \\u005c cut
+        // just after or inside a masked value's closing quote, and with every other backslash spelled so, the level-wrapped
+        // grid holds such fields with their quotes spelled through \\u005c escapes wrapped in one more JSON string (review
+        // on 1e2b532), the level-generated grid holds such fields generated over every quote and backslash spelling, the
+        // name's and the value's levels and each kind of end, with the report forms the Redactor masks of some kept texts
+        // and outputs (review on dd53a50), and the level-probe grid is #374's 18,200-text mixed-level probe, which the scanner's guard
+        // against main reads. Their inputs are the committed files' own, so the exact forms stay
         // in data; replay/test/leaks.test.mjs checks the scanner's verdict on each input and that it accepts each output.
-        Map<String, int[]> counts = Map.of("generic-separator-pin-grid", new int[] {48, 9},
-                "generic-separator-miss-grid", new int[] {6111, 1326}, "generic-separator-note-grid", new int[] {369, 180},
-                "generic-separator-mixed-grid", new int[] {1600, 2600});
+        Map<String, int[]> counts = Map.ofEntries(
+                Map.entry("generic-separator-pin-grid", new int[] {48, 9}),
+                Map.entry("generic-separator-miss-grid", new int[] {6111, 1326}),
+                Map.entry("generic-separator-note-grid", new int[] {369, 180}),
+                Map.entry("generic-separator-mixed-grid", new int[] {1600, 2600}),
+                Map.entry("generic-separator-level-miss-grid", new int[] {640, 1920}),
+                Map.entry("generic-separator-level-over-grid", new int[] {180, 1740}),
+                Map.entry("generic-separator-level-name-grid", new int[] {680, 2200}),
+                Map.entry("generic-separator-level-spelling-grid", new int[] {800, 3640}),
+                Map.entry("generic-separator-level-case-grid", new int[] {1340, 1220}),
+                Map.entry("generic-separator-level-flat-grid", new int[] {4960, 1440}),
+                Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}),
+                Map.entry("generic-separator-level-escape-grid", new int[] {3920, 12400}),
+                Map.entry("generic-separator-level-deeper-grid", new int[] {960, 11820}),
+                Map.entry("generic-separator-level-slice-grid", new int[] {1020, 1830}),
+                Map.entry("generic-separator-level-whole-grid", new int[] {2420, 4020}),
+                Map.entry("generic-separator-level-spelled-grid", new int[] {1536, 4752}),
+                Map.entry("generic-separator-level-loose-grid", new int[] {4900, 0}),
+                Map.entry("generic-separator-level-respelled-grid", new int[] {5500, 9600}),
+                Map.entry("generic-separator-level-chain-grid", new int[] {4060, 3866}),
+                Map.entry("generic-separator-level-wrapped-grid", new int[] {2853, 11192}),
+                Map.entry("generic-separator-level-generated-grid", new int[] {11890, 4128}),
+                Map.entry("generic-separator-level-probe-grid", new int[] {6940, 11260}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
             int masked = 0;
