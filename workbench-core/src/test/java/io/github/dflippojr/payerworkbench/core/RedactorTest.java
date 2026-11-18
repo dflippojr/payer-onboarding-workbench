@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static io.github.dflippojr.payerworkbench.core.SameJson.assertKept;
+import static io.github.dflippojr.payerworkbench.core.SameJson.assertRedactsTo;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
@@ -207,7 +209,7 @@ class RedactorTest {
         for (String text : List.of("see the Cookie: header docs", "Cookie:", "Cookie: \nnext", "the X-Api-Key: header",
                 "Accept: application/fhir+json", "Cookies: none", "Authorization: Bearer access token required",
                 "Proxy-Authorization: Basic authentication is required")) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
@@ -271,7 +273,7 @@ class RedactorTest {
     @Test
     void leavesOrdinaryTextAlone() {
         String text = "{\"error\":\"invalid_client\",\"error_description\":\"Missing bearer token\"}";
-        assertEquals(text, Redactor.redact(text));
+        assertKept(text);
         assertNull(Redactor.redact(null));
         assertEquals(Map.of(), Redactor.redactHeaders(null));
     }
@@ -430,7 +432,7 @@ class RedactorTest {
     @Test
     void leavesOrdinaryJsonFieldsAlone() {
         String text = "{\"token_type\":\"Bearer\",\"expires_in\":300,\"active\":true,\"note\":\"say \\\"hi\\\"\"}";
-        assertEquals(text, Redactor.redact(text));
+        assertKept(text);
     }
 
     @Test
@@ -467,28 +469,21 @@ class RedactorTest {
         // escaped token character is still that character (#212); also escaped again, and several in a row.
         for (String separator : List.of("\\t", "\\n", "\\r", "\\u0020", "\\u0009", "\\u000A", "\\u000D", "\\u000a",
                 "\\u000d", "\\\\t", "\\\\n", "\\\\r", "\\\\u0020", "\\\\u0009", "\\r\\n", " \\t", "\\t ", "\\n\\u0020")) {
-            assertEquals("{\"echo\":\"Bearer [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Bearer" + separator + "SecretTokenValue99\"}"), separator);
-            assertEquals("{\"echo\":\"Basic [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Basic" + separator + "c3ludGhjbGllbnQ6U3ludGg\"}"), separator);
-            assertEquals("{\"echo\":\"Authorization: Bearer [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Authorization: Bearer" + separator + "SecretTokenValue99\"}"), separator);
-            assertEquals("{\"echo\":\"rejected bearer [REDACTED], twice\"}",
-                    Redactor.redact("{\"echo\":\"rejected bearer" + separator + "Ab12\\/SecretRemainder99, twice\"}"), separator);
+            assertRedactsTo("{\"echo\":\"Bearer [REDACTED]\"}", "{\"echo\":\"Bearer" + separator + "SecretTokenValue99\"}", separator);
+            assertRedactsTo("{\"echo\":\"Basic [REDACTED]\"}", "{\"echo\":\"Basic" + separator + "c3ludGhjbGllbnQ6U3ludGg\"}", separator);
+            assertRedactsTo("{\"echo\":\"Authorization: Bearer [REDACTED]\"}", "{\"echo\":\"Authorization: Bearer" + separator + "SecretTokenValue99\"}", separator);
+            assertRedactsTo("{\"echo\":\"rejected bearer [REDACTED], twice\"}", "{\"echo\":\"rejected bearer" + separator + "Ab12\\/SecretRemainder99, twice\"}", separator);
         }
         // In JSON quoted inside a JSON string.
-        assertEquals("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}",
-                Redactor.redact("{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\tSecretTokenValue99\\\"}\"}"));
+        assertRedactsTo("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}", "{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\tSecretTokenValue99\\\"}\"}");
         // After Token and DPoP, only an escaped space or tab, as only a real space or tab is.
         for (String separator : List.of("\\t", "\\u0020", "\\u0009", "\\\\t", "\\\\u0020", " \\t")) {
-            assertEquals("{\"echo\":\"Token [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Token" + separator + "9944b09199c62bcf9418\"}"), separator);
-            assertEquals("{\"echo\":\"rejected DPoP [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"rejected DPoP" + separator + "PHNhbWw6QXNzZXJ0aW9u\"}"), separator);
+            assertRedactsTo("{\"echo\":\"Token [REDACTED]\"}", "{\"echo\":\"Token" + separator + "9944b09199c62bcf9418\"}", separator);
+            assertRedactsTo("{\"echo\":\"rejected DPoP [REDACTED]\"}", "{\"echo\":\"rejected DPoP" + separator + "PHNhbWw6QXNzZXJ0aW9u\"}", separator);
         }
         for (String separator : List.of("\\n", "\\r", "\\u000A", "\\u000D", "\\r\\n", "\\\\n")) {
             String text = "{\"m\":\"issue a token" + separator + "2 times per hour; DPoP" + separator + "proof-v2 required\"}";
-            assertEquals(text, Redactor.redact(text), separator);
+            assertKept(text, separator);
         }
     }
 
@@ -499,29 +494,23 @@ class RedactorTest {
         // mixed with other separators (#212, Codex round 1).
         for (String separator : List.of("\\f", "\\u000C", "\\u000c", "\\u000B", "\\u000b", "\\\\f", "\\\\u000C",
                 "\\t\\f", "\\f\\n", " \\f", "\\u000b\\u0020")) {
-            assertEquals("{\"echo\":\"Bearer [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Bearer" + separator + "SecretTokenValue99\"}"), separator);
-            assertEquals("{\"echo\":\"Basic [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Basic" + separator + "c3ludGhjbGllbnQ6U3ludGg\"}"), separator);
-            assertEquals("{\"echo\":\"Authorization: Bearer [REDACTED]\"}",
-                    Redactor.redact("{\"echo\":\"Authorization: Bearer" + separator + "SecretTokenValue99\"}"), separator);
-            assertEquals("{\"echo\":\"rejected bearer [REDACTED], twice\"}",
-                    Redactor.redact("{\"echo\":\"rejected bearer" + separator + "Ab12\\/SecretRemainder99, twice\"}"), separator);
-            assertEquals("{\"echo\":\"rejected bearer [REDACTED], twice\"}",
-                    Redactor.redact("{\"echo\":\"rejected bearer" + separator + "Ab12\\u002BSecretRemainder99, twice\"}"), separator);
+            assertRedactsTo("{\"echo\":\"Bearer [REDACTED]\"}", "{\"echo\":\"Bearer" + separator + "SecretTokenValue99\"}", separator);
+            assertRedactsTo("{\"echo\":\"Basic [REDACTED]\"}", "{\"echo\":\"Basic" + separator + "c3ludGhjbGllbnQ6U3ludGg\"}", separator);
+            assertRedactsTo("{\"echo\":\"Authorization: Bearer [REDACTED]\"}", "{\"echo\":\"Authorization: Bearer" + separator + "SecretTokenValue99\"}", separator);
+            assertRedactsTo("{\"echo\":\"rejected bearer [REDACTED], twice\"}", "{\"echo\":\"rejected bearer" + separator + "Ab12\\/SecretRemainder99, twice\"}", separator);
+            assertRedactsTo("{\"echo\":\"rejected bearer [REDACTED], twice\"}", "{\"echo\":\"rejected bearer" + separator + "Ab12\\u002BSecretRemainder99, twice\"}", separator);
         }
         // In JSON quoted inside a JSON string.
-        assertEquals("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}",
-                Redactor.redact("{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\fSecretTokenValue99\\\"}\"}"));
+        assertRedactsTo("{\"debug\":\"{\\\"e\\\":\\\"Bearer [REDACTED]\\\"}\"}", "{\"debug\":\"{\\\"e\\\":\\\"Bearer\\\\fSecretTokenValue99\\\"}\"}");
         // After Token and DPoP only a space or tab separates, so an escaped form feed or vertical tab does not.
         for (String separator : List.of("\\f", "\\u000C", "\\u000b")) {
             String text = "{\"m\":\"issue a token" + separator + "2 times per hour; DPoP" + separator + "proof-v2 required\"}";
-            assertEquals(text, Redactor.redact(text), separator);
+            assertKept(text, separator);
         }
         // Prose and challenge parameters after one stay as they are.
         for (String text : List.of("{\"m\":\"Missing bearer\\ftoken\"}", "{\"m\":\"Basic\\u000Cplan\"}",
                 "{\"h\":\"Bearer\\frealm=\\\"synthetic\\\", error=\\\"invalid_token\\\"\"}")) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
@@ -552,7 +541,7 @@ class RedactorTest {
                 "{\"h\":\"Bearer\\u0020error_description=\\\"Expired\\\"\"}",
                 "{\"h\":\"Basic\\u0020realm=\\\"synthetic-payer\\\"\"}",
                 "{\"h\":\"Bearer\\r\\nscope=\\\"system/*.read\\\"\"}")) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
@@ -620,7 +609,7 @@ class RedactorTest {
                 "\"kty\": \"RSA\", \"d\": \"x\"",
                 "[\"kty\": \"RSA\", \"d\": \"x\"]",
                 "[\"kty\": 1, \"kty\": 2, \"d\": \"x\"]")) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
@@ -628,22 +617,15 @@ class RedactorTest {
     void masksJwkMembersWhoseNamesAreSpelledWithEscapes() {
         // JSON may spell any character of a member name as a \\u escape, in either hex case: "kt\\u0079" is
         // kty and "\\u0064" is d.
-        assertEquals("{\"kt\\u0079\":\"RSA\",\"n\":\"N1\",\"d\":\"[REDACTED]\"}",
-                Redactor.redact("{\"kt\\u0079\":\"RSA\",\"n\":\"N1\",\"d\":\"PRIVD\"}"));
-        assertEquals("{\"kty\":\"RSA\",\"\\u0064\":\"[REDACTED]\",\"\\u0064p\":\"[REDACTED]\",\"n\":\"N1\"}",
-                Redactor.redact("{\"kty\":\"RSA\",\"\\u0064\":\"PRIVD\",\"\\u0064p\":\"PRIVDP\",\"n\":\"N1\"}"));
-        assertEquals("{\"\\u006B\\u0074\\u0079\":\"oct\",\"\\u006b\":\"[REDACTED]\"}",
-                Redactor.redact("{\"\\u006B\\u0074\\u0079\":\"oct\",\"\\u006b\":\"PRIVK\"}"));
-        assertEquals("{\"kty\":\"RSA\",\"\\u006fth\":\"[REDACTED]\"}",
-                Redactor.redact("{\"kty\":\"RSA\",\"\\u006fth\":[{\"r\":\"PRIVR\"}]}"));
-        assertEquals("{\"keys\":[{\"k\\u0074y\":\"oct\",\"\\u006B\":\"[REDACTED]\"}]}",
-                Redactor.redact("{\"keys\":[{\"k\\u0074y\":\"oct\",\"\\u006B\":\"PRIVK\"}]}"));
+        assertRedactsTo("{\"kt\\u0079\":\"RSA\",\"n\":\"N1\",\"d\":\"[REDACTED]\"}", "{\"kt\\u0079\":\"RSA\",\"n\":\"N1\",\"d\":\"PRIVD\"}");
+        assertRedactsTo("{\"kty\":\"RSA\",\"\\u0064\":\"[REDACTED]\",\"\\u0064p\":\"[REDACTED]\",\"n\":\"N1\"}", "{\"kty\":\"RSA\",\"\\u0064\":\"PRIVD\",\"\\u0064p\":\"PRIVDP\",\"n\":\"N1\"}");
+        assertRedactsTo("{\"\\u006B\\u0074\\u0079\":\"oct\",\"\\u006b\":\"[REDACTED]\"}", "{\"\\u006B\\u0074\\u0079\":\"oct\",\"\\u006b\":\"PRIVK\"}");
+        assertRedactsTo("{\"kty\":\"RSA\",\"\\u006fth\":\"[REDACTED]\"}", "{\"kty\":\"RSA\",\"\\u006fth\":[{\"r\":\"PRIVR\"}]}");
+        assertRedactsTo("{\"keys\":[{\"k\\u0074y\":\"oct\",\"\\u006B\":\"[REDACTED]\"}]}", "{\"keys\":[{\"k\\u0074y\":\"oct\",\"\\u006B\":\"PRIVK\"}]}");
         // In JSON embedded in a JSON string the inner escape's backslash is escaped (\\\\u0064), or the
         // outer string spells the letter itself (\\u0064).
-        assertEquals("{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"RSA\\\",\\\"\\\\u0064\\\":\\\"[REDACTED]\\\"}\"}",
-                Redactor.redact("{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"RSA\\\",\\\"\\\\u0064\\\":\\\"PRIVD\\\"}\"}"));
-        assertEquals("{\"body\":\"{\\\"kt\\u0079\\\":\\\"RSA\\\",\\\"\\u0064\\\":\\\"[REDACTED]\\\"}\"}",
-                Redactor.redact("{\"body\":\"{\\\"kt\\u0079\\\":\\\"RSA\\\",\\\"\\u0064\\\":\\\"PRIVD\\\"}\"}"));
+        assertRedactsTo("{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"RSA\\\",\\\"\\\\u0064\\\":\\\"[REDACTED]\\\"}\"}", "{\"body\":\"{\\\"kt\\\\u0079\\\":\\\"RSA\\\",\\\"\\\\u0064\\\":\\\"PRIVD\\\"}\"}");
+        assertRedactsTo("{\"body\":\"{\\\"kt\\u0079\\\":\\\"RSA\\\",\\\"\\u0064\\\":\\\"[REDACTED]\\\"}\"}", "{\"body\":\"{\\\"kt\\u0079\\\":\\\"RSA\\\",\\\"\\u0064\\\":\\\"PRIVD\\\"}\"}");
         // Once the budget is spent, every private member name is found, also spelled with escapes.
         assertEquals("{\"\\u0064\":\"[REDACTED]\",\"kty\":\"RSA\"}",
                 Redactor.maskJwks("{\"\\u0064\":\"PRIVD\",\"kty\":\"RSA\"}", false, 0));
@@ -652,19 +634,17 @@ class RedactorTest {
         // Without kty the names stay, and an escaped backslash is not an escape: "\\\\u0064" is not d.
         for (String text : List.of("{\"\\u0064\":\"x\"}", "{\"kty\":\"RSA\",\"\\\\u0064\":\"x\"}",
                 "{\"\\\\u006bty\":\"RSA\",\"d\":\"x\"}")) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
     @Test
     void masksSecretFieldsWhoseNamesAreSpelledWithEscapes() {
-        assertEquals("{\"client_s\\u0065cret\":\"[REDACTED]\"}", Redactor.redact("{\"client_s\\u0065cret\":\"PRIVS\"}"));
-        assertEquals("{\"body\":\"{\\\"client_s\\\\u0065cret\\\":\\\"[REDACTED]\\\"}\"}",
-                Redactor.redact("{\"body\":\"{\\\"client_s\\\\u0065cret\\\":\\\"PRIVS\\\"}\"}"));
-        assertEquals("{\"private_k\\u0065y\":\"[REDACTED]\"}", Redactor.redact("{\"private_k\\u0065y\":{\"kty\":\"oct\"}}"));
+        assertRedactsTo("{\"client_s\\u0065cret\":\"[REDACTED]\"}", "{\"client_s\\u0065cret\":\"PRIVS\"}");
+        assertRedactsTo("{\"body\":\"{\\\"client_s\\\\u0065cret\\\":\\\"[REDACTED]\\\"}\"}", "{\"body\":\"{\\\"client_s\\\\u0065cret\\\":\\\"PRIVS\\\"}\"}");
+        assertRedactsTo("{\"private_k\\u0065y\":\"[REDACTED]\"}", "{\"private_k\\u0065y\":{\"kty\":\"oct\"}}");
         // An Authorization-style name keeps the scheme, also spelled with an escape.
-        assertEquals("{\"\\u0041uthorization\":\"SCRAM-SHA-256 [REDACTED]\"}",
-                Redactor.redact("{\"\\u0041uthorization\":\"SCRAM-SHA-256 PRIVSCRAM\"}"));
+        assertRedactsTo("{\"\\u0041uthorization\":\"SCRAM-SHA-256 [REDACTED]\"}", "{\"\\u0041uthorization\":\"SCRAM-SHA-256 PRIVSCRAM\"}");
     }
 
     @Test
@@ -746,10 +726,8 @@ class RedactorTest {
     void masksJwksWhoseEmbeddedJsonIsSpelledWithUnicodeEscapes() {
         // The review's shape: a serializer that escapes a quote in a string as \\u0022 (as .NET's default encoder
         // does), also mixed with \". The mask is quoted as its member's name is.
-        assertEquals("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022[REDACTED]\\u0022}\"}",
-                Redactor.redact("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
-        assertEquals("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022[REDACTED]\\u0022}\"}",
-                Redactor.redact("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}"));
+        assertRedactsTo("{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022[REDACTED]\\u0022}\"}", "{\"body\":\"{\\u0022kty\\u0022:\\u0022oct\\u0022,\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}");
+        assertRedactsTo("{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022[REDACTED]\\u0022}\"}", "{\"body\":\"{\\\"kty\\\":\\\"oct\\\",\\u0022k\\u0022:\\u0022PRIVK\\u0022}\"}");
         // Any character of the embedded JSON may be a unicode escape: the space after a colon, the colon itself
         // (the review's shapes), a brace, a comma, a line break.
         for (String in : List.of(
@@ -793,7 +771,7 @@ class RedactorTest {
         }
         // Without kty the names stay.
         String plain = "{\"body\":\"{\\u0022d\\u0022:\\u0022x\\u0022,\\u0022k\\u0022:[1,2]}\"}";
-        assertEquals(plain, Redactor.redact(plain));
+        assertRedactsTo(plain, plain);
     }
 
     @Test
@@ -837,13 +815,11 @@ class RedactorTest {
     @Test
     void masksSecretFieldsNestedTwoOrMoreLevelsDeep() {
         // #339: the issue's shape, two levels deep with \\\" quotes.
-        assertEquals("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"[REDACTED]\\\\\\\"}\\\"}\"}",
-                Redactor.redact("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"s3cr3t\\\\\\\"}\\\"}\"}"));
+        assertRedactsTo("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"[REDACTED]\\\\\\\"}\\\"}\"}", "{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"client_secret\\\\\\\":\\\\\\\"s3cr3t\\\\\\\"}\\\"}\"}");
         // Three levels deep, \\\\\\\" quotes.
-        assertEquals("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"c\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_secret\\\\\\\\\\\\\\\":"
-                        + "\\\\\\\\\\\\\\\"[REDACTED]\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}",
-                Redactor.redact("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"c\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_secret\\\\\\\\\\\\\\\":"
-                        + "\\\\\\\\\\\\\\\"s3cr3t\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}"));
+        assertRedactsTo("{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"c\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_secret\\\\\\\\\\\\\\\":"
+                        + "\\\\\\\\\\\\\\\"[REDACTED]\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}", "{\"a\":\"{\\\"b\\\":\\\"{\\\\\\\"c\\\\\\\":\\\\\\\"{\\\\\\\\\\\\\\\"client_secret\\\\\\\\\\\\\\\":"
+                        + "\\\\\\\\\\\\\\\"s3cr3t\\\\\\\\\\\\\\\"}\\\\\\\"}\\\"}\"}");
         // Every spelling isSecretField accepts, a name spelled with a \\u escape, a number and an object value, with
         // other members around them: only the secret values change, at every depth.
         // The expected outputs are written out, so a change to the unnested redaction fails here too (review on 84afef7).
@@ -864,13 +840,13 @@ class RedactorTest {
                         "{\"note\":\"a \\\"quoted\\\" \\\\ word\",\"access_token\":\"[REDACTED]\"}"})) {
             String json = pair[0];
             String masked = pair[1];
-            assertEquals(masked, Redactor.redact(json));
+            assertRedactsTo(masked, json);
             String in = json;
             String out = masked;
             for (int depth = 1; depth <= 4; depth++) {
                 in = nested(in);
                 out = nested(out);
-                assertEquals(out, Redactor.redact(in), "depth " + depth + ": " + json);
+                assertRedactsTo(out, in, "depth " + depth + ": " + json);
             }
         }
     }
@@ -878,15 +854,11 @@ class RedactorTest {
     @Test
     void masksSecretFieldsWhoseEmbeddedJsonIsSpelledWithUnicodeEscapes() {
         // #339: quotes spelled \\u0022, in a JSON string and at the top level (text copied from inside a string).
-        assertEquals("{\"a\":\"{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}\"}",
-                Redactor.redact("{\"a\":\"{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}\"}"));
-        assertEquals("{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}",
-                Redactor.redact("{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}"));
+        assertRedactsTo("{\"a\":\"{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}\"}", "{\"a\":\"{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}\"}");
+        assertRedactsTo("{\\u0022client_secret\\u0022:\\u0022[REDACTED]\\u0022}", "{\\u0022client_secret\\u0022:\\u0022s3cr3t\\u0022}");
         // A level written with \" inside a level written with \\u0022, and the reverse.
-        assertEquals("{\"a\":\"{\\u0022b\\u0022:\\u0022{\\\\\\\"client_secret\\\\\\\":\\\\\\\"[REDACTED]\\\\\\\"}\\u0022}\"}",
-                Redactor.redact("{\"a\":\"{\\u0022b\\u0022:\\u0022{\\\\\\\"client_secret\\\\\\\":\\\\\\\"s3cr3t\\\\\\\"}\\u0022}\"}"));
-        assertEquals("{\"a\":\"{\\\"b\\\":\\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022[REDACTED]\\\\u0022}\\\"}\"}",
-                Redactor.redact("{\"a\":\"{\\\"b\\\":\\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022s3cr3t\\\\u0022}\\\"}\"}"));
+        assertRedactsTo("{\"a\":\"{\\u0022b\\u0022:\\u0022{\\\\\\\"client_secret\\\\\\\":\\\\\\\"[REDACTED]\\\\\\\"}\\u0022}\"}", "{\"a\":\"{\\u0022b\\u0022:\\u0022{\\\\\\\"client_secret\\\\\\\":\\\\\\\"s3cr3t\\\\\\\"}\\u0022}\"}");
+        assertRedactsTo("{\"a\":\"{\\\"b\\\":\\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022[REDACTED]\\\\u0022}\\\"}\"}", "{\"a\":\"{\\\"b\\\":\\\"{\\\\u0022client_secret\\\\u0022:\\\\u0022s3cr3t\\\\u0022}\\\"}\"}");
         // Every mix of escapes one to three levels deep keeps all but the secret values byte for byte.
         List<UnaryOperator<String>> levels = List.of(RedactorTest::nested, RedactorTest::nestedEscapingQuotes);
         for (String[] shape : List.of(
@@ -900,14 +872,14 @@ class RedactorTest {
                         "{\"client\\u005fsecret\":\"[REDACTED]\"}"})) {
             String json = shape[0];
             String masked = shape[1];
-            assertEquals(masked, Redactor.redact(json));
+            assertRedactsTo(masked, json);
             for (UnaryOperator<String> a : levels) {
                 for (UnaryOperator<String> b : levels) {
                     for (UnaryOperator<String> c : levels) {
                         for (String[] pair : List.of(new String[] {a.apply(json), a.apply(masked)},
                                 new String[] {b.apply(a.apply(json)), b.apply(a.apply(masked))},
                                 new String[] {c.apply(b.apply(a.apply(json))), c.apply(b.apply(a.apply(masked)))})) {
-                            assertEquals(pair[1], Redactor.redact(pair[0]), pair[0]);
+                            assertRedactsTo(pair[1], pair[0], pair[0]);
                         }
                     }
                 }
@@ -923,7 +895,7 @@ class RedactorTest {
                 "{\\u0022client_id\\u0022:\\u0022app\\u0022,\\u0022token_type\\u0022:\\u0022Bearer\\u0022}",
                 nested(nested(nested("{\"client_id\":\"app\",\"secretary\":\"s\",\"n\":1,\"obj\":{\"x\":[1]}}"))),
                 nestedEscapingQuotes(nested("{\"client_id\":\"app\",\"scope\":\"a b\"}")))) {
-            assertEquals(in, Redactor.redact(in));
+            assertRedactsTo(in, in);
         }
     }
 
@@ -942,23 +914,22 @@ class RedactorTest {
                 new String[] {"{\"n\":1,\"clientSecret\":\\u0022s3cr3t\\u0022,\"scope\":\"x\"}",
                         "{\"n\":1,\"clientSecret\":\"[REDACTED]\""},
                 new String[] {"{\\u0022password\\u0022:123456}", "{\\u0022password\\u0022:\\u0022[REDACTED]\\u0022}"})) {
-            assertEquals(pair[1], Redactor.redact(pair[0]), pair[0]);
+            assertRedactsTo(pair[1], pair[0], pair[0]);
             // Wrapped: the same text in a JSON string, one and two levels deep, whichever way each level escapes.
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(RedactorTest::nested,
                     RedactorTest::nestedEscapingQuotes, t -> nested(nested(t)), t -> nestedEscapingQuotes(nested(t)),
                     t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+                assertRedactsTo(wrapped(wrap, pair[1]), wrap.apply(pair[0]), wrap.apply(pair[0]));
             }
         }
         // A value opened with a plain quote is a JSON string, where \\u0022 is a character of it: masked through its
         // plain closing quote, as JSON_FIELD masks it on main (review on 47c938e), so no part of the value is kept.
-        assertEquals("{\"client_secret\":\"[REDACTED]\"",
-                Redactor.redact("{\"client_secret\":\"s3cr3t\\u0022,\"client_id\":\"app\"}"));
-        assertEquals("{\"password\":\"[REDACTED]\"}", Redactor.redact("{\"password\":\"ab\\u0022cd\"}"));
+        assertRedactsTo("{\"client_secret\":\"[REDACTED]\"", "{\"client_secret\":\"s3cr3t\\u0022,\"client_id\":\"app\"}");
+        assertRedactsTo("{\"password\":\"[REDACTED]\"}", "{\"password\":\"ab\\u0022cd\"}");
         // Non-secret names spelled the same way stay byte for byte.
         for (String in : List.of("{\"client_id\":\\u0022app\\u0022}", "{\\u0022client_id\\u0022:\"app\"}",
                 nested("{\"client_id\":\\u0022app\\u0022,\\u0022scope\\u0022:\"a b\"}"))) {
-            assertEquals(in, Redactor.redact(in));
+            assertRedactsTo(in, in);
         }
     }
 
@@ -976,15 +947,14 @@ class RedactorTest {
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
                     t -> nestedEscapingQuotes(nested(t)), t -> nested(nestedEscapingQuotes(t)),
                     t -> nested(nested(nestedEscapingQuotes(t))))) {
-                assertEquals(wrapped(wrap, pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+                assertRedactsTo(wrapped(wrap, pair[1]), wrap.apply(pair[0]), wrap.apply(pair[0]));
             }
         }
         // The same with every quote of the text spelled \\u0022.
-        assertEquals("{QxQ:QQclient_secretQ:Q[REDACTED]Q}".replace("Q", "\\u0022"),
-                Redactor.redact("{QxQ:QQclient_secretQ:Qs3cr3tQ}".replace("Q", "\\u0022")));
+        assertRedactsTo("{QxQ:QQclient_secretQ:Q[REDACTED]Q}".replace("Q", "\\u0022"), "{QxQ:QQclient_secretQ:Qs3cr3tQ}".replace("Q", "\\u0022"));
         // A non-secret name in the same place is kept.
         String kept = nested(nested("{\"x\":\"\"client_id\":\"app\"}"));
-        assertEquals(kept, Redactor.redact(kept));
+        assertRedactsTo(kept, kept);
     }
 
     @Test
@@ -1001,10 +971,10 @@ class RedactorTest {
             String in = "{\"client_secret\":\"" + value + "\",\"client_id\":\"app\",\"password\":\"" + value + "\"}";
             String out = "{\"client_secret\":\"[REDACTED]\",\"client_id\":\"app\",\"password\":\"[REDACTED]\"}";
             for (UnaryOperator<String> wrap : wraps) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
-        assertEquals("{QpasswordQ:Q[REDACTED]Q}".replace("Q", "\\u0022"), Redactor.redact("{QpasswordQ:QQ}".replace("Q", "\\u0022")));
+        assertRedactsTo("{QpasswordQ:Q[REDACTED]Q}".replace("Q", "\\u0022"), "{QpasswordQ:QQ}".replace("Q", "\\u0022"));
     }
 
     @Test
@@ -1086,7 +1056,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1113,13 +1083,13 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
         // A non-secret value so quoted keeps every byte.
         for (String text : List.of("{\"client_id\":Q\\\"appQ,\"n\":1}".replace("Q", "\\u0022"),
                 nested(nested("{\"scope\":Qa\\\\Q,\"n\":1}".replace("Q", "\\u0022"))))) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
@@ -1141,7 +1111,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1184,7 +1154,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1225,7 +1195,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1241,7 +1211,7 @@ class RedactorTest {
             String in = text.replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(in), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(in), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1269,7 +1239,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1311,7 +1281,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
                     t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, pair[1]), Redactor.redact(wrap.apply(pair[0])), wrap.apply(pair[0]));
+                assertRedactsTo(wrapped(wrap, pair[1]), wrap.apply(pair[0]), wrap.apply(pair[0]));
             }
         }
     }
@@ -1338,7 +1308,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
                     t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1356,7 +1326,7 @@ class RedactorTest {
             String in = text.replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrap.apply(in), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(in), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1380,7 +1350,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
                     t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1420,7 +1390,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1442,7 +1412,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1460,10 +1430,20 @@ class RedactorTest {
                 "{\"x\\\"password\":\"visible\",\"n\":1}",
                 "{\"note\":\"a\",\"x\\\"client_secret\":42}",
                 "{\"a\\\":\\\"password\":\"v\",\"n\":1}")) {
-            assertEquals(nestedEscapingQuotes(text), Redactor.redact(nestedEscapingQuotes(text)));
+            // Since #377 stage 1 the text engine also reads each string as the text spells it, and nested, that reading
+            // may mask the value, fail closed; nothing else changes.
+            String valueMasked = text.replace(":\"visible\"", ":\"[REDACTED]\"").replace(":42", ":\"[REDACTED]\"")
+                    .replace(":\"v\"", ":\"[REDACTED]\"");
+            String once = nestedEscapingQuotes(text);
+            String onceOut = Redactor.redact(once);
+            assertTrue(SameJson.same(once, onceOut) || SameJson.same(nestedEscapingQuotes(valueMasked), onceOut),
+                    () -> once + " => " + onceOut);
             for (UnaryOperator<String> a : levels) {
                 for (UnaryOperator<String> b : levels) {
-                    assertEquals(b.apply(a.apply(text)), Redactor.redact(b.apply(a.apply(text))), b.apply(a.apply(text)));
+                    String in = b.apply(a.apply(text));
+                    String out = Redactor.redact(in);
+                    assertTrue(SameJson.same(in, out) || SameJson.same(b.apply(a.apply(valueMasked)), out),
+                            () -> in + " => " + out);
                 }
             }
         }
@@ -1486,7 +1466,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1506,7 +1486,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(wrapped(wrap, out), Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrapped(wrap, out), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1527,7 +1507,7 @@ class RedactorTest {
                     new String[] {"{\"passwordQ:S~\"s3cr3tQ,\"n\":1}", "{\"passwordQ:Q[REDACTED]Q"},
                     new String[] {"{\"client_secretQ:SQs3cr3tQ}", "{\"client_secretQ:Q[REDACTED]Q"})) {
                 String in = withEscapes(pair[0].replace("S", space));
-                assertEquals(withEscapes(pair[1].replace("S", space)), Redactor.redact(in), in);
+                assertRedactsTo(withEscapes(pair[1].replace("S", space)), in, in);
                 // Nested, the embedded reading masks from the escaped whitespace on, which the text escapes again there;
                 // everything before the value is kept.
                 String secret = in.contains("password") ? "password" : "client_secret";
@@ -1536,8 +1516,8 @@ class RedactorTest {
                     String wrapped = wrap.apply(in);
                     String out = Redactor.redact(wrapped);
                     assertFalse(out.contains("s3cr3t"), () -> wrapped + " => " + out);
-                    assertTrue(out.startsWith(wrapped.substring(0, wrapped.indexOf(':', wrapped.indexOf(secret)) + 1)),
-                            () -> wrapped + " => " + out);
+                    // The name before the value is kept, written with canonical escape spellings since #377.
+                    assertTrue(out.contains(secret) && out.contains(Redactor.MASK), () -> wrapped + " => " + out);
                 }
             }
         }
@@ -1656,7 +1636,7 @@ class RedactorTest {
                             texts++;
                             String out = Redactor.redact(text);
                             pairs.add(new String[] {text, out});
-                            if (kept ? !out.equals(text) : out.contains("s3cr3t")) {
+                            if (kept ? !SameJson.same(text, out) : out.contains("s3cr3t")) {
                                 wrong.add(text + " => " + out);
                             }
                         }
@@ -1717,8 +1697,7 @@ class RedactorTest {
         // a quote of no level the strict reading reads, so the value is masked, never kept. The outputs must match the
         // committed scanner-grids/escape-chain-grid.json.gz, where replay/test/leaks.test.mjs checks that the scanner
         // accepts every one.
-        assertEquals("{\"password\\u005cu0022:\\u005cu0022[REDACTED]\\u005cu0022",
-                Redactor.redact("{\"password\\u005cu0022:\"s3cr3t\"}"));
+        assertRedactsTo("{\"password\\u005cu0022:\\u005cu0022[REDACTED]\\u005cu0022", "{\"password\\u005cu0022:\"s3cr3t\"}");
         // The bound: a chain that makes a quote NESTED_LEVELS levels down is read; one level more is a quote of no level,
         // and its value is masked all the same, the mask unquoted.
         String atBound = "\\" + "u005c".repeat(Redactor.NESTED_LEVELS - 1) + "u0022";
@@ -1763,8 +1742,8 @@ class RedactorTest {
                 String text = wrap.apply(withEscapes(input));
                 String out = Redactor.redact(text);
                 pairs.add(new String[] {text, out});
-                // Valid JSON keeps every byte; in a log line it is text that is not JSON, where the fail-closed rule holds.
-                if (kept ? isValidWithoutSecretNames(text) && !out.equals(text) : out.contains("s3cr3t")) {
+                // Valid JSON stays the same JSON (#377: only its escape spellings may change); in a log line it is text that is not JSON, where the fail-closed rule holds.
+                if (kept ? isValidWithoutSecretNames(text) && !SameJson.same(text, out) : out.contains("s3cr3t")) {
                     wrong.add(text + " => " + out);
                 }
             }
@@ -1834,7 +1813,8 @@ class RedactorTest {
                 Map.entry("generic-separator-level-respelled-grid", new int[] {5500, 9600}),
                 Map.entry("generic-separator-level-chain-grid", new int[] {4060, 3866}),
                 Map.entry("generic-separator-level-wrapped-grid", new int[] {2853, 11192}),
-                Map.entry("generic-separator-level-generated-grid", new int[] {11890, 4128}),
+                // #377: 15 rows that already hold a mask are masked again by the reading of each string as spelled.
+                Map.entry("generic-separator-level-generated-grid", new int[] {11905, 4113}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {6940, 11260}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
@@ -1842,7 +1822,8 @@ class RedactorTest {
             for (List<String> pair : committedScannerGrid(grid.getKey())) {
                 String out = Redactor.redact(pair.get(0));
                 pairs.add(new String[] {pair.get(0), out});
-                masked += out.equals(pair.get(0)) ? 0 : 1;
+                // Kept is the same JSON since the structural path (#377): only the escape spellings may change.
+                masked += SameJson.same(pair.get(0), out) ? 0 : 1;
             }
             assertEquals(grid.getValue()[0], masked, grid.getKey() + ": masked");
             assertEquals(grid.getValue()[1], pairs.size() - masked, grid.getKey() + ": kept");
@@ -1994,14 +1975,31 @@ class RedactorTest {
     @Test
     void readsTheRestOfASecretFieldsObjectOnceForAllItsSecretFieldsInLinearTime() {
         // Automated review on b00189e: each secret field's strict reading read the rest of its object again, so an object
-        // of n secret fields cost n squared (8,000 fields took 4.8 s). About 1 MB of them, bare and nested, valid JSON:
-        // each value masked, every other byte kept, in time that grows with the text.
+        // of n secret fields cost n squared (8,000 fields took 4.8 s). About 1 MB of them, bare and nested, in time that
+        // grows with the text. Since #377 the structural path reads JSON whose names repeat as JSON it will not read, and
+        // masks it whole; with the names spelled apart, each value is masked and every other byte kept.
         int n = 60_000;
         String fields = "{" + "\"password\":\"s3cr3t\",".repeat(n) + "\"n\":1}";
-        String masked = "{" + "\"password\":\"[REDACTED]\",".repeat(n) + "\"n\":1}";
         assertTimeoutPreemptively(Duration.ofSeconds(20), () -> {
-            assertEquals(masked, Redactor.redact(fields));
-            assertEquals(nested(masked), Redactor.redact(nested(fields)));
+            assertEquals(Redactor.MASK, Redactor.redact(fields));
+            assertEquals("{\"body\":\"" + Redactor.MASK + "\"}", Redactor.redact(nested(fields)));
+        });
+        StringBuilder distinct = new StringBuilder("{");
+        StringBuilder masked = new StringBuilder("{");
+        for (int i = 0; i < 1 << "password".length(); i++) {
+            StringBuilder name = new StringBuilder();
+            for (int c = 0; c < "password".length(); c++) {
+                char letter = "password".charAt(c);
+                name.append((i >> c & 1) == 1 ? Character.toUpperCase(letter) : letter);
+            }
+            distinct.append('"').append(name).append("\":\"s3cr3t\",");
+            masked.append('"').append(name).append("\":\"[REDACTED]\",");
+        }
+        String spelledApart = distinct.append("\"n\":1}").toString();
+        String spelledApartMasked = masked.append("\"n\":1}").toString();
+        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> {
+            assertRedactsTo(spelledApartMasked, spelledApart);
+            assertRedactsTo(nested(spelledApartMasked), nested(spelledApart));
         });
     }
 
@@ -2166,10 +2164,10 @@ class RedactorTest {
         // The same text copied from inside such strings, with no bracket or quote left bare.
         cases.put(escapedEverything(escapedEverything(loose + d)), escapedEverything(escapedEverything(loose + "\"d\":"))
                 + escapedEverything(quote) + "[REDACTED]" + escapedEverything(quote));
-        cases.forEach((leaked, kept) -> assertEquals(kept, Redactor.redact(leaked)));
+        cases.forEach((leaked, kept) -> assertRedactsTo(kept, leaked));
         // Ten repetitions do not spend it: d is in no object, and is kept.
         String few = "\"kty\":\"".repeat(10) + d;
-        assertEquals(few, Redactor.redact(few));
+        assertRedactsTo(few, few);
     }
 
     @Test
@@ -2225,7 +2223,7 @@ class RedactorTest {
     void keepsALooseKtyInAStringAfterAValueWithARawLineBreak() {
         // #342: the leak scanner must accept this as it is.
         String text = "{\"note\":\"a\nb\",\"body\":\"" + "\"kty\":\"RSA\",\"d\":\"dimension\"".replace("\"", "\\u0022") + "\"}";
-        assertEquals(text, Redactor.redact(text));
+        assertKept(text);
     }
 
     @Test
@@ -2278,7 +2276,7 @@ class RedactorTest {
             for (String members : before) {
                 String text = "he said \"" + lb + "{" + b + "body" + b + ":" + b + members + u + "kty" + u + ":" + u + "RSA" + u
                         + "," + u + "d" + u + ":" + u + "dimension" + u + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                assertKept(text);
             }
         }
     }
@@ -2292,7 +2290,7 @@ class RedactorTest {
             for (String mid : List.of("0 ", b + "a" + b + " ", "{" + b + "y" + b + ":1} ", "[1] ")) {
                 String text = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
                         + b + "d" + b + ":" + b + "dimension" + b + "}";
-                assertEquals(text, Redactor.redact(text));
+                assertKept(text);
             }
             for (String mid : List.of("0,", "0 , ", "0, x ", "{" + b + "y" + b + ":1},", "[1],")) {
                 String form = "he said \"" + lb + "{" + b + "x" + b + ":" + mid + b + "kty" + b + ":" + b + "RSA" + b + ","
@@ -2314,7 +2312,7 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ")) {
                     String text = "he said \"" + lb + encode.apply("{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertKept(text);
                 }
                 for (String mid : List.of("0,", "0, x ")) {
                     String form = "{\"x\":" + mid + "\"kty\":\"RSA\",\"d\":\"%s\"}";
@@ -2336,7 +2334,7 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String before : List.of("\"\"a\":0,", "\"a\":\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{" + before + "\"kty\":\"RSA\",\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertKept(text);
                 }
                 for (String before : List.of("\"a\":0,", "")) {
                     String form = "{" + before + "\"kty\":\"RSA\",\"d\":\"%s\"}";
@@ -2358,7 +2356,7 @@ class RedactorTest {
             for (var encode : encodings) {
                 for (String mid : List.of("0 ", "\"a\" ", "{\"y\":1} ", "[1] ", "\"\"a\":0,", "\"b\"c\",")) {
                     String text = "he said \"" + lb + encode.apply("{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"dimension\"}");
-                    assertEquals(text, Redactor.redact(text));
+                    assertKept(text);
                 }
                 for (String mid : List.of("0,", "0, y ", "[1],", "\"b\"c\"\",")) {
                     String form = "{\"kty\":\"RSA\",\"x\":" + mid + "\"d\":\"%s\"}";
@@ -2404,7 +2402,7 @@ class RedactorTest {
                     for (String form : List.of("{\"kty\"" + space + ":\"oct\",\"k\":\"dimension\"}",
                             "{\"kty\":\"oct\",\"k\"" + space + ":\"dimension\"}", "{\"kty\":\"oct\",\"k\":" + space + "\"dimension\"}")) {
                         String text = "he said \"" + lb + encode.apply(form);
-                        assertEquals(text, Redactor.redact(text));
+                        assertKept(text);
                     }
                 }
             }
@@ -2757,7 +2755,7 @@ class RedactorTest {
         for (String lb : List.of("\n", "\r\n")) {
             for (String copied : List.of(b.apply(head + tail), u.apply(head) + b.apply(tail), b.apply(head) + u.apply(tail))) {
                 String text = "he said \"" + lb + copied;
-                assertEquals(text, Redactor.redact(text));
+                assertKept(text);
                 assertEquals(text, Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
             }
         }
@@ -2993,7 +2991,7 @@ class RedactorTest {
                 "POST https://payer.example/oauth/token -> HTTP 401 in 12 ms",
                 // The next line is not the credential of an ordinary word.
                 "issue a token\n2 times per hour", "DPoP\r\nproof-v2 required")) {
-            assertEquals(text, Redactor.redact(text));
+            assertKept(text);
         }
     }
 
@@ -3037,16 +3035,24 @@ class RedactorTest {
 
         Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
 
-        assertEquals(List.copyOf(tree.keySet()), List.copyOf(out.keySet()));
+        // The value is copied into plain data first (#377): an enum key becomes its name, a record a map of its components.
+        assertEquals(List.of("summary", "requestHeaders", "tags", "card", "count", "FAIL", "missing"),
+                List.copyOf(out.keySet()));
         assertEquals("Echo: Bearer [REDACTED]", out.get("summary"));
         assertEquals(Map.of("Authorization", List.of("Bearer [REDACTED]"), "Cookie", List.of("[REDACTED]")),
                 out.get("requestHeaders"));
         assertEquals(Set.of("Bearer [REDACTED]"), out.get("tags"));
-        // A record keeps its type; a secret-named component that cannot hold the mask is emptied.
-        assertEquals(new Echoed("Bearer [REDACTED]", "[REDACTED]", null, 0, List.of("Bearer [REDACTED]")),
-                out.get("card"));
+        // A record becomes a map of its components, so every secret-named component holds the mask.
+        Map<String, Object> card = new LinkedHashMap<>();
+        card.put("summary", "Bearer [REDACTED]");
+        card.put("clientSecret", "[REDACTED]");
+        card.put("apiKey", "[REDACTED]");
+        card.put("password", "[REDACTED]");
+        card.put("notes", List.of("Bearer [REDACTED]"));
+        assertEquals(card, out.get("card"));
+        assertEquals(List.copyOf(card.keySet()), List.copyOf(((Map<?, ?>) out.get("card")).keySet()));
         assertEquals(3, out.get("count"));
-        assertEquals(1L, out.get(Severity.FAIL));
+        assertEquals(1L, out.get("FAIL"));
         assertTrue(out.containsKey("missing"));
         assertNull(out.get("missing"));
         assertNull(Redactor.redactTree(null));

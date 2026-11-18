@@ -2099,6 +2099,54 @@ function redactorGrid(name) {
   return JSON.parse(gunzipSync(readFileSync(fileURLToPath(url))).toString('utf8'));
 }
 
+/**
+ * Whether the Redactor masked anything in `input`, given its output `out`. Since its structural path (#377) the Redactor
+ * writes text that is one JSON value with canonical escape spellings, so an output that differs from its input is still
+ * a kept text when it is the same JSON: the same names in order and the same values, a string that holds one JSON value
+ * holding the same JSON at any depth, and the same whitespace around the value.
+ */
+function maskedBy(input, out) {
+  return out !== input && !sameJson(input, out);
+}
+
+/**
+ * Whether the Redactor's output differs from a text that holds the mask only by masks, quotes and the backslash and
+ * quote spellings around them: it masked nothing but a value that already is the mask.
+ */
+function remasked(input, out) {
+  const bare = text => text.toLowerCase().replaceAll('[redacted]', '').replace(/u005c|u0022|["\\]/g, '');
+  return input.includes('[REDACTED]') && bare(input) === bare(out);
+}
+
+function sameJson(a, b) {
+  const parse = text => {
+    try {
+      return { value: JSON.parse(text) };
+    } catch {
+      return null;
+    }
+  };
+  const x = parse(a);
+  const y = parse(b);
+  if (x === null || y === null) return false;
+  const lead = t => t.length - t.trimStart().length;
+  const tail = t => t.length - t.trimEnd().length;
+  return sameValue(x.value, y.value) && lead(a) === lead(b) && tail(a) === tail(b);
+}
+
+function sameValue(x, y) {
+  if (typeof x === 'string' && typeof y === 'string') return x === y || sameJson(x, y);
+  if (Array.isArray(x) || Array.isArray(y)) {
+    return Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => sameValue(v, y[i]));
+  }
+  if (x !== null && y !== null && typeof x === 'object' && typeof y === 'object') {
+    const xs = Object.keys(x);
+    const ys = Object.keys(y);
+    return xs.length === ys.length && xs.every((k, i) => k === ys[i] && sameValue(x[k], y[k]));
+  }
+  return x === y;
+}
+
 test('accepts every output of the Redactor for the Codex round 5 grid (#339)', () => {
   // RedactorTest checks that the committed grid holds the Redactor's outputs for these inputs; see redactorGrid.
   const pairs = redactorGrid('fail-closed-grid');
@@ -2181,7 +2229,7 @@ test('reads the rest of a secret field\'s object once for all its secret fields,
 function separatorGridWrong(pairs) {
   const wrong = [];
   for (const [input, out] of pairs) {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
       .map(leaks => leaks.length > 0);
     if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
@@ -2211,7 +2259,7 @@ function levelGridWrong(name, pairs) {
   const wrong = [];
   let keptAsMain = 0;
   pairs.forEach(([input, out], row) => {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
       .map(leaks => leaks.length > 0);
     const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0);
@@ -2236,10 +2284,18 @@ function generatedGridWrong(name, pairs) {
   const masksReportForm = text => byInput.has(reportForm(text)) && byInput.get(reportForm(text)) !== reportForm(text);
   const wrong = [];
   let keptAsMain = 0;
+  let remasks = 0;
   pairs.forEach(([input, out], row) => {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
       .map(leaks => leaks.length > 0);
+    if (masked && remasked(input, out) && !verdicts.some(Boolean)) {
+      // #377: a kept text whose value already is the mask, which the Redactor's reading of the decoded string masks
+      // again; there is nothing to flag in it, and the output must be accepted.
+      remasks++;
+      if (findTextLeaks(out).length > 0 || findJsonLeaks({ responseBody: out }).length > 0) wrong.push(`remask output: ${out}`);
+      return;
+    }
     const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0
       || (entry === 1 && masksReportForm(input)));
     if (verdicts.some((flagged, entry) => flagged !== expected[entry])) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
@@ -2249,7 +2305,7 @@ function generatedGridWrong(name, pairs) {
     const outputExpected = [false, masksReportForm(out), false];
     if (outputFlags.some((flagged, entry) => flagged !== outputExpected[entry])) wrong.push(`output ${outputFlags}: ${out}`);
   });
-  return { wrong, keptAsMain };
+  return { wrong, keptAsMain, remasks };
 }
 
 test('pins the verdicts on the generic-field separator forms #351 resolved (#348)', () => {
@@ -2285,7 +2341,7 @@ test('ends such a field\'s value where the Redactor does before a cut note, at t
   assert.equal(pairs.length, 549);
   const wrong = [];
   for (const [input, out] of pairs) {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findJsonLeaks({ responseBody: input })].map(leaks => leaks.length > 0);
     if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
     if (findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
@@ -2427,7 +2483,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
     const lost = [];
     pairs.forEach(([input, out], row) => {
       for (let entry = 0; entry < 3; entry++) {
-        if ((Number(digits[row]) & (1 << entry)) !== 0 && entries[entry](input).length === 0) lost.push(`${out === input ? 'kept' : 'masked'} entry ${entry}: ${input}`);
+        if ((Number(digits[row]) & (1 << entry)) !== 0 && entries[entry](input).length === 0) lost.push(`${maskedBy(input, out) ? 'masked' : 'kept'} entry ${entry}: ${input}`);
       }
     });
     assert.deepEqual(lost.slice(0, 5), [], `${name}: ${lost.length} verdicts main flags are lost`);
@@ -2578,8 +2634,11 @@ test('reads every spelling of a secret field\'s quotes and of a closing backslas
   // (13,496 entries, counting a row's input and output apart).
   const pairs = redactorGrid('generic-separator-level-generated-grid');
   assert.equal(pairs.length, 16_018);
-  const { wrong, keptAsMain } = generatedGridWrong('generic-separator-level-generated-grid', pairs);
-  assert.equal(keptAsMain, 921, 'verdicts on kept texts main flags too');
+  const { wrong, keptAsMain, remasks } = generatedGridWrong('generic-separator-level-generated-grid', pairs);
+  // #377: the Redactor's reading of a decoded string masks 15 kept texts whose value already is the mask again. The 3
+  // that main flags now count as masked, taking their 9 verdicts out of this count; the other 12 hold nothing to flag.
+  assert.equal(keptAsMain, 912, 'verdicts on kept texts main flags too');
+  assert.equal(remasks, 12, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
