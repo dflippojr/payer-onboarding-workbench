@@ -3037,75 +3037,80 @@ class RedactorTest {
     @Test
     void redactsEveryStringOfATreeAndMasksSecretFields() {
         String token = randomToken();
-        Map<Object, Object> tree = new LinkedHashMap<>();
+        // A tree is JSON-shaped plain data (#377, typed tree): a record is given as the map of its components.
+        Map<String, Object> card = new LinkedHashMap<>();
+        card.put("summary", "Bearer " + token);
+        card.put("clientSecret", token);
+        card.put("apiKey", 918273645);
+        card.put("password", 918273646);
+        card.put("notes", List.of("Bearer " + token));
+        Map<String, Object> tree = new LinkedHashMap<>();
         tree.put("summary", "Echo: Bearer " + token);
         tree.put("requestHeaders", Map.of("Authorization", List.of("Bearer " + token), "Cookie", List.of("c=" + token)));
-        tree.put("tags", new LinkedHashSet<>(List.of("Bearer " + token)));
-        tree.put("card", new Echoed("Bearer " + token, token, 918273645, 918273646, List.of("Bearer " + token)));
+        tree.put("tags", List.of("Bearer " + token));
+        tree.put("card", card);
         tree.put("count", 3);
-        tree.put(Severity.FAIL, 1L);
+        tree.put("FAIL", 1L);
         tree.put("missing", null);
 
         Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
 
-        // The value is copied into plain data first (#377): an enum key becomes its name, a record a map of its components.
-        assertEquals(List.of("summary", "requestHeaders", "tags", "card", "count", "FAIL", "missing"),
-                List.copyOf(out.keySet()));
+        assertEquals(List.copyOf(tree.keySet()), List.copyOf(out.keySet()));
         assertEquals("Echo: Bearer [REDACTED]", out.get("summary"));
-        assertEquals(Map.of("Authorization", List.of("Bearer [REDACTED]"), "Cookie", List.of("[REDACTED]")),
-                out.get("requestHeaders"));
-        assertEquals(Set.of("Bearer [REDACTED]"), out.get("tags"));
-        // A record becomes a map of its components, so every secret-named component holds the mask.
-        Map<String, Object> card = new LinkedHashMap<>();
-        card.put("summary", "Bearer [REDACTED]");
-        card.put("clientSecret", "[REDACTED]");
-        card.put("apiKey", "[REDACTED]");
-        card.put("password", "[REDACTED]");
-        card.put("notes", List.of("Bearer [REDACTED]"));
-        assertEquals(card, out.get("card"));
+        // Each secret-named value is masked as it is in the JSON text of the same tree (RedactorTreeTest).
+        assertEquals(Redactor.redact(JSON.writeValueAsString(tree.get("requestHeaders"))),
+                JSON.writeValueAsString(out.get("requestHeaders")));
+        assertEquals(List.of("Bearer [REDACTED]"), out.get("tags"));
+        Map<String, Object> redactedCard = new LinkedHashMap<>();
+        redactedCard.put("summary", "Bearer [REDACTED]");
+        redactedCard.put("clientSecret", "[REDACTED]");
+        redactedCard.put("apiKey", "[REDACTED]");
+        redactedCard.put("password", "[REDACTED]");
+        redactedCard.put("notes", List.of("Bearer [REDACTED]"));
+        assertEquals(redactedCard, out.get("card"));
         assertEquals(List.copyOf(card.keySet()), List.copyOf(((Map<?, ?>) out.get("card")).keySet()));
         assertEquals(3, out.get("count"));
         assertEquals(1L, out.get("FAIL"));
         assertTrue(out.containsKey("missing"));
         assertNull(out.get("missing"));
         assertNull(Redactor.redactTree(null));
-        assertEquals(Map.of("access_token", List.of("[REDACTED]", "[REDACTED]"),
-                        "Proxy-Authorization", List.of("[REDACTED]", "Basic [REDACTED]")),
-                Redactor.redactTree(Map.of("access_token", List.of("x", "Basic dXNlcjpwYXNz"),
-                        "Proxy-Authorization", List.of("x", "Basic dXNlcjpwYXNz"))));
+        Map<String, Object> lists = Map.of("access_token", List.of("x", "Basic dXNlcjpwYXNz"),
+                "Proxy-Authorization", List.of("x", "Basic dXNlcjpwYXNz"));
+        assertEquals(Redactor.redact(JSON.writeValueAsString(lists)), JSON.writeValueAsString(Redactor.redactTree(lists)));
+        assertFalse(String.valueOf(out).contains(token), String.valueOf(out));
+        // The record, a set and an enum key are not JSON-shaped: the whole tree is the mask.
+        Map<Object, Object> typed = new LinkedHashMap<>(tree);
+        typed.put("card", new Echoed("Bearer " + token, token, 918273645, 918273646, List.of("Bearer " + token)));
+        assertEquals(Redactor.MASK, Redactor.redactTree(typed));
+        assertEquals(Redactor.MASK, Redactor.redactTree(Map.of("tags", new LinkedHashSet<>(List.of("Bearer " + token)))));
+        assertEquals(Redactor.MASK, Redactor.redactTree(Map.of(Severity.FAIL, 1L)));
     }
 
     @Test
     void redactsMapKeysArraysOptionalsAndValuesOfOtherTypesInATree() {
         String token = randomToken();
         String echo = "Bearer " + token;
-        Map<Object, Object> tree = new LinkedHashMap<>();
+        Map<String, Object> tree = new LinkedHashMap<>();
         tree.put("key: " + echo, "v");
-        tree.put("array", new String[] {echo});
-        tree.put("nested", new Object[] {List.of(echo), 7});
-        tree.put("queue", new ArrayDeque<>(List.of(echo)));
-        tree.put("optional", Optional.of(echo));
-        tree.put("builder", new StringBuilder(echo));
-        tree.put("node", JSON.readTree("{\"echo\":\"" + echo + "\"}"));
-        tree.put("at", Instant.EPOCH);
-        tree.put("took", Duration.ofSeconds(3));
-        tree.put("letter", 'x');
+        tree.put("nested", List.of(List.of(echo), 7));
+        tree.put("node", JSON.readTree("{\"echo\":\"" + echo + "\",\"n\":[1,true,null]}"));
 
         Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
 
         assertEquals("v", out.get("key: Bearer [REDACTED]"));
-        assertEquals(List.of("Bearer [REDACTED]"), out.get("array"));
         assertEquals(List.of(List.of("Bearer [REDACTED]"), 7), out.get("nested"));
-        assertEquals(List.of("Bearer [REDACTED]"), out.get("queue"));
-        assertEquals(Optional.of("Bearer [REDACTED]"), out.get("optional"));
-        assertEquals(Optional.empty(), Redactor.redactTree(Optional.empty()));
-        // Any other type becomes its redacted string form.
-        assertEquals("Bearer [REDACTED]", out.get("builder"));
-        assertEquals("{\"echo\":\"Bearer [REDACTED]\"}", out.get("node"));
-        assertEquals(Instant.EPOCH, out.get("at"));
-        assertEquals(Duration.ofSeconds(3), out.get("took"));
-        assertEquals('x', out.get("letter"));
+        // A Jackson tree comes back as plain data.
+        List<Object> n = new ArrayList<>(List.of(1, true));
+        n.add(null);
+        assertEquals(Map.of("echo", "Bearer [REDACTED]", "n", n), out.get("node"));
         assertFalse(String.valueOf(out).contains(token), String.valueOf(out));
+        // An array, a collection that is not a list, an optional and any other type are not JSON-shaped (#377, typed
+        // tree): each makes the whole tree the mask, so its own code never runs and nothing of it is kept.
+        for (Object other : List.of(new String[] {echo}, new Object[] {List.of(echo), 7}, new ArrayDeque<>(List.of(echo)),
+                Optional.of(echo), Optional.empty(), new StringBuilder(echo), Instant.EPOCH, Duration.ofSeconds(3), 'x')) {
+            assertEquals(Redactor.MASK, Redactor.redactTree(Map.of("v", other)), other.getClass().getName());
+            assertEquals(Redactor.MASK, Redactor.redactTree(other), other.getClass().getName());
+        }
     }
 
     /** #310: a payer's body can be megabytes of this, and no HTTP timeout bounds the matching. */

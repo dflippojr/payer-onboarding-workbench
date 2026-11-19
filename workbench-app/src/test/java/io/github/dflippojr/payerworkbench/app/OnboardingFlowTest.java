@@ -102,6 +102,46 @@ class OnboardingFlowTest {
     }
 
     /**
+     * Each step records JSON-shaped plain data (#377, typed tree), which the API, the reports and the run store all
+     * read: a record, an enum or an instant is converted when the step is recorded, so no step's details are the mask.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
+    void everyStepRecordsJsonShapedDetails(String payerId) {
+        for (List<String> faults : List.of(List.<String>of(), List.of(Fault.EXPIRED_TOKEN_401.id()))) {
+            OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, faults));
+            for (StepResult step : run.steps()) {
+                assertFalse(step.details().containsKey("details"), step.stepId() + " details: " + step.details());
+                assertJsonShaped(step.details(), step.stepId());
+            }
+        }
+    }
+
+    private static final Set<Class<?>> JSON_NUMBERS = Set.of(Integer.class, Long.class, Short.class, Byte.class,
+            Double.class, Float.class, java.math.BigInteger.class, java.math.BigDecimal.class);
+
+    private static void assertJsonShaped(Object value, String path) {
+        if (value == null || value instanceof String || value instanceof Boolean
+                || JSON_NUMBERS.contains(value.getClass())) {
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            map.forEach((k, v) -> {
+                assertTrue(k instanceof String, () -> path + " has a key that is not text: " + k.getClass().getName());
+                assertJsonShaped(v, path + "." + k);
+            });
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (int i = 0; i < list.size(); i++) {
+                assertJsonShaped(list.get(i), path + "[" + i + "]");
+            }
+            return;
+        }
+        throw new AssertionError(path + " is a " + value.getClass().getName() + ", not JSON-shaped plain data");
+    }
+
+    /**
      * auth.clock-skew is reachable through the runner: it measures the client JWT
      * Fabrikam signs and the client_assertion Tailspin sends against each payer's
      * Date header. Northwind's client secret carries no JWT, so there is nothing to measure.
