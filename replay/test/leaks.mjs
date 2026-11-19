@@ -212,8 +212,8 @@ const isAuthLineProse = (name, v) => {
 };
 
 /**
- * An item Redactor leaves in a secret-named list: redactTree masks a header-named list item by item, an
- * authorization item keeping any token as a scheme in front of the mask (SCRAM-SHA-256 [REDACTED]); any
+ * An item Redactor may leave in a secret-named list: a header-named list may be masked item by item, an
+ * authorization item keeping a token as a scheme in front of the mask (SCRAM-SHA-256 [REDACTED]); any
  * other item is a bare mask (#292).
  */
 const isMaskedItem = (name, item) => typeof item === 'string'
@@ -2659,7 +2659,7 @@ export function findJsonLeaks(value, path = '$') {
     if (!v || typeof v !== 'object') return;
     for (const [k, x] of Object.entries(v)) {
       const key = k.toLowerCase();
-      // Redactor.redactTree masks a header-named list item by item (authorization: ["Bearer [REDACTED]"]).
+      // Redactor may leave a header-named list masked item by item (authorization: ["Bearer [REDACTED]"]).
       const maskedHeaderList = SENSITIVE_HEADERS.has(key) && Array.isArray(x)
         && x.every(hv => typeof hv === 'string' && isMaskedValue(key, hv));
       if (isSecretKey(key) && (typeof x === 'number' || typeof x === 'boolean'

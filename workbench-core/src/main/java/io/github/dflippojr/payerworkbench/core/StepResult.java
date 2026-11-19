@@ -18,9 +18,10 @@ import java.util.Objects;
  * @param elapsed how long it took
  * @param ok whether the step completed successfully
  * @param summary one-line human-readable outcome, redacted
- * @param details extra step-specific values for display; must not contain secret material.
- *     Copied, through {@link Redactor#redactTree(Object)}, into an unmodifiable map of plain data that
- *     keeps insertion order (a record becomes a map of its components, an enum its name).
+ * @param details extra step-specific values for display; must not contain secret material, and must be
+ *     JSON-shaped plain data: strings, numbers, booleans, {@code null}, maps with string keys and lists
+ *     ({@link Redactor#redactTree(Object)}, #377), so a caller converts a record or an enum first.
+ *     Redacted through it into an unmodifiable map that keeps insertion order.
  */
 public record StepResult(
         String stepId,
@@ -38,7 +39,7 @@ public record StepResult(
         details = details == null ? Map.of() : redactedDetails(details);
     }
 
-    /** The details as plain redacted data; if they cannot be copied, one {@code details} entry holding the mask. */
+    /** The details redacted; if they are not JSON-shaped plain data, one {@code details} entry holding the mask. */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> redactedDetails(Map<String, Object> details) {
         return Redactor.redactTree(details) instanceof Map<?, ?> safe

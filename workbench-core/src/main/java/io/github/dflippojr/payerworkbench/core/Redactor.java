@@ -11,11 +11,9 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -2549,73 +2547,34 @@ public final class Redactor {
     }
 
     /**
-     * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
-     * and the value of every field named like a secret or a credential header is masked, recursively,
-     * or {@code null} if {@code value} is {@code null}.
+     * Returns JSON-shaped plain data redacted by the same rules as a JSON text ({@link #redact(String)}), as new plain
+     * data, or {@code null} if {@code value} is {@code null}.
      *
-     * <p>The value is first copied once into plain JDK data ({@link PlainData}: strings, final JDK scalars, maps,
-     * lists, sets and optionals; a record becomes a map of its components, an enum its name and any other value its
-     * string form), and only that copy is redacted, so no caller object runs its own code afterwards or is returned
-     * (#360's snapshot-first rule, #377). Maps keep their iteration order, and their string keys are redacted too. An
-     * {@code Authorization}-style field keeps its scheme ({@code Bearer [REDACTED]}). In a map with a {@code kty} key
-     * (a JWK, also a record with a {@code kty} component) the {@link #JWK_PRIVATE_MEMBERS} are masked too, each key
-     * read as its text. If copying or redacting fails, the whole result is the mask.
+     * <p>{@code value} may hold only {@code null}, strings, booleans, the JDK's own number types ({@code Integer},
+     * {@code Long}, {@code Short}, {@code Byte}, {@code Double}, {@code Float}, {@code BigInteger} and
+     * {@code BigDecimal}), maps whose keys are all strings, lists, and Jackson's own tree nodes (a {@code JsonNode})
+     * holding only the same (#377, typed tree). Any other value anywhere in it (a record, an enum, a set, an array, a
+     * map with a key that is not a string) is rejected, and the whole result is the mask: a caller converts such
+     * values to plain data first.
+     *
+     * <p>The tree is read once into the JSON path's own nodes and redacted there ({@link JsonRedaction#redactTree}), so
+     * each string, member name and secret-named or JWK member is redacted exactly as it is in the same tree written as
+     * JSON text. Maps keep their order, and numbers and booleans are returned as they are. A tree that weighs more than
+     * {@link JsonRedaction#MAX_WEIGHT}, nests deeper than {@link JsonRedaction#MAX_DEPTH}, or that the JSON path would
+     * mask whole as a text, is the mask, as is any failure while it is read.
      */
     public static Object redactTree(Object value) {
         try {
-            return redactPlain(null, PlainData.of(value));
+            return JsonRedaction.redactTree(value);
         } catch (Exception | LinkageError | AssertionError | StackOverflowError failed) {
-            // Fail closed (#360, #377): a caller value that cannot be copied or redacted is not kept, nor is its error.
+            // Fail closed (#360, #377): a caller value that cannot be read or redacted is not kept, nor is its error.
             return MASK;
         }
-    }
-
-    /** {@link #redactTree}'s redaction of a {@link PlainData} copy, the value of a member named {@code key}. */
-    private static Object redactPlain(String key, Object value) {
-        if (key != null && isSecretKey(key)) {
-            return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
-        }
-        if (value instanceof String s) {
-            return redact(s);
-        }
-        if (value instanceof Map<?, ?> map) {
-            // A key may be any plain copy (#377): its text names the member for the secret-name and JWK rules, and the
-            // map is keyed by that text once the key is redacted by the same rules as any value. Keys that merge fail.
-            Map<String, Object> out = new LinkedHashMap<>();
-            boolean jwk = map.keySet().stream().anyMatch(k -> "kty".equals(String.valueOf(k)));
-            map.forEach((k, v) -> {
-                String name = String.valueOf(k);
-                String shown = redact(k instanceof String s ? s : String.valueOf(redactPlain(null, k)));
-                Object item = jwk && JWK_PRIVATE_MEMBERS.contains(name) ? maskField(name, v) : redactPlain(name, v);
-                if (out.containsKey(shown)) {
-                    throw new IllegalArgumentException("two keys with the same redacted text");
-                }
-                out.put(shown, item);
-            });
-            return Collections.unmodifiableMap(out);
-        }
-        if (value instanceof Set<?> set) {
-            Set<Object> out = new LinkedHashSet<>();
-            set.forEach(v -> out.add(redactPlain(null, v)));
-            return Collections.unmodifiableSet(out);
-        }
-        if (value instanceof List<?> list) {
-            return list.stream().map(v -> redactPlain(null, v)).toList();
-        }
-        if (value instanceof Optional<?> optional) {
-            return optional.map(v -> redactPlain(null, v));
-        }
-        return value;
     }
 
     /** Whether a field with this name holds a secret or a credential header's value. */
     static boolean isSecretKey(String key) {
         return isSecretField(key) || isSensitiveHeader(key);
-    }
-
-    /** A secret field's value, by the rule the JSON path uses too ({@link #masked}), whatever its type. */
-    private static Object maskField(String key, Object value) {
-        return value == null ? null : masked(key, String.valueOf(value));
     }
 
     private static String redactHeaderValue(String name, String value) {

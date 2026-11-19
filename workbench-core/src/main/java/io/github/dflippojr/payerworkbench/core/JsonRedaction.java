@@ -1,13 +1,19 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 import tools.jackson.core.ObjectReadContext;
 import tools.jackson.core.StreamReadConstraints;
+import tools.jackson.core.TreeNode;
 import tools.jackson.core.exc.StreamConstraintsException;
 import tools.jackson.core.exc.StreamReadException;
 import tools.jackson.core.io.JsonStringEncoder;
@@ -25,8 +31,8 @@ import tools.jackson.core.json.JsonReadFeature;
  *
  * <ul>
  *   <li>the value of a member named like a secret or a credential header ({@link Redactor#isSecretKey(String)}) is
- *       the mask; an {@code Authorization}-style string keeps its scheme ({@code Bearer [REDACTED]}), and
- *       {@code null} stays {@code null};
+ *       the mask; an {@code Authorization}-style string keeps its scheme ({@code Bearer [REDACTED]}), and so does
+ *       each string of an array that holds only such strings, as a header's values; {@code null} stays {@code null};
  *   <li>in an object with a {@code kty} member (a JWK) the value of each {@link Redactor#JWK_PRIVATE_MEMBERS} member
  *       is the mask, also {@code null} kept;
  *   <li>every other string, and every member name, is decoded and redacted again: a string that is itself one JSON
@@ -37,6 +43,9 @@ import tools.jackson.core.json.JsonReadFeature;
  * <p>The output keeps the text's whitespace between tokens, its member order and each number's spelling; only the
  * strings are written anew. Each level reads only strings the level above decoded, so the work is linear in the text
  * for each of the {@link #MAX_LEVELS} levels.
+ *
+ * <p>{@link Redactor#redactTree(Object)} reads JSON-shaped plain data into the same nodes ({@link #redactTree}) and
+ * redacts them by the same rules, so a tree and the same tree written as JSON text are redacted alike.
  */
 final class JsonRedaction {
 
@@ -145,6 +154,221 @@ final class JsonRedaction {
         return out.append(text, endOfValue(text), text.length()).toString();
     }
 
+    /**
+     * The most a tree given to {@link #redactTree} may weigh: one for each value, container and member name, and the
+     * length of each string and name as JSON spells it, quotes included. A heavier tree is not read further.
+     */
+    static final long MAX_WEIGHT = 16L * 1024 * 1024;
+
+    /** The number types a tree may hold: the JDK's own, matched by exact class, so reading one runs no caller code. */
+    static final Set<Class<?>> NUMBERS = Set.of(Integer.class, Long.class, Short.class, Byte.class, Double.class,
+            Float.class, BigInteger.class, BigDecimal.class);
+
+    /** The package of Jackson's own tree nodes, the only {@link TreeNode}s a tree may hold. */
+    private static final String JACKSON_NODES = "tools.jackson.databind.node";
+
+    /** Thrown for a tree that holds anything but JSON-shaped plain data ({@link #redactTree}). */
+    static final class NotPlain extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        NotPlain() {
+            super(null, null, false, false);
+        }
+    }
+
+    /**
+     * {@code value}, JSON-shaped plain data, redacted by the same tree rules as a JSON text ({@link #redact(String, int)}),
+     * as new plain data: {@code null}, a {@link String}, a {@link Boolean}, a number of one of the {@link #NUMBERS}
+     * types, a {@link Map} whose keys are all strings, a {@link List}, or one of Jackson's own tree nodes, holding only
+     * the same. Maps come back as unmodifiable maps that keep their order, lists and Jackson arrays as unmodifiable
+     * lists, Jackson objects as maps, and numbers and booleans as they are.
+     *
+     * <p>The tree is read once, each map entry and list item in turn, into this class's own nodes, and only those are
+     * redacted, so no caller object runs its code after it is read or is returned. Reading stops as soon as the tree
+     * weighs more than {@link #MAX_WEIGHT} or nests deeper than {@link #MAX_DEPTH}.
+     *
+     * @throws NotPlain if it holds anything else
+     * @throws Unreadable if it nests deeper than {@link #MAX_DEPTH}, an object's names repeat, or two names redact
+     *     to one, as for a text
+     * @throws UnterminatedKey if a string or name opens a private key block it does not close, as for a text
+     * @throws IllegalArgumentException if it weighs more than {@link #MAX_WEIGHT}
+     */
+    static Object redactTree(Object value) {
+        TreeReader reader = new TreeReader();
+        Node root = reader.read(value, 0);
+        if (reader.opensAKey) {
+            throw new UnterminatedKey();
+        }
+        return plain(redact(root, 0, Place.ROOT));
+    }
+
+    /** A redacted node read from a tree, as plain data. */
+    private static Object plain(Node node) {
+        if (node instanceof Scalar scalar) {
+            return scalar.string() ? scalar.text() : scalar.value();
+        }
+        Container container = (Container) node;
+        if (container.object()) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            container.members().forEach(member -> out.put(member.name(), plain(member.value())));
+            return Collections.unmodifiableMap(out);
+        }
+        List<Object> out = new ArrayList<>(container.members().size());
+        container.members().forEach(member -> out.add(plain(member.value())));
+        return Collections.unmodifiableList(out);
+    }
+
+    /** Reads JSON-shaped plain data into nodes, as {@link Reader} reads a text, keeping the tree's weight. */
+    private static final class TreeReader {
+        private long weight;
+
+        /** Whether a string or name opens a private key block it does not close. */
+        boolean opensAKey;
+
+        Node read(Object value, int depth) {
+            if (value == null) {
+                return value(null, "null");
+            }
+            if (value instanceof String string) {
+                return string(string);
+            }
+            if (value instanceof Boolean bool) {
+                return value(bool, bool.toString());
+            }
+            if (NUMBERS.contains(value.getClass())) {
+                return number((Number) value);
+            }
+            if (value instanceof Map<?, ?> map) {
+                enter(depth);
+                List<Member> members = new ArrayList<>();
+                Set<String> names = new HashSet<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (!(entry.getKey() instanceof String name)) {
+                        throw new NotPlain();
+                    }
+                    members.add(new Member("", name(name, names), quoted(name), read(entry.getValue(), depth + 1)));
+                }
+                return new Container("", true, members, "");
+            }
+            if (value instanceof List<?> list) {
+                enter(depth);
+                List<Member> members = new ArrayList<>();
+                for (Object item : list) {
+                    members.add(new Member(null, null, null, read(item, depth + 1)));
+                }
+                return new Container("", false, members, "");
+            }
+            if (value instanceof TreeNode node && JACKSON_NODES.equals(node.getClass().getPackageName())) {
+                try (JsonParser parser = node.traverse(ObjectReadContext.empty())) {
+                    return read(parser, parser.nextToken(), depth);
+                }
+            }
+            throw new NotPlain();
+        }
+
+        /** The value at {@code token} of a Jackson tree's tokens. */
+        private Node read(JsonParser parser, JsonToken token, int depth) {
+            switch (token) {
+                case START_OBJECT -> {
+                    enter(depth);
+                    List<Member> members = new ArrayList<>();
+                    Set<String> names = new HashSet<>();
+                    while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
+                        String name = name(parser.currentName(), names);
+                        members.add(new Member("", name, quoted(name), read(parser, parser.nextToken(), depth + 1)));
+                    }
+                    return new Container("", true, members, "");
+                }
+                case START_ARRAY -> {
+                    enter(depth);
+                    List<Member> members = new ArrayList<>();
+                    for (JsonToken item = parser.nextToken(); item != JsonToken.END_ARRAY; item = parser.nextToken()) {
+                        members.add(new Member(null, null, null, read(parser, item, depth + 1)));
+                    }
+                    return new Container("", false, members, "");
+                }
+                case VALUE_STRING -> {
+                    return string(parser.getString());
+                }
+                case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT -> {
+                    Number number = parser.getNumberValue();
+                    if (!NUMBERS.contains(number.getClass())) {
+                        throw new NotPlain();
+                    }
+                    return number(number);
+                }
+                case VALUE_TRUE, VALUE_FALSE -> {
+                    return value(token == JsonToken.VALUE_TRUE, token.asString());
+                }
+                case VALUE_NULL -> {
+                    return value(null, "null");
+                }
+                default -> throw new NotPlain();
+            }
+        }
+
+        /** A container at {@code depth}, the root's being 0: nesting past {@link #MAX_DEPTH} is unreadable. */
+        private void enter(int depth) {
+            if (depth >= MAX_DEPTH) {
+                throw new Unreadable();
+            }
+            weigh(1);
+        }
+
+        private Node string(String string) {
+            String raw = spelled(string);
+            opensAKey |= Redactor.opensAnUnterminatedKey(string);
+            return new Scalar("", true, string, raw, null);
+        }
+
+        /** A member name; a name that repeats in one object is unreadable, as it is in a text. */
+        private String name(String name, Set<String> names) {
+            spelled(name);
+            opensAKey |= Redactor.opensAnUnterminatedKey(name);
+            if (!names.add(name)) {
+                throw new Unreadable();
+            }
+            return name;
+        }
+
+        /** A big number weighs about its digits, counted from its bits so it is never written out. */
+        private Node number(Number number) {
+            if (number instanceof BigInteger big) {
+                weigh(1 + big.bitLength() / 3);
+            } else if (number instanceof BigDecimal big) {
+                weigh(1 + big.unscaledValue().bitLength() / 3);
+            }
+            return value(number, "number");
+        }
+
+        private Node value(Object value, String kind) {
+            weigh(1);
+            return new Scalar("", false, kind, null, value);
+        }
+
+        /** {@code text} as JSON spells it, weighed: its length is checked before it is spelled. */
+        private String spelled(String text) {
+            weigh(1 + text.length() + 2);
+            String raw = quoted(text);
+            weigh(raw.length() - text.length() - 2);
+            return raw;
+        }
+
+        private void weigh(long more) {
+            weight += more;
+            if (weight > MAX_WEIGHT) {
+                throw new IllegalArgumentException("the tree weighs more than " + MAX_WEIGHT);
+            }
+        }
+    }
+
+    /** {@code text} as Jackson's encoder spells a JSON string, quotes included. */
+    private static String quoted(String text) {
+        StringBuilder out = new StringBuilder(text.length() + 2);
+        quote(text, out);
+        return out.toString();
+    }
+
     /** A JSON value read from the text, with the text between it and the token before it ({@code lead}). */
     private sealed interface Node permits Container, Scalar {
         String lead();
@@ -166,11 +390,13 @@ final class JsonRedaction {
 
     /**
      * A string (its decoded value, {@code string}, and as the text spells it, {@code raw}, quotes included) or a
-     * number, {@code true}, {@code false} or {@code null} (as the text spells it, no {@code raw}).
+     * number, {@code true}, {@code false} or {@code null} (as the text spells it, no {@code raw}). A number, boolean or
+     * {@code null} read from a tree ({@link #redactTree}) is {@code value}, and its {@code text} only says which it is:
+     * {@code number}, {@code true}, {@code false} or {@code null}.
      */
-    private record Scalar(String lead, boolean string, String text, String raw) implements Node {
+    private record Scalar(String lead, boolean string, String text, String raw, Object value) implements Node {
         static Scalar masked(String lead, String mask) {
-            return new Scalar(lead, true, mask, null);
+            return new Scalar(lead, true, mask, null, null);
         }
     }
 
@@ -199,11 +425,11 @@ final class JsonRedaction {
                 if (end <= start || end > text.length() || text.charAt(end - 1) != '"') {
                     throw new IllegalStateException("string end not found");
                 }
-                return new Scalar(lead, true, value, text.substring(start, end));
+                return new Scalar(lead, true, value, text.substring(start, end), null);
             }
             return switch (token) {
                 case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT, VALUE_TRUE, VALUE_FALSE, VALUE_NULL ->
-                        new Scalar(lead, false, parser.getText(), null);
+                        new Scalar(lead, false, parser.getText(), null, null);
                 default -> throw new IllegalStateException("unexpected token " + token);
             };
         }
@@ -315,7 +541,7 @@ final class JsonRedaction {
     private static Node redact(Node node, int level, Place place) {
         if (node instanceof Scalar scalar) {
             return scalar.string()
-                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), scalar.raw(), level, place), null)
+                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), scalar.raw(), level, place), null, null)
                     : scalar;
         }
         Container container = (Container) node;
@@ -399,13 +625,30 @@ final class JsonRedaction {
         return end;
     }
 
-    /** The value of a secret-named member: a string keeps an {@code Authorization}-style scheme, {@code null} stays. */
+    /**
+     * The value of a secret-named member: a string keeps an {@code Authorization}-style scheme ({@link Redactor#masked})
+     * and {@code null} stays. An array of such strings, as a credential header's list of values, keeps each one's
+     * scheme so; any other value, an array with any other item among them, is the mask.
+     */
     private static Node maskSecret(String name, Node value) {
         if (value instanceof Scalar scalar && !scalar.string()) {
             return isNull(scalar) ? scalar : Scalar.masked(scalar.lead(), Redactor.MASK);
         }
         if (value instanceof Scalar scalar) {
             return Scalar.masked(scalar.lead(), Redactor.masked(name, scalar.text()));
+        }
+        Container container = (Container) value;
+        if (!container.object()) {
+            List<Member> items = new ArrayList<>(container.members().size());
+            for (Member item : container.members()) {
+                String masked = item.value() instanceof Scalar scalar && scalar.string()
+                        ? Redactor.masked(name, scalar.text()) : Redactor.MASK;
+                if (masked.equals(Redactor.MASK)) {
+                    return Scalar.masked(value.lead(), Redactor.MASK);
+                }
+                items.add(new Member(null, null, null, Scalar.masked(item.value().lead(), masked)));
+            }
+            return new Container(container.lead(), false, items, container.closeLead());
         }
         return Scalar.masked(value.lead(), Redactor.MASK);
     }

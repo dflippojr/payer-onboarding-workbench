@@ -94,9 +94,9 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
     // A tab after the colon, escaped when the text is quoted.
     JSON.stringify({ responseBody: 'HTTP/1.1 401\nCookie:\t[REDACTED]\nAccept: x' }),
-    // redactHeaders and redactTree keep an empty header list.
+    // redactHeaders and Redactor keep an empty header list.
     '{"requestHeaders":{"Cookie":[],"Authorization":[ ]}}',
-    // redactTree keeps any scheme of an authorization list item.
+    // The scanner accepts any scheme in front of the mask in an authorization list item.
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
   ]) {
     assert.deepEqual(findTextLeaks(text), [], text);
