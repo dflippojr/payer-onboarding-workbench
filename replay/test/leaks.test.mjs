@@ -2187,8 +2187,7 @@ function agreementRow(input) {
  * does not get, and any row whose flags differ from the pinned set (so a flag that moves to another row fails even when
  * the number of flagged rows stays the same).
  */
-function agreementWrong(pairs) {
-  const { main, head } = agreementVerdicts();
+function agreementWrong(pairs, { main, head } = agreementVerdicts()) {
   const wrong = [];
   const flagged = {};
   for (const [input, out] of pairs) {
@@ -2221,6 +2220,34 @@ test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterio
   assert.equal(pairs.length, 135 + 5_000);
   const wrong = agreementWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong of ${pairs.length}`);
+});
+
+/**
+ * The agreement grid with one row main's output does not flag at any entry point given a flagged report-form output
+ * instead (a regression), and verdicts edited to match: that row added to main's verdicts and to the head pin.
+ */
+function blessedRegression() {
+  const pairs = redactorGrid('agreement-grid').map(([input, out]) => [input, out]);
+  const verdicts = structuredClone(agreementVerdicts());
+  const flaggedOut = pairs.find(([, out]) => findTextLeaks(reportForm(out)).length > 0)[1];
+  const row = pairs.findIndex(([input, out]) => !(agreementRow(input) in verdicts.main) && !/^[ \t\n\r]*[[{"]/.test(out));
+  pairs[row][1] = flaggedOut;
+  verdicts.main[agreementRow(pairs[row][0])] = 2;
+  verdicts.head[agreementRow(pairs[row][0])] = 2;
+  return { pairs, verdicts };
+}
+
+test('fails the agreement when main\'s verdicts and the head pin are edited together to accept a new flag (#377 criterion 2)', () => {
+  // Main's verdicts are checked against main's own outputs, so editing them cannot accept a regression.
+  const { pairs, verdicts } = blessedRegression();
+  assert.ok(agreementWrong(pairs, verdicts).length > 0, 'a new flag accepted by editing main\'s verdicts and the head pin');
+});
+
+test('fails the agreement when a row is dropped from main\'s verdicts (#377 criterion 2)', () => {
+  const verdicts = structuredClone(agreementVerdicts());
+  const mainOnly = Object.keys(verdicts.main).find(row => !(row in verdicts.head));
+  delete verdicts.main[mainOnly];
+  assert.ok(agreementWrong(redactorGrid('agreement-grid'), verdicts).length > 0, `row ${mainOnly} dropped unnoticed`);
 });
 
 test('fails the agreement when a report-form flag moves to another row (#377 criterion 2, as amended)', () => {
