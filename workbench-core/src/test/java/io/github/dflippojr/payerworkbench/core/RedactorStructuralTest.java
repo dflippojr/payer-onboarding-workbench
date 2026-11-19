@@ -117,6 +117,39 @@ class RedactorStructuralTest {
         assertFalse(Redactor.redact(notJson).contains(SECRET));
     }
 
+    /** JSON whose one string opens a key block, its first character written as an escape, one or two levels down. */
+    private static List<String> nestedOpenKeys() {
+        String inner = "{\"k\":\"\\u002d----BEGIN PRIVATE KEY-----\"}";
+        return List.of(inner, "{\"x\":" + quoted(inner) + "}");
+    }
+
+    @Test
+    void masksTheOutermostTextWhenASecretMembersValueOpensAKeyBlockItDoesNotClose() {
+        String rest = SECRET + "\n-----END PRIVATE KEY-----";
+        for (String nested : nestedOpenKeys()) {
+            String in = "{\"password\":" + quoted(nested) + ",\"note\":" + quoted(rest).replace("\n", "\\n") + "}";
+            assertEquals(Redactor.MASK, Redactor.redact(in), in);
+            java.util.Map<String, Object> tree = new java.util.LinkedHashMap<>();
+            tree.put("password", nested);
+            tree.put("note", rest);
+            assertEquals(Redactor.MASK, Redactor.redactTree(tree), in);
+        }
+    }
+
+    @Test
+    void masksTheOutermostTextWhenAJwkPrivateMembersValueOpensAKeyBlockItDoesNotClose() {
+        String rest = SECRET + "\n-----END PRIVATE KEY-----";
+        for (String nested : nestedOpenKeys()) {
+            String in = "{\"kty\":\"RSA\",\"d\":" + quoted(nested) + ",\"note\":" + quoted(rest).replace("\n", "\\n") + "}";
+            assertEquals(Redactor.MASK, Redactor.redact(in), in);
+            java.util.Map<String, Object> tree = new java.util.LinkedHashMap<>();
+            tree.put("kty", "RSA");
+            tree.put("d", nested);
+            tree.put("note", rest);
+            assertEquals(Redactor.MASK, Redactor.redactTree(tree), in);
+        }
+    }
+
     @Test
     void readsTextThatIsNotOneJsonValueWithTheTextEngine() {
         for (String text : List.of("{\"a\":1} trailing", "[1,]", "{'a':1}", "// note\n{}", "{\"a\":\"tab\there\"}", "42",
