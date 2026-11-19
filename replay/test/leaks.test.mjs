@@ -5,11 +5,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
+import { agreementRow, committedVerdicts, grid, verdictsOf } from './agreement.mjs';
 
 const MASK = '[REDACTED]';
 
@@ -2168,16 +2168,36 @@ test('accepts every output of the Redactor for the Codex round 5 grid (#339)', (
 });
 
 /**
- * The scanner's verdicts on the agreement grid, by row: main's (main's Redactor, built from 19b624c, on each input) and
- * the pinned set for the current Redactor; see the file's _comment.
+ * The scanner agreement's verdicts (#377 criterion 2, as amended: no new flags against main, row by row), from two files:
+ * agreement-main-verdicts.json, the current scanner's verdicts on main's outputs, and agreement-head-flags.json, the head
+ * pin. Main's outputs are scanner-grids/agreement-main-grid.json.gz, which AgreementBaselineTest (Maven verify) keeps
+ * equal to the outputs of the baseline revision's own Redactor (19b624cd5ced541d2f0461b548d4653ff7bcaeeb), compiled and
+ * loaded apart from this build. Regenerate, then review the diff:
+ *   ./mvnw -pl workbench-core test -Dtest=AgreementBaselineTest -Dredactor.grids.update=true
+ *   node scripts/agreement-baseline.mjs           # main's verdicts only
+ *   node scripts/agreement-baseline.mjs --head    # the head pin only, a separate step
  */
 function agreementVerdicts() {
-  return JSON.parse(readFileSync(fileURLToPath(new URL('./main-verdicts-agreement.json', import.meta.url)), 'utf8'));
+  return committedVerdicts();
 }
 
-/** An agreement-grid row's id: the first 16 hex digits of its input's SHA-256, so it does not move with the row order. */
-function agreementRow(input) {
-  return createHash('sha256').update(input, 'utf8').digest('hex').slice(0, 16);
+/**
+ * What is wrong with main's committed verdicts: main's outputs must be for exactly the agreement grid's inputs, in its
+ * order, and the verdicts must be the current scanner's on those outputs at all three entry points, row for row, so an
+ * edited, added or dropped row fails.
+ */
+function mainBaselineWrong(main) {
+  const wrong = [];
+  const inputs = grid('agreement-grid').map(([input]) => input);
+  const mainPairs = grid('agreement-main-grid');
+  if (mainPairs.length !== inputs.length || mainPairs.some(([input], i) => input !== inputs[i])) {
+    wrong.push(`main's outputs are not for the agreement grid's ${inputs.length} inputs in order`);
+  }
+  const expected = verdictsOf(mainPairs);
+  for (const row of new Set([...Object.keys(expected), ...Object.keys(main)])) {
+    if (expected[row] !== main[row]) wrong.push(`main's verdicts, row ${row}: committed ${main[row] ?? 0}, scanner ${expected[row] ?? 0}`);
+  }
+  return wrong;
 }
 
 /**
@@ -2185,10 +2205,11 @@ function agreementRow(input) {
  * by the owner on 2026-11-19: no new flags against main, row by row): an output flagged as text or as parsed JSON, key
  * armor in the report form ({"responseBody": output}), a flag at any entry point that main's output for the same input
  * does not get, and any row whose flags differ from the pinned set (so a flag that moves to another row fails even when
- * the number of flagged rows stays the same).
+ * the number of flagged rows stays the same). Main's verdicts must first be the scanner's on main's own outputs
+ * (mainBaselineWrong), so editing them cannot accept a new flag.
  */
 function agreementWrong(pairs, { main, head } = agreementVerdicts()) {
-  const wrong = [];
+  const wrong = mainBaselineWrong(main);
   const flagged = {};
   for (const [input, out] of pairs) {
     const row = agreementRow(input);
@@ -2208,6 +2229,11 @@ function agreementWrong(pairs, { main, head } = agreementVerdicts()) {
   }
   return wrong;
 }
+
+test('holds the current scanner\'s verdicts on the baseline revision\'s outputs as main\'s verdicts (#377 criterion 2)', () => {
+  const wrong = mainBaselineWrong(agreementVerdicts().main);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
+});
 
 test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterion 2)', () => {
   // RedactorTest.recordsItsOutputsForTheCorpusAndTheFuzzCorpusForTheScannerAgreement commits the Redactor's output for

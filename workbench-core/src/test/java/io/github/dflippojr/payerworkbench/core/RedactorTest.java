@@ -1845,7 +1845,7 @@ class RedactorTest {
     }
 
     /** The input and output pairs of the committed {@code src/test/resources/scanner-grids/<name>.json.gz}. */
-    private static List<List<String>> committedScannerGrid(String name) throws java.io.IOException {
+    static List<List<String>> committedScannerGrid(String name) throws java.io.IOException {
         java.nio.file.Path grid = java.nio.file.Path.of("src", "test", "resources", "scanner-grids", name + ".json.gz");
         try (var in = new java.util.zip.GZIPInputStream(java.nio.file.Files.newInputStream(grid))) {
             return JSON.readValue(new String(in.readAllBytes(), StandardCharsets.UTF_8),
@@ -1885,7 +1885,7 @@ class RedactorTest {
      * After a change to the Redactor, rewrite the files with
      * {@code ./mvnw -pl workbench-core test -Dtest=RedactorTest -Dredactor.grids.update=true} and commit them.
      */
-    private static void assertScannerGrid(String name, List<String[]> pairs) throws java.io.IOException {
+    static void assertScannerGrid(String name, List<String[]> pairs) throws java.io.IOException {
         java.nio.file.Path grid = java.nio.file.Path.of("src", "test", "resources", "scanner-grids", name + ".json.gz");
         String json = JSON.writeValueAsString(pairs);
         if (Boolean.getBoolean("redactor.grids.update")) {
