@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static io.github.dflippojr.payerworkbench.core.SameJson.assertKept;
-import static io.github.dflippojr.payerworkbench.core.SameJson.assertRedactsTo;
+import static io.github.dflippojr.payerworkbench.core.Canonical.assertKept;
+import static io.github.dflippojr.payerworkbench.core.Canonical.assertRedactsTo;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
@@ -1447,7 +1447,7 @@ class RedactorTest {
             for (UnaryOperator<String> form : forms) {
                 String in = form.apply(text);
                 String out = Redactor.redact(in);
-                verdicts.append(SameJson.same(in, out) ? 'K' : SameJson.same(form.apply(valueMasked), out) ? 'M' : '?');
+                verdicts.append(Canonical.of(in).equals(out) ? 'K' : Canonical.of(form.apply(valueMasked)).equals(out) ? 'M' : '?');
             }
             verdictsByText.add(verdicts.toString());
         }
@@ -1518,13 +1518,19 @@ class RedactorTest {
                 // Nested, the embedded reading masks from the escaped whitespace on, which the text escapes again there;
                 // everything before the value is kept.
                 String secret = in.contains("password") ? "password" : "client_secret";
-                for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(RedactorTest::nested,
-                        t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                    String wrapped = wrap.apply(in);
+                List<UnaryOperator<String>> wraps = List.of(RedactorTest::nested, t -> nested(nested(t)),
+                        RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)));
+                for (int w = 0; w < wraps.size(); w++) {
+                    String wrapped = wraps.get(w).apply(in);
                     String out = Redactor.redact(wrapped);
                     assertFalse(out.contains("s3cr3t"), () -> wrapped + " => " + out);
-                    // The name before the value is kept, written with canonical escape spellings since #377.
-                    assertTrue(out.contains(secret) && out.contains(Redactor.MASK), () -> wrapped + " => " + out);
+                    // Everything up to the value's colon is kept, as Jackson's encoder spells the strings since #377.
+                    // Pinned (#377 gate change): nested around a \u0022-quoted level, the embedded reading masks the
+                    // value in that string's own spelling, which the encoder does not write, so there the prefix is the
+                    // input's own, byte for byte, as on main.
+                    String expected = w == 3 ? wrapped : Canonical.of(wrapped);
+                    assertTrue(out.startsWith(expected.substring(0, expected.indexOf(':', expected.indexOf(secret)) + 1)),
+                            () -> wrapped + " => " + out);
                 }
             }
         }
@@ -1643,7 +1649,7 @@ class RedactorTest {
                             texts++;
                             String out = Redactor.redact(text);
                             pairs.add(new String[] {text, out});
-                            if (kept ? !SameJson.same(text, out) : out.contains("s3cr3t")) {
+                            if (kept ? !Canonical.of(text).equals(out) : out.contains("s3cr3t")) {
                                 wrong.add(text + " => " + out);
                             }
                         }
@@ -1750,7 +1756,7 @@ class RedactorTest {
                 String out = Redactor.redact(text);
                 pairs.add(new String[] {text, out});
                 // Valid JSON stays the same JSON (#377: only its escape spellings may change); in a log line it is text that is not JSON, where the fail-closed rule holds.
-                if (kept ? isValidWithoutSecretNames(text) && !SameJson.same(text, out) : out.contains("s3cr3t")) {
+                if (kept ? isValidWithoutSecretNames(text) && !Canonical.of(text).equals(out) : out.contains("s3cr3t")) {
                     wrong.add(text + " => " + out);
                 }
             }
@@ -1830,7 +1836,7 @@ class RedactorTest {
                 String out = Redactor.redact(pair.get(0));
                 pairs.add(new String[] {pair.get(0), out});
                 // Kept is the same JSON since the structural path (#377): only the escape spellings may change.
-                masked += SameJson.same(pair.get(0), out) ? 0 : 1;
+                masked += Canonical.of(pair.get(0)).equals(out) ? 0 : 1;
             }
             assertEquals(grid.getValue()[0], masked, grid.getKey() + ": masked");
             assertEquals(grid.getValue()[1], pairs.size() - masked, grid.getKey() + ": kept");

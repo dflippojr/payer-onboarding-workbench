@@ -2101,12 +2101,11 @@ function redactorGrid(name) {
 
 /**
  * Whether the Redactor masked anything in `input`, given its output `out`. Since its structural path (#377) the Redactor
- * writes text that is one JSON value with canonical escape spellings, so an output that differs from its input is still
- * a kept text when it is the same JSON: the same names in order and the same values, a string that holds one JSON value
- * holding the same JSON at any depth, and the same whitespace around the value.
+ * writes text that is one JSON value with each string as Jackson's encoder spells it, so a kept text is exactly
+ * `canonical(input)`.
  */
 function maskedBy(input, out) {
-  return out !== input && !sameJson(input, out);
+  return out !== canonical(input);
 }
 
 /**
@@ -2118,33 +2117,45 @@ function remasked(input, out) {
   return input.includes('[REDACTED]') && bare(input) === bare(out);
 }
 
-function sameJson(a, b) {
-  const parse = text => {
-    try {
-      return { value: JSON.parse(text) };
-    } catch {
-      return null;
+/**
+ * `text` with each JSON string literal written as Jackson's encoder writes it and every character outside string
+ * literals as it is, written apart from the Redactor. Only text that is one JSON value whose first character after JSON
+ * whitespace opens an object, an array or a string is rewritten, as the Redactor reads it; a literal's content is
+ * rewritten the same way first, to the Redactor's 8 levels (JsonRedaction.MAX_LEVELS). Canonical.java is the Java twin.
+ */
+function canonical(text, level = 0) {
+  if (level >= 8 || !/^[ \t\n\r]*[[{"]/.test(text)) return text;
+  try {
+    JSON.parse(text);
+  } catch {
+    return text;
+  }
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '"') {
+      out += text[i++];
+      continue;
     }
-  };
-  const x = parse(a);
-  const y = parse(b);
-  if (x === null || y === null) return false;
-  const lead = t => t.length - t.trimStart().length;
-  const tail = t => t.length - t.trimEnd().length;
-  return sameValue(x.value, y.value) && lead(a) === lead(b) && tail(a) === tail(b);
+    let end = i + 1;
+    while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+    out += `"${jacksonQuoted(canonical(JSON.parse(text.slice(i, end + 1)), level + 1))}"`;
+    i = end + 1;
+  }
+  return out;
 }
 
-function sameValue(x, y) {
-  if (typeof x === 'string' && typeof y === 'string') return x === y || sameJson(x, y);
-  if (Array.isArray(x) || Array.isArray(y)) {
-    return Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => sameValue(v, y[i]));
+/** A string's content as Jackson's JsonStringEncoder writes it: short escapes, else \u00XX in upper case below 0x20. */
+function jacksonQuoted(text) {
+  const short = { 0x08: '\\b', 0x09: '\\t', 0x0a: '\\n', 0x0c: '\\f', 0x0d: '\\r', 0x22: '\\"', 0x5c: '\\\\' };
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (short[c]) out += short[c];
+    else if (c < 0x20) out += `\\u${c.toString(16).toUpperCase().padStart(4, '0')}`;
+    else out += text[i];
   }
-  if (x !== null && y !== null && typeof x === 'object' && typeof y === 'object') {
-    const xs = Object.keys(x);
-    const ys = Object.keys(y);
-    return xs.length === ys.length && xs.every((k, i) => k === ys[i] && sameValue(x[k], y[k]));
-  }
-  return x === y;
+  return out;
 }
 
 test('accepts every output of the Redactor for the Codex round 5 grid (#339)', () => {
