@@ -2166,6 +2166,24 @@ test('accepts every output of the Redactor for the Codex round 5 grid (#339)', (
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
 });
 
+/**
+ * What is wrong with the scanner's verdicts on the agreement grid's [input, output] pairs: an output flagged as text or as
+ * parsed JSON, key armor in the report form ({"responseBody": output}), or report-form flags other than the pinned ones.
+ */
+function agreementWrong(pairs) {
+  const wrong = [];
+  let reportFormFlags = 0;
+  for (const [input, out] of pairs) {
+    const leaks = [...findTextLeaks(out), ...findJsonLeaks({ responseBody: out })];
+    if (leaks.length > 0) wrong.push(`${leaks.map(l => l.check)}: ${input} => ${out}`);
+    const report = findTextLeaks(reportForm(out));
+    if (report.some(l => l.check === 'PEM block')) wrong.push(`report form, PEM block: ${input} => ${out}`);
+    if (report.length > 0) reportFormFlags++;
+  }
+  if (reportFormFlags !== 170) wrong.push(`${reportFormFlags} report-form flags, 170 pinned`);
+  return wrong;
+}
+
 test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterion 2)', () => {
   // RedactorTest.recordsItsOutputsForTheCorpusAndTheFuzzCorpusForTheScannerAgreement commits the Redactor's output for
   // every text and harmless corpus entry and 5,000 seeded fuzz texts. Read as text and as parsed JSON, no output is
@@ -2174,17 +2192,24 @@ test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterio
   // one corpus entry), which main's Redactor output gets on the same rows (pinned; Stage 3 replaces this scanner).
   const pairs = redactorGrid('agreement-grid');
   assert.equal(pairs.length, 135 + 5_000);
-  const flagged = [];
-  let reportFormFlags = 0;
-  for (const [input, out] of pairs) {
-    const leaks = [...findTextLeaks(out), ...findJsonLeaks({ responseBody: out })];
-    if (leaks.length > 0) flagged.push(`${leaks.map(l => l.check)}: ${input} => ${out}`);
-    const report = findTextLeaks(reportForm(out));
-    if (report.some(l => l.check === 'PEM block')) flagged.push(`report form, PEM block: ${input} => ${out}`);
-    if (report.length > 0) reportFormFlags++;
-  }
-  assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
-  assert.equal(reportFormFlags, 170);
+  const wrong = agreementWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong of ${pairs.length}`);
+});
+
+test('fails the agreement when a report-form flag moves to another row (#377 criterion 2, as amended)', () => {
+  // The owner's amendment of criterion 2 (2026-11-19): no new flags against main, row by row. A flag that moves to a row
+  // main does not flag must fail, even though the number of flagged rows stays the same.
+  const pairs = redactorGrid('agreement-grid').map(([input, out]) => [input, out]);
+  const flaggedRow = pairs.findIndex(([, out]) => findTextLeaks(reportForm(out)).length > 0);
+  const cleanRow = pairs.findIndex(([, out], row) => row > flaggedRow && findTextLeaks(reportForm(out)).length === 0
+    && !/^[ \t\n\r]*[[{"]/.test(out));
+  assert.ok(flaggedRow >= 0 && cleanRow >= 0);
+  // Swapped: the flagged row's output is clean, and the clean row's output is the flagged one.
+  const flaggedOut = pairs[flaggedRow][1];
+  pairs[flaggedRow][1] = pairs[cleanRow][1];
+  pairs[cleanRow][1] = flaggedOut;
+  assert.equal(pairs.filter(([, out]) => findTextLeaks(reportForm(out)).length > 0).length, 170);
+  assert.ok(agreementWrong(pairs).length > 0, 'a flag swapped onto a row main does not flag was accepted');
 });
 
 /** The inputs of RedactorTest.masksASecretNameWhoseQuoteIsSpelledThroughAnEscapeChainOfAnyDepth..., in its order. */
