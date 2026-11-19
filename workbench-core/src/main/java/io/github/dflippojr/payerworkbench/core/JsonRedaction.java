@@ -13,7 +13,6 @@ import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 import tools.jackson.core.ObjectReadContext;
 import tools.jackson.core.StreamReadConstraints;
-import tools.jackson.core.TreeNode;
 import tools.jackson.core.exc.StreamConstraintsException;
 import tools.jackson.core.exc.StreamReadException;
 import tools.jackson.core.io.JsonStringEncoder;
@@ -164,9 +163,6 @@ final class JsonRedaction {
     static final Set<Class<?>> NUMBERS = Set.of(Integer.class, Long.class, Short.class, Byte.class, Double.class,
             Float.class, BigInteger.class, BigDecimal.class);
 
-    /** The package of Jackson's own tree nodes, the only {@link TreeNode}s a tree may hold. */
-    private static final String JACKSON_NODES = "tools.jackson.databind.node";
-
     /** Thrown for a tree that holds anything but JSON-shaped plain data ({@link #redactTree}). */
     static final class NotPlain extends RuntimeException {
         private static final long serialVersionUID = 1L;
@@ -179,9 +175,9 @@ final class JsonRedaction {
     /**
      * {@code value}, JSON-shaped plain data, redacted by the same tree rules as a JSON text ({@link #redact(String, int)}),
      * as new plain data: {@code null}, a {@link String}, a {@link Boolean}, a number of one of the {@link #NUMBERS}
-     * types, a {@link Map} whose keys are all strings, a {@link List}, or one of Jackson's own tree nodes, holding only
-     * the same. Maps come back as unmodifiable maps that keep their order, lists and Jackson arrays as unmodifiable
-     * lists, Jackson objects as maps, and numbers and booleans as they are.
+     * types, a {@link Map} whose keys are all strings, or a {@link List}, holding only the same. A Jackson tree is not
+     * plain data: a caller converts it first, as any other typed value. Maps come back as unmodifiable maps that keep
+     * their order, lists as unmodifiable lists, and numbers and booleans as they are.
      *
      * <p>The tree is read once, each map entry and list item in turn, into this class's own nodes, and only those are
      * redacted, so no caller object runs its code after it is read or is returned. Reading stops as soon as the tree
@@ -258,53 +254,7 @@ final class JsonRedaction {
                 }
                 return new Container("", false, members, "");
             }
-            if (value instanceof TreeNode node && JACKSON_NODES.equals(node.getClass().getPackageName())) {
-                try (JsonParser parser = node.traverse(ObjectReadContext.empty())) {
-                    return read(parser, parser.nextToken(), depth);
-                }
-            }
             throw new NotPlain();
-        }
-
-        /** The value at {@code token} of a Jackson tree's tokens. */
-        private Node read(JsonParser parser, JsonToken token, int depth) {
-            switch (token) {
-                case START_OBJECT -> {
-                    enter(depth);
-                    List<Member> members = new ArrayList<>();
-                    Set<String> names = new HashSet<>();
-                    while (parser.nextToken() == JsonToken.PROPERTY_NAME) {
-                        String name = name(parser.currentName(), names);
-                        members.add(new Member("", name, quoted(name), read(parser, parser.nextToken(), depth + 1)));
-                    }
-                    return new Container("", true, members, "");
-                }
-                case START_ARRAY -> {
-                    enter(depth);
-                    List<Member> members = new ArrayList<>();
-                    for (JsonToken item = parser.nextToken(); item != JsonToken.END_ARRAY; item = parser.nextToken()) {
-                        members.add(new Member(null, null, null, read(parser, item, depth + 1)));
-                    }
-                    return new Container("", false, members, "");
-                }
-                case VALUE_STRING -> {
-                    return string(parser.getString());
-                }
-                case VALUE_NUMBER_INT, VALUE_NUMBER_FLOAT -> {
-                    Number number = parser.getNumberValue();
-                    if (!NUMBERS.contains(number.getClass())) {
-                        throw new NotPlain();
-                    }
-                    return number(number);
-                }
-                case VALUE_TRUE, VALUE_FALSE -> {
-                    return value(token == JsonToken.VALUE_TRUE, token.asString());
-                }
-                case VALUE_NULL -> {
-                    return value(null, "null");
-                }
-                default -> throw new NotPlain();
-            }
         }
 
         /** A container at {@code depth}, the root's being 0: nesting past {@link #MAX_DEPTH} is unreadable. */

@@ -144,15 +144,15 @@ class RedactorTreeTest {
     }
 
     /**
-     * Checks {@code tree}, and the same tree as a Jackson tree, against its JSON text, adding what differs to
-     * {@code wrong}; the number of trees checked.
+     * Checks {@code tree}, and the same tree as Jackson reads its JSON text into plain data, against its JSON text,
+     * adding what differs to {@code wrong}; the number of trees checked.
      */
     private static int check(Object tree, List<String> wrong) {
         String text = JSON.writeValueAsString(tree);
         same(text, Redactor.redact(text), Redactor.redactTree(tree), "plain", wrong);
-        JsonNode node = JSON.readTree(text);
-        String nodeText = JSON.writeValueAsString(node);
-        same(nodeText, Redactor.redact(nodeText), Redactor.redactTree(node), "node", wrong);
+        Object read = JSON.readValue(text, Object.class);
+        String readText = JSON.writeValueAsString(read);
+        same(readText, Redactor.redact(readText), Redactor.redactTree(read), "read", wrong);
         return 2;
     }
 
@@ -174,19 +174,21 @@ class RedactorTreeTest {
     }
 
     @Test
-    void readsAJacksonTreeAsPlainData() {
+    void masksAJacksonTreeAndRedactsItOnceConvertedToPlainData() {
         JsonNode node = JSON.readTree("{\"a\":[1,2.5,true,null,\"Bearer " + SECRET + "\"],\"b\":{\"client_secret\":\""
                 + SECRET + "\"}}");
+        // A Jackson tree is not plain data: the whole tree is the mask, also inside plain data.
+        assertEquals(Redactor.MASK, Redactor.redactTree(node));
+        assertEquals(Redactor.MASK, Redactor.redactTree(Map.of("node", node)));
+        assertEquals(Redactor.MASK, Redactor.redactTree(JsonNodeFactory.instance.pojoNode(new StringBuilder(SECRET))));
+        // A caller converts it first.
         Map<String, Object> b = Map.of("client_secret", Redactor.MASK);
         List<Object> a = new ArrayList<>(List.of(1, 2.5, true));
         a.add(null);
         a.add("Bearer " + Redactor.MASK);
-        Object out = Redactor.redactTree(node);
+        Object out = Redactor.redactTree(JSON.convertValue(node, Object.class));
         assertEquals(Map.of("a", a, "b", b), out);
         assertTrue(out.getClass().getName().startsWith("java.util."), () -> "not plain data: " + out.getClass());
-        // A Jackson node that holds a caller object or bytes is not JSON-shaped.
-        assertEquals(Redactor.MASK, Redactor.redactTree(JsonNodeFactory.instance.pojoNode(new StringBuilder(SECRET))));
-        assertEquals(Redactor.MASK, Redactor.redactTree(JsonNodeFactory.instance.binaryNode(SECRET.getBytes())));
     }
 
     // ---- anything else is rejected and masked ----

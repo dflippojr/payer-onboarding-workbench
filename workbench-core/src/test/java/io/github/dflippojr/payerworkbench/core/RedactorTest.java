@@ -3093,21 +3093,23 @@ class RedactorTest {
         Map<String, Object> tree = new LinkedHashMap<>();
         tree.put("key: " + echo, "v");
         tree.put("nested", List.of(List.of(echo), 7));
-        tree.put("node", JSON.readTree("{\"echo\":\"" + echo + "\",\"n\":[1,true,null]}"));
+        JsonNode node = JSON.readTree("{\"echo\":\"" + echo + "\",\"n\":[1,true,null]}");
+        // A Jackson tree is converted to plain data first (#377, typed tree).
+        tree.put("node", JSON.convertValue(node, Object.class));
 
         Map<?, ?> out = (Map<?, ?>) Redactor.redactTree(tree);
 
         assertEquals("v", out.get("key: Bearer [REDACTED]"));
         assertEquals(List.of(List.of("Bearer [REDACTED]"), 7), out.get("nested"));
-        // A Jackson tree comes back as plain data.
         List<Object> n = new ArrayList<>(List.of(1, true));
         n.add(null);
         assertEquals(Map.of("echo", "Bearer [REDACTED]", "n", n), out.get("node"));
         assertFalse(String.valueOf(out).contains(token), String.valueOf(out));
-        // An array, a collection that is not a list, an optional and any other type are not JSON-shaped (#377, typed
-        // tree): each makes the whole tree the mask, so its own code never runs and nothing of it is kept.
+        // An array, a collection that is not a list, an optional, a Jackson tree and any other type are not JSON-shaped
+        // (#377, typed tree): each makes the whole tree the mask, so its own code never runs and nothing of it is kept.
         for (Object other : List.of(new String[] {echo}, new Object[] {List.of(echo), 7}, new ArrayDeque<>(List.of(echo)),
-                Optional.of(echo), Optional.empty(), new StringBuilder(echo), Instant.EPOCH, Duration.ofSeconds(3), 'x')) {
+                Optional.of(echo), Optional.empty(), new StringBuilder(echo), node, Instant.EPOCH, Duration.ofSeconds(3),
+                'x')) {
             assertEquals(Redactor.MASK, Redactor.redactTree(Map.of("v", other)), other.getClass().getName());
             assertEquals(Redactor.MASK, Redactor.redactTree(other), other.getClass().getName());
         }

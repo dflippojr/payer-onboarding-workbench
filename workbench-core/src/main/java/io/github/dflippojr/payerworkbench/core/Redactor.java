@@ -2552,10 +2552,9 @@ public final class Redactor {
      *
      * <p>{@code value} may hold only {@code null}, strings, booleans, the JDK's own number types ({@code Integer},
      * {@code Long}, {@code Short}, {@code Byte}, {@code Double}, {@code Float}, {@code BigInteger} and
-     * {@code BigDecimal}), maps whose keys are all strings, lists, and Jackson's own tree nodes (a {@code JsonNode})
-     * holding only the same (#377, typed tree). Any other value anywhere in it (a record, an enum, a set, an array, a
-     * map with a key that is not a string) is rejected, and the whole result is the mask: a caller converts such
-     * values to plain data first.
+     * {@code BigDecimal}), maps whose keys are all strings, and lists, holding only the same (#377, typed tree). Any
+     * other value anywhere in it (a record, an enum, a set, an array, a map with a key that is not a string, a Jackson
+     * tree) is rejected, and the whole result is the mask: a caller converts such values to plain data first.
      *
      * <p>The tree is read once into the JSON path's own nodes and redacted there ({@link JsonRedaction#redactTree}), so
      * each string, member name and secret-named or JWK member is redacted exactly as it is in the same tree written as
