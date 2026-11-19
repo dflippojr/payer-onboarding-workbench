@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * DNS rebinding (#201): a web page whose name the attacker rebinds to 127.0.0.1 reaches the workbench with
  * the attacker's name in {@code Host}. A raw socket sends it, because the JDK client won't set {@code Host}.
- * Custom endpoints are on, as in the README's local opt-in, because that is where rebinding turns the
+ * Custom endpoints are on, as in the local opt-in in docs/api.md, because that is where rebinding turns the
  * workbench into a loopback port scanner. The context is its own, so no other class's runs are in the store.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,

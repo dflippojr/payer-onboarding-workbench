@@ -90,13 +90,9 @@ public class WorkbenchApiController {
 
     @PostMapping("/runs")
     public OnboardingRun run(@RequestBody RunRequest request) {
-        prepareAudit(request);
-        if (request.payerId() == null || request.sampleId() == null) {
-            throw new IllegalArgumentException("payerId and sampleId are required");
-        }
+        auditIdentity(request);
         OnboardingRun run = runner.run(request);
         runs.save(run);
-        if (AuditContext.current() != null) { AuditContext.current().reasonCode = null; }
         AuditContext audit = AuditContext.current();
         if (audit != null) { audit.verdict = RunVerdict.of(run).status(); }
         return run;
@@ -122,10 +118,9 @@ public class WorkbenchApiController {
         if (audit != null) {
             audit.runId = runs.find(id).map(OnboardingRun::runId).orElse(null);
             audit.reportFormat = ReportRenderer.Format.fromId(format).map(ReportRenderer.Format::extension).orElse(null);
-            if (audit.reportFormat == null) { audit.reasonCode = "invalid_format"; }
         }
         ReportRenderer.Format f = ReportRenderer.Format.fromId(format)
-                .orElseThrow(() -> new IllegalArgumentException("format must be md, html or json"));
+                .orElseThrow(() -> new RunRejection("invalid_format", "format must be md, html or json"));
         OnboardingRun run = run(id);
         MockPayer payer = payers.payer(run.payerId()).orElse(null);
         RunReport report = RunReport.of(run, payer == null ? null : payer.displayName(),
@@ -138,7 +133,13 @@ public class WorkbenchApiController {
                 .body(ReportRenderer.render(report, f));
     }
 
-    private void prepareAudit(RunRequest request) {
+    /**
+     * Fills the audit trail's payer, sample and environment from the request before the run is validated, so a
+     * refused request carries what it named and the events of a run that starts carry them too. Only a payer and a
+     * sample the workbench knows are copied; an unknown id never reaches the trail. The reason for a refusal is
+     * written by {@link #rejected}, not here.
+     */
+    private void auditIdentity(RunRequest request) {
         AuditContext audit = AuditContext.current();
         if (audit == null) { return; }
         audit.environment = request.environment();
@@ -146,13 +147,6 @@ public class WorkbenchApiController {
                 : (request.payerId() != null && payers.payerIds().contains(request.payerId())) ? request.payerId() : null;
         audit.sampleId = samples.list().stream().filter(s -> s.id().equals(request.sampleId()))
                 .map(SampleMetadata::id).findFirst().orElse(null);
-        if (request.payerId() == null || request.sampleId() == null) { audit.reasonCode = "missing_input"; }
-        else if (audit.sampleId == null) { audit.reasonCode = "unknown_sample"; }
-        else if (request.customEndpoint() != null) {
-            // The runner sets invalid_custom_endpoint where it refuses the endpoint, so a server error reads request_failed.
-            if (!properties.customEndpoints().enabled()) { audit.reasonCode = "custom_disabled"; }
-        } else if (audit.payerId == null) { audit.reasonCode = "unknown_payer"; }
-        else if (request.faults().stream().anyMatch(id -> Fault.fromId(id).isEmpty())) { audit.reasonCode = "unknown_fault"; }
     }
 
     /** The version from {@code META-INF/build-info.properties}, written by the Spring Boot Maven plugin. */
@@ -170,6 +164,22 @@ public class WorkbenchApiController {
         return manifest == null ? "unknown" : manifest;
     }
 
+    /**
+     * The one place a refused run or report request gets its audit reason: the {@link RunRejection} carries it with
+     * the status and the message, so the answer and the audit trail can't disagree.
+     */
+    @ExceptionHandler(RunRejection.class)
+    ResponseEntity<ProblemDetail> rejected(RunRejection e) {
+        AuditContext audit = AuditContext.current();
+        if (audit != null) { audit.reasonCode = e.reasonCode(); }
+        return ResponseEntity.status(e.status()).headers(e.headers())
+                .body(ProblemDetail.forStatusAndDetail(e.status(), e.getMessage()));
+    }
+
+    /**
+     * Any other {@link IllegalArgumentException}, one no rule planned for: still a 400 with its message, which
+     * {@link AuditRequestFilter} audits as {@code invalid_body}.
+     */
     @ExceptionHandler(IllegalArgumentException.class)
     ProblemDetail badRequest(IllegalArgumentException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -179,19 +189,5 @@ public class WorkbenchApiController {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ProblemDetail unreadableBody(HttpMessageNotReadableException e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, RunBodyProblem.describe(e.getCause()));
-    }
-
-    /** Another run held the synthetic payer for the whole wait: 409, and no run was started. */
-    @ExceptionHandler(PayerBusyException.class)
-    ResponseEntity<ProblemDetail> payerBusy(PayerBusyException e) {
-        return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, e.getMessage()));
-    }
-
-    /** Too many custom-endpoint runs in flight: 503 with a hint to retry, rather than queuing the run. */
-    @ExceptionHandler(RunsBusyException.class)
-    ResponseEntity<ProblemDetail> busy(RunsBusyException e) {
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header(HttpHeaders.RETRY_AFTER, "5")
-                .body(ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage()));
     }
 }

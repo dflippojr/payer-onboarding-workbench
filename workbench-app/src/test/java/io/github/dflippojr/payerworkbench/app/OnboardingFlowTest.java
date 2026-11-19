@@ -71,9 +71,9 @@ class OnboardingFlowTest {
     /** Everything the tests logged, for the class-level check. */
     private static final StringBuilder LOG = new StringBuilder();
     private static final List<String> ALL_PAYERS = List.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID);
-    private static final Path README = Path.of("..", "README.md");
+    private static final Path FAULT_TABLE_PAGE = Path.of("..", "docs", "faults.md");
     private static final String FAULT_TABLE_HEADING = "### What each fault and misconfiguration fails";
-    /** The run behind each row of the README's fault table, keyed by the row's first cell. */
+    /** The run behind each row of the fault table in docs/faults.md, keyed by the row's first cell. */
     private static final Map<String, FaultTableRun> FAULT_TABLE_RUNS = faultTableRuns();
 
     @Autowired
@@ -580,11 +580,11 @@ class OnboardingFlowTest {
         return new FaultTableRun(ALL_PAYERS, request);
     }
 
-    /** The rows of the README's fault table, without its header and separator lines. */
+    /** The rows of the fault table in docs/faults.md, without its header and separator lines. */
     static List<FaultTableRow> faultTableRows() throws IOException {
-        List<String> lines = Files.readAllLines(README);
+        List<String> lines = Files.readAllLines(FAULT_TABLE_PAGE);
         int heading = lines.indexOf(FAULT_TABLE_HEADING);
-        assertTrue(heading >= 0, () -> README + " has no heading: " + FAULT_TABLE_HEADING);
+        assertTrue(heading >= 0, () -> FAULT_TABLE_PAGE + " has no heading: " + FAULT_TABLE_HEADING);
         List<FaultTableRow> rows = lines.subList(heading + 1, lines.size()).stream()
                 .dropWhile(line -> !line.startsWith("|"))
                 .takeWhile(line -> line.startsWith("|"))
@@ -615,7 +615,7 @@ class OnboardingFlowTest {
     @MethodSource("faultTableRows")
     void faultTableRowMatchesWhatARunFails(FaultTableRow row) {
         FaultTableRun scenario = FAULT_TABLE_RUNS.get(row.run());
-        assertTrue(scenario != null, () -> "README fault table row with no run in faultTableRuns: " + row.run());
+        assertTrue(scenario != null, () -> "fault table row in docs/faults.md with no run in faultTableRuns: " + row.run());
         for (String payerId : scenario.payerIds()) {
             OnboardingRun run = runner.run(scenario.request().apply(payerId));
 

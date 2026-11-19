@@ -7,7 +7,7 @@ import org.springframework.boot.test.web.server.LocalManagementPort;
 import static io.github.dflippojr.payerworkbench.app.HostCheckTest.send;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/** Actuator on a port of its own, as the README's Observability section describes, keeps the Host check (#201). */
+/** Actuator on a port of its own, as docs/observability.md describes, keeps the Host check (#201). */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"management.server.port=0", "management.server.address=127.0.0.1"})
 class HostCheckManagementPortTest {
