@@ -1854,6 +1854,31 @@ class RedactorTest {
     }
 
     /**
+     * The Redactor's outputs for every text and harmless entry of the shared corpus and for the seeded fuzz corpus
+     * ({@link FuzzCorpus}), committed as the agreement grid: replay/test/leaks.test.mjs runs the scanner over each output
+     * (#377 criterion 2).
+     */
+    @Test
+    void recordsItsOutputsForTheCorpusAndTheFuzzCorpusForTheScannerAgreement() throws java.io.IOException {
+        JsonNode corpus;
+        try (java.io.InputStream in = RedactorTest.class.getResourceAsStream("/redaction-corpus.json")) {
+            corpus = JSON.readTree(in);
+        }
+        List<String[]> pairs = new ArrayList<>();
+        for (String section : List.of("text", "harmless")) {
+            for (JsonNode entry : corpus.get(section)) {
+                String input = entry.get("input").asString();
+                pairs.add(new String[] {input, Redactor.redact(input)});
+            }
+        }
+        for (String input : FuzzCorpus.texts(377, 5_000)) {
+            pairs.add(new String[] {input, Redactor.redact(input)});
+        }
+        assertEquals(135 + 5_000, pairs.size());
+        assertScannerGrid("agreement-grid", pairs);
+    }
+
+    /**
      * Checks that the committed {@code src/test/resources/scanner-grids/<name>.json.gz} holds exactly these input and
      * output pairs. replay/test/leaks.test.mjs checks that the scanner accepts every output; it reads the committed file
      * because the publish job runs that suite without Maven, where a build output under target/ does not exist (#357).

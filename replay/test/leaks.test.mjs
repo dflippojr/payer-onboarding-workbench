@@ -2166,6 +2166,27 @@ test('accepts every output of the Redactor for the Codex round 5 grid (#339)', (
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
 });
 
+test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterion 2)', () => {
+  // RedactorTest.recordsItsOutputsForTheCorpusAndTheFuzzCorpusForTheScannerAgreement commits the Redactor's output for
+  // every text and harmless corpus entry and 5,000 seeded fuzz texts. Read as text and as parsed JSON, no output is
+  // flagged by any check. In the report form ({"responseBody": output}) no output holds key armor either; the other
+  // flags there are this scanner's reading of the report form of text that is not one JSON value (cut fuzz texts and
+  // one corpus entry), which main's Redactor output gets on the same rows (pinned; Stage 3 replaces this scanner).
+  const pairs = redactorGrid('agreement-grid');
+  assert.equal(pairs.length, 135 + 5_000);
+  const flagged = [];
+  let reportFormFlags = 0;
+  for (const [input, out] of pairs) {
+    const leaks = [...findTextLeaks(out), ...findJsonLeaks({ responseBody: out })];
+    if (leaks.length > 0) flagged.push(`${leaks.map(l => l.check)}: ${input} => ${out}`);
+    const report = findTextLeaks(reportForm(out));
+    if (report.some(l => l.check === 'PEM block')) flagged.push(`report form, PEM block: ${input} => ${out}`);
+    if (report.length > 0) reportFormFlags++;
+  }
+  assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
+  assert.equal(reportFormFlags, 170);
+});
+
 /** The inputs of RedactorTest.masksASecretNameWhoseQuoteIsSpelledThroughAnEscapeChainOfAnyDepth..., in its order. */
 function escapeChainInputs() {
   const B = '\\';
