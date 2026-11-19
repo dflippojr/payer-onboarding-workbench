@@ -319,6 +319,40 @@ class RedactorStructuralTest {
     }
 
     @Test
+    void keepsNoPrivateMemberOfARecordUsedAsBothAKeyAndAValue() {
+        Jwk jwk = new Jwk("RSA", "N1", SECRET);
+        Map<String, Object> masked = Map.of("kty", "RSA", "n", "N1", "d", Redactor.MASK);
+        // A key is copied as any value is, redacted by the same rules, then keyed by its text.
+        String keyText = "{kty=RSA, n=N1, d=" + Redactor.MASK + "}";
+        Map<Object, Object> keyFirst = new LinkedHashMap<>();
+        keyFirst.put(jwk, "k");
+        keyFirst.put("v", jwk);
+        Map<Object, Object> valueFirst = new LinkedHashMap<>();
+        valueFirst.put("v", jwk);
+        valueFirst.put(jwk, "k");
+        for (Map<Object, Object> tree : List.of(keyFirst, valueFirst)) {
+            Object out = Redactor.redactTree(tree);
+            assertFalse(String.valueOf(out).contains(SECRET), String.valueOf(out));
+            assertEquals(Map.of(keyText, "k", "v", masked), out);
+        }
+    }
+
+    @Test
+    void masksARootOrAKeyPastTheSizeBound() {
+        // A string of MAX_WEIGHT characters weighs one more than the bound.
+        String big = "x".repeat((int) PlainData.MAX_WEIGHT);
+        Object bigText = new Object() {
+            @Override
+            public String toString() {
+                return big;
+            }
+        };
+        assertEquals(Redactor.MASK, Redactor.redactTree(big));
+        assertEquals(Redactor.MASK, Redactor.redactTree(bigText));
+        assertEquals(Redactor.MASK, Redactor.redactTree(Map.of(bigText, "v")));
+    }
+
+    @Test
     void findsAnUnclosedPrivateKeyAmongManyLabelsInLinearTime() {
         // Many closed blocks, each with its own label, then one header left open.
         StringBuilder text = new StringBuilder();
