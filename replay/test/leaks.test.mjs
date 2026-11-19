@@ -5,6 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
@@ -2167,20 +2168,45 @@ test('accepts every output of the Redactor for the Codex round 5 grid (#339)', (
 });
 
 /**
- * What is wrong with the scanner's verdicts on the agreement grid's [input, output] pairs: an output flagged as text or as
- * parsed JSON, key armor in the report form ({"responseBody": output}), or report-form flags other than the pinned ones.
+ * The scanner's verdicts on the agreement grid, by row: main's (main's Redactor, built from 19b624c, on each input) and
+ * the pinned set for the current Redactor; see the file's _comment.
+ */
+function agreementVerdicts() {
+  return JSON.parse(readFileSync(fileURLToPath(new URL('./main-verdicts-agreement.json', import.meta.url)), 'utf8'));
+}
+
+/** An agreement-grid row's id: the first 16 hex digits of its input's SHA-256, so it does not move with the row order. */
+function agreementRow(input) {
+  return createHash('sha256').update(input, 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * What is wrong with the scanner's verdicts on the agreement grid's [input, output] pairs (#377 criterion 2, as amended
+ * by the owner on 2026-11-19: no new flags against main, row by row): an output flagged as text or as parsed JSON, key
+ * armor in the report form ({"responseBody": output}), a flag at any entry point that main's output for the same input
+ * does not get, and any row whose flags differ from the pinned set (so a flag that moves to another row fails even when
+ * the number of flagged rows stays the same).
  */
 function agreementWrong(pairs) {
+  const { main, head } = agreementVerdicts();
   const wrong = [];
-  let reportFormFlags = 0;
+  const flagged = {};
   for (const [input, out] of pairs) {
-    const leaks = [...findTextLeaks(out), ...findJsonLeaks({ responseBody: out })];
-    if (leaks.length > 0) wrong.push(`${leaks.map(l => l.check)}: ${input} => ${out}`);
+    const row = agreementRow(input);
     const report = findTextLeaks(reportForm(out));
-    if (report.some(l => l.check === 'PEM block')) wrong.push(`report form, PEM block: ${input} => ${out}`);
-    if (report.length > 0) reportFormFlags++;
+    const bits = (findTextLeaks(out).length > 0 ? 1 : 0) | (report.length > 0 ? 2 : 0)
+      | (findJsonLeaks({ responseBody: out }).length > 0 ? 4 : 0);
+    if (bits & 5) wrong.push(`row ${row} flagged as text or parsed JSON: ${input} => ${out}`);
+    if (report.some(l => l.check === 'PEM block')) wrong.push(`row ${row}, report form, PEM block: ${input} => ${out}`);
+    if (bits & ~(main[row] ?? 0)) wrong.push(`row ${row}: flags ${bits}, main's ${main[row] ?? 0}: ${input} => ${out}`);
+    if (bits) flagged[row] = bits;
   }
-  if (reportFormFlags !== 170) wrong.push(`${reportFormFlags} report-form flags, 170 pinned`);
+  for (const row of new Set([...Object.keys(flagged), ...Object.keys(head)])) {
+    if ((flagged[row] ?? 0) !== (head[row] ?? 0)) wrong.push(`row ${row}: flags ${flagged[row] ?? 0}, pinned ${head[row] ?? 0}`);
+  }
+  for (const [row, bits] of Object.entries(head)) {
+    if (bits & ~(main[row] ?? 0)) wrong.push(`pinned row ${row}: flags ${bits}, main's ${main[row] ?? 0}`);
+  }
   return wrong;
 }
 
@@ -2189,7 +2215,8 @@ test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterio
   // every text and harmless corpus entry and 5,000 seeded fuzz texts. Read as text and as parsed JSON, no output is
   // flagged by any check. In the report form ({"responseBody": output}) no output holds key armor either; the other
   // flags there are this scanner's reading of the report form of text that is not one JSON value (cut fuzz texts and
-  // one corpus entry), which main's Redactor output gets on the same rows (pinned; Stage 3 replaces this scanner).
+  // one corpus entry). Each is pinned by row and is a flag main's Redactor output gets on the same row (criterion 2 as
+  // amended: no new flags against main, row by row; zero flags is Stage 3's, which replaces this scanner).
   const pairs = redactorGrid('agreement-grid');
   assert.equal(pairs.length, 135 + 5_000);
   const wrong = agreementWrong(pairs);
