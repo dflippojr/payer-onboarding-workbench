@@ -353,6 +353,39 @@ class RedactorStructuralTest {
     }
 
     @Test
+    void masksEachFieldValueOnTheTreeAsTheJsonPathDoes() {
+        // One masking rule for a field's value, whichever path reads it and whatever type the caller gave it.
+        List<String> names = new ArrayList<>();
+        names.addAll(Redactor.SECRET_FIELDS);
+        for (String name : Redactor.SENSITIVE_HEADERS) {
+            names.add(name);
+            names.add(name.toUpperCase(java.util.Locale.ROOT));
+        }
+        List<String> texts = List.of("v1", "v1 v2", "Bearer v1", "basic v1 v2", "x-y v1", " v1 ", "");
+        List<java.util.function.Function<String, Object>> types = List.of(t -> t, StringBuilder::new,
+                t -> new Object() {
+                    @Override
+                    public String toString() {
+                        return t;
+                    }
+                });
+        List<String> wrong = new ArrayList<>();
+        for (String name : names) {
+            for (String text : texts) {
+                String expected = Redactor.redact("{" + quoted(name) + ":" + quoted(text) + "}");
+                for (java.util.function.Function<String, Object> type : types) {
+                    Object out = ((Map<?, ?>) Redactor.redactTree(Map.of(name, type.apply(text)))).get(name);
+                    if (!expected.equals("{" + quoted(name) + ":" + quoted(String.valueOf(out)) + "}")) {
+                        wrong.add(name + " " + type.apply(text).getClass().getSimpleName() + " " + quoted(text) + " => " + out
+                                + " / " + expected);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), wrong);
+    }
+
+    @Test
     void findsAnUnclosedPrivateKeyAmongManyLabelsInLinearTime() {
         // Many closed blocks, each with its own label, then one header left open.
         StringBuilder text = new StringBuilder();

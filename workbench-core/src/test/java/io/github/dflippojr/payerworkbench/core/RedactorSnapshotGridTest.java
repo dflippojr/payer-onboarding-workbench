@@ -3,6 +3,7 @@ package io.github.dflippojr.payerworkbench.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.AbstractList;
@@ -17,6 +18,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -107,6 +109,181 @@ class RedactorSnapshotGridTest {
         if (made.calls() != null) {
             int calls = made.calls().get();
             assertTrue(size == Size.PAST_THE_BOUND ? calls <= 1 : calls == 1, "caller code ran " + calls + " times");
+        }
+    }
+
+    enum Container { LIST, SET, MAP, ARRAY }
+
+    enum Element { LARGE, ONE_CHARACTER }
+
+    enum Identity { SHARED, DISTINCT }
+
+    /** The most a copy may allocate on its thread, far above any copy within the bound and below copying past it. */
+    private static final long HEAP = 512L * 1024 * 1024;
+
+    static Stream<Arguments> pastTheBound() {
+        List<Arguments> cells = new ArrayList<>();
+        for (Container container : Container.values()) {
+            for (Element element : Element.values()) {
+                for (Identity identity : Identity.values()) {
+                    // An array holds its items already, so only a shared item keeps the test's own heap small.
+                    if (!(container == Container.ARRAY && identity == Identity.DISTINCT)) {
+                        cells.add(Arguments.of(container, element, identity));
+                    }
+                }
+            }
+        }
+        return cells.stream();
+    }
+
+    @ParameterizedTest(name = "{0} of {1} items, {2}")
+    @MethodSource("pastTheBound")
+    void masksAContainerPastTheBoundWithinAFixedHeapAndTime(Container container, Element element, Identity identity) {
+        String text = element == Element.LARGE ? "x".repeat(1024 * 1024) : "x";
+        long weight = 1L + text.length();
+        // Far more items than the bound holds; a lazy container makes each only when it is read.
+        long count = container == Container.ARRAY ? 32_000_000L : container == Container.MAP ? 20_000_000L
+                : 100_000_000L;
+        AtomicLong read = new AtomicLong();
+        Object tree = switch (container) {
+            case LIST -> new LazyList(count, read, item(text, identity));
+            case SET -> new LazySet(count, read, item(text, identity));
+            case MAP -> new LazyMap(count, read, item(text, identity));
+            case ARRAY -> {
+                Object[] items = new Object[(int) count];
+                java.util.Arrays.fill(items, text);
+                yield items;
+            }
+        };
+        com.sun.management.ThreadMXBean threads =
+                (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        long[] allocated = new long[1];
+        Object out = assertTimeoutPreemptively(java.time.Duration.ofSeconds(20), () -> {
+            long before = threads.getCurrentThreadAllocatedBytes();
+            Object masked = Redactor.redactTree(tree);
+            allocated[0] = threads.getCurrentThreadAllocatedBytes() - before;
+            return masked;
+        });
+        assertEquals(Redactor.MASK, out);
+        assertTrue(allocated[0] < HEAP, () -> "allocated " + allocated[0] + " bytes");
+        if (container != Container.ARRAY) {
+            // The copy stops reading at the bound: no more items than the bound's worth, plus the one that passes it.
+            long most = PlainData.MAX_WEIGHT / (weight + (container == Container.MAP ? 1 : 0)) + 1;
+            assertTrue(read.get() <= most, () -> "read " + read.get() + " items, at most " + most);
+        }
+    }
+
+    /** Each item: the same text, or a new caller object whose text it is. */
+    private static java.util.function.Supplier<Object> item(String text, Identity identity) {
+        return identity == Identity.SHARED ? () -> text : () -> new Object() {
+            @Override
+            public String toString() {
+                return text;
+            }
+        };
+    }
+
+    /** {@code count} items, each made only when an iterator reaches it. */
+    private static Iterator<Object> lazy(long count, AtomicLong read, java.util.function.Supplier<Object> item) {
+        return new Iterator<>() {
+            private long next;
+
+            @Override
+            public boolean hasNext() {
+                return next < count;
+            }
+
+            @Override
+            public Object next() {
+                next++;
+                read.incrementAndGet();
+                return item.get();
+            }
+        };
+    }
+
+    static final class LazyList extends java.util.AbstractCollection<Object> {
+        private final long count;
+        private final AtomicLong read;
+        private final java.util.function.Supplier<Object> item;
+
+        LazyList(long count, AtomicLong read, java.util.function.Supplier<Object> item) {
+            this.count = count;
+            this.read = read;
+            this.item = item;
+        }
+
+        @Override
+        public Iterator<Object> iterator() {
+            return lazy(count, read, item);
+        }
+
+        @Override
+        public int size() {
+            return (int) Math.min(count, Integer.MAX_VALUE);
+        }
+    }
+
+    static final class LazySet extends AbstractSet<Object> {
+        private final long count;
+        private final AtomicLong read;
+        private final java.util.function.Supplier<Object> item;
+
+        LazySet(long count, AtomicLong read, java.util.function.Supplier<Object> item) {
+            this.count = count;
+            this.read = read;
+            this.item = item;
+        }
+
+        @Override
+        public Iterator<Object> iterator() {
+            return lazy(count, read, item);
+        }
+
+        @Override
+        public int size() {
+            return (int) Math.min(count, Integer.MAX_VALUE);
+        }
+    }
+
+    /** {@code count} entries keyed 0, 1, 2 and on, each made only when an iterator reaches it. */
+    static final class LazyMap extends AbstractMap<Object, Object> {
+        private final long count;
+        private final AtomicLong read;
+        private final java.util.function.Supplier<Object> item;
+
+        LazyMap(long count, AtomicLong read, java.util.function.Supplier<Object> item) {
+            this.count = count;
+            this.read = read;
+            this.item = item;
+        }
+
+        @Override
+        public Set<Map.Entry<Object, Object>> entrySet() {
+            return new AbstractSet<>() {
+                @Override
+                public Iterator<Map.Entry<Object, Object>> iterator() {
+                    Iterator<Object> values = lazy(count, read, item);
+                    return new Iterator<>() {
+                        private long key;
+
+                        @Override
+                        public boolean hasNext() {
+                            return values.hasNext();
+                        }
+
+                        @Override
+                        public Map.Entry<Object, Object> next() {
+                            return new AbstractMap.SimpleImmutableEntry<>(key++, values.next());
+                        }
+                    };
+                }
+
+                @Override
+                public int size() {
+                    return (int) Math.min(count, Integer.MAX_VALUE);
+                }
+            };
         }
     }
 
