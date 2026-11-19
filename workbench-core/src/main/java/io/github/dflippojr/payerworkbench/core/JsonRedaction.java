@@ -132,25 +132,85 @@ final class JsonRedaction {
      * @throws Unreadable if it is JSON this path will not read
      */
     static String redact(String text, int level) {
+        Node root = parse(text, level);
+        if (root == null) {
+            return null;
+        }
+        StringBuilder out = new StringBuilder(text.length() + 16);
+        write(redact(root, level, Place.ROOT), out);
+        return out.append(text, endOfValue(text), text.length()).toString();
+    }
+
+    /**
+     * {@code text}, at JSON-in-string level {@code level}, read into nodes; {@code null} if it is not one JSON value.
+     * The one place this path reads a text, for {@link #redact(String, int)} and {@link #checkNested} alike.
+     *
+     * <p>A text this path rejects (not one JSON value, a name that repeats, nesting past {@link #MAX_DEPTH}) is first
+     * read for any key block it opens ({@link #opensAKeyAnywhere}): the key material may sit in a later string that
+     * the rejected text's own handling (the text engine, or the mask over this one string) does not cover.
+     *
+     * @throws UnterminatedKey if a string or name it decodes, at any level down to {@link #MAX_LEVELS}, opens a private
+     *     key block it does not close, whether or not the text is rejected
+     * @throws Unreadable if it is JSON this path will not read
+     */
+    private static Node parse(String text, int level) {
         Node root;
         Reader reader;
         try (JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
             reader = new Reader(text, parser);
             root = reader.read(parser.nextToken());
             if (parser.nextToken() != null) {
+                rejected(text, level);
                 return null;
             }
+        } catch (Unreadable repeatedName) {
+            rejected(text, level);
+            throw repeatedName;
         } catch (StreamConstraintsException tooDeep) {
+            rejected(text, level);
             throw new Unreadable();
         } catch (StreamReadException notJson) {
+            rejected(text, level);
             return null;
         }
         if (reader.opensAKey) {
             throw new UnterminatedKey();
         }
-        StringBuilder out = new StringBuilder(text.length() + 16);
-        write(redact(root, level, Place.ROOT), out);
-        return out.append(text, endOfValue(text), text.length()).toString();
+        return root;
+    }
+
+    /**
+     * For a text at level {@code level} that this path rejects.
+     *
+     * @throws UnterminatedKey if any string or name in it opens a key block it does not close ({@link #opensAKeyAnywhere})
+     */
+    private static void rejected(String text, int level) {
+        if (opensAKeyAnywhere(text, level)) {
+            throw new UnterminatedKey();
+        }
+    }
+
+    /**
+     * Whether a string or name that {@code text}, at level {@code level}, decodes opens a private key block it does
+     * not close, or one in JSON held in such a string does, down to {@link #MAX_LEVELS}. Every token Jackson can read
+     * is read, with no check for repeated names, up to the first read error or past the nesting bound, so a block
+     * before or after the point where the text is rejected is found; what follows a read error is not JSON this path
+     * can decode.
+     */
+    static boolean opensAKeyAnywhere(String text, int level) {
+        try (JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
+            for (JsonToken token = parser.nextToken(); token != null; token = parser.nextToken()) {
+                String decoded = token == JsonToken.PROPERTY_NAME ? parser.currentName()
+                        : token == JsonToken.VALUE_STRING ? parser.getString() : null;
+                if (decoded != null && (Redactor.opensAnUnterminatedKey(decoded)
+                        || (level + 1 < MAX_LEVELS && mayBeJson(decoded) && opensAKeyAnywhere(decoded, level + 1)))) {
+                    return true;
+                }
+            }
+        } catch (StreamReadException | StreamConstraintsException stopped) {
+            // What was decoded before the error was read; nothing after it can be.
+        }
+        return false;
     }
 
     /**
@@ -550,9 +610,8 @@ final class JsonRedaction {
 
     /**
      * Reads {@code text}, a decoded string, as JSON at level {@code level} if it may be one JSON value there, as
-     * {@link Redactor#redactAt} does, and checks each string and name in it for a key block it does not close, one level
-     * deeper each time. Text that is not one JSON value, or that this path would not read, holds no deeper strings; its
-     * own text was checked where it was decoded.
+     * {@link Redactor#redactAt} does ({@link #parse}, which also reads a text it rejects for a key block it opens), and
+     * checks each string and name in it for a key block it does not close, one level deeper each time.
      *
      * @throws UnterminatedKey if a string or name at any level opens a key block it does not close
      */
@@ -561,20 +620,14 @@ final class JsonRedaction {
             return;
         }
         Node root;
-        Reader reader;
-        try (JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
-            reader = new Reader(text, parser);
-            root = reader.read(parser.nextToken());
-            if (parser.nextToken() != null) {
-                return;
-            }
-        } catch (StreamConstraintsException | StreamReadException | Unreadable notRead) {
+        try {
+            root = parse(text, level);
+        } catch (Unreadable notRead) {
             return;
         }
-        if (reader.opensAKey) {
-            throw new UnterminatedKey();
+        if (root != null) {
+            checkMaskedValue(root, level);
         }
-        checkMaskedValue(root, level);
     }
 
     /**

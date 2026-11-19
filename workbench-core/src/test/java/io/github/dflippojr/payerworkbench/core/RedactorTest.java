@@ -2141,11 +2141,11 @@ class RedactorTest {
         // it came never sees d as a member; masking the block takes the quote away, and 6304ec0 (PEM first) masked d.
         String pem = "{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\"-----END PRIVATE KEY-----\",\"d\":\"FAKE_PRIVATE_KEY_293\"}";
         String pgp = pem.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
-        // What 6304ec0 made of the two raw inputs.
-        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n-----END PRIVATE KEY-----\",\"d\":\"[REDACTED]\"}",
-                Redactor.redact(pem));
-        assertEquals("{\"kty\":\"RSA\",\"note\":\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
-                + "-----END PGP PRIVATE KEY BLOCK-----\",\"d\":\"[REDACTED]\"}", Redactor.redact(pgp));
+        // 6304ec0 masked the block and d in the two raw inputs. Since #377 (review round 7) the structural path rejects
+        // them (the stray quote is a read error) after decoding a string that opens the block, so the whole text is the
+        // mask: the key material may sit in a later string.
+        assertEquals(Redactor.MASK, Redactor.redact(pem));
+        assertEquals(Redactor.MASK, Redactor.redact(pgp));
         for (String raw : List.of(pem, pgp)) {
             for (String in : List.of(nested(raw), nested(nested(raw)), nestedEscapingQuotes(raw),
                     nestedEscapingBackslashes(raw), nestedEscapingEverything(raw))) {
