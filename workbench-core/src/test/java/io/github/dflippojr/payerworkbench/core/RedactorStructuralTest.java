@@ -183,6 +183,40 @@ class RedactorStructuralTest {
         assertRejectedOpenKeyMasksTheText("comment");
     }
 
+    /**
+     * Nested JSON, in a string whose spelling has escapes, where the text engine's reading of that spelling masks the
+     * value that opens a key block (the block's first character written as an escape, so only the nested level reads
+     * it): a secret member's value, a JWK private member's value, and the first of these one level deeper.
+     */
+    private static List<String> rewrittenOpenKeys() {
+        String open = "\"\\u002d----BEGIN PRIVATE KEY-----\"";
+        String secret = "{\"password\":" + open + "}";
+        return List.of(secret, "{\"kty\":\"RSA\",\"d\":" + open + "}", "{\"x\":" + quoted(secret) + "}");
+    }
+
+    @Test
+    void checksAStringForAnOpenKeyBlockBeforeTheTextEngineRewritesItsSpelling() {
+        // Check first: the key check reads the string as decoded, before the text engine's reading of its spelling can
+        // mask the part that opens the block, in a value, a name and an item alike.
+        String rest = SECRET + "\n-----END PRIVATE KEY-----";
+        String restJson = quoted(rest).replace("\n", "\\n");
+        for (String nested : rewrittenOpenKeys()) {
+            for (String in : List.of("{\"comment\":" + quoted(nested) + ",\"note\":" + restJson + "}",
+                    "{" + quoted(nested) + ":1,\"note\":" + restJson + "}", "[" + quoted(nested) + "," + restJson + "]")) {
+                assertEquals(Redactor.MASK, Redactor.redact(in), in);
+            }
+            java.util.Map<String, Object> value = new java.util.LinkedHashMap<>();
+            value.put("comment", nested);
+            value.put("note", rest);
+            assertEquals(Redactor.MASK, Redactor.redactTree(value), nested);
+            java.util.Map<String, Object> name = new java.util.LinkedHashMap<>();
+            name.put(nested, 1);
+            name.put("note", rest);
+            assertEquals(Redactor.MASK, Redactor.redactTree(name), nested);
+            assertEquals(Redactor.MASK, Redactor.redactTree(List.of(nested, rest)), nested);
+        }
+    }
+
     @Test
     void readsTextThatIsNotOneJsonValueWithTheTextEngine() {
         for (String text : List.of("{\"a\":1} trailing", "[1,]", "{'a':1}", "// note\n{}", "{\"a\":\"tab\there\"}", "42",
