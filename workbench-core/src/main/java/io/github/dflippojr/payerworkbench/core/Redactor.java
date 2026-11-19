@@ -2579,12 +2579,18 @@ public final class Redactor {
             return redact(s);
         }
         if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> out = new LinkedHashMap<>();
+            // A key may be any plain copy (#377): its text names the member for the secret-name and JWK rules, and the
+            // map is keyed by that text once the key is redacted by the same rules as any value. Keys that merge fail.
+            Map<String, Object> out = new LinkedHashMap<>();
             boolean jwk = map.keySet().stream().anyMatch(k -> "kty".equals(String.valueOf(k)));
             map.forEach((k, v) -> {
                 String name = String.valueOf(k);
-                out.put(k instanceof String s ? redact(s) : k,
-                        jwk && JWK_PRIVATE_MEMBERS.contains(name) ? maskField(name, v) : redactPlain(name, v));
+                String shown = redact(k instanceof String s ? s : String.valueOf(redactPlain(null, k)));
+                Object item = jwk && JWK_PRIVATE_MEMBERS.contains(name) ? maskField(name, v) : redactPlain(name, v);
+                if (out.containsKey(shown)) {
+                    throw new IllegalArgumentException("two keys with the same redacted text");
+                }
+                out.put(shown, item);
             });
             return Collections.unmodifiableMap(out);
         }

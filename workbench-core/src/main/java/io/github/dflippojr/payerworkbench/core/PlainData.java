@@ -38,14 +38,19 @@ import java.util.Set;
  * subclass of {@link BigDecimal} is not one), and newly built unmodifiable {@link Map}s (iteration order kept),
  * {@link List}s, {@link Set}s and {@link Optional}s of copies. A record becomes a map from each component's name to its
  * copied value, so a record with a {@code kty} component is read as a JWK; an array or any other collection becomes a
- * list; an enum becomes its {@link Enum#name() name}; a map key that is not a string or one of {@link #SCALARS} becomes
- * text as any other value does; and every other value becomes its {@link String#valueOf(Object) string form}, so it
- * cannot carry a secret through unredacted. Each caller object is copied once, by identity: one that appears in two
- * places is the same copy in both, so each of its methods (a map's entries, a record's accessors, a {@code toString})
- * runs once. A value that holds itself, nesting deeper than {@link #MAX_DEPTH}, a copy whose expanded size (every
- * value, and every character of every string, counted each time it appears) passes {@link #MAX_WEIGHT}, or any failure
- * throws; {@link Redactor#redactTree(Object)} then returns the mask. The size bound also bounds the redaction, which
- * reads the copy as a tree.
+ * list; an enum becomes its {@link Enum#name() name}; and every other value becomes its
+ * {@link String#valueOf(Object) string form}, so it cannot carry a secret through unredacted.
+ *
+ * <p>Every caller value, whatever its role (the root, a map key, a map value, an element, a record component or an
+ * optional's content), is copied by one function, {@link #snapshot}. A map key is therefore copied as any value is, so
+ * a map in the copy may have keys of any plain type; {@link Redactor#redactTree(Object)} redacts each key by the same
+ * rules and then keys the map by its text. Each caller object is copied once, by identity: one that appears in two
+ * places, in any two roles, is the same copy in both, so each of its methods (a map's entries, a record's accessors, a
+ * {@code toString}) runs once. {@link #snapshot} is also the one place the size bound is checked, on every copy it
+ * returns. A value that holds itself, nesting deeper than {@link #MAX_DEPTH}, a copy whose expanded size (every value,
+ * and every character of every string, counted each time it appears) passes {@link #MAX_WEIGHT}, two keys of one map
+ * whose copies are equal, or any failure throws; {@link Redactor#redactTree(Object)} then returns the mask. The size
+ * bound also bounds the redaction, which reads the copy as a tree.
  */
 final class PlainData {
 
@@ -77,125 +82,100 @@ final class PlainData {
 
     /** A plain copy of {@code value}; {@code null} stays {@code null}. */
     static Object of(Object value) {
-        return new PlainData().copy(value, 0).value();
+        return new PlainData().snapshot(value, 0).value();
     }
 
-    private Copied copy(Object value, int depth) {
+    /**
+     * The copy of any caller value in any role, made once per caller object, and the one check of the size bound: every
+     * copy this returns, the root's included, weighs at most {@link #MAX_WEIGHT}.
+     */
+    private Copied snapshot(Object value, int depth) {
         if (depth > MAX_DEPTH) {
             throw new IllegalArgumentException("nested too deep to redact");
         }
-        if (value == null || SCALARS.contains(value.getClass())) {
-            return new Copied(value, 1);
+        boolean leaf = value == null || value instanceof String || SCALARS.contains(value.getClass());
+        Copied result;
+        if (leaf) {
+            result = new Copied(value, value instanceof String s ? 1L + s.length() : 1);
+        } else {
+            Copied done = copied.get(value);
+            if (done != null) {
+                return done;
+            }
+            if (!open.add(value)) {
+                throw new IllegalArgumentException("a value that holds itself");
+            }
+            result = convert(value, depth);
+            open.remove(value);
         }
-        if (value instanceof String s) {
-            return new Copied(s, 1L + s.length());
+        if (result.weight() > MAX_WEIGHT) {
+            throw new IllegalArgumentException("too large to redact");
         }
-        Copied done = copied.get(value);
-        if (done != null) {
-            return done;
+        if (!leaf) {
+            copied.put(value, result);
         }
-        if (!open.add(value)) {
-            throw new IllegalArgumentException("a value that holds itself");
-        }
-        Copied result = copyNew(value, depth);
-        open.remove(value);
-        copied.put(value, result);
         return result;
     }
 
-    private Copied copyNew(Object value, int depth) {
+    /** A caller object that is not a string or a scalar, read once; its parts through {@link #snapshot}. */
+    private Copied convert(Object value, int depth) {
         if (value instanceof Enum<?> constant) {
             return new Copied(constant.name(), 1L + constant.name().length());
         }
         if (value instanceof Map<?, ?> map) {
             Map<Object, Object> out = new LinkedHashMap<>();
-            Weight weight = new Weight();
+            long weight = 1;
             for (Map.Entry<?, ?> entry : map.entrySet()) {
-                Copied key = key(entry.getKey());
-                Copied item = copy(entry.getValue(), depth + 1);
-                weight.add(key.weight() + item.weight());
+                Copied key = snapshot(entry.getKey(), depth + 1);
+                Copied item = snapshot(entry.getValue(), depth + 1);
+                if (out.containsKey(key.value())) {
+                    throw new IllegalArgumentException("two keys with the same copy");
+                }
                 out.put(key.value(), item.value());
+                weight += key.weight() + item.weight();
             }
-            return new Copied(Collections.unmodifiableMap(out), weight.total);
+            return new Copied(Collections.unmodifiableMap(out), weight);
         }
-        if (value instanceof Set<?> set) {
-            Set<Object> out = new LinkedHashSet<>();
-            Weight weight = new Weight();
-            for (Object item : set) {
-                Copied c = copy(item, depth + 1);
-                weight.add(c.weight());
-                out.add(c.value());
-            }
-            return new Copied(Collections.unmodifiableSet(out), weight.total);
-        }
-        if (value instanceof Collection<?> collection) {
-            List<Object> out = new ArrayList<>();
-            Weight weight = new Weight();
-            for (Object item : collection) {
-                Copied c = copy(item, depth + 1);
-                weight.add(c.weight());
-                out.add(c.value());
-            }
-            return new Copied(Collections.unmodifiableList(out), weight.total);
-        }
-        if (value.getClass().isArray()) {
-            List<Object> out = new ArrayList<>();
-            Weight weight = new Weight();
-            for (int i = 0; i < Array.getLength(value); i++) {
-                Copied c = copy(Array.get(value, i), depth + 1);
-                weight.add(c.weight());
-                out.add(c.value());
-            }
-            return new Copied(Collections.unmodifiableList(out), weight.total);
+        if (value instanceof Record rec) {
+            return record(rec, depth);
         }
         if (value instanceof Optional<?> optional) {
             if (optional.isEmpty()) {
                 return new Copied(Optional.empty(), 1);
             }
-            Copied c = copy(optional.get(), depth + 1);
-            return new Copied(Optional.ofNullable(c.value()), new Weight().add(c.weight()).total);
+            Copied c = snapshot(optional.get(), depth + 1);
+            return new Copied(Optional.ofNullable(c.value()), 1 + c.weight());
         }
-        if (value instanceof Record rec) {
-            return record(rec, depth);
+        Iterable<?> items = value instanceof Collection<?> collection ? collection
+                : value.getClass().isArray() ? arrayItems(value) : null;
+        if (items == null) {
+            String text = String.valueOf(value);
+            return new Copied(text, 1L + text.length());
         }
-        String text = String.valueOf(value);
-        return new Copied(text, 1L + text.length());
+        List<Object> out = new ArrayList<>();
+        long weight = 1;
+        for (Object item : items) {
+            Copied c = snapshot(item, depth + 1);
+            out.add(c.value());
+            weight += c.weight();
+        }
+        return new Copied(value instanceof Set<?> ? Collections.unmodifiableSet(new LinkedHashSet<>(out))
+                : Collections.unmodifiableList(out), weight);
     }
 
-    /** A sum of expanded sizes, one for the value itself, that fails once it passes {@link #MAX_WEIGHT}. */
-    private static final class Weight {
-        private long total = 1;
-
-        Weight add(long weight) {
-            total += weight;
-            if (total > MAX_WEIGHT) {
-                throw new IllegalArgumentException("too large to redact");
-            }
-            return this;
+    /** An array's items, read once. */
+    private static List<Object> arrayItems(Object array) {
+        List<Object> items = new ArrayList<>();
+        for (int i = 0; i < Array.getLength(array); i++) {
+            items.add(Array.get(array, i));
         }
+        return items;
     }
 
-    /**
-     * A map key: a string or a {@link #SCALARS} value as it is, an enum's name, anything else its string form, read
-     * once.
-     */
-    private Copied key(Object key) {
-        if (key == null || key instanceof String || SCALARS.contains(key.getClass()) || key instanceof Enum<?>) {
-            return copy(key, 0);
-        }
-        Copied done = copied.get(key);
-        if (done == null) {
-            String text = String.valueOf(key);
-            done = new Copied(text, 1L + text.length());
-            copied.put(key, done);
-        }
-        return done;
-    }
-
-/** A record as a map from each component's name to its copied value, in component order. */
+    /** A record as a map from each component's name to its copied value, in component order. */
     private Copied record(Record rec, int depth) {
         Map<Object, Object> out = new LinkedHashMap<>();
-        Weight weight = new Weight();
+        long weight = 1;
         for (RecordComponent component : rec.getClass().getRecordComponents()) {
             Method accessor = component.getAccessor();
             accessor.trySetAccessible();
@@ -205,10 +185,10 @@ final class PlainData {
             } catch (ReflectiveOperationException e) {
                 throw new IllegalArgumentException("cannot read a record component", e);
             }
-            Copied c = copy(value, depth + 1);
-            weight.add(1L + component.getName().length() + c.weight());
+            Copied c = snapshot(value, depth + 1);
             out.put(component.getName(), c.value());
+            weight += 1L + component.getName().length() + c.weight();
         }
-        return new Copied(Collections.unmodifiableMap(out), weight.total);
+        return new Copied(Collections.unmodifiableMap(out), weight);
     }
 }
