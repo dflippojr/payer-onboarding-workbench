@@ -109,8 +109,8 @@ class RedactorStructuralTest {
                 "[\"" + header.replace("PRIVATE KEY", "PGP PRIVATE KEY BLOCK") + "\",\"" + SECRET + "\"]")) {
             assertEquals(Redactor.MASK, Redactor.redact(in), in);
         }
-        // A block a string closes is masked in that string, and the rest is kept.
-        assertEquals("{\"a\":\"" + header + "\\n[REDACTED]\\n" + footer + "\",\"n\":1}",
+        // A block a string closes is masked in that string, whole, its armor too, and the rest is kept.
+        assertEquals("{\"a\":\"[REDACTED]\",\"n\":1}",
                 Redactor.redact("{\"a\":\"" + header + "\\n" + SECRET + "\\n" + footer + "\",\"n\":1}"));
         // Text that is not JSON goes to the text engine, which masks the block to the end of the text.
         String notJson = "{\"a\":\"" + header + "\"} and then " + SECRET;
@@ -255,7 +255,7 @@ class RedactorStructuralTest {
         String closed = "{\"k\":\"" + text + "\"}";
         String open = "{\"k\":\"" + text + "-----BEGIN LAST PRIVATE KEY-----\",\"n\":\"" + SECRET + "\"}";
         org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-            assertTrue(Redactor.redact(closed).startsWith("{\"k\":\"-----BEGIN"));
+            assertTrue(Redactor.redact(closed).startsWith("{\"k\":\"" + Redactor.MASK + "\\n" + Redactor.MASK));
             assertEquals(Redactor.MASK, Redactor.redact(open));
         });
     }

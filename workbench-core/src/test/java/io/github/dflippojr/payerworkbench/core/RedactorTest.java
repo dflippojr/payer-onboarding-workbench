@@ -105,8 +105,8 @@ class RedactorTest {
         String out = Redactor.redact("credential file contents:\n" + pem + "\ntrailing text");
 
         assertFalse(out.contains(body.substring(0, 40)));
-        assertTrue(out.contains("-----BEGIN PRIVATE KEY-----\n" + Redactor.MASK + "\n-----END PRIVATE KEY-----"));
-        assertTrue(out.endsWith("trailing text"));
+        // The block is masked whole, its armor too (#377 criterion 2: no armor header in the Redactor's output).
+        assertEquals("credential file contents:\n" + Redactor.MASK + "\ntrailing text", out);
     }
 
     @Test
@@ -115,7 +115,7 @@ class RedactorTest {
         String out = Redactor.redact("-----BEGIN EC PRIVATE KEY-----\n" + body);
 
         assertFalse(out.contains(body));
-        assertEquals("-----BEGIN EC PRIVATE KEY-----\n" + Redactor.MASK, out);
+        assertEquals(Redactor.MASK, out);
     }
 
     @Test
@@ -2897,10 +2897,9 @@ class RedactorTest {
                 + "X".repeat(10_000) + "-----END PRIVATE KEY-----";
         String pgp = key.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
         // What 027fe1e made of the two raw inputs.
-        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PRIVATE KEY-----\n[REDACTED]\n"
-                + "-----END PRIVATE KEY-----", Redactor.redact(key));
-        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n"
-                + "-----END PGP PRIVATE KEY BLOCK-----", Redactor.redact(pgp));
+        // Since #377 criterion 2 the block is masked whole, its armor too.
+        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"[REDACTED]", Redactor.redact(key));
+        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"[REDACTED]", Redactor.redact(pgp));
         // Embedded forms that keep the value and the block's header literal, so the second read runs at an escaped
         // level; each was masked on 027fe1e and kept on 3c47acc.
         List<org.junit.jupiter.api.function.Executable> embedded = new java.util.ArrayList<>();
@@ -2926,7 +2925,7 @@ class RedactorTest {
         String text = block.repeat(64_000) + "-----BEGIN PGP PRIVATE KEY BLOCK-----\\nFAKETAIL";
         String out = assertTimeoutPreemptively(Duration.ofSeconds(4), () -> Redactor.redact(text));
         assertFalse(out.contains("FAKEKEY"), out.substring(0, 200));
-        assertTrue(out.endsWith("-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]"), out.substring(out.length() - 80));
+        assertEquals(Redactor.MASK.repeat(64_001), out, out.substring(out.length() - 80));
     }
 
     @Test
@@ -3047,13 +3046,12 @@ class RedactorTest {
 
     @Test
     void masksAnUnterminatedPgpPrivateKeyBlock() {
-        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + Redactor.MASK,
-                Redactor.redact("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKEKEYMATERIAL\n=abcd"));
+        // Masked whole, armor too (#377 criterion 2); a public key's lone header is masked, its body kept.
+        assertEquals(Redactor.MASK, Redactor.redact("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKEKEYMATERIAL\n=abcd"));
         String terminated = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBFAKE\n-----END PGP PRIVATE KEY BLOCK-----";
-        assertEquals("-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]\n-----END PGP PRIVATE KEY BLOCK-----",
-                Redactor.redact(terminated));
+        assertEquals(Redactor.MASK, Redactor.redact(terminated));
         String publicKey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQENBFAKEPUBLIC";
-        assertEquals(publicKey, Redactor.redact(publicKey));
+        assertEquals(Redactor.MASK + "\nmQENBFAKEPUBLIC", Redactor.redact(publicKey));
     }
 
     record Echoed(String summary, String clientSecret, Integer apiKey, int password, List<String> notes) {

@@ -30,7 +30,7 @@ import java.util.stream.Collectors;
  * <p>Covers {@code Bearer}, {@code Basic}, {@code Token} and {@code DPoP} credentials (a
  * {@code Bearer} one also URL-encoded, {@code Bearer%20} or {@code Bearer+}), JWT signatures
  * (the header and payload stay readable because their claims are useful for diagnosis), PEM
- * blocks and PGP private key blocks, the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
+ * blocks and PGP private key blocks (whole, their armor header and footer too), the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
  * of a JSON object with a {@code kty} member, also in JSON nested in JSON strings at any
  * depth), and the values of well-known secret fields such as {@code client_secret},
  * {@code access_token} and {@code private_key} in form and query bodies and in JSON (any
@@ -64,6 +64,13 @@ public final class Redactor {
      */
     private static final Pattern UNTERMINATED_PEM_KEY = Pattern.compile(
             "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----(?!\\s*" + Pattern.quote(MASK) + ")");
+
+    /**
+     * Any armor header, of any label or none, as the replay scanner reads one: the Redactor writes none, so one left
+     * after the blocks are masked (a header with no footer that opens no private key, or one already followed by the
+     * mask) is masked itself.
+     */
+    private static final Pattern ARMOR_HEADER = Pattern.compile("-----BEGIN [A-Z0-9 ]*-----");
 
     /**
      * Where a word starts: a word boundary, or right after a JSON escape such as {@code \n}, which
@@ -2000,17 +2007,17 @@ public final class Redactor {
     }
 
     /**
-     * Every PEM block and PGP private key block in the text, as masks on it: a terminated block keeps its armor
-     * around the mask; an unterminated private key header is masked to the end of the text, unless it is in a
-     * terminated block or already masked.
+     * Every PEM block and PGP private key block in the text, as masks on it: a terminated block is masked whole, its
+     * armor header and footer too (#377: the replay scanner reads any armor header in the Redactor's output as a leak);
+     * an unterminated private key header is masked to the end of the text, unless it is in a terminated block or already
+     * masked; and any other armor header is masked itself, so no header is left in the output.
      */
     private static List<Mask> pemMasks(String text) {
         List<Mask> masks = new ArrayList<>();
         Matcher block = PEM_BLOCK.matcher(text);
         List<int[]> blocks = new ArrayList<>();
         while (block.find()) {
-            masks.add(new Mask(block.start(), block.end(),
-                    "-----BEGIN " + block.group(1) + "-----\n" + MASK + "\n-----END " + block.group(1) + "-----"));
+            masks.add(new Mask(block.start(), block.end(), MASK));
             blocks.add(new int[] {block.start(), block.end()});
         }
         // The blocks are in order and apart: one pointer walks them as the headers are found, and a header in a
@@ -2026,8 +2033,13 @@ public final class Redactor {
                 header.region(blocks.get(next)[1], text.length());
                 continue;
             }
-            masks.add(new Mask(start, text.length(), "-----BEGIN " + header.group(1) + "-----\n" + MASK));
+            masks.add(new Mask(start, text.length(), MASK));
             break;
+        }
+        // A header in a mask above goes with that mask (applyMasks).
+        Matcher armor = ARMOR_HEADER.matcher(text);
+        while (armor.find()) {
+            masks.add(new Mask(armor.start(), armor.end(), MASK));
         }
         return masks;
     }
