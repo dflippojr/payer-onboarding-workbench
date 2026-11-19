@@ -319,6 +319,43 @@ class RedactorTreeTest {
         assertEquals(plain, new StepResult("s", Instant.EPOCH, Duration.ZERO, true, "ok", plain).details());
     }
 
+    /** A string node of a caller's own class, counting each time its code gives its text. */
+    static final class CallerStringNode extends tools.jackson.databind.node.StringNode {
+        private static final long serialVersionUID = 1L;
+        private final transient AtomicInteger calls;
+
+        CallerStringNode(AtomicInteger calls) {
+            super("ok");
+            this.calls = calls;
+        }
+
+        @Override
+        public String stringValue() {
+            calls.incrementAndGet();
+            return "Bearer " + SECRET;
+        }
+
+        @Override
+        public String asString() {
+            calls.incrementAndGet();
+            return "Bearer " + SECRET;
+        }
+    }
+
+    @Test
+    void masksATreeHoldingAValueOfACallerClassAnywhereWithoutRunningItsCode() {
+        AtomicInteger calls = new AtomicInteger();
+        tools.jackson.databind.node.ObjectNode standard = JsonNodeFactory.instance.objectNode();
+        standard.put("note", "ok");
+        standard.set("v", new CallerStringNode(calls));
+        tools.jackson.databind.node.ArrayNode list = JsonNodeFactory.instance.arrayNode();
+        list.add(new CallerStringNode(calls));
+        for (Object tree : List.of(standard, list, Map.of("outer", standard), List.of(list))) {
+            assertEquals(Redactor.MASK, Redactor.redactTree(tree), () -> String.valueOf(tree.getClass()));
+        }
+        assertEquals(0, calls.get(), "caller code ran");
+    }
+
     // ---- what comes back ----
 
     @Test
