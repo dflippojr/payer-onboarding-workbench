@@ -2613,15 +2613,9 @@ public final class Redactor {
         return isSecretField(key) || isSensitiveHeader(key);
     }
 
-    /** Keeps the scheme of an {@code Authorization}-style value so it still says which was sent. */
+    /** A secret field's value, by the rule the JSON path uses too ({@link #masked}), whatever its type. */
     private static Object maskField(String key, Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof String s && keepsScheme(key)) {
-            return redactHeaderValue("Authorization", s);
-        }
-        return MASK;
+        return value == null ? null : masked(key, String.valueOf(value));
     }
 
     private static String redactHeaderValue(String name, String value) {

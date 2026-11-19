@@ -118,8 +118,13 @@ class RedactorSnapshotGridTest {
 
     enum Identity { SHARED, DISTINCT }
 
-    /** The most a copy may allocate on its thread, far above any copy within the bound and below copying past it. */
-    private static final long HEAP = 512L * 1024 * 1024;
+    /**
+     * The most a copy may allocate on its thread: with large items it stops after a few, and with one-character items a
+     * copy up to the bound allocates about 64 bytes per unit of it, so 128 bytes per unit is a fixed ceiling.
+     */
+    private static long heap(Element element) {
+        return element == Element.LARGE ? 64L * 1024 * 1024 : 128L * PlainData.MAX_WEIGHT;
+    }
 
     static Stream<Arguments> pastTheBound() {
         List<Arguments> cells = new ArrayList<>();
@@ -142,7 +147,7 @@ class RedactorSnapshotGridTest {
         String text = element == Element.LARGE ? "x".repeat(1024 * 1024) : "x";
         long weight = 1L + text.length();
         // Far more items than the bound holds; a lazy container makes each only when it is read.
-        long count = container == Container.ARRAY ? 32_000_000L : container == Container.MAP ? 20_000_000L
+        long count = container == Container.ARRAY ? 64_000_000L : container == Container.MAP ? 20_000_000L
                 : 100_000_000L;
         AtomicLong read = new AtomicLong();
         Object tree = switch (container) {
@@ -165,7 +170,7 @@ class RedactorSnapshotGridTest {
             return masked;
         });
         assertEquals(Redactor.MASK, out);
-        assertTrue(allocated[0] < HEAP, () -> "allocated " + allocated[0] + " bytes");
+        assertTrue(allocated[0] < heap(element), () -> "allocated " + allocated[0] + " bytes");
         if (container != Container.ARRAY) {
             // The copy stops reading at the bound: no more items than the bound's worth, plus the one that passes it.
             long most = PlainData.MAX_WEIGHT / (weight + (container == Container.MAP ? 1 : 0)) + 1;

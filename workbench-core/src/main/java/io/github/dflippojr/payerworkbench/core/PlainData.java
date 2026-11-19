@@ -22,10 +22,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.Set;
 
@@ -46,8 +48,9 @@ import java.util.Set;
  * a map in the copy may have keys of any plain type; {@link Redactor#redactTree(Object)} redacts each key by the same
  * rules and then keys the map by its text. Each caller object is copied once, by identity: one that appears in two
  * places, in any two roles, is the same copy in both, so each of its methods (a map's entries, a record's accessors, a
- * {@code toString}) runs once. {@link #snapshot} is also the one place the size bound is checked, on every copy it
- * returns. A value that holds itself, nesting deeper than {@link #MAX_DEPTH}, a copy whose expanded size (every value,
+ * {@code toString}) runs once. {@link #snapshot} is also the one place the size bound is checked: it keeps one running
+ * expanded size for the whole copy and fails the moment that passes the bound, as each part is added, so no container
+ * is read past it. A value that holds itself, nesting deeper than {@link #MAX_DEPTH}, a copy whose expanded size (every value,
  * and every character of every string, counted each time it appears) passes {@link #MAX_WEIGHT}, two keys of one map
  * whose copies are equal, or any failure throws; {@link Redactor#redactTree(Object)} then returns the mask. The size
  * bound also bounds the redaction, which reads the copy as a tree.
@@ -70,6 +73,9 @@ final class PlainData {
     /** Each caller object copied so far, with its copy and that copy's expanded size. */
     private final Map<Object, Copied> copied = new IdentityHashMap<>();
 
+    /** The expanded size of the copy so far: every part added, each time it appears. */
+    private long total;
+
     /** The caller objects being copied, from the root down: meeting one again means it holds itself. */
     private final Set<Object> open = Collections.newSetFromMap(new IdentityHashMap<>());
 
@@ -86,13 +92,15 @@ final class PlainData {
     }
 
     /**
-     * The copy of any caller value in any role, made once per caller object, and the one check of the size bound: every
-     * copy this returns, the root's included, weighs at most {@link #MAX_WEIGHT}.
+     * The copy of any caller value in any role, made once per caller object, and the one check of the size bound: each
+     * part adds its expanded size to the running {@link #total} as it is added, and the copy fails the moment the total
+     * passes {@link #MAX_WEIGHT}.
      */
     private Copied snapshot(Object value, int depth) {
         if (depth > MAX_DEPTH) {
             throw new IllegalArgumentException("nested too deep to redact");
         }
+        long before = total;
         boolean leaf = value == null || value instanceof String || SCALARS.contains(value.getClass());
         Copied result;
         if (leaf) {
@@ -100,7 +108,7 @@ final class PlainData {
         } else {
             Copied done = copied.get(value);
             if (done != null) {
-                return done;
+                return counted(before, done);
             }
             if (!open.add(value)) {
                 throw new IllegalArgumentException("a value that holds itself");
@@ -108,13 +116,23 @@ final class PlainData {
             result = convert(value, depth);
             open.remove(value);
         }
-        if (result.weight() > MAX_WEIGHT) {
-            throw new IllegalArgumentException("too large to redact");
-        }
+        counted(before, result);
         if (!leaf) {
             copied.put(value, result);
         }
         return result;
+    }
+
+    /**
+     * Sets the running total to {@code before} plus the part's expanded size (a new copy's parts have already been added
+     * as they were read), and fails if it passes the bound.
+     */
+    private Copied counted(long before, Copied part) {
+        total = before + part.weight();
+        if (total > MAX_WEIGHT) {
+            throw new IllegalArgumentException("too large to redact");
+        }
+        return part;
     }
 
     /** A caller object that is not a string or a scalar, read once; its parts through {@link #snapshot}. */
@@ -146,7 +164,7 @@ final class PlainData {
             Copied c = snapshot(optional.get(), depth + 1);
             return new Copied(Optional.ofNullable(c.value()), 1 + c.weight());
         }
-        Iterable<?> items = value instanceof Collection<?> collection ? collection
+        Iterator<?> items = value instanceof Collection<?> collection ? collection.iterator()
                 : value.getClass().isArray() ? arrayItems(value) : null;
         if (items == null) {
             String text = String.valueOf(value);
@@ -154,8 +172,8 @@ final class PlainData {
         }
         List<Object> out = new ArrayList<>();
         long weight = 1;
-        for (Object item : items) {
-            Copied c = snapshot(item, depth + 1);
+        while (items.hasNext()) {
+            Copied c = snapshot(items.next(), depth + 1);
             out.add(c.value());
             weight += c.weight();
         }
@@ -163,13 +181,25 @@ final class PlainData {
                 : Collections.unmodifiableList(out), weight);
     }
 
-    /** An array's items, read once. */
-    private static List<Object> arrayItems(Object array) {
-        List<Object> items = new ArrayList<>();
-        for (int i = 0; i < Array.getLength(array); i++) {
-            items.add(Array.get(array, i));
-        }
-        return items;
+    /** An array's items, each read once, as the copy reaches it. */
+    private static Iterator<Object> arrayItems(Object array) {
+        int length = Array.getLength(array);
+        return new Iterator<>() {
+            private int next;
+
+            @Override
+            public boolean hasNext() {
+                return next < length;
+            }
+
+            @Override
+            public Object next() {
+                if (next >= length) {
+                    throw new NoSuchElementException();
+                }
+                return Array.get(array, next++);
+            }
+        };
     }
 
     /** A record as a map from each component's name to its copied value, in component order. */
