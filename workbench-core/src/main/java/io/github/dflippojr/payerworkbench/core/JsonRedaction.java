@@ -640,8 +640,17 @@ final class JsonRedaction {
      * masks anything there, the string it leaves is decoded and redacted instead, and if what it leaves is no longer one
      * JSON string in that place, the whole string is the mask. So no string keeps anything the text engine masks in it.
      * A spelling with no backslash is the decoded string in quotes, so only the decoded string is read.
+     *
+     * <p>Check first: before any of that, the decoded string, a value, a name or an item, is read for a key block it
+     * opens and does not close at any level ({@link #checkNested}). The text engine's reading of the spelling may mask
+     * the part that opens the block, and what it leaves would then pass the check while the key material, in a later
+     * string, is kept; so the check reads the string as it came, never what a rewrite left.
+     *
+     * @throws UnterminatedKey if a string or name in the decoded string, at any level, opens a key block it does not
+     *     close
      */
     private static String redactString(String decoded, String raw, int level, Place place) {
+        checkNested(decoded, level + 1);
         if (raw.indexOf('\\') < 0) {
             // No escape in the spelling: it is the decoded string in quotes, with no spelling for decoding to remove.
             return Redactor.redactAt(decoded, level + 1);
