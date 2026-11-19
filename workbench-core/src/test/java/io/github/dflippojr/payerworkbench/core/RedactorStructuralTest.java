@@ -150,6 +150,39 @@ class RedactorStructuralTest {
         }
     }
 
+    /**
+     * Nested JSON this path rejects, holding a key block it opens (the block's first character written as an escape):
+     * a name that repeats after the block or before it, a read error after it, and the first of these one level deeper.
+     */
+    private static List<String> rejectedOpenKeys() {
+        String open = "\"\\u002d----BEGIN PRIVATE KEY-----\"";
+        String repeatedAfter = "{\"a\":" + open + ",\"a\":1}";
+        return List.of(repeatedAfter, "{\"a\":1,\"a\":" + open + "}", "{\"a\":" + open + ",oops}",
+                "{\"x\":" + quoted(repeatedAfter) + "}");
+    }
+
+    private static void assertRejectedOpenKeyMasksTheText(String name) {
+        String rest = SECRET + "\n-----END PRIVATE KEY-----";
+        for (String nested : rejectedOpenKeys()) {
+            String in = "{\"" + name + "\":" + quoted(nested) + ",\"note\":" + quoted(rest).replace("\n", "\\n") + "}";
+            assertEquals(Redactor.MASK, Redactor.redact(in), in);
+            java.util.Map<String, Object> tree = new java.util.LinkedHashMap<>();
+            tree.put(name, nested);
+            tree.put("note", rest);
+            assertEquals(Redactor.MASK, Redactor.redactTree(tree), in);
+        }
+    }
+
+    @Test
+    void masksTheOutermostTextWhenRejectedNestedJsonInAMaskedValueOpensAKeyBlock() {
+        assertRejectedOpenKeyMasksTheText("password");
+    }
+
+    @Test
+    void masksTheOutermostTextWhenRejectedNestedJsonInAnOrdinaryStringOpensAKeyBlock() {
+        assertRejectedOpenKeyMasksTheText("comment");
+    }
+
     @Test
     void readsTextThatIsNotOneJsonValueWithTheTextEngine() {
         for (String text : List.of("{\"a\":1} trailing", "[1,]", "{'a':1}", "// note\n{}", "{\"a\":\"tab\there\"}", "42",
