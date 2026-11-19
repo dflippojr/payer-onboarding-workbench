@@ -506,8 +506,10 @@ final class JsonRedaction {
             String name = member.name();
             Node value;
             if (Redactor.isSecretKey(name)) {
+                checkMaskedValue(member.value(), level);
                 value = maskSecret(name, member.value());
             } else if (jwk && Redactor.JWK_PRIVATE_MEMBERS.contains(name)) {
+                checkMaskedValue(member.value(), level);
                 value = maskPrivate(member.value());
             } else {
                 value = redact(member.value(), level, Place.VALUE);
@@ -520,6 +522,59 @@ final class JsonRedaction {
             members.add(new Member(member.lead(), redactedName, null, value));
         }
         return new Container(container.lead(), container.object(), members, container.closeLead());
+    }
+
+    /**
+     * Before a member's value at JSON-in-string level {@code level} is masked whole, each string and name in it is read as
+     * JSON down to {@link #MAX_LEVELS}, as any other string is ({@link Redactor#redactAt}), and one that opens a private
+     * key block it does not close at any level makes the outermost text the mask: the key material may sit in a later
+     * string the mask does not cover.
+     *
+     * @throws UnterminatedKey if one does
+     */
+    private static void checkMaskedValue(Node value, int level) {
+        if (value instanceof Scalar scalar) {
+            if (scalar.string()) {
+                checkNested(scalar.text(), level + 1);
+            }
+            return;
+        }
+        Container container = (Container) value;
+        for (Member member : container.members()) {
+            if (container.object()) {
+                checkNested(member.name(), level + 1);
+            }
+            checkMaskedValue(member.value(), level);
+        }
+    }
+
+    /**
+     * Reads {@code text}, a decoded string, as JSON at level {@code level} if it may be one JSON value there, as
+     * {@link Redactor#redactAt} does, and checks each string and name in it for a key block it does not close, one level
+     * deeper each time. Text that is not one JSON value, or that this path would not read, holds no deeper strings; its
+     * own text was checked where it was decoded.
+     *
+     * @throws UnterminatedKey if a string or name at any level opens a key block it does not close
+     */
+    private static void checkNested(String text, int level) {
+        if (level >= MAX_LEVELS || !mayBeJson(text)) {
+            return;
+        }
+        Node root;
+        Reader reader;
+        try (JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
+            reader = new Reader(text, parser);
+            root = reader.read(parser.nextToken());
+            if (parser.nextToken() != null) {
+                return;
+            }
+        } catch (StreamConstraintsException | StreamReadException | Unreadable notRead) {
+            return;
+        }
+        if (reader.opensAKey) {
+            throw new UnterminatedKey();
+        }
+        checkMaskedValue(root, level);
     }
 
     /**
