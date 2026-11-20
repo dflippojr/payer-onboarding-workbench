@@ -3540,6 +3540,36 @@ test('r10: keeps the bound for an escape that spells a quote or a backslash, and
     for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
   }
 });
+test('r10: leaves the letters kty in an ordinary string out of the bound beside masked JWKs (#341)', () => {
+  // Automated review on 019d3ca, decided by the owner on the issue (2026-11-20): a kty occurrence counts only where
+  // it could be a member name at some nesting level. In a string with no escape, of well-formed JSON, it is one only
+  // as a whole unescaped member name (a strict one): a key identifier, a value or a longer name that holds the letters
+  // is none at any level, as Redactor keeps each text
+  // (RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks), so the scanner accepts it, bare and nested.
+  for (const keys of [3, 4, 12]) {
+    const text = jwks341(keys);
+    for (const form of [
+      text.replaceAll('"kid":"key-', '"kid":"kty-'),
+      text.replaceAll('"use":"sig"', '"use":"kty"'),
+      text.replaceAll('"alg":', '"x-kty":'),
+      text.replaceAll('"kid":"key-', '"kid":"kty-').replaceAll('"use":"sig"', '"use":"kty kty"'),
+    ]) {
+      assert.notEqual(form, text);
+      JSON.parse(form);
+      for (const levels of [0, 1, 2, 3]) {
+        assertAccepted(nestedIn(form, levels));
+        assertFlagged(nestedIn(form.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
+      }
+    }
+  }
+  // Beside such strings, the r7 form (kty names no object holds, in a string that holds escapes) still spends
+  // Redactor's budget, and so does one in a string of a nested level: the loose member stays flagged.
+  const ids = jwks341(3).replaceAll('"kid":"key-', '"kid":"kty-');
+  const loose = '"kty":"'.repeat(63) + '"d":"FAKE_PRIVATE_KEY_341"';
+  const form = ids.replace('{"keys"', `{"note":${JSON.stringify(loose)},"keys"`);
+  JSON.parse(form);
+  for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
+});
 test('flags every text of the JWK search budget grid the Redactor changes, at all three entry points (#341)', () => {
   // RedactorTest.recordsItsOutputsForTheJwkSearchBudgetGrid checks that the committed grid holds the Redactor's outputs
   // for its seeded texts: a JWKS of masked keys and a private-member name in no JWK beside other kty names (loose ones,

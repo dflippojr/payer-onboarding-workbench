@@ -3547,6 +3547,20 @@ class RedactorTest {
                         }
                     }
                 }
+                // With the letters kty in ordinary strings (a key identifier, a value, a longer member name): none is
+                // a kty member at any level, so each text is kept, bare and nested.
+                for (String ordinary : List.of(
+                        text.replace("\"kid\":\"key-", "\"kid\":\"kty-"),
+                        text.replace("\"use\":\"sig\"", "\"use\":\"kty\""),
+                        text.replace("\"alg\":", "\"x-kty\":"),
+                        text.replace("\"kid\":\"key-", "\"kid\":\"kty-").replace("\"use\":\"sig\"", "\"use\":\"kty kty\""))) {
+                    assertFalse(text.equals(ordinary));
+                    String at = ordinary;
+                    for (int levels = 0; levels <= 3; levels++) {
+                        assertEquals(at, Redactor.redact(at), keys + " keys with kty in ordinary strings, " + levels + " levels");
+                        at = nested(at);
+                    }
+                }
                 String form = text;
                 for (int levels = 0; levels <= 3; levels++) {
                     String label = keys + " keys, kty " + (last ? "last" : "first") + ", " + levels + " levels";
