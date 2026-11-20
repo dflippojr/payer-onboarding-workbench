@@ -9,7 +9,7 @@ import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
-import { agreementRow, committedVerdicts, grid, verdictsOf } from './agreement.mjs';
+import { agreementRow, committedVerdicts, entryBits, grid, verdictsOf } from './agreement.mjs';
 
 const MASK = '[REDACTED]';
 
@@ -3463,4 +3463,29 @@ test('r10: accepts a loose private member next to any number of masked JWKs, nes
       }
     }
   }
+});
+test('flags every text of the JWK search budget grid the Redactor changes, at all three entry points (#341)', () => {
+  // RedactorTest.recordsItsOutputsForTheJwkSearchBudgetGrid checks that the committed grid holds the Redactor's outputs
+  // for its seeded texts: a JWKS of masked keys and a private-member name in no JWK beside other kty names (loose ones,
+  // a nested JWKS, cut or repeated-name objects, plain words), bare, nested, after prose or cut. The scanner's bound on
+  // the Redactor's JWK search must stay at least as strict as the search: every text the Redactor changes is flagged at
+  // every entry point. The kept texts the scanner accepts are pinned, 33 of 140 (main accepted 11), so a bound that
+  // loosens or tightens shows here; the rest are flagged by the bound or by the canonical reading, which fails safe.
+  const pairs = redactorGrid('jwk-search-budget-grid');
+  assert.equal(pairs.length, 600);
+  const brief = text => `${text.length}: ${text.slice(0, 120)}`;
+  const missed = [];
+  let kept = 0;
+  let accepted = 0;
+  for (const [input, out] of pairs) {
+    const bits = entryBits(input);
+    if (maskedBy(input, out)) {
+      if (bits !== 7) missed.push(`${bits} ${brief(input)}`);
+    } else {
+      kept++;
+      if (bits === 0) accepted++;
+    }
+  }
+  assert.deepEqual(missed.slice(0, 3), [], `${missed.length} changed texts not flagged at every entry point`);
+  assert.deepEqual([kept, accepted], [140, 33]);
 });

@@ -3543,6 +3543,97 @@ class RedactorTest {
         }
     }
 
+    /**
+     * Seeded texts for the JWK search budget grid (#341): a JSON object with a JWKS of masked keys (kty first, in the
+     * middle or last), a private-member name in no JWK, and beside them a string of other kty names: loose ones that
+     * no object holds, a nested JWKS, a cut or repeated-name object, a name that only ends in kty, or plain words. The
+     * loose member sits beside the keys or in that string, and a second JWKS may sit in a string of its own. Each text
+     * comes bare, nested one to three levels deep, also with quotes spelled as unicode escapes, after prose, or cut
+     * before its last bracket.
+     */
+    static List<String> jwkSearchBudgetTexts(long seed, int count) {
+        java.util.Random random = new java.util.Random(seed);
+        String masked = ",\"d\":\"[REDACTED]\",\"p\":\"[REDACTED]\",\"q\":\"[REDACTED]\"";
+        List<String> texts = new ArrayList<>();
+        while (texts.size() < count) {
+            int position = random.nextInt(3);
+            int pad = new int[] {1, 2, 6}[random.nextInt(3)];
+            java.util.function.IntFunction<String> jwks = keys -> "{\"keys\":[" + java.util.stream.IntStream.range(0, keys)
+                    .mapToObj(i -> {
+                        String rest = "\"kid\":\"key-" + i + "\",\"n\":\"" + "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA".repeat(pad)
+                                + "\",\"e\":\"AQAB\"";
+                        return position == 0 ? "{\"kty\":\"RSA\"," + rest + masked + "}"
+                                : position == 1 ? "{" + rest + ",\"kty\":\"RSA\"" + masked + "}"
+                                : "{" + rest + masked + ",\"kty\":\"RSA\"}";
+                    }).collect(java.util.stream.Collectors.joining(",")) + "]";
+            String loose = "\"d\":\"dimension\"";
+            int names = new int[] {1, 2, 3, 4, 5, 6, 7, 9, 12, 24, 63}[random.nextInt(11)];
+            boolean looseInside = random.nextInt(3) == 0;
+            String inside = looseInside ? loose : "\"e\":\"AQAB\"";
+            String other = switch (random.nextInt(9)) {
+                case 0 -> "";
+                case 1 -> "\"kty\":\"".repeat(names) + inside;
+                case 2 -> "x".repeat(new int[] {100, 300, 900, 2500}[random.nextInt(4)]) + " " + "\"kty\":\"".repeat(names) + inside;
+                case 3 -> jwks.apply(1 + random.nextInt(5)) + "," + inside + "}";
+                case 4 -> jwks.apply(1 + random.nextInt(5)) + "," + inside;
+                case 5 -> "{\"kty\":\"oct\",\"kty\":\"RSA\"," + inside + "}";
+                case 6 -> "{\"x\\\"kty\":1," + "\"y\\\"kty\":1,".repeat(names) + inside + "}";
+                case 7 -> "kty ".repeat(names) + inside;
+                default -> "{\"a\":[" + "{\"kty\":\"oct\"},".repeat(names) + "1]," + inside + ",\"b\":\"" + "\\\"kty\\\":\\\"".repeat(names) + "\"}";
+            };
+            StringBuilder object = new StringBuilder("{");
+            if (random.nextBoolean()) {
+                object.append("\"note\":").append(JSON.writeValueAsString(other)).append(',');
+            }
+            object.append(jwks.apply(new int[] {2, 3, 4, 6, 12}[random.nextInt(5)]).substring(1));
+            if (!looseInside || random.nextBoolean()) {
+                object.append(',').append(loose);
+            }
+            if (object.indexOf("\"note\"") < 0) {
+                object.append(",\"note\":").append(JSON.writeValueAsString(other));
+            }
+            // A JWKS in a string of its own, at the level of the other names.
+            if (random.nextInt(3) == 0) {
+                String body = JSON.writeValueAsString(jwks.apply(new int[] {1, 3, 8, 20}[random.nextInt(4)]) + "}");
+                if (random.nextBoolean()) {
+                    object.insert(1, "\"body\":" + body + ",");
+                } else {
+                    object.append(",\"body\":").append(body);
+                }
+            }
+            String text = object.append('}').toString();
+            texts.add(switch (random.nextInt(9)) {
+                case 0 -> text;
+                case 1 -> nested(text);
+                case 2 -> nested(nested(text));
+                case 3 -> "payer said: " + text;
+                case 4 -> text.substring(0, text.length() - 1);
+                case 5 -> nestedEscapingQuotes(text);
+                case 6 -> "payer said: " + nested(text);
+                case 7 -> nested(nestedEscapingQuotes(text));
+                default -> nested(nested(nested(text)));
+            });
+        }
+        return texts;
+    }
+
+    @Test
+    void recordsItsOutputsForTheJwkSearchBudgetGrid() throws java.io.IOException {
+        // #341: the Redactor's output for each seeded text, committed as scanner-grids/jwk-search-budget-grid.json.gz,
+        // where replay/test/leaks.test.mjs checks that the scanner flags every text the Redactor changes and accepts
+        // every output: the scanner's bound on the JWK search stays at least as strict as the search itself.
+        List<String[]> pairs = new ArrayList<>();
+        int kept = 0;
+        for (String input : jwkSearchBudgetTexts(341, 600)) {
+            String out = Redactor.redact(input);
+            pairs.add(new String[] {input, out});
+            kept += out.equals(input) ? 1 : 0;
+        }
+        // Both kinds are in the grid: texts the Redactor keeps, and texts it changes.
+        assertTrue(kept > 100 && pairs.size() - kept > 100, kept + " of " + pairs.size() + " kept");
+        assertScannerGrid("jwk-search-budget-grid", pairs);
+    }
+
     @Test
     void keepsALoosePrivateMemberNextToMaskedJwksCopiedAfterAStrayQuoteAndARawLineBreak() {
         // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that

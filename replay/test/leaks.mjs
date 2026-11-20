@@ -94,21 +94,111 @@ const sourceOffsets = (body, ctx, length = Infinity) => {
  * position in the text, one character of that level's view, so positions are counted once each. The read after the key
  * blocks are masked spends the rest of the same budget, at most 4m + 1024 for the shortened text, and needs a PEM
  * header in the text, which the PEM block check flags.
+ *
+ * With `strict` above 0 (#341), `positions` leaves out that many names of the level that are strict ones
+ * (strictKtyNames), and the bound is of the search beside them. In the view, each strict name is a member name of an
+ * object of well-formed JSON, in a string no other read reaches into (a bare quote of the view ends each read of JSON
+ * embedded in a string), so the search reads back from it to its own object's open bracket and forward through that
+ * object, once: later names in the object are behind the read's end, the bracket pairs it matched are skipped, and so
+ * no character of the view is read back twice or forward twice. All the strict names together cost at most 2m, and one
+ * more character each (the backslash before an embedded name's quote), for at most m / 7 names in a view of length m.
+ * The budget is then spent only when (k - 2)m + 2 * sum(m') + min(strict, m / 7) > 1024 over the k other names, a
+ * bound that is linear between the positions and 7 * strict; with no other name it never is.
  */
-const mayExhaustJwkSearch = (n, positions) => {
+const mayExhaustJwkSearch = (n, positions, strict = 0) => {
   const distinct = [...new Set(positions)];
   const k = distinct.length;
-  if (k < 2) return false;
+  if (k < (strict > 0 ? 1 : 2)) return false;
   const p = distinct.map(x => Math.min(x, n)).sort((a, b) => a - b);
+  const spare = strict > 0 ? 2 : 4;
   // The sum of the positions below the i-th: those are min(p, m) for m = p[i]; the rest are m.
   let below = 0;
+  const spent = (m, i) => (k - spare) * m + 2 * (below + (k - i) * m) + Math.min(strict, m / 7) > 1024;
+  let last = 0;
   for (let i = 0; i <= k; i++) {
     const m = i < k ? p[i] : n;
-    if ((k - 4) * m + 2 * (below + (k - i) * m) > 1024) return true;
+    if (last < 7 * strict && 7 * strict < m && spent(7 * strict, i)) return true;
+    if (spent(m, i)) return true;
     if (i < k) below += p[i];
+    last = m;
   }
   return false;
 };
+
+/** What a JSON string's escape decodes to, by the character after its backslash; a text with a \\u escape is not read. */
+const STRICT_ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+
+/** The deepest nesting of objects and arrays strictKtyNames reads in one JSON value. */
+const STRICT_DEPTH = 128;
+
+/**
+ * Where in `text` the k of each strict kty name starts (#341): a member name spelled "kty", with no escape, in
+ * well-formed JSON at its own level. The text must be one JSON value (JSON.parse reads it) with no \\u escape anywhere,
+ * no object that repeats a name and no nesting past STRICT_DEPTH; a string of it that holds an escape is decoded, and
+ * if that is one such JSON value too (it opens with a bracket or a quote) its names are strict a level down, and so
+ * on. Anything else gives no strict name at all, here or in a string, so the scanner's bound stays as it was for it.
+ *
+ * Such a name costs Redactor's JWK search little, whatever else the level holds (mayExhaustJwkSearch): with no \\u
+ * escape Redactor's view of a level is the text with whole levels of escaping taken off, so there the name's quotes
+ * are the level's own, every quote inside its JSON value is escaped at least as far, and the value sits between the
+ * two bare quotes of the string that holds it. Written apart from Redactor's code: it reads JSON with JSON.parse and
+ * a walk of its own over the strings.
+ */
+function strictKtyNames(text, ctx) {
+  const strict = new Set();
+  if (text.includes('\\u')) return strict;
+  // Adds the strict names of `json`, a view `level` levels down whose characters start at toRoot(index) in the text,
+  // and of the strings in it, if it is one JSON value. Throws for a repeated name or nesting past STRICT_DEPTH.
+  const walk = (json, toRoot, level) => {
+    ctx.work += json.length;
+    try {
+      JSON.parse(json);
+    } catch {
+      return;
+    }
+    // The names of each open object, innermost last, with null for an open array.
+    const open = [];
+    for (let i = 0; i < json.length; i++) {
+      const c = json[i];
+      if (c === '{' || c === '[') {
+        if (open.length >= STRICT_DEPTH) throw new RangeError('nested too deep');
+        open.push(c === '{' ? new Set() : null);
+      } else if (c === '}' || c === ']') {
+        open.pop();
+      }
+      if (c !== '"') continue;
+      // The string's content, decoded, and where each of its characters starts in `json`.
+      let decoded = '';
+      const starts = [];
+      let end = i + 1;
+      for (; json[end] !== '"'; end++) {
+        starts.push(end);
+        decoded += json[end] === '\\' ? STRICT_ESCAPES[json[++end]] : json[end];
+      }
+      starts.push(end);
+      const escaped = end - i - 1 > decoded.length;
+      let after = end + 1;
+      while (after < json.length && ' \t\n\r'.includes(json[after])) after++;
+      const names = open.length > 0 ? open[open.length - 1] : null;
+      if (json[after] === ':' && names) {
+        if (names.has(decoded)) throw new RangeError('repeated name');
+        names.add(decoded);
+        if (decoded === 'kty' && !escaped) strict.add(toRoot(i + 1));
+      }
+      const first = decoded.trimStart()[0];
+      if (escaped && level + 1 < MAX_LEVELS && (first === '{' || first === '[' || first === '"')) {
+        walk(decoded, j => toRoot(starts[j]), level + 1);
+      }
+      i = end;
+    }
+  };
+  try {
+    walk(text, j => j, 0);
+  } catch {
+    strict.clear();
+  }
+  return strict;
+}
 
 /**
  * The most levels of JSON in JSON strings the scanner reads: the top level and 16 below it, as Redactor reads.
@@ -3409,8 +3499,20 @@ function textLeaks(text, level) {
   // mayExhaustJwkSearch is false whatever the positions. Mapping a name after a long value walked that value again at
   // every level it was read at (automated review on feb555e).
   const positions = names => (names.length < 2 ? [] : names.map(name => name.toRoot(name.index)));
-  if (ctx.kty.some(names => mayExhaustJwkSearch(text.length, positions(names)))) {
-    for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
+  const spending = ctx.unowned.length === 0 ? []
+    : ctx.kty.map(positions).filter(level => mayExhaustJwkSearch(text.length, level));
+  if (spending.length > 0) {
+    // Strict kty names cost the search little (#341): a level is judged again beside them, by its other names. The
+    // text is read for them only here, where a private member in no JWK would otherwise be flagged.
+    const strict = strictKtyNames(text, ctx);
+    const besideStrict = level => {
+      const others = [...new Set(level)].filter(position => !strict.has(position));
+      const strictNames = new Set(level).size - others.length;
+      return strictNames === 0 || mayExhaustJwkSearch(text.length, others, strictNames);
+    };
+    if (spending.some(besideStrict)) {
+      for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);
+    }
   }
   scanWork.characters += ctx.work;
   return ctx.leaks;
