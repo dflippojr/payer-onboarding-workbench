@@ -1556,6 +1556,13 @@ const firstBareQuote = (text, ctx) => {
   return -1;
 };
 
+/** How many backslashes end the characters `parts` holds so far. */
+const trailingBackslashes = parts => {
+  let k = 0;
+  while (k < parts.length && parts[parts.length - 1 - k] === '\\') k++;
+  return k;
+};
+
 /** A backslash at some level ending a text: a run of backslashes, or backslashes before a u005c or u005C. */
 const BACKSLASH_BEFORE = /(?:\\|\\+u005[cC])$/;
 
@@ -1622,7 +1629,8 @@ const decodeString = (body, ctx, read = []) => {
       if (/^[0-9a-fA-F]{4}$/.test(hex)) {
         const c = String.fromCharCode(Number.parseInt(hex, 16));
         parts.push(c);
-        if (c === '"') inDecodedString = !inDecodedString;
+        // A decoded quote after an odd run of backslashes is an escaped one, which opens and closes nothing.
+        if (c === '"' && trailingBackslashes(parts) % 2 === 0) inDecodedString = !inDecodedString;
         decodedAny = true;
         i += 6;
       } else if (body[i] === '\\' && i + 1 < to) {
@@ -1649,7 +1657,7 @@ const decodeString = (body, ctx, read = []) => {
       continue;
     }
     decodeSpan(from, i);
-    if (inDecodedString) breaks.push(parts.length);
+    const opensInDecodedString = inDecodedString;
     if (afterLineBreak) gaps.push([from, i]);
     // A quoted string, to its closing quote or the end of the text; a backslash takes the next character with it.
     let end = i + 1;
@@ -1662,6 +1670,8 @@ const decodeString = (body, ctx, read = []) => {
       const decodedContent = JSON.parse(`"${escapeControls(end >= body.length ? withoutPartialEscape(content) : content)}"`);
       // scanJson decodes a string JSON reads, where it is: unless it read the string otherwise (unread).
       leftOut.push([i, Math.min(end + 1, body.length), Math.min(end, body.length), decodedContent]);
+      // Only a string left out of the decoded text joins what is around it (#349).
+      if (opensInDecodedString) breaks.push(parts.length);
     } catch {
       // A string JSON cannot read (a stray quote before an escape JSON has not) is decoded as the text around it is.
       decodeSpan(i + 1, Math.min(end, body.length));
@@ -2328,6 +2338,99 @@ function readFlatJwks(text, ctx, toRoot, cut) {
   ctx.budget -= Math.max(0, allowance - (ctx.work - before));
 }
 
+const isJsonSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+
+/** Where the JSON string whose opening quote is at `i` in `text` ends (after its closing quote), or -1 if it does not. */
+const stringEnd = (text, i) => {
+  for (let k = i + 1; k < text.length; k += text[k] === '\\' ? 2 : 1) if (text[k] === '"') return k + 1;
+  return -1;
+};
+
+/**
+ * Where the member that follows the value open at `from` in `text` starts (its comma) and ends: the value's closing
+ * quote, a comma, then a name, a colon and a value (a string, an object or array with its brackets matched, or a
+ * scalar). Null when the text there is not that, so nothing is left out.
+ */
+function memberAfter(text, from) {
+  const skip = k => {
+    while (k < text.length && isJsonSpace(text[k])) k++;
+    return k;
+  };
+  const close = stringEnd(text, from - 1);
+  if (close < 0) return null;
+  const comma = skip(close);
+  if (text[comma] !== ',') return null;
+  const name = skip(comma + 1);
+  if (text[name] !== '"') return null;
+  const nameEnd = stringEnd(text, name);
+  if (nameEnd < 0) return null;
+  const colon = skip(nameEnd);
+  if (text[colon] !== ':') return null;
+  let k = skip(colon + 1);
+  if (text[k] === '"') {
+    k = stringEnd(text, k);
+  } else if (text[k] === '{' || text[k] === '[') {
+    let depth = 0;
+    while (k < text.length) {
+      const c = text[k];
+      if (c === '"') {
+        k = stringEnd(text, k);
+        if (k < 0) return null;
+        continue;
+      }
+      if (c === '{' || c === '[') depth++;
+      if (c === '}' || c === ']') depth--;
+      k++;
+      if (depth === 0) break;
+    }
+    if (depth !== 0) return null;
+  } else {
+    while (k < text.length && !',}]'.includes(text[k]) && !isJsonSpace(text[k])) k++;
+  }
+  return k < 0 ? null : { from: comma, to: k };
+}
+
+/**
+ * `text`, the loose decode of a view main does not read, without the member right after each value that a string the
+ * decode left out at a break spans (memberAfter): Redactor's reading does not read that member (#349). Returns the
+ * text, a function from an index in it to one in `text`, and whether it still reaches the end of `text`. The text is
+ * read once from each break, and that read is charged.
+ */
+function joinedSkipping(text, breaks, ctx) {
+  const removed = [];
+  for (const b of breaks) {
+    // A break inside a member left out still leaves out the member after its own value.
+    const member = memberAfter(text, b);
+    if (member === null || (removed.length > 0 && member.from < removed[removed.length - 1].to)) continue;
+    ctx.work += member.to - b;
+    removed.push(member);
+  }
+  if (removed.length === 0) return { text, at: j => j, reachesEnd: true };
+  const pieces = [];
+  const starts = [];
+  let from = 0;
+  let length = 0;
+  for (const span of removed) {
+    pieces.push(text.slice(from, span.from));
+    starts.push([length, from]);
+    length += span.from - from;
+    from = span.to;
+  }
+  pieces.push(text.slice(from));
+  starts.push([length, from]);
+  const at = j => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid][0] <= j) lo = mid;
+      else hi = mid - 1;
+    }
+    return starts[lo][1] + (j - starts[lo][0]);
+  };
+  return { text: pieces.join(''), at, reachesEnd: removed[removed.length - 1].to < text.length };
+}
+
 /**
  * Reads a decoded string as the JSON it may hold, `level` levels down. A string with a quote is read as JSON. A
  * string that still holds escapes is also read as the content of one more string, decoded once more (decodeString,
@@ -2375,18 +2478,25 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = f
       return;
     }
     const belowCut = cut !== 0 ? cutOf(decoded, unescaped, cut) : 0;
-    // In a view main does not read, the loose decode's text is read in parts, split where a bare quote opened inside a
-    // string a decoded quote opened (decodeString's breaks). One level down that quote is a bare quote inside a string
-    // the copy's own quote opened, where Redactor's JWK reading stops: so no object spans it, as the loose decode,
-    // which leaves the string it opens out, would otherwise join kty before it to a private member after it (#349).
-    // Main's views are read as before.
-    let from = 0;
-    for (const to of mode === MAIN ? [unescaped.length] : [...breaks, unescaped.length]) {
-      if (to <= from) continue;
-      const start = from;
-      const part = to - from === unescaped.length ? unescaped : unescaped.slice(start, to);
-      readNested(part, level + 1, ctx, j => toRoot(inDecoded(start + j)), below, to === unescaped.length ? belowCut : 0, looseView);
-      from = to;
+    const toUnescaped = j => toRoot(inDecoded(j));
+    if (mode === MAIN || breaks.length === 0) {
+      readNested(unescaped, level + 1, ctx, toUnescaped, below, belowCut, looseView);
+    } else {
+      // In a view main does not read, a bare quote that opened inside a string a decoded quote opened (decodeString's
+      // breaks) is, one level down, a bare quote inside a string the copy's own quote opened. The loose decode leaves out
+      // the string it opens and joins the text around it, but Redactor's reading does not read the member right after
+      // the value that string spans: a private member there is in no JWK, while a member after it is (#349). So the
+      // joined text is read without that member (joinedSkipping), and the parts between the breaks are read too, so a
+      // JWK inside the member left out is still found.
+      const skipped = joinedSkipping(unescaped, breaks, ctx);
+      readNested(skipped.text, level + 1, ctx, j => toUnescaped(skipped.at(j)), below, skipped.reachesEnd ? belowCut : 0, looseView);
+      let from = 0;
+      for (const to of [...breaks, unescaped.length]) {
+        if (to <= from) continue;
+        const start = from;
+        readNested(unescaped.slice(start, to), level + 1, ctx, j => toUnescaped(start + j), below, to === unescaped.length ? belowCut : 0, looseView);
+        from = to;
+      }
     }
   }
   // The loose decode's own unicode escapes outside strings decoded may spell an escape Redactor does not read as one
