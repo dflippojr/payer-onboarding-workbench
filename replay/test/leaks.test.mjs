@@ -1497,6 +1497,34 @@ test('still flags a double-escaped JWK whose private member comes after another 
     }
   }
 });
+test('reads a form feed or vertical tab around the member after the inner quotes as whitespace, as Redactor does (#349, automated review on c1178a6)', () => {
+  // Redactor's patterns read Java's \s, which holds a form feed and a vertical tab, so these are the accepted forms with
+  // that whitespace after the comma before the private member; with another member between, it is still flagged.
+  const v = s => `\\\\u0022${s}\\\\u0022`;
+  for (const prefix of ['x"', '{"a":"b"}"']) {
+    for (const space of ['\f', '\v']) {
+      for (const inner of ['@', '@@']) {
+        const head = [`${v('kty')}:0`, `${v('x')}:${v(inner)}`, `${v('y')}:${v(inner)}`];
+        const accepted = `${prefix}\n{${head.join(',')},${space}${v('k')}:${v('dimension')}}`.replaceAll('@', '\\u0022');
+        assertAccepted(accepted);
+        const flagged = `${prefix}\n{${head.join(',')},${space}${v('o')}:${v('x')},${space}${v('k')}:${v('dimension')}}`.replaceAll('@', '\\u0022');
+        assertFlagged(flagged);
+      }
+    }
+  }
+});
+test('reads the member after many inner quotes in one value once, in time that grows with the text, not its square (#349, automated review on c1178a6)', () => {
+  // Every left-out string in one value was a break, and each read the member after that value again, uncharged: 8,000
+  // of them before a 160,001-item array took about 3.5 s, against 0.24 s on main.
+  const text = `x"\n{\\\\u0022kty\\\\u0022:0,\\\\u0022x\\\\u0022:\\\\u0022${'\\u0022\\u0022'.repeat(8000)}\\\\u0022,`
+    + `\\\\u0022a\\\\u0022:[${'1,'.repeat(160_000)}1]}`;
+  const before = scanWork.characters;
+  const started = performance.now();
+  findTextLeaks(text);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 1500, `took ${Math.round(elapsed)} ms`);
+  assert.ok(scanWork.characters - before <= 40 * text.length + 4096);
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

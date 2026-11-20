@@ -3798,6 +3798,24 @@ class RedactorTest {
     }
 
     @Test
+    void readsAFormFeedOrVerticalTabAroundTheMemberAfterTheInnerQuotesAsWhitespace() {
+        // #349 (automated review on c1178a6): the leak scanner's test of the same form accepts the first and flags the second.
+        java.util.function.UnaryOperator<String> v = s -> "\\\\u0022" + s + "\\\\u0022";
+        for (String prefix : List.of("x\"", "{\"a\":\"b\"}\"")) {
+            for (String space : List.of("\f", "\u000B")) {
+                for (String inner : List.of("@", "@@")) {
+                    String head = v.apply("kty") + ":0," + v.apply("x") + ":" + v.apply(inner) + "," + v.apply("y") + ":" + v.apply(inner);
+                    String kept = (prefix + "\n{" + head + "," + space + v.apply("k") + ":" + v.apply("dimension") + "}").replace("@", "\\u0022");
+                    assertEquals(kept, Redactor.redact(kept));
+                    String masked = (prefix + "\n{" + head + "," + space + v.apply("o") + ":" + v.apply("x") + "," + space + v.apply("k") + ":"
+                            + v.apply("dimension") + "}").replace("@", "\\u0022");
+                    assertNotEquals(masked, Redactor.redact(masked));
+                }
+            }
+        }
+    }
+
+    @Test
     void masksAJwkCopiedAfterAStrayQuoteAndARawLineBreakNestedEightDeep() {
         // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
         // skips here is now expected masked whole.
