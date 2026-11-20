@@ -3771,6 +3771,33 @@ class RedactorTest {
     }
 
     @Test
+    void masksADoubleEscapedJwkWithAMemberBetweenItsInnerQuotesAndItsPrivateMember() {
+        // #349 (automated review on 5eec467): the member right after the value whose inner quotes stop the JWK reading is
+        // not read, but a member after it is, so the private member is masked. The leak scanner's test of the same form
+        // flags each of these.
+        java.util.function.UnaryOperator<String> v = s -> "\\\\u0022" + s + "\\\\u0022";
+        List<List<String>> betweens = List.of(List.of(v.apply("other") + ":" + v.apply("x")), List.of(v.apply("other") + ":1"),
+                List.of(v.apply("a") + ":{" + v.apply("b") + ":1}"),
+                List.of(v.apply("o1") + ":" + v.apply("x"), v.apply("o2") + ":" + v.apply("x")));
+        for (String prefix : List.of("x\"", "he said\"", "{\"a\":\"b\"}\"", "{\"a\":\"x\"y\"")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String name : List.of("k", "d")) {
+                    for (String inner : List.of("@", "a@b", "@@")) {
+                        for (List<String> between : betweens) {
+                            List<String> members = new java.util.ArrayList<>(List.of(v.apply("kty") + ":0",
+                                    v.apply("x") + ":" + v.apply(inner), v.apply("y") + ":" + v.apply(inner)));
+                            members.addAll(between);
+                            members.add(v.apply(name) + ":" + v.apply("dimension"));
+                            String text = (prefix + lb + "{" + String.join(",", members) + "}").replace("@", "\\u0022");
+                            assertNotEquals(text, Redactor.redact(text));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void masksAJwkCopiedAfterAStrayQuoteAndARawLineBreakNestedEightDeep() {
         // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
         // skips here is now expected masked whole.

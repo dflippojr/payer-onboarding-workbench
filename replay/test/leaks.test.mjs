@@ -1477,6 +1477,26 @@ test('still flags a double-escaped JWK after a stray quote and a raw line break 
     assert.ok(findTextLeaks(text).some(leak => leak.check === 'JWK reading skipped prose (whole text masked)'), JSON.stringify(text));
   }
 });
+test('still flags a double-escaped JWK whose private member comes after another member past the inner quotes (#349, automated review on 5eec467)', () => {
+  // Redactor's reading does not read the member right after a value whose inner quotes it stops at, but it reads every
+  // member after that one, so a private member there is in the JWK and masked
+  // (RedactorTest.masksADoubleEscapedJwkWithAMemberBetweenItsInnerQuotesAndItsPrivateMember).
+  const v = s => `\\\\u0022${s}\\\\u0022`;
+  for (const prefix of ['x"', 'he said"', '{"a":"b"}"', '{"a":"x"y"']) {
+    for (const lb of ['\n', '\r\n']) {
+      for (const name of ['k', 'd']) {
+        for (const inner of ['@', 'a@b', '@@']) {
+          for (const between of [[`${v('other')}:${v('x')}`], [`${v('other')}:1`], [`${v('a')}:{${v('b')}:1}`], [`${v('o1')}:${v('x')}`, `${v('o2')}:${v('x')}`]]) {
+            const members = [`${v('kty')}:0`, `${v('x')}:${v(inner)}`, `${v('y')}:${v(inner)}`, ...between, `${v(name)}:${v('dimension')}`];
+            const text = `${prefix}${lb}{${members.join(',')}}`.replaceAll('@', '\\u0022');
+            assertFlagged(text);
+            assertFlagged(nestedIn(text, 1));
+          }
+        }
+      }
+    }
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,
