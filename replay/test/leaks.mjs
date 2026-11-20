@@ -1610,13 +1610,19 @@ const decodeString = (body, ctx, read = []) => {
   const parts = [];
   const offsets = [];
   let decodedAny = false;
+  // Whether a string a decoded quote opened is open, and where in the decoded text a bare quote opened inside one
+  // (breaks): there Redactor's reading of the level below stops (#349).
+  let inDecodedString = false;
+  const breaks = [];
   // Decodes the unicode escapes of body from `from` to `to`, keeping any other escape whole.
   const decodeSpan = (from, to) => {
     for (let i = from; i < to;) {
       offsets.push(i);
       const hex = body[i] === '\\' && body[i + 1] === 'u' && i + 6 <= to ? body.slice(i + 2, i + 6) : '';
       if (/^[0-9a-fA-F]{4}$/.test(hex)) {
-        parts.push(String.fromCharCode(Number.parseInt(hex, 16)));
+        const c = String.fromCharCode(Number.parseInt(hex, 16));
+        parts.push(c);
+        if (c === '"') inDecodedString = !inDecodedString;
         decodedAny = true;
         i += 6;
       } else if (body[i] === '\\' && i + 1 < to) {
@@ -1643,6 +1649,7 @@ const decodeString = (body, ctx, read = []) => {
       continue;
     }
     decodeSpan(from, i);
+    if (inDecodedString) breaks.push(parts.length);
     if (afterLineBreak) gaps.push([from, i]);
     // A quoted string, to its closing quote or the end of the text; a backslash takes the next character with it.
     let end = i + 1;
@@ -1676,7 +1683,7 @@ const decodeString = (body, ctx, read = []) => {
     if (to - from > 1 && body.slice(from, to).includes('\\')) unread.push([from, to]);
   }
   if (!decodedAny) return { decoded: body, at: sourceOffsets(body, ctx, body.length), unread, repaired };
-  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread, repaired, loose: true };
+  return { decoded: parts.join(''), at: j => (j < offsets.length ? offsets[j] : body.length), unread, repaired, loose: true, breaks };
 };
 
 /**
@@ -2361,13 +2368,26 @@ function readNested(decoded, level, ctx, toRoot, mode = MAIN, cut = 0, loose = f
   const below = mode === MAIN ? MAIN : UNREAD;
   // A FLAT copy is read in place only (see FLAT).
   if (!decoded.includes('\\') || mode === FLAT) return;
-  const { decoded: unescaped, at: inDecoded, unread, repaired, loose: looseView = false } = decodeString(decoded, ctx, read);
+  const { decoded: unescaped, at: inDecoded, unread, repaired, loose: looseView = false, breaks = [] } = decodeString(decoded, ctx, read);
   if (unescaped !== decoded && (unescaped.includes('"') || unescaped.includes('\\'))) {
     if (level >= MAX_LEVELS) {
       failClosed(ctx, 'JSON nested past 17 levels', decoded);
       return;
     }
-    readNested(unescaped, level + 1, ctx, j => toRoot(inDecoded(j)), below, cut !== 0 ? cutOf(decoded, unescaped, cut) : 0, looseView);
+    const belowCut = cut !== 0 ? cutOf(decoded, unescaped, cut) : 0;
+    // In a view main does not read, the loose decode's text is read in parts, split where a bare quote opened inside a
+    // string a decoded quote opened (decodeString's breaks). One level down that quote is a bare quote inside a string
+    // the copy's own quote opened, where Redactor's JWK reading stops: so no object spans it, as the loose decode,
+    // which leaves the string it opens out, would otherwise join kty before it to a private member after it (#349).
+    // Main's views are read as before.
+    let from = 0;
+    for (const to of mode === MAIN ? [unescaped.length] : [...breaks, unescaped.length]) {
+      if (to <= from) continue;
+      const start = from;
+      const part = to - from === unescaped.length ? unescaped : unescaped.slice(start, to);
+      readNested(part, level + 1, ctx, j => toRoot(inDecoded(start + j)), below, to === unescaped.length ? belowCut : 0, looseView);
+      from = to;
+    }
   }
   // The loose decode's own unicode escapes outside strings decoded may spell an escape Redactor does not read as one
   // (two \u005c escapes become an escaped backslash): the copy repaired at the end of such a view is not read
