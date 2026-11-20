@@ -3528,13 +3528,25 @@ class RedactorTest {
                 String text = "{\"keys\":[" + java.util.stream.IntStream.range(0, keys)
                         .mapToObj(i -> jwk.formatted("key-" + i)).collect(java.util.stream.Collectors.joining(","))
                         + "],\"d\":\"dimension\"}";
-                // Beside a string with an escaped backslash before a word that starts with u (no unicode escape), and one
-                // with a unicode escape, written back as the character it spells: each is kept too.
+                // Beside a string with an escaped backslash before a word that starts with u (no unicode escape): kept.
                 String plain = text.replace("{\"keys\"", "{\"note\":\"user\\\\unit\",\"keys\"");
                 assertEquals(plain, Redactor.redact(plain), keys + " keys beside a backslash and u");
                 assertEquals(nested(plain), Redactor.redact(nested(plain)), keys + " keys beside a backslash and u, nested");
-                assertEquals(text.replace("{\"keys\"", "{\"note\":\"A\",\"keys\""),
-                        Redactor.redact(text.replace("{\"keys\"", "{\"note\":\"\\u0041\",\"keys\"")), keys + " keys beside a unicode escape");
+                // Beside a unicode escape (a control character, printable ones, a hex digit, a u, a letter of kty, a
+                // bracket, a colon) in a sibling value, a member name or a string of a JWK, bare and nested: each is kept,
+                // written as the encoder spells the character.
+                for (String code : List.of("0000", "001f", "0041", "00e9", "0034", "0075", "006b", "007b", "003a", "2028")) {
+                    for (String escaped : List.of(
+                            text.replace("{\"keys\"", "{\"note\":\"a\\u" + code + "b\",\"keys\""),
+                            text.replace("{\"keys\"", "{\"no\\u" + code + "te\":1,\"keys\""),
+                            text.replace("\"kid\":\"key-0\"", "\"kid\":\"key\\u" + code + "0\""))) {
+                        String at = escaped;
+                        for (int levels = 0; levels <= 3; levels++) {
+                            assertEquals(Canonical.of(at), Redactor.redact(at), keys + " keys beside \\u" + code + ", " + levels + " levels");
+                            at = nested(at);
+                        }
+                    }
+                }
                 String form = text;
                 for (int levels = 0; levels <= 3; levels++) {
                     String label = keys + " keys, kty " + (last ? "last" : "first") + ", " + levels + " levels";
@@ -3641,6 +3653,29 @@ class RedactorTest {
         // Both kinds are in the grid: texts the Redactor keeps, and texts it changes.
         assertTrue(kept > 50 && pairs.size() - kept > 100, kept + " of " + pairs.size() + " kept");
         assertScannerGrid("jwk-search-budget-grid", pairs);
+    }
+
+    @Test
+    void masksAPrivateMemberAfterEscapedLooseKtyNamesBesideMaskedJwks() {
+        // #341: kty names no object holds, enough to spend the JWK search's budget, in a string beside three masked
+        // JWKs, with their quotes or letters spelled as unicode escapes of the string's level or the one above: the
+        // private member after them is masked, bare and nested. The leak scanner's r10 test flags each form.
+        String jwk = "{\"kty\":\"RSA\",\"kid\":\"%s\",\"n\":\"" + "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA".repeat(4)
+                + "\",\"e\":\"AQAB\",\"d\":\"[REDACTED]\"}";
+        String loose = "\"kty\":\"".repeat(63) + "\"d\":\"FAKE_PRIVATE_KEY_341\"";
+        String quoted = JSON.writeValueAsString(loose);
+        String content = quoted.substring(1, quoted.length() - 1);
+        StringBuilder every = new StringBuilder();
+        loose.chars().forEach(c -> every.append(String.format("\\u%04x", c)));
+        for (String junk : List.of(content.replace("kty", "\\\\u006bty"), content.replace("kty", "k\\\\u0074y"),
+                loose.replace("\"", "\\u0022"), every.toString(), content.replace("kty", "\\u006bty"))) {
+            String form = "{\"note\":\"" + junk + "\",\"keys\":[" + jwk.formatted("a") + "," + jwk.formatted("b") + ","
+                    + jwk.formatted("c") + "],\"d\":\"dimension\"}";
+            for (int levels = 0; levels <= 2; levels++) {
+                assertFalse(Redactor.redact(form).contains("FAKE_PRIVATE_KEY_341"), levels + " levels: " + junk.substring(0, 40));
+                form = nested(form);
+            }
+        }
     }
 
     @Test

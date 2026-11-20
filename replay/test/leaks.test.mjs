@@ -3476,11 +3476,68 @@ test('r10: reads a backslash before a u that is no unicode escape as plain text 
       assertAccepted(nestedIn(plain, levels));
       assertFlagged(nestedIn(plain.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
     }
-    // A text with a real unicode escape keeps the bound it had: the scanner still flags the loose member there, which
-    // fails safe (Redactor keeps the text; reading such texts as strict is left to a later change).
-    const escaped = text.replace('{"keys"', '{"note":"\\u0041","keys"');
-    assert.equal(JSON.parse(escaped).note, 'A');
-    assertFlagged(escaped);
+  }
+});
+test('r10: reads unicode escapes beside masked JWKs as the characters they spell (#341)', () => {
+  // Automated review on 760bbf4, decided on the issue (2026-11-20): the strict reading decodes unicode escapes. A
+  // control character, a printable one, a hex digit, a u, a letter of kty outside a name, a bracket and a colon, in
+  // a sibling value, a member name or a string of a JWK, bare and nested: Redactor keeps each text (it writes the
+  // escape as its encoder spells the character, RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks),
+  // so the scanner accepts it, and still flags a private member left unmasked there.
+  const u = code => `\\u${code}`;
+  for (const keys of [3, 12]) {
+    const text = jwks341(keys);
+    for (const code of ['0000', '001f', '0041', '00e9', '0034', '0075', '006b', '007b', '003a', '2028']) {
+      for (const form of [
+        text.replace('{"keys"', `{"note":"a${u(code)}b","keys"`),
+        text.replace('{"keys"', `{"no${u(code)}te":1,"keys"`),
+        text.replace('"kid":"key-0"', `"kid":"key${u(code)}0"`),
+      ]) {
+        assert.notEqual(form, text);
+        JSON.parse(form);
+        for (const levels of [0, 1, 2, 3]) {
+          assertAccepted(nestedIn(form, levels));
+          assertFlagged(nestedIn(form.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
+        }
+      }
+    }
+    // An escape of an escaped level: the body's own text spells the escape, one level down.
+    const inner = JSON.stringify({ body: text }).replace('{\\"keys\\"', `{\\"note\\":\\"a\\${u('0041')}b\\",\\"keys\\"`);
+    assert.equal(JSON.parse(JSON.parse(inner).body).note, 'aAb');
+    assertAccepted(inner);
+  }
+});
+test('r10: keeps the bound for an escape that spells a quote or a backslash, and for escaped kty names (#341)', () => {
+  // An escape that decodes to a quote or a backslash, at any level, changes which quotes Redactor reads, so a text
+  // with one is not read as strict and the loose member beside three masked JWKs stays flagged, which fails safe.
+  const text = jwks341(3);
+  for (const code of ['0022', '005c', '005C']) {
+    for (const form of [
+      text.replace('{"keys"', `{"note":"a\\u${code}b","keys"`),
+      text.replace('{"keys"', `{"note":"a\\\\u${code}b","keys"`),
+      // Spelled through other escapes: a u, and hex digits, that only a level down make the escape.
+      text.replace('{"keys"', `{"note":"a\\\\\\u0075${code}b","keys"`),
+      text.replace('{"keys"', `{"note":"a\\\\u${code.slice(0, 2)}\\u003${code[2]}${code[3]}b","keys"`),
+    ]) {
+      JSON.parse(form);
+      for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
+    }
+  }
+  // The r7 forms (kty names no object holds, enough to spend Redactor's budget) in a string beside the masked JWKS,
+  // with their quotes or letters spelled as unicode escapes: Redactor masks the private member after them
+  // (RedactorTest.masksAPrivateMemberAfterEscapedLooseKtyNamesBesideMaskedJwks), so the scanner flags it.
+  const escapedAll = t => [...t].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const loose = '"kty":"'.repeat(63) + '"d":"FAKE_PRIVATE_KEY_341"';
+  for (const junk of [
+    JSON.stringify(loose).slice(1, -1).replaceAll('kty', '\\\\u006bty'),
+    JSON.stringify(loose).slice(1, -1).replaceAll('kty', 'k\\\\u0074y'),
+    loose.replaceAll('"', '\\u0022'),
+    escapedAll(loose),
+    JSON.stringify(loose).slice(1, -1).replaceAll('kty', '\\u006bty'),
+  ]) {
+    const form = text.replace('{"keys"', `{"note":"${junk}","keys"`);
+    JSON.parse(form);
+    for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
   }
 });
 test('flags every text of the JWK search budget grid the Redactor changes, at all three entry points (#341)', () => {
