@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Regenerates the README screenshots in docs/screenshots/: builds the workbench,
+// Regenerates the screenshots in docs/screenshots/ that the docs link to: builds the workbench,
 // exports the replay bundle, starts the app on a free port and drives headless
 // Edge or Chrome over the DevTools protocol. No dependencies beyond Node 22+
 // (for the global WebSocket), JDK 21 and a Chromium-based browser.

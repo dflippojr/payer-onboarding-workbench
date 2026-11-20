@@ -26,8 +26,8 @@ import java.util.regex.Pattern;
  * request the run later sends is checked against that answer: {@link #wrap} re-resolves
  * the host and refuses a request whose answer no longer matches, so a DNS rebind during a
  * run cannot move the call to an internal address. The JDK client does its own lookup when
- * it connects, so a rebind inside that window is narrowed rather than impossible; see the
- * README.
+ * it connects, so a rebind inside that window is narrowed rather than impossible; see
+ * docs/api.md.
  */
 final class EndpointGuard {
 

@@ -53,6 +53,7 @@ public class AuditRequestFilter extends OncePerRequestFilter {
         } finally {
             try {
                 int status = failed ? 500 : response.getStatus();
+                // A RunRejection's reason is already set by WorkbenchApiController; anything else falls back on its status.
                 if (status >= 400 && context.reasonCode == null) {
                     context.reasonCode = status == 404 ? "not_found" : status == 400 ? "invalid_body" : "request_failed";
                 }

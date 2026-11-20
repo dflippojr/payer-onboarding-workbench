@@ -71,9 +71,9 @@ class OnboardingFlowTest {
     /** Everything the tests logged, for the class-level check. */
     private static final StringBuilder LOG = new StringBuilder();
     private static final List<String> ALL_PAYERS = List.of(NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID);
-    private static final Path README = Path.of("..", "README.md");
+    private static final Path FAULT_TABLE_PAGE = Path.of("..", "docs", "faults.md");
     private static final String FAULT_TABLE_HEADING = "### What each fault and misconfiguration fails";
-    /** The run behind each row of the README's fault table, keyed by the row's first cell. */
+    /** The run behind each row of the fault table in docs/faults.md, keyed by the row's first cell. */
     private static final Map<String, FaultTableRun> FAULT_TABLE_RUNS = faultTableRuns();
 
     @Autowired
@@ -99,6 +99,46 @@ class OnboardingFlowTest {
         }
         assertTrue(run.findings().stream().anyMatch(f -> f.checkId().equals("tls.handshake") && f.severity() == Severity.PASS));
         assertTrue(payers.payer(payerId).orElseThrow().baseUrl().startsWith("https://127.0.0.1:"));
+    }
+
+    /**
+     * Each step records JSON-shaped plain data (#377, typed tree), which the API, the reports and the run store all
+     * read: a record, an enum or an instant is converted when the step is recorded, so no step's details are the mask.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {NORTHWIND_ID, FABRIKAM_ID, TAILSPIN_ID})
+    void everyStepRecordsJsonShapedDetails(String payerId) {
+        for (List<String> faults : List.of(List.<String>of(), List.of(Fault.EXPIRED_TOKEN_401.id()))) {
+            OnboardingRun run = runner.run(request(payerId, HEALTHY_SAMPLE, faults));
+            for (StepResult step : run.steps()) {
+                assertFalse(step.details().containsKey("details"), step.stepId() + " details: " + step.details());
+                assertJsonShaped(step.details(), step.stepId());
+            }
+        }
+    }
+
+    private static final Set<Class<?>> JSON_NUMBERS = Set.of(Integer.class, Long.class, Short.class, Byte.class,
+            Double.class, Float.class, java.math.BigInteger.class, java.math.BigDecimal.class);
+
+    private static void assertJsonShaped(Object value, String path) {
+        if (value == null || value instanceof String || value instanceof Boolean
+                || JSON_NUMBERS.contains(value.getClass())) {
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            map.forEach((k, v) -> {
+                assertTrue(k instanceof String, () -> path + " has a key that is not text: " + k.getClass().getName());
+                assertJsonShaped(v, path + "." + k);
+            });
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (int i = 0; i < list.size(); i++) {
+                assertJsonShaped(list.get(i), path + "[" + i + "]");
+            }
+            return;
+        }
+        throw new AssertionError(path + " is a " + value.getClass().getName() + ", not JSON-shaped plain data");
     }
 
     /**
@@ -325,10 +365,8 @@ class OnboardingFlowTest {
                 .map(Map.Entry::getValue).findFirst().orElse(List.of());
     }
 
-    @SuppressWarnings("unchecked")
     private static List<ExchangeView> exchanges(OnboardingRun run, String step) {
-        return (List<ExchangeView>) run.steps().stream().filter(s -> s.stepId().equals(step))
-                .findFirst().orElseThrow().details().get("exchanges");
+        return StepExchanges.of(run.steps().stream().filter(s -> s.stepId().equals(step)).findFirst().orElseThrow());
     }
 
     static Stream<Arguments> failingCalls() {
@@ -390,11 +428,12 @@ class OnboardingFlowTest {
     @Test
     void tailspinRecordsClaimsAndDiagnosesExpectedAndSentAudience() {
         OnboardingRun healthy = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of()));
-        var claims = (io.github.dflippojr.payerworkbench.core.JwtClaims) healthy.steps().get(2).details().get("clientAssertionClaims");
-        assertEquals(SyntheticPayers.CLIENT_ID, claims.iss());
-        assertEquals(claims.iss(), claims.sub());
+        // Step details are plain data (#377): the JwtClaims record is the map of its components.
+        var claims = (Map<?, ?>) healthy.steps().get(2).details().get("clientAssertionClaims");
+        assertEquals(SyntheticPayers.CLIENT_ID, claims.get("iss"));
+        assertEquals(claims.get("iss"), claims.get("sub"));
         assertEquals(List.of(payers.store().findByPayerIdAndEnvironment(TAILSPIN_ID, Environment.SANDBOX)
-                .orElseThrow().tokenEndpoint()), claims.aud());
+                .orElseThrow().tokenEndpoint()), claims.get("aud"));
         assertEquals(Severity.PASS, healthy.findings().stream().filter(f -> f.checkId().equals("auth.client-assertion"))
                 .findFirst().orElseThrow().severity());
         OnboardingRun rejected = runner.run(request(TAILSPIN_ID, HEALTHY_SAMPLE, List.of("wrong-audience-reject")));
@@ -403,7 +442,7 @@ class OnboardingFlowTest {
                 .findFirst().orElseThrow();
         assertEquals(Severity.FAIL, finding.severity());
         assertTrue(finding.evidence().contains(io.github.dflippojr.payerworkbench.mock.TailspinPayer.WRONG_AUDIENCE));
-        assertTrue(finding.evidence().contains(claims.aud().getFirst()));
+        assertTrue(finding.evidence().contains((String) ((List<?>) claims.get("aud")).getFirst()));
         for (OnboardingRun run : List.of(healthy, rejected)) {
             for (ReportRenderer.Format format : ReportRenderer.Format.values()) {
                 String report = ReportRenderer.render(RunReport.of(run, TAILSPIN_ID, "2.2.1", java.time.Instant.now(), "test"), format);
@@ -581,11 +620,11 @@ class OnboardingFlowTest {
         return new FaultTableRun(ALL_PAYERS, request);
     }
 
-    /** The rows of the README's fault table, without its header and separator lines. */
+    /** The rows of the fault table in docs/faults.md, without its header and separator lines. */
     static List<FaultTableRow> faultTableRows() throws IOException {
-        List<String> lines = Files.readAllLines(README);
+        List<String> lines = Files.readAllLines(FAULT_TABLE_PAGE);
         int heading = lines.indexOf(FAULT_TABLE_HEADING);
-        assertTrue(heading >= 0, () -> README + " has no heading: " + FAULT_TABLE_HEADING);
+        assertTrue(heading >= 0, () -> FAULT_TABLE_PAGE + " has no heading: " + FAULT_TABLE_HEADING);
         List<FaultTableRow> rows = lines.subList(heading + 1, lines.size()).stream()
                 .dropWhile(line -> !line.startsWith("|"))
                 .takeWhile(line -> line.startsWith("|"))
@@ -616,7 +655,7 @@ class OnboardingFlowTest {
     @MethodSource("faultTableRows")
     void faultTableRowMatchesWhatARunFails(FaultTableRow row) {
         FaultTableRun scenario = FAULT_TABLE_RUNS.get(row.run());
-        assertTrue(scenario != null, () -> "README fault table row with no run in faultTableRuns: " + row.run());
+        assertTrue(scenario != null, () -> "fault table row in docs/faults.md with no run in faultTableRuns: " + row.run());
         for (String payerId : scenario.payerIds()) {
             OnboardingRun run = runner.run(scenario.request().apply(payerId));
 

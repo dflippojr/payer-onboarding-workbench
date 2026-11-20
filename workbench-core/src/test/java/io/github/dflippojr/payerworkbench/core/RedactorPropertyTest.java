@@ -312,10 +312,6 @@ class RedactorPropertyTest {
     /** Identifiers the workbench sets itself, never text from the payer. */
     private static final Set<String> NOT_PAYER_TEXT = Set.of("stepId", "checkId");
 
-    /** A typed value in step details, as {@code ExchangeView} or {@code RedactedConnection} is. */
-    record Echo(String body, List<String> notes, Map<String, List<String>> headers) {
-    }
-
     /**
      * Class-level check (#211): the run model redacts everything it holds, so the live run API, the
      * stored run and the reports agree. Each generated case goes into every text component of
@@ -331,8 +327,11 @@ class RedactorPropertyTest {
             text = c.text();
             details.put("summary", text);
             details.put("cards", List.of(Map.of("source", text)));
-            details.put("exchange", new Echo(text, List.of(text), Map.of("X-Debug-Echo", List.of(text))));
-            details.put("array", new Object[] {text, new String[] {text}});
+            // Details are JSON-shaped plain data (#377, typed tree): a record as the map of its components, an array as
+            // a list.
+            details.put("exchange", Map.of("body", text, "notes", List.of(text), "headers",
+                    Map.of("X-Debug-Echo", List.of(text))));
+            details.put("array", List.of(text, List.of(text)));
             details.put("keyed", Map.of(text, "value"));
         } else {
             text = "ok";

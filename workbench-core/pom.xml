@@ -24,6 +24,11 @@
       <groupId>io.github.dflippojr</groupId>
       <artifactId>directory-core</artifactId>
     </dependency>
+    <!-- The JSON parser and string encoder of Redactor's structural path (JsonRedaction, #377). -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>tools.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>

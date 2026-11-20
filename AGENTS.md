@@ -1,6 +1,7 @@
 # Agent notes
 
 - To prove a change works in the real app, use the verify skill: [.claude/skills/verify/SKILL.md](.claude/skills/verify/SKILL.md) (`npm run verify`), which builds on [docs/ui-testing.md](docs/ui-testing.md).
+- Reference docs (API, the fault table in `docs/faults.md`, audit, observability, replay, mock payers, CI) live in [docs/](docs/); README.md is the front page and links each one.
 
 ## How to prove a change works
 

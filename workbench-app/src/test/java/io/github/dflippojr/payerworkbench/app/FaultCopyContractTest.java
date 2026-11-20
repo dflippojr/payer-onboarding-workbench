@@ -2,7 +2,6 @@ package io.github.dflippojr.payerworkbench.app;
 
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
-import io.github.dflippojr.payerworkbench.core.StepResult;
 import io.github.dflippojr.payerworkbench.mock.Fault;
 import io.github.dflippojr.payerworkbench.mock.MockPayer;
 import org.junit.jupiter.api.Test;
@@ -119,12 +118,10 @@ class FaultCopyContractTest {
         return touched;
     }
 
-    @SuppressWarnings("unchecked")
     private static boolean carriesFaultHeader(OnboardingRun run, Call call, Fault fault) {
         return run.steps().stream()
                 .filter(step -> step.stepId().equals(call.stepId))
-                .map(StepResult::details)
-                .map(details -> (List<ExchangeView>) details.getOrDefault("exchanges", List.of()))
+                .map(StepExchanges::of)
                 .flatMap(List::stream)
                 .flatMap(exchange -> exchange.responseHeaders().entrySet().stream())
                 .anyMatch(header -> header.getKey().equalsIgnoreCase(MockPayer.FAULT_HEADER)
