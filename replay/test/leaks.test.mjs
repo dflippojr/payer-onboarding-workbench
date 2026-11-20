@@ -1430,6 +1430,53 @@ test('fails closed on a masked JWK after a long pad, copied and closed at each l
     assert.ok(findTextLeaks(nest('FAKE_JWK_K_342', lb)).length > 0);
   }
 });
+// #349: a JWK copied twice over (every quote \\u0022, two backslashes) whose x and y values each hold a quote escaped
+// once (\u0022, one backslash), after a stray quote glued to text and a raw line break. One level down that inner quote
+// is a bare quote inside a string the copy's own quote opened, where Redactor's JWK reading stops, so the k (or d)
+// after it is in no JWK and Redactor keeps the text (RedactorTest.keepsADoubleEscapedJwkWithAQuoteInsideItsValues
+// AfterAStrayQuoteAndARawLineBreak). The scanner's loose decode of that view paired the inner quotes, left out the
+// string between them, and so read kty and k as members of one object. The stray quote is glued to the word before it,
+// so the #352 canonical reading does not skip it as prose: with a space before it (he said "), Redactor masks the text
+// whole and the scanner flags it whole.
+const doubleEscapedJwk349 = (name, inner, privateFirst = false) => {
+  const v = s => `\\\\u0022${s}\\\\u0022`;
+  const members = [`${v('kty')}:0`, `${v('x')}:${v(inner)}`, `${v('y')}:${v(inner)}`];
+  const secret = `${v(name)}:${v('dimension')}`;
+  return `{${(privateFirst ? [members[0], secret, members[1], members[2]] : [...members, secret]).join(',')}}`;
+};
+test('accepts a double-escaped JWK with a quote inside its values after a stray quote and a raw line break, as Redactor keeps it (#349)', () => {
+  for (const prefix of ['x"', 'he said"', '{"a":"b"}"', '{"a":"x"y"']) {
+    for (const lb of ['\n', '\r\n']) {
+      for (const name of ['k', 'd']) {
+        for (const inner of ['@', 'a@b', '@@']) {
+          const text = `${prefix}${lb}${doubleEscapedJwk349(name, inner.replaceAll('@', '\\u0022'))}`;
+          assertAccepted(text);
+          assertAccepted(nestedIn(text, 1));
+        }
+      }
+    }
+  }
+});
+test('still flags a double-escaped JWK after a stray quote and a raw line break where Redactor masks it (#349)', () => {
+  for (const prefix of ['x"', 'he said"', '{"a":"b"}"', '{"a":"x"y"']) {
+    for (const lb of ['\n', '\r\n']) {
+      for (const name of ['k', 'd']) {
+        for (const inner of ['@', 'a@b', '@@']) {
+          // The inner quote escaped once more (\\\u0022) is the copy's own escaped quote: the JWK reads whole.
+          assertFlagged(`${prefix}${lb}${doubleEscapedJwk349(name, inner.replaceAll('@', '\\\\\\u0022'))}`);
+          // The private member before the inner quotes is read before the JWK reading stops.
+          assertFlagged(`${prefix}${lb}${doubleEscapedJwk349(name, inner.replaceAll('@', '\\u0022'), true)}`);
+        }
+      }
+    }
+  }
+  // The issue's own form, with a space before the stray quote: the #352 canonical reading skips it as prose, and Redactor
+  // masks the text whole.
+  for (const lb of ['\n', '\r\n']) {
+    const text = `he said "${lb}${doubleEscapedJwk349('k', '\\u0022')}`;
+    assert.ok(findTextLeaks(text).some(leak => leak.check === 'JWK reading skipped prose (whole text masked)'), JSON.stringify(text));
+  }
+});
 test('reads JSON member names spelled with \\u escapes, as Redactor does (#262)', () => {
   for (const text of [
     String.raw`{"kt\u0079":"RSA","\u0064":"[REDACTED]","\u0064p":"[REDACTED]"}`,

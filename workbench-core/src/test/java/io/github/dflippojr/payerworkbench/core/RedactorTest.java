@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -3729,6 +3730,42 @@ class RedactorTest {
                 assertEquals(Redactor.MASK, Redactor.redact(text));
                 assertEquals(Redactor.MASK,
                         Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
+            }
+        }
+    }
+
+    /** #349: a JWK copied twice over, its quotes \\u0022, with {@code inner} in its x and y values. */
+    private static String doubleEscapedJwk349(String name, String inner, boolean privateFirst) {
+        java.util.function.UnaryOperator<String> v = s -> "\\\\u0022" + s + "\\\\u0022";
+        String kty = v.apply("kty") + ":0";
+        String x = v.apply("x") + ":" + v.apply(inner);
+        String y = v.apply("y") + ":" + v.apply(inner);
+        String secret = v.apply(name) + ":" + v.apply("dimension");
+        return "{" + String.join(",", privateFirst ? List.of(kty, secret, x, y) : List.of(kty, x, y, secret)) + "}";
+    }
+
+    @Test
+    void keepsADoubleEscapedJwkWithAQuoteInsideItsValuesAfterAStrayQuoteAndARawLineBreak() {
+        // #349: one level down, each \u0022 in x and y is a bare quote inside a string the copy's quote opened, where the
+        // JWK reading stops, so the k (or d) after it is in no JWK and the text is kept. The stray quote is glued to the
+        // word before it, so the canonical reading does not skip it as prose (#352). The leak scanner's test of the same
+        // name accepts these forms. Escaped once more (\\\u0022), or with the private member before them, the inner quotes
+        // stop nothing, and the member is masked.
+        for (String prefix : List.of("x\"", "he said\"", "{\"a\":\"b\"}\"", "{\"a\":\"x\"y\"")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String name : List.of("k", "d")) {
+                    for (String inner : List.of("@", "a@b", "@@")) {
+                        String text = prefix + lb + doubleEscapedJwk349(name, inner.replace("@", "\\u0022"), false);
+                        assertEquals(text, Redactor.redact(text));
+                        String nested = "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\\"")
+                                .replace("\n", "\\n").replace("\r", "\\r") + "\"}";
+                        assertEquals(nested, Redactor.redact(nested));
+                        String once = prefix + lb + doubleEscapedJwk349(name, inner.replace("@", "\\\\\\u0022"), false);
+                        assertNotEquals(once, Redactor.redact(once));
+                        String first = prefix + lb + doubleEscapedJwk349(name, inner.replace("@", "\\u0022"), true);
+                        assertNotEquals(first, Redactor.redact(first));
+                    }
+                }
             }
         }
     }
