@@ -9,6 +9,7 @@ import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
+import { agreementRow, committedVerdicts, grid, verdictsOf } from './agreement.mjs';
 
 const MASK = '[REDACTED]';
 
@@ -94,9 +95,9 @@ test('accepts what Redactor leaves for a sensitive header line or JSON key (#261
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
     // A tab after the colon, escaped when the text is quoted.
     JSON.stringify({ responseBody: 'HTTP/1.1 401\nCookie:\t[REDACTED]\nAccept: x' }),
-    // redactHeaders and redactTree keep an empty header list.
+    // redactHeaders and Redactor keep an empty header list.
     '{"requestHeaders":{"Cookie":[],"Authorization":[ ]}}',
-    // redactTree keeps any scheme of an authorization list item.
+    // The scanner accepts any scheme in front of the mask in an authorization list item.
     '{"details":{"authorization":["SCRAM-SHA-256 [REDACTED]"]}}',
   ]) {
     assert.deepEqual(findTextLeaks(text), [], text);
@@ -2099,12 +2100,196 @@ function redactorGrid(name) {
   return JSON.parse(gunzipSync(readFileSync(fileURLToPath(url))).toString('utf8'));
 }
 
+/**
+ * Whether the Redactor masked anything in `input`, given its output `out`. Since its structural path (#377) the Redactor
+ * writes text that is one JSON value with each string as Jackson's encoder spells it, so a kept text is exactly
+ * `canonical(input)`.
+ */
+function maskedBy(input, out) {
+  return out !== canonical(input);
+}
+
+/**
+ * Whether the Redactor's output differs from a text that holds the mask only by masks, quotes and the backslash and
+ * quote spellings around them: it masked nothing but a value that already is the mask.
+ */
+function remasked(input, out) {
+  const bare = text => text.toLowerCase().replaceAll('[redacted]', '').replace(/u005c|u0022|["\\]/g, '');
+  return input.includes('[REDACTED]') && bare(input) === bare(out);
+}
+
+/**
+ * `text` with each JSON string literal written as Jackson's encoder writes it and every character outside string
+ * literals as it is, written apart from the Redactor. Only text that is one JSON value whose first character after JSON
+ * whitespace opens an object, an array or a string is rewritten, as the Redactor reads it; a literal's content is
+ * rewritten the same way first, to the Redactor's 8 levels (JsonRedaction.MAX_LEVELS). Canonical.java is the Java twin.
+ */
+function canonical(text, level = 0) {
+  if (level >= 8 || !/^[ \t\n\r]*[[{"]/.test(text)) return text;
+  try {
+    JSON.parse(text);
+  } catch {
+    return text;
+  }
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '"') {
+      out += text[i++];
+      continue;
+    }
+    let end = i + 1;
+    while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+    out += `"${jacksonQuoted(canonical(JSON.parse(text.slice(i, end + 1)), level + 1))}"`;
+    i = end + 1;
+  }
+  return out;
+}
+
+/** A string's content as Jackson's JsonStringEncoder writes it: short escapes, else \u00XX in upper case below 0x20. */
+function jacksonQuoted(text) {
+  const short = { 0x08: '\\b', 0x09: '\\t', 0x0a: '\\n', 0x0c: '\\f', 0x0d: '\\r', 0x22: '\\"', 0x5c: '\\\\' };
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (short[c]) out += short[c];
+    else if (c < 0x20) out += `\\u${c.toString(16).toUpperCase().padStart(4, '0')}`;
+    else out += text[i];
+  }
+  return out;
+}
+
 test('accepts every output of the Redactor for the Codex round 5 grid (#339)', () => {
   // RedactorTest checks that the committed grid holds the Redactor's outputs for these inputs; see redactorGrid.
   const pairs = redactorGrid('fail-closed-grid');
   assert.ok(pairs.length > 20_000, `${pairs.length} pairs`);
   const flagged = pairs.filter(([, out]) => findTextLeaks(out).length > 0).map(([input, out]) => `${input} => ${out}`);
   assert.deepEqual(flagged.slice(0, 5), [], `${flagged.length} of ${pairs.length} outputs flagged`);
+});
+
+/**
+ * The scanner agreement's verdicts (#377 criterion 2, as amended: no new flags against main, row by row), from two files:
+ * agreement-main-verdicts.json, the current scanner's verdicts on main's outputs, and agreement-head-flags.json, the head
+ * pin. Main's outputs are scanner-grids/agreement-main-grid.json.gz, which AgreementBaselineTest (Maven verify) keeps
+ * equal to the outputs of the baseline revision's own Redactor (19b624cd5ced541d2f0461b548d4653ff7bcaeeb), compiled and
+ * loaded apart from this build. Regenerate, then review the diff:
+ *   ./mvnw -pl workbench-core test -Dtest=AgreementBaselineTest -Dredactor.grids.update=true
+ *   node scripts/agreement-baseline.mjs           # main's verdicts only
+ *   node scripts/agreement-baseline.mjs --head    # the head pin only, a separate step
+ */
+function agreementVerdicts() {
+  return committedVerdicts();
+}
+
+/**
+ * What is wrong with main's committed verdicts: main's outputs must be for exactly the agreement grid's inputs, in its
+ * order, and the verdicts must be the current scanner's on those outputs at all three entry points, row for row, so an
+ * edited, added or dropped row fails.
+ */
+function mainBaselineWrong(main) {
+  const wrong = [];
+  const inputs = grid('agreement-grid').map(([input]) => input);
+  const mainPairs = grid('agreement-main-grid');
+  if (mainPairs.length !== inputs.length || mainPairs.some(([input], i) => input !== inputs[i])) {
+    wrong.push(`main's outputs are not for the agreement grid's ${inputs.length} inputs in order`);
+  }
+  const expected = verdictsOf(mainPairs);
+  for (const row of new Set([...Object.keys(expected), ...Object.keys(main)])) {
+    if (expected[row] !== main[row]) wrong.push(`main's verdicts, row ${row}: committed ${main[row] ?? 0}, scanner ${expected[row] ?? 0}`);
+  }
+  return wrong;
+}
+
+/**
+ * What is wrong with the scanner's verdicts on the agreement grid's [input, output] pairs (#377 criterion 2, as amended
+ * by the owner on 2026-11-19: no new flags against main, row by row): an output flagged as text or as parsed JSON, key
+ * armor in the report form ({"responseBody": output}), a flag at any entry point that main's output for the same input
+ * does not get, and any row whose flags differ from the pinned set (so a flag that moves to another row fails even when
+ * the number of flagged rows stays the same). Main's verdicts must first be the scanner's on main's own outputs
+ * (mainBaselineWrong), so editing them cannot accept a new flag.
+ */
+function agreementWrong(pairs, { main, head } = agreementVerdicts()) {
+  const wrong = mainBaselineWrong(main);
+  const flagged = {};
+  for (const [input, out] of pairs) {
+    const row = agreementRow(input);
+    const report = findTextLeaks(reportForm(out));
+    const bits = (findTextLeaks(out).length > 0 ? 1 : 0) | (report.length > 0 ? 2 : 0)
+      | (findJsonLeaks({ responseBody: out }).length > 0 ? 4 : 0);
+    if (bits & 5) wrong.push(`row ${row} flagged as text or parsed JSON: ${input} => ${out}`);
+    if (report.some(l => l.check === 'PEM block')) wrong.push(`row ${row}, report form, PEM block: ${input} => ${out}`);
+    if (bits & ~(main[row] ?? 0)) wrong.push(`row ${row}: flags ${bits}, main's ${main[row] ?? 0}: ${input} => ${out}`);
+    if (bits) flagged[row] = bits;
+  }
+  for (const row of new Set([...Object.keys(flagged), ...Object.keys(head)])) {
+    if ((flagged[row] ?? 0) !== (head[row] ?? 0)) wrong.push(`row ${row}: flags ${flagged[row] ?? 0}, pinned ${head[row] ?? 0}`);
+  }
+  for (const [row, bits] of Object.entries(head)) {
+    if (bits & ~(main[row] ?? 0)) wrong.push(`pinned row ${row}: flags ${bits}, main's ${main[row] ?? 0}`);
+  }
+  return wrong;
+}
+
+test('holds the current scanner\'s verdicts on the baseline revision\'s outputs as main\'s verdicts (#377 criterion 2)', () => {
+  const wrong = mainBaselineWrong(agreementVerdicts().main);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong`);
+});
+
+test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterion 2)', () => {
+  // RedactorTest.recordsItsOutputsForTheCorpusAndTheFuzzCorpusForTheScannerAgreement commits the Redactor's output for
+  // every text and harmless corpus entry and 5,000 seeded fuzz texts. Read as text and as parsed JSON, no output is
+  // flagged by any check. In the report form ({"responseBody": output}) no output holds key armor either; the other
+  // flags there are this scanner's reading of the report form of text that is not one JSON value (cut fuzz texts and
+  // one corpus entry). Each is pinned by row and is a flag main's Redactor output gets on the same row (criterion 2 as
+  // amended: no new flags against main, row by row; zero flags is Stage 3's, which replaces this scanner).
+  const pairs = redactorGrid('agreement-grid');
+  assert.equal(pairs.length, 135 + 5_000);
+  const wrong = agreementWrong(pairs);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong of ${pairs.length}`);
+});
+
+/**
+ * The agreement grid with one row main's output does not flag at any entry point given a flagged report-form output
+ * instead (a regression), and verdicts edited to match: that row added to main's verdicts and to the head pin.
+ */
+function blessedRegression() {
+  const pairs = redactorGrid('agreement-grid').map(([input, out]) => [input, out]);
+  const verdicts = structuredClone(agreementVerdicts());
+  const flaggedOut = pairs.find(([, out]) => findTextLeaks(reportForm(out)).length > 0)[1];
+  const row = pairs.findIndex(([input, out]) => !(agreementRow(input) in verdicts.main) && !/^[ \t\n\r]*[[{"]/.test(out));
+  pairs[row][1] = flaggedOut;
+  verdicts.main[agreementRow(pairs[row][0])] = 2;
+  verdicts.head[agreementRow(pairs[row][0])] = 2;
+  return { pairs, verdicts };
+}
+
+test('fails the agreement when main\'s verdicts and the head pin are edited together to accept a new flag (#377 criterion 2)', () => {
+  // Main's verdicts are checked against main's own outputs, so editing them cannot accept a regression.
+  const { pairs, verdicts } = blessedRegression();
+  assert.ok(agreementWrong(pairs, verdicts).length > 0, 'a new flag accepted by editing main\'s verdicts and the head pin');
+});
+
+test('fails the agreement when a row is dropped from main\'s verdicts (#377 criterion 2)', () => {
+  const verdicts = structuredClone(agreementVerdicts());
+  const mainOnly = Object.keys(verdicts.main).find(row => !(row in verdicts.head));
+  delete verdicts.main[mainOnly];
+  assert.ok(agreementWrong(redactorGrid('agreement-grid'), verdicts).length > 0, `row ${mainOnly} dropped unnoticed`);
+});
+
+test('fails the agreement when a report-form flag moves to another row (#377 criterion 2, as amended)', () => {
+  // The owner's amendment of criterion 2 (2026-11-19): no new flags against main, row by row. A flag that moves to a row
+  // main does not flag must fail, even though the number of flagged rows stays the same.
+  const pairs = redactorGrid('agreement-grid').map(([input, out]) => [input, out]);
+  const flaggedRow = pairs.findIndex(([, out]) => findTextLeaks(reportForm(out)).length > 0);
+  const cleanRow = pairs.findIndex(([, out], row) => row > flaggedRow && findTextLeaks(reportForm(out)).length === 0
+    && !/^[ \t\n\r]*[[{"]/.test(out));
+  assert.ok(flaggedRow >= 0 && cleanRow >= 0);
+  // Swapped: the flagged row's output is clean, and the clean row's output is the flagged one.
+  const flaggedOut = pairs[flaggedRow][1];
+  pairs[flaggedRow][1] = pairs[cleanRow][1];
+  pairs[cleanRow][1] = flaggedOut;
+  assert.equal(pairs.filter(([, out]) => findTextLeaks(reportForm(out)).length > 0).length, 170);
+  assert.ok(agreementWrong(pairs).length > 0, 'a flag swapped onto a row main does not flag was accepted');
 });
 
 /** The inputs of RedactorTest.masksASecretNameWhoseQuoteIsSpelledThroughAnEscapeChainOfAnyDepth..., in its order. */
@@ -2181,7 +2366,7 @@ test('reads the rest of a secret field\'s object once for all its secret fields,
 function separatorGridWrong(pairs) {
   const wrong = [];
   for (const [input, out] of pairs) {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
       .map(leaks => leaks.length > 0);
     if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
@@ -2211,7 +2396,7 @@ function levelGridWrong(name, pairs) {
   const wrong = [];
   let keptAsMain = 0;
   pairs.forEach(([input, out], row) => {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
       .map(leaks => leaks.length > 0);
     const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0);
@@ -2236,10 +2421,18 @@ function generatedGridWrong(name, pairs) {
   const masksReportForm = text => byInput.has(reportForm(text)) && byInput.get(reportForm(text)) !== reportForm(text);
   const wrong = [];
   let keptAsMain = 0;
+  let remasks = 0;
   pairs.forEach(([input, out], row) => {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findTextLeaks(reportForm(input)), findJsonLeaks({ responseBody: input })]
       .map(leaks => leaks.length > 0);
+    if (masked && remasked(input, out) && !verdicts.some(Boolean)) {
+      // #377: a kept text whose value already is the mask, which the Redactor's reading of the decoded string masks
+      // again; there is nothing to flag in it, and the output must be accepted.
+      remasks++;
+      if (findTextLeaks(out).length > 0 || findJsonLeaks({ responseBody: out }).length > 0) wrong.push(`remask output: ${out}`);
+      return;
+    }
     const expected = verdicts.map((_, entry) => masked || (Number(digits[row]) & (1 << entry)) !== 0
       || (entry === 1 && masksReportForm(input)));
     if (verdicts.some((flagged, entry) => flagged !== expected[entry])) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
@@ -2249,7 +2442,7 @@ function generatedGridWrong(name, pairs) {
     const outputExpected = [false, masksReportForm(out), false];
     if (outputFlags.some((flagged, entry) => flagged !== outputExpected[entry])) wrong.push(`output ${outputFlags}: ${out}`);
   });
-  return { wrong, keptAsMain };
+  return { wrong, keptAsMain, remasks };
 }
 
 test('pins the verdicts on the generic-field separator forms #351 resolved (#348)', () => {
@@ -2285,7 +2478,7 @@ test('ends such a field\'s value where the Redactor does before a cut note, at t
   assert.equal(pairs.length, 549);
   const wrong = [];
   for (const [input, out] of pairs) {
-    const masked = out !== input;
+    const masked = maskedBy(input, out);
     const verdicts = [findTextLeaks(input), findJsonLeaks({ responseBody: input })].map(leaks => leaks.length > 0);
     if (verdicts.some(flagged => flagged !== masked)) wrong.push(`${masked ? 'masked' : 'kept'} ${verdicts}: ${input}`);
     if (findTextLeaks(out).length > 0) wrong.push(`output flagged: ${out}`);
@@ -2427,7 +2620,7 @@ test('flags at the head every verdict main flags on the mixed-level probe and th
     const lost = [];
     pairs.forEach(([input, out], row) => {
       for (let entry = 0; entry < 3; entry++) {
-        if ((Number(digits[row]) & (1 << entry)) !== 0 && entries[entry](input).length === 0) lost.push(`${out === input ? 'kept' : 'masked'} entry ${entry}: ${input}`);
+        if ((Number(digits[row]) & (1 << entry)) !== 0 && entries[entry](input).length === 0) lost.push(`${maskedBy(input, out) ? 'masked' : 'kept'} entry ${entry}: ${input}`);
       }
     });
     assert.deepEqual(lost.slice(0, 5), [], `${name}: ${lost.length} verdicts main flags are lost`);
@@ -2578,8 +2771,11 @@ test('reads every spelling of a secret field\'s quotes and of a closing backslas
   // (13,496 entries, counting a row's input and output apart).
   const pairs = redactorGrid('generic-separator-level-generated-grid');
   assert.equal(pairs.length, 16_018);
-  const { wrong, keptAsMain } = generatedGridWrong('generic-separator-level-generated-grid', pairs);
-  assert.equal(keptAsMain, 921, 'verdicts on kept texts main flags too');
+  const { wrong, keptAsMain, remasks } = generatedGridWrong('generic-separator-level-generated-grid', pairs);
+  // #377: the Redactor's reading of a decoded string masks 15 kept texts whose value already is the mask again. The 3
+  // that main flags now count as masked, taking their 9 verdicts out of this count; the other 12 hold nothing to flag.
+  assert.equal(keptAsMain, 912, 'verdicts on kept texts main flags too');
+  assert.equal(remasks, 12, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 

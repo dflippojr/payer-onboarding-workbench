@@ -128,7 +128,7 @@ class RunStoreTest {
         for (int i = 0; i < properties.maxRuns(); i++) {
             bounded.save(new OnboardingRun("near-limit-" + i, "synthetic-payer", Environment.SANDBOX,
                     List.of(new StepResult("hook-request", Instant.EPOCH, Duration.ZERO, false, "too large",
-                            Map.of("exchanges", List.of(kept)))), List.of()));
+                            RunAttempt.plain(Map.of("exchanges", List.of(kept))))), List.of()));
         }
         assertEquals(properties.maxRuns(), bounded.list().size());
         assertTrue(bounded.storedBytes() < properties.maxRuns() * (ExchangeView.BODY_LIMIT_CHARS + 1024L),

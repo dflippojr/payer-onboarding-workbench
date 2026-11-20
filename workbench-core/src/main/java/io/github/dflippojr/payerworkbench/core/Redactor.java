@@ -1,28 +1,19 @@
 package io.github.dflippojr.payerworkbench.core;
 
-import java.lang.reflect.Array;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
-import java.lang.reflect.RecordComponent;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.time.temporal.TemporalAccessor;
-import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -31,7 +22,6 @@ import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 /**
  * Masks credential material in strings and HTTP headers before they are stored,
@@ -40,7 +30,7 @@ import java.util.stream.IntStream;
  * <p>Covers {@code Bearer}, {@code Basic}, {@code Token} and {@code DPoP} credentials (a
  * {@code Bearer} one also URL-encoded, {@code Bearer%20} or {@code Bearer+}), JWT signatures
  * (the header and payload stay readable because their claims are useful for diagnosis), PEM
- * blocks and PGP private key blocks, the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
+ * blocks and PGP private key blocks (whole, their armor header and footer too), the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
  * of a JSON object with a {@code kty} member, also in JSON nested in JSON strings at any
  * depth), and the values of well-known secret fields such as {@code client_secret},
  * {@code access_token} and {@code private_key} in form and query bodies and in JSON (any
@@ -74,6 +64,13 @@ public final class Redactor {
      */
     private static final Pattern UNTERMINATED_PEM_KEY = Pattern.compile(
             "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----(?!\\s*" + Pattern.quote(MASK) + ")");
+
+    /**
+     * Any armor header, of any label or none, as the replay scanner reads one: the Redactor writes none, so one left
+     * after the blocks are masked (a header with no footer that opens no private key, or one already followed by the
+     * mask) is masked itself.
+     */
+    private static final Pattern ARMOR_HEADER = Pattern.compile("-----BEGIN [A-Z0-9 ]*-----");
 
     /**
      * Where a word starts: a word boundary, or right after a JSON escape such as {@code \n}, which
@@ -375,17 +372,84 @@ public final class Redactor {
                 Matcher.quoteReplacement(String.valueOf((char) Integer.parseInt(m.group(1), 16))));
     }
 
+    /** A private key header, PEM or PGP; group 1 is its label, which the matching footer repeats. */
+    private static final Pattern PRIVATE_KEY_HEADER = Pattern.compile("-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
+
+    /** The footer that closes a {@link #PRIVATE_KEY_HEADER} of the same label (group 1). */
+    private static final Pattern PRIVATE_KEY_FOOTER = Pattern.compile("-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
+
+    /**
+     * Whether {@code text} holds a private key header ({@link #PRIVATE_KEY_HEADER}) with no matching footer after it.
+     * In one string of a JSON text, the key material may then be in the strings after it, which the structural path
+     * reads one at a time ({@link JsonRedaction}), so the whole text is masked.
+     */
+    static boolean opensAnUnterminatedKey(String text) {
+        if (!text.contains("-----BEGIN ")) {
+            return false;
+        }
+        // Each label's last footer, found in one pass, so the work stays linear however many labels the text holds.
+        Map<String, Integer> lastFooter = new HashMap<>();
+        Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
+        while (footer.find()) {
+            lastFooter.put(footer.group(1), footer.start());
+        }
+        Matcher header = PRIVATE_KEY_HEADER.matcher(text);
+        while (header.find()) {
+            if (lastFooter.getOrDefault(header.group(1), -1) < header.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Returns {@code text} with credential material masked, or {@code null} if
      * {@code text} is {@code null}.
+     *
+     * <p>Text that is one JSON object, array or string is read with a JSON parser, redacted on the tree and written
+     * back with canonical escape spellings ({@link JsonRedaction}, #377); its whitespace, member order and numbers are
+     * kept. JSON that path will not read (names that repeat in one object, nesting deeper than
+     * {@link JsonRedaction#MAX_DEPTH}) is masked whole, and so is the text when anything on that path fails. Any other
+     * text goes to the text engine.
      */
     public static String redact(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        try {
+            return redactAt(text, 0);
+        } catch (RuntimeException | StackOverflowError failed) {
+            // Fail closed (#377): nothing of a text the structural path could not finish is kept.
+            return MASK;
+        }
+    }
+
+    /**
+     * {@code text} redacted at JSON-in-string level {@code level}: on the tree if it is one JSON value and
+     * {@code level} is below {@link JsonRedaction#MAX_LEVELS}, the mask if it is JSON that path will not read, and
+     * otherwise by the text engine.
+     */
+    static String redactAt(String text, int level) {
+        if (text.isEmpty()) {
+            return text;
+        }
+        if (level < JsonRedaction.MAX_LEVELS && JsonRedaction.mayBeJson(text)) {
+            try {
+                String structural = JsonRedaction.redact(text, level);
+                if (structural != null) {
+                    return structural;
+                }
+            } catch (JsonRedaction.Unreadable unreadable) {
+                return MASK;
+            }
+        }
         return redact(text, null);
     }
 
     /**
-     * {@link #redact(String)}, adding to {@code reads}, unless it is {@code null}, each read JWK discovery makes:
-     * at which escape level, and how much of that level's budget was left before and after it.
+     * The text engine: {@code text} redacted by the patterns and readers below, adding to {@code reads}, unless it is
+     * {@code null}, each read JWK discovery makes: at which escape level, and how much of that level's budget was left
+     * before and after it.
      */
     static String redact(String text, List<DiscoveryRead> reads) {
         if (text == null || text.isEmpty()) {
@@ -545,7 +609,7 @@ public final class Redactor {
      * with one of {@link #AUTH_SCHEMES}; any other value (or {@code null}, for a number or boolean) is
      * masked whole.
      */
-    private static String masked(String name, String value) {
+    static String masked(String name, String value) {
         if (value != null && keepsScheme(name)) {
             Matcher scheme = SCHEME.matcher(value);
             if (scheme.lookingAt() && AUTH_SCHEMES.contains(scheme.group(1).toLowerCase(Locale.ROOT))) {
@@ -1943,17 +2007,17 @@ public final class Redactor {
     }
 
     /**
-     * Every PEM block and PGP private key block in the text, as masks on it: a terminated block keeps its armor
-     * around the mask; an unterminated private key header is masked to the end of the text, unless it is in a
-     * terminated block or already masked.
+     * Every PEM block and PGP private key block in the text, as masks on it: a terminated block is masked whole, its
+     * armor header and footer too (#377: the replay scanner reads any armor header in the Redactor's output as a leak);
+     * an unterminated private key header is masked to the end of the text, unless it is in a terminated block or already
+     * masked; and any other armor header is masked itself, so no header is left in the output.
      */
     private static List<Mask> pemMasks(String text) {
         List<Mask> masks = new ArrayList<>();
         Matcher block = PEM_BLOCK.matcher(text);
         List<int[]> blocks = new ArrayList<>();
         while (block.find()) {
-            masks.add(new Mask(block.start(), block.end(),
-                    "-----BEGIN " + block.group(1) + "-----\n" + MASK + "\n-----END " + block.group(1) + "-----"));
+            masks.add(new Mask(block.start(), block.end(), MASK));
             blocks.add(new int[] {block.start(), block.end()});
         }
         // The blocks are in order and apart: one pointer walks them as the headers are found, and a header in a
@@ -1969,8 +2033,13 @@ public final class Redactor {
                 header.region(blocks.get(next)[1], text.length());
                 continue;
             }
-            masks.add(new Mask(start, text.length(), "-----BEGIN " + header.group(1) + "-----\n" + MASK));
+            masks.add(new Mask(start, text.length(), MASK));
             break;
+        }
+        // A header in a mask above goes with that mask (applyMasks).
+        Matcher armor = ARMOR_HEADER.matcher(text);
+        while (armor.find()) {
+            masks.add(new Mask(armor.start(), armor.end(), MASK));
         }
         return masks;
     }
@@ -2490,104 +2559,33 @@ public final class Redactor {
     }
 
     /**
-     * Returns a copy of a JSON-like value in which every string has been through {@link #redact(String)}
-     * and the value of every field named like a secret or a credential header is masked, recursively,
-     * or {@code null} if {@code value} is {@code null}. Maps keep their iteration order, and their string
-     * keys are redacted too; sets are copied, other collections and arrays become lists, and an
-     * {@link Optional} keeps its redacted value; a record is rebuilt through its canonical constructor
-     * from redacted components, so it keeps its type. Numbers, booleans, characters, enums, dates and
-     * durations are returned as they are. Any other value, such as a {@code StringBuilder} or a parsed
-     * JSON tree, becomes its redacted {@link String#valueOf(Object) string form}, so it cannot carry a
-     * secret through unredacted. An {@code Authorization}-style field keeps its scheme
-     * ({@code Bearer [REDACTED]}). In a map with a {@code kty} key (a JWK) the
-     * {@link #JWK_PRIVATE_MEMBERS} are masked too.
+     * Returns JSON-shaped plain data redacted by the same rules as a JSON text ({@link #redact(String)}), as new plain
+     * data, or {@code null} if {@code value} is {@code null}.
+     *
+     * <p>{@code value} may hold only {@code null}, strings, booleans, the JDK's own number types ({@code Integer},
+     * {@code Long}, {@code Short}, {@code Byte}, {@code Double}, {@code Float}, {@code BigInteger} and
+     * {@code BigDecimal}), maps whose keys are all strings, and lists, holding only the same (#377, typed tree). Any
+     * other value anywhere in it (a record, an enum, a set, an array, a map with a key that is not a string, a Jackson
+     * tree) is rejected, and the whole result is the mask: a caller converts such values to plain data first.
+     *
+     * <p>The tree is read once into the JSON path's own nodes and redacted there ({@link JsonRedaction#redactTree}), so
+     * each string, member name and secret-named or JWK member is redacted exactly as it is in the same tree written as
+     * JSON text. Maps keep their order, and numbers and booleans are returned as they are. A tree that weighs more than
+     * {@link JsonRedaction#MAX_WEIGHT}, nests deeper than {@link JsonRedaction#MAX_DEPTH}, or that the JSON path would
+     * mask whole as a text, is the mask, as is any failure while it is read.
      */
     public static Object redactTree(Object value) {
-        return redactTree(null, value);
-    }
-
-    private static Object redactTree(String key, Object value) {
-        if (key != null && isSecretKey(key)) {
-            return value instanceof List<?> list ? list.stream().map(v -> maskField(key, v)).toList() : maskField(key, value);
-        }
-        if (value == null || value instanceof Number || value instanceof Boolean || value instanceof Character
-                || value instanceof Enum<?> || value instanceof TemporalAccessor || value instanceof TemporalAmount) {
-            return value;
-        }
-        if (value instanceof String s) {
-            return redact(s);
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> out = new LinkedHashMap<>();
-            boolean jwk = map.keySet().stream().anyMatch("kty"::equals);
-            map.forEach((k, v) -> out.put(k instanceof String s ? redact(s) : k,
-                    jwk && k instanceof String name && JWK_PRIVATE_MEMBERS.contains(name)
-                            ? maskField(name, v)
-                            : redactTree(String.valueOf(k), v)));
-            return Collections.unmodifiableMap(out);
-        }
-        if (value instanceof Set<?> set) {
-            Set<Object> out = new LinkedHashSet<>();
-            set.forEach(v -> out.add(redactTree(null, v)));
-            return Collections.unmodifiableSet(out);
-        }
-        if (value instanceof Collection<?> collection) {
-            return collection.stream().map(v -> redactTree(null, v)).toList();
-        }
-        if (value.getClass().isArray()) {
-            return IntStream.range(0, Array.getLength(value)).mapToObj(i -> redactTree(null, Array.get(value, i))).toList();
-        }
-        if (value instanceof Optional<?> optional) {
-            return optional.map(v -> redactTree(null, v));
-        }
-        if (value instanceof Record record) {
-            return redactRecord(record);
-        }
-        return redact(String.valueOf(value));
-    }
-
-    private static boolean isSecretKey(String key) {
-        return isSecretField(key) || isSensitiveHeader(key);
-    }
-
-    /** Keeps the scheme of an {@code Authorization}-style value so it still says which was sent. */
-    private static Object maskField(String key, Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof String s && keepsScheme(key)) {
-            return redactHeaderValue("Authorization", s);
-        }
-        return MASK;
-    }
-
-    /**
-     * Rebuilds a record from its redacted components. A secret-named component that cannot hold the
-     * mask (not a string) becomes {@code null}, or {@code 0} or {@code false} for a primitive.
-     */
-    private static Record redactRecord(Record record) {
-        RecordComponent[] components = record.getClass().getRecordComponents();
-        Object[] values = new Object[components.length];
-        Class<?>[] types = new Class<?>[components.length];
         try {
-            for (int i = 0; i < components.length; i++) {
-                Method accessor = components[i].getAccessor();
-                accessor.trySetAccessible();
-                types[i] = components[i].getType();
-                values[i] = fitting(types[i], redactTree(components[i].getName(), accessor.invoke(record)));
-            }
-            Constructor<? extends Record> canonical = record.getClass().getDeclaredConstructor(types);
-            canonical.trySetAccessible();
-            return canonical.newInstance(values);
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalArgumentException("Cannot redact a " + record.getClass().getName(), e);
+            return JsonRedaction.redactTree(value);
+        } catch (Exception | LinkageError | AssertionError | StackOverflowError failed) {
+            // Fail closed (#360, #377): a caller value that cannot be read or redacted is not kept, nor is its error.
+            return MASK;
         }
     }
 
-    /** {@code value} if a component of {@code type} can hold it, otherwise that type's empty value. */
-    private static Object fitting(Class<?> type, Object value) {
-        Object empty = type.isPrimitive() ? Array.get(Array.newInstance(type, 1), 0) : null;
-        return (empty == null ? type : empty.getClass()).isInstance(value) ? value : empty;
+    /** Whether a field with this name holds a secret or a credential header's value. */
+    static boolean isSecretKey(String key) {
+        return isSecretField(key) || isSensitiveHeader(key);
     }
 
     private static String redactHeaderValue(String name, String value) {

@@ -137,7 +137,8 @@ public record RunReport(
     }
 
     private static Step step(StepResult step) {
-        Map<String, Object> details = asMap(Redactor.redactTree(MAPPER.convertValue(step.details(), Map.class)));
+        Object redacted = Redactor.redactTree(MAPPER.convertValue(step.details(), Map.class));
+        Map<String, Object> details = redacted instanceof Map<?, ?> ? asMap(redacted) : Map.of("details", Redactor.MASK);
         List<String> exchanges = new ArrayList<>();
         if (details.get("exchanges") instanceof List<?> list) {
             for (Object x : list) {

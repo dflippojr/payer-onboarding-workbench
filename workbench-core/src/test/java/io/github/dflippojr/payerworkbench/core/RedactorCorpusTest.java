@@ -46,8 +46,8 @@ class RedactorCorpusTest {
     @TestFactory
     Stream<DynamicTest> harmlessTextIsUntouched() {
         return CORPUS.get("harmless").valueStream().map(e -> DynamicTest.dynamicTest(e.get("id").asString(), () -> {
-            String input = e.get("input").asString();
-            assertEquals(input, Redactor.redact(input));
+            // The same text, or since the structural path (#377) the same JSON with canonical escape spellings.
+            Canonical.assertKept(e.get("input").asString());
         }));
     }
 

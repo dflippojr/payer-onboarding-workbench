@@ -35,6 +35,8 @@ import io.github.dflippojr.payerworkbench.samples.SampleCatalog;
 import io.github.dflippojr.payerworkbench.samples.SampleMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -87,6 +89,9 @@ final class RunAttempt {
 
     /** Each step's one line keeps the runner's logger name, which the README's logging section shows. */
     private static final Logger LOG = LoggerFactory.getLogger(OnboardingRunner.class);
+    /** Converts step details to plain data ({@link #plain}); the defaults RunReport's own converter uses. */
+    private static final JsonMapper PLAIN = JsonMapper.builder().build();
+    private static final TypeReference<Map<String, Object>> PLAIN_MAP = new TypeReference<>() { };
 
     private final SyntheticPayers payers;
     private final SampleCatalog samples;
@@ -659,8 +664,10 @@ final class RunAttempt {
 
     /** Whether the step recorded an HTTP response from the payer. */
     private static boolean answered(StepResult step) {
+        // Step details are plain data (#377): each exchange is the map an ExchangeView converts to.
         return step.details().get("exchanges") instanceof List<?> exchanges && exchanges.stream()
-                .anyMatch(e -> e instanceof ExchangeView view && view.status() != HttpExchange.NO_RESPONSE);
+                .anyMatch(e -> e instanceof Map<?, ?> view && view.get("status") instanceof Number status
+                        && status.intValue() != HttpExchange.NO_RESPONSE);
     }
 
     // ---- helpers ----
@@ -689,8 +696,18 @@ final class RunAttempt {
             }
         }
         details.put("status", outcome.ok() ? "passed" : "failed");
-        add(new StepResult(id, startedAt, elapsed, outcome.ok(), outcome.summary(), details));
+        add(new StepResult(id, startedAt, elapsed, outcome.ok(), outcome.summary(), plain(details)));
         return outcome.ok();
+    }
+
+    /**
+     * {@code details} as the JSON-shaped plain data a {@link StepResult} takes (#377): converted by Jackson, as the
+     * report ({@link RunReport}) and the API write them, so a record (a {@link RedactedConnection}, an
+     * {@link ExchangeView}, a {@code JwtClaims}) becomes a map of its properties, an enum and an enum map key their
+     * names, and an instant its ISO-8601 text.
+     */
+    static Map<String, Object> plain(Map<String, Object> details) {
+        return PLAIN.convertValue(details, PLAIN_MAP);
     }
 
     /** Keeps a step and logs its one structured line; the summary and details stay out of the log. */
