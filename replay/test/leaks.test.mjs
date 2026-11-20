@@ -3431,3 +3431,36 @@ test('reads the quote state of each view in linear work, on long texts with many
     assert.ok(scanWork.characters <= 40 * text.length + 4096, `${name}: read ${scanWork.characters} of ${text.length}`);
   }
 });
+
+// #341: a valid JWKS of any key count with a sibling private-member name in no JWK. Redactor keeps each form
+// (RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks), so the scanner accepts it at every entry point.
+const jwks341 = (keys, { last = false, repeat = 4 } = {}) => {
+  const rest = `"kid":"K","use":"sig","alg":"RS256","n":"${'0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA'.repeat(repeat)}",`
+    + '"e":"AQAB","d":"[REDACTED]","p":"[REDACTED]","q":"[REDACTED]","dp":"[REDACTED]","dq":"[REDACTED]","qi":"[REDACTED]"';
+  const jwk = kid => (last ? `{${rest},"kty":"RSA"}` : `{"kty":"RSA",${rest}}`).replace('"K"', `"${kid}"`);
+  return `{"keys":[${Array.from({ length: keys }, (_, i) => jwk(`key-${i}`)).join(',')}],"d":"dimension"}`;
+};
+test('r10: accepts a loose private member next to three masked JWKs, and next to four (#341)', () => {
+  for (const keys of [3, 4]) {
+    for (const repeat of [4, 10]) {
+      const text = jwks341(keys, { repeat });
+      assertAccepted(text);
+      // A private member of a JWK left unmasked is still flagged.
+      assertFlagged(text.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'));
+    }
+  }
+});
+test('r10: accepts a loose private member next to any number of masked JWKs, nested and with kty last (#341)', () => {
+  for (const keys of [3, 4, 5, 8, 33]) {
+    for (const last of [false, true]) {
+      const text = jwks341(keys, { last });
+      for (const levels of [0, 1, 2, 3]) {
+        const form = nestedIn(text, levels);
+        assertAccepted(form);
+        const leaked = nestedIn(text.replace(/("qi":)"\[REDACTED\]"(?!.*"qi")/, '$1"FAKE_PRIVATE_KEY_341"'), levels);
+        assert.notEqual(leaked, form);
+        assertFlagged(leaked);
+      }
+    }
+  }
+});

@@ -3514,6 +3514,36 @@ class RedactorTest {
     }
 
     @Test
+    void keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks() {
+        // #341: a valid JWKS of 3 to 33 masked keys and a sibling "d" in no JWK, with kty first or last in each key, bare
+        // and nested one to three levels deep. Redactor keeps each form, and so does the text engine on its own, whose
+        // JWK search never spends a level's budget: each key costs it the read back to its open bracket and one read
+        // forward through it. The leak scanner's r10 tests use these as accepted forms.
+        String rest = "\"kid\":\"%s\",\"use\":\"sig\",\"alg\":\"RS256\",\"n\":\""
+                + "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA".repeat(4) + "\",\"e\":\"AQAB\",\"d\":\"[REDACTED]\","
+                + "\"p\":\"[REDACTED]\",\"q\":\"[REDACTED]\",\"dp\":\"[REDACTED]\",\"dq\":\"[REDACTED]\",\"qi\":\"[REDACTED]\"";
+        for (int keys : new int[] {3, 4, 5, 8, 33}) {
+            for (boolean last : new boolean[] {false, true}) {
+                String jwk = last ? "{" + rest + ",\"kty\":\"RSA\"}" : "{\"kty\":\"RSA\"," + rest + "}";
+                String text = "{\"keys\":[" + java.util.stream.IntStream.range(0, keys)
+                        .mapToObj(i -> jwk.formatted("key-" + i)).collect(java.util.stream.Collectors.joining(","))
+                        + "],\"d\":\"dimension\"}";
+                String form = text;
+                for (int levels = 0; levels <= 3; levels++) {
+                    String label = keys + " keys, kty " + (last ? "last" : "first") + ", " + levels + " levels";
+                    assertEquals(form, Redactor.redact(form), label);
+                    List<Redactor.DiscoveryRead> reads = new java.util.ArrayList<>();
+                    assertEquals(form, Redactor.redact(form, reads), label);
+                    assertTrue(reads.stream().allMatch(read -> read.after() >= 0), () -> label + ": " + reads);
+                    String leaked = form.replace("dimension", "x").replaceFirst("\\[REDACTED\\]", "FAKE_PRIVATE_KEY_341");
+                    assertFalse(Redactor.redact(leaked).contains("FAKE_PRIVATE_KEY_341"), label);
+                    form = nested(form);
+                }
+            }
+        }
+    }
+
+    @Test
     void keepsALoosePrivateMemberNextToMaskedJwksCopiedAfterAStrayQuoteAndARawLineBreak() {
         // The owner's rule (#352): where a skip prevents complete analysis, the whole text is masked; each form that
         // skips here is now expected masked whole.
