@@ -77,6 +77,14 @@ final class Canonical {
         return out.toString();
     }
 
+    /**
+     * Whether the Redactor's structural path reads {@code text} (#377): it is one JSON value whose first character, after
+     * JSON whitespace, opens an object, an array or a string.
+     */
+    static boolean isJson(String text) {
+        return opensJson(text) && oneValue(text);
+    }
+
     private static boolean opensJson(String text) {
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
