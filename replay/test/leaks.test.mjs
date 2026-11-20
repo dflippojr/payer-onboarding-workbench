@@ -3573,10 +3573,11 @@ test('r10: leaves the letters kty in an ordinary string out of the bound beside 
 test('flags every text of the JWK search budget grid the Redactor changes, at all three entry points (#341)', () => {
   // RedactorTest.recordsItsOutputsForTheJwkSearchBudgetGrid checks that the committed grid holds the Redactor's outputs
   // for its seeded texts: a JWKS of masked keys and a private-member name in no JWK beside other kty names (loose ones,
-  // a nested JWKS, cut or repeated-name objects, plain words, backslashes before a u, unicode escapes), bare, nested, after prose
+  // a nested JWKS, cut or repeated-name objects, plain words, backslashes before a u, unicode escapes, the letters
+  // kty in ordinary strings), bare, nested, after prose
   // or cut. The scanner's bound on the Redactor's JWK search must stay at least as strict as the search: every text the
-  // Redactor changes is flagged at every entry point. The kept texts the scanner accepts are pinned, 61 of 308 (main
-  // accepted 20), so a bound that loosens or tightens shows here; the rest are flagged by the bound or by the
+  // Redactor changes is flagged at every entry point. The kept texts the scanner accepts are pinned, 139 of 409 (main
+  // accepted 62), so a bound that loosens or tightens shows here; the rest are flagged by the bound or by the
   // canonical reading, which fails safe.
   const pairs = redactorGrid('jwk-search-budget-grid');
   assert.equal(pairs.length, 1500);
@@ -3594,5 +3595,5 @@ test('flags every text of the JWK search budget grid the Redactor changes, at al
     }
   }
   assert.deepEqual(missed.slice(0, 3), [], `${missed.length} changed texts not flagged at every entry point`);
-  assert.deepEqual([kept, accepted], [308, 61]);
+  assert.deepEqual([kept, accepted], [409, 139]);
 });

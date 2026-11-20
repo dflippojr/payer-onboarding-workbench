@@ -180,8 +180,16 @@ const STRICT_DEPTH = 128;
  * value is escaped at least as far, and the value sits between the two bare quotes of the string that holds it. A
  * name spelled with an escape (a letter of kty as one) is not strict: the scanner's own kty spellings count it.
  * Written apart from Redactor's code: it reads JSON with JSON.parse and a walk of its own over the strings.
+ *
+ * `inert` gets where the k of each other kty spelling in a string with no escape of such JSON starts: letters that are
+ * a member name at no nesting level (owner decision on #341, 2026-11-20). Redactor's search stops only at a kty
+ * between two quotes of one level with a colon after them. The string holds no quote and no backslash, and no view
+ * adds one (none spells a quote or a backslash as an escape), so the only quotes around the letters are the string's
+ * own, in every view; with a colon after them the string is a member name, and one that is kty whole is a strict
+ * name. Any other is a value, a longer name or an array item, which costs the search nothing. A string that holds an
+ * escape may hold names of a level down: its spellings stay counted unless it is read as strict JSON itself.
  */
-function strictKtyNames(text, ctx) {
+function strictKtyNames(text, ctx, inert = new Set()) {
   const strict = new Set();
   if (spellsQuoteEscape(text, ctx)) return strict;
   // Adds the strict names of `json`, a view `level` levels down whose characters start at toRoot(index) in the text,
@@ -229,6 +237,9 @@ function strictKtyNames(text, ctx) {
         names.add(decoded);
         if (decoded === 'kty' && !escaped) strict.add(toRoot(i + 1));
       }
+      if (!escaped) {
+        for (const m of decoded.matchAll(KTY_SPELLING)) inert.add(toRoot(i + 1 + m.index));
+      }
       const first = decoded.trimStart()[0];
       if (escaped && level + 1 < MAX_LEVELS && (first === '{' || first === '[' || first === '"')) {
         walk(decoded, j => toRoot(starts[j]), level + 1);
@@ -240,7 +251,10 @@ function strictKtyNames(text, ctx) {
     walk(text, j => j, 0);
   } catch {
     strict.clear();
+    inert.clear();
   }
+  // A strict name is counted as one, not as inert.
+  for (const position of strict) inert.delete(position);
   return strict;
 }
 
@@ -3548,11 +3562,14 @@ function textLeaks(text, level) {
   if (spending.length > 0) {
     // Strict kty names cost the search little (#341): a level is judged again beside them, by its other names. The
     // text is read for them only here, where a private member in no JWK would otherwise be flagged.
-    const strict = strictKtyNames(text, ctx);
+    // Nor do the letters kty in a string with no escape, which are a name at no level (inert): they are left out.
+    const inert = new Set();
+    const strict = strictKtyNames(text, ctx, inert);
     const besideStrict = level => {
-      const others = [...new Set(level)].filter(position => !strict.has(position));
-      const strictNames = new Set(level).size - others.length;
-      return strictNames === 0 || mayExhaustJwkSearch(text.length, others, strictNames);
+      const names = [...new Set(level)];
+      const others = names.filter(position => !strict.has(position) && !inert.has(position));
+      const strictNames = names.filter(position => strict.has(position)).length;
+      return mayExhaustJwkSearch(text.length, others, strictNames);
     };
     if (spending.some(besideStrict)) {
       for (const value of ctx.unowned) failClosed(ctx, value.check, value.text);

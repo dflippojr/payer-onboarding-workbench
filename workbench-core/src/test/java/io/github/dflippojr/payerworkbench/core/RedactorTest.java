@@ -3581,10 +3581,12 @@ class RedactorTest {
      * middle or last), a private-member name in no JWK, and beside them a string of other kty names: loose ones that
      * no object holds (also after backslashes before a u that spell no unicode escape, or spelled with unicode
      * escapes), a nested JWKS, a cut or
-     * repeated-name object, a name that only ends in kty, or plain words. The
+     * repeated-name object, a name that only ends in kty, or plain words (with quotes after them, or alone in a string
+     * with no escape). The
      * loose member sits beside the keys or in that string, and a second JWKS may sit in a string of its own. Each text
      * comes bare, nested one to three levels deep, also with quotes spelled as unicode escapes, after prose, or cut
-     * before its last bracket, and a third of them spell ordinary characters as unicode escapes.
+     * before its last bracket; a third of them spell ordinary characters as unicode escapes, and a third hold the
+     * letters kty in the keys' identifiers and in a value of each key.
      */
     static List<String> jwkSearchBudgetTexts(long seed, int count) {
         java.util.Random random = new java.util.Random(seed);
@@ -3605,7 +3607,7 @@ class RedactorTest {
             int names = new int[] {1, 2, 3, 4, 5, 6, 7, 9, 12, 24, 63}[random.nextInt(11)];
             boolean looseInside = random.nextInt(3) == 0;
             String inside = looseInside ? loose : "\"e\":\"AQAB\"";
-            String other = switch (random.nextInt(12)) {
+            String other = switch (random.nextInt(14)) {
                 case 0 -> "";
                 case 1 -> "\"kty\":\"".repeat(names) + inside;
                 case 2 -> "x".repeat(new int[] {100, 300, 900, 2500}[random.nextInt(4)]) + " " + "\"kty\":\"".repeat(names) + inside;
@@ -3617,6 +3619,8 @@ class RedactorTest {
                 case 8 -> "dir\\unit\\u12 " + "\"kty\":\"".repeat(names) + inside;
                 case 9 -> "\"k\\u0074y\":\"".repeat(names) + inside;
                 case 10 -> "\\u0022kty\\u0022:\\u0022".repeat(names) + inside;
+                case 11 -> "kty ".repeat(names).trim();
+                case 12 -> "kty-" + "kty:kty,".repeat(names) + "x".repeat(new int[] {0, 300, 2500}[random.nextInt(3)]);
                 default -> "{\"a\":[" + "{\"kty\":\"oct\"},".repeat(names) + "1]," + inside + ",\"b\":\"" + "\\\"kty\\\":\\\"".repeat(names) + "\"}";
             };
             StringBuilder object = new StringBuilder("{");
@@ -3643,6 +3647,10 @@ class RedactorTest {
             // Unicode escapes of ordinary characters, in the keys' strings and names and in the other string.
             if (random.nextInt(3) == 0) {
                 text = text.replace("key-", "key\\u002d").replace("\"e\":", "\"\\u0065\":").replace("AQAB", "\\u0041QAB");
+            }
+            // The letters kty in ordinary strings: the key identifiers, and a value of each key.
+            if (random.nextInt(3) == 0) {
+                text = text.replace(":\"key", ":\"kty").replace(":\\\"key", ":\\\"kty").replace("\"AQAB\"", "\"kty\"");
             }
             texts.add(switch (random.nextInt(9)) {
                 case 0 -> text;
