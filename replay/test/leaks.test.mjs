@@ -3464,15 +3464,35 @@ test('r10: accepts a loose private member next to any number of masked JWKs, nes
     }
   }
 });
+test('r10: reads a backslash before a u that is no unicode escape as plain text beside masked JWKs (#341)', () => {
+  // Automated review on e30fac1: an escaped backslash before a word that starts with u is no unicode escape, so the
+  // JWKS beside it is still read as strict and the loose member accepted, as Redactor keeps it
+  // (RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks).
+  for (const keys of [3, 4]) {
+    const text = jwks341(keys);
+    const plain = text.replace('{"keys"', '{"note":"user\\\\unit","keys"');
+    assert.ok(plain.includes('"user\\\\unit"') && JSON.parse(plain).note === 'user\\unit');
+    for (const levels of [0, 1, 2]) {
+      assertAccepted(nestedIn(plain, levels));
+      assertFlagged(nestedIn(plain.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
+    }
+    // A text with a real unicode escape keeps the bound it had: the scanner still flags the loose member there, which
+    // fails safe (Redactor keeps the text; reading such texts as strict is left to a later change).
+    const escaped = text.replace('{"keys"', '{"note":"\\u0041","keys"');
+    assert.equal(JSON.parse(escaped).note, 'A');
+    assertFlagged(escaped);
+  }
+});
 test('flags every text of the JWK search budget grid the Redactor changes, at all three entry points (#341)', () => {
   // RedactorTest.recordsItsOutputsForTheJwkSearchBudgetGrid checks that the committed grid holds the Redactor's outputs
   // for its seeded texts: a JWKS of masked keys and a private-member name in no JWK beside other kty names (loose ones,
-  // a nested JWKS, cut or repeated-name objects, plain words), bare, nested, after prose or cut. The scanner's bound on
-  // the Redactor's JWK search must stay at least as strict as the search: every text the Redactor changes is flagged at
-  // every entry point. The kept texts the scanner accepts are pinned, 33 of 140 (main accepted 11), so a bound that
-  // loosens or tightens shows here; the rest are flagged by the bound or by the canonical reading, which fails safe.
+  // a nested JWKS, cut or repeated-name objects, plain words, backslashes before a u), bare, nested, after prose or
+  // cut. The scanner's bound on the Redactor's JWK search must stay at least as strict as the search: every text the
+  // Redactor changes is flagged at every entry point. The kept texts the scanner accepts are pinned, 77 of 303 (main
+  // accepted 32), so a bound that loosens or tightens shows here; the rest are flagged by the bound or by the
+  // canonical reading, which fails safe.
   const pairs = redactorGrid('jwk-search-budget-grid');
-  assert.equal(pairs.length, 600);
+  assert.equal(pairs.length, 1500);
   const brief = text => `${text.length}: ${text.slice(0, 120)}`;
   const missed = [];
   let kept = 0;
@@ -3487,5 +3507,5 @@ test('flags every text of the JWK search budget grid the Redactor changes, at al
     }
   }
   assert.deepEqual(missed.slice(0, 3), [], `${missed.length} changed texts not flagged at every entry point`);
-  assert.deepEqual([kept, accepted], [140, 33]);
+  assert.deepEqual([kept, accepted], [303, 77]);
 });

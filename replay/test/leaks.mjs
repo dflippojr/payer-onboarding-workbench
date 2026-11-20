@@ -125,20 +125,29 @@ const mayExhaustJwkSearch = (n, positions, strict = 0) => {
   return false;
 };
 
-/** What a JSON string's escape decodes to, by the character after its backslash; a text with a \\u escape is not read. */
+/** What a JSON string's escape decodes to, by the character after its backslash; a text with a unicode escape is not read. */
 const STRICT_ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+
+/**
+ * A unicode escape as Redactor's readers find one: a backslash, u and four hex digits anywhere in the text, after any
+ * number of backslashes. A backslash before a u that no four hex digits follow (an escaped backslash before a word)
+ * is none, in the text or in any view of it: taking escaping off leaves a backslash of every run, and no other escape
+ * decodes to a hex digit, so no view or decoded string gains one.
+ */
+const STRICT_UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/;
 
 /** The deepest nesting of objects and arrays strictKtyNames reads in one JSON value. */
 const STRICT_DEPTH = 128;
 
 /**
  * Where in `text` the k of each strict kty name starts (#341): a member name spelled "kty", with no escape, in
- * well-formed JSON at its own level. The text must be one JSON value (JSON.parse reads it) with no \\u escape anywhere,
+ * well-formed JSON at its own level. The text must be one JSON value (JSON.parse reads it) with no unicode escape
+ * anywhere (STRICT_UNICODE_ESCAPE),
  * no object that repeats a name and no nesting past STRICT_DEPTH; a string of it that holds an escape is decoded, and
  * if that is one such JSON value too (it opens with a bracket or a quote) its names are strict a level down, and so
  * on. Anything else gives no strict name at all, here or in a string, so the scanner's bound stays as it was for it.
  *
- * Such a name costs Redactor's JWK search little, whatever else the level holds (mayExhaustJwkSearch): with no \\u
+ * Such a name costs Redactor's JWK search little, whatever else the level holds (mayExhaustJwkSearch): with no unicode
  * escape Redactor's view of a level is the text with whole levels of escaping taken off, so there the name's quotes
  * are the level's own, every quote inside its JSON value is escaped at least as far, and the value sits between the
  * two bare quotes of the string that holds it. Written apart from Redactor's code: it reads JSON with JSON.parse and
@@ -146,7 +155,7 @@ const STRICT_DEPTH = 128;
  */
 function strictKtyNames(text, ctx) {
   const strict = new Set();
-  if (text.includes('\\u')) return strict;
+  if (STRICT_UNICODE_ESCAPE.test(text)) return strict;
   // Adds the strict names of `json`, a view `level` levels down whose characters start at toRoot(index) in the text,
   // and of the strings in it, if it is one JSON value. Throws for a repeated name or nesting past STRICT_DEPTH.
   const walk = (json, toRoot, level) => {

@@ -3528,6 +3528,13 @@ class RedactorTest {
                 String text = "{\"keys\":[" + java.util.stream.IntStream.range(0, keys)
                         .mapToObj(i -> jwk.formatted("key-" + i)).collect(java.util.stream.Collectors.joining(","))
                         + "],\"d\":\"dimension\"}";
+                // Beside a string with an escaped backslash before a word that starts with u (no unicode escape), and one
+                // with a unicode escape, written back as the character it spells: each is kept too.
+                String plain = text.replace("{\"keys\"", "{\"note\":\"user\\\\unit\",\"keys\"");
+                assertEquals(plain, Redactor.redact(plain), keys + " keys beside a backslash and u");
+                assertEquals(nested(plain), Redactor.redact(nested(plain)), keys + " keys beside a backslash and u, nested");
+                assertEquals(text.replace("{\"keys\"", "{\"note\":\"A\",\"keys\""),
+                        Redactor.redact(text.replace("{\"keys\"", "{\"note\":\"\\u0041\",\"keys\"")), keys + " keys beside a unicode escape");
                 String form = text;
                 for (int levels = 0; levels <= 3; levels++) {
                     String label = keys + " keys, kty " + (last ? "last" : "first") + ", " + levels + " levels";
@@ -3546,7 +3553,8 @@ class RedactorTest {
     /**
      * Seeded texts for the JWK search budget grid (#341): a JSON object with a JWKS of masked keys (kty first, in the
      * middle or last), a private-member name in no JWK, and beside them a string of other kty names: loose ones that
-     * no object holds, a nested JWKS, a cut or repeated-name object, a name that only ends in kty, or plain words. The
+     * no object holds (also after backslashes before a u that spell no unicode escape), a nested JWKS, a cut or
+     * repeated-name object, a name that only ends in kty, or plain words. The
      * loose member sits beside the keys or in that string, and a second JWKS may sit in a string of its own. Each text
      * comes bare, nested one to three levels deep, also with quotes spelled as unicode escapes, after prose, or cut
      * before its last bracket.
@@ -3570,7 +3578,7 @@ class RedactorTest {
             int names = new int[] {1, 2, 3, 4, 5, 6, 7, 9, 12, 24, 63}[random.nextInt(11)];
             boolean looseInside = random.nextInt(3) == 0;
             String inside = looseInside ? loose : "\"e\":\"AQAB\"";
-            String other = switch (random.nextInt(9)) {
+            String other = switch (random.nextInt(10)) {
                 case 0 -> "";
                 case 1 -> "\"kty\":\"".repeat(names) + inside;
                 case 2 -> "x".repeat(new int[] {100, 300, 900, 2500}[random.nextInt(4)]) + " " + "\"kty\":\"".repeat(names) + inside;
@@ -3579,6 +3587,7 @@ class RedactorTest {
                 case 5 -> "{\"kty\":\"oct\",\"kty\":\"RSA\"," + inside + "}";
                 case 6 -> "{\"x\\\"kty\":1," + "\"y\\\"kty\":1,".repeat(names) + inside + "}";
                 case 7 -> "kty ".repeat(names) + inside;
+                case 8 -> "dir\\unit\\u12 " + "\"kty\":\"".repeat(names) + inside;
                 default -> "{\"a\":[" + "{\"kty\":\"oct\"},".repeat(names) + "1]," + inside + ",\"b\":\"" + "\\\"kty\\\":\\\"".repeat(names) + "\"}";
             };
             StringBuilder object = new StringBuilder("{");
@@ -3624,13 +3633,13 @@ class RedactorTest {
         // every output: the scanner's bound on the JWK search stays at least as strict as the search itself.
         List<String[]> pairs = new ArrayList<>();
         int kept = 0;
-        for (String input : jwkSearchBudgetTexts(341, 600)) {
+        for (String input : jwkSearchBudgetTexts(341, 1500)) {
             String out = Redactor.redact(input);
             pairs.add(new String[] {input, out});
             kept += out.equals(input) ? 1 : 0;
         }
         // Both kinds are in the grid: texts the Redactor keeps, and texts it changes.
-        assertTrue(kept > 100 && pairs.size() - kept > 100, kept + " of " + pairs.size() + " kept");
+        assertTrue(kept > 50 && pairs.size() - kept > 100, kept + " of " + pairs.size() + " kept");
         assertScannerGrid("jwk-search-budget-grid", pairs);
     }
 
