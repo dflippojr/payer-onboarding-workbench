@@ -9,7 +9,7 @@ import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { findJsonLeaks, findTextLeaks, scanWork } from './leaks.mjs';
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
-import { agreementRow, committedVerdicts, grid, verdictsOf } from './agreement.mjs';
+import { agreementRow, committedVerdicts, entryBits, grid, verdictsOf } from './agreement.mjs';
 
 const MASK = '[REDACTED]';
 
@@ -3430,4 +3430,170 @@ test('reads the quote state of each view in linear work, on long texts with many
     assert.ok(!leaks.some(leak => leak.check === 'scan budget spent'), name);
     assert.ok(scanWork.characters <= 40 * text.length + 4096, `${name}: read ${scanWork.characters} of ${text.length}`);
   }
+});
+
+// #341: a valid JWKS of any key count with a sibling private-member name in no JWK. Redactor keeps each form
+// (RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks), so the scanner accepts it at every entry point.
+const jwks341 = (keys, { last = false, repeat = 4 } = {}) => {
+  const rest = `"kid":"K","use":"sig","alg":"RS256","n":"${'0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiA'.repeat(repeat)}",`
+    + '"e":"AQAB","d":"[REDACTED]","p":"[REDACTED]","q":"[REDACTED]","dp":"[REDACTED]","dq":"[REDACTED]","qi":"[REDACTED]"';
+  const jwk = kid => (last ? `{${rest},"kty":"RSA"}` : `{"kty":"RSA",${rest}}`).replace('"K"', `"${kid}"`);
+  return `{"keys":[${Array.from({ length: keys }, (_, i) => jwk(`key-${i}`)).join(',')}],"d":"dimension"}`;
+};
+test('r10: accepts a loose private member next to three masked JWKs, and next to four (#341)', () => {
+  for (const keys of [3, 4]) {
+    for (const repeat of [4, 10]) {
+      const text = jwks341(keys, { repeat });
+      assertAccepted(text);
+      // A private member of a JWK left unmasked is still flagged.
+      assertFlagged(text.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'));
+    }
+  }
+});
+test('r10: accepts a loose private member next to any number of masked JWKs, nested and with kty last (#341)', () => {
+  for (const keys of [3, 4, 5, 8, 33]) {
+    for (const last of [false, true]) {
+      const text = jwks341(keys, { last });
+      for (const levels of [0, 1, 2, 3]) {
+        const form = nestedIn(text, levels);
+        assertAccepted(form);
+        const leaked = nestedIn(text.replace(/("qi":)"\[REDACTED\]"(?!.*"qi")/, '$1"FAKE_PRIVATE_KEY_341"'), levels);
+        assert.notEqual(leaked, form);
+        assertFlagged(leaked);
+      }
+    }
+  }
+});
+test('r10: reads a backslash before a u that is no unicode escape as plain text beside masked JWKs (#341)', () => {
+  // Automated review on e30fac1: an escaped backslash before a word that starts with u is no unicode escape, so the
+  // JWKS beside it is still read as strict and the loose member accepted, as Redactor keeps it
+  // (RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks).
+  for (const keys of [3, 4]) {
+    const text = jwks341(keys);
+    const plain = text.replace('{"keys"', '{"note":"user\\\\unit","keys"');
+    assert.ok(plain.includes('"user\\\\unit"') && JSON.parse(plain).note === 'user\\unit');
+    for (const levels of [0, 1, 2]) {
+      assertAccepted(nestedIn(plain, levels));
+      assertFlagged(nestedIn(plain.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
+    }
+  }
+});
+test('r10: reads unicode escapes beside masked JWKs as the characters they spell (#341)', () => {
+  // Automated review on 760bbf4, decided on the issue (2026-11-20): the strict reading decodes unicode escapes. A
+  // control character, a printable one, a hex digit, a u, a letter of kty outside a name, a bracket and a colon, in
+  // a sibling value, a member name or a string of a JWK, bare and nested: Redactor keeps each text (it writes the
+  // escape as its encoder spells the character, RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks),
+  // so the scanner accepts it, and still flags a private member left unmasked there.
+  const u = code => `\\u${code}`;
+  for (const keys of [3, 12]) {
+    const text = jwks341(keys);
+    for (const code of ['0000', '001f', '0041', '00e9', '0034', '0075', '006b', '007b', '003a', '2028']) {
+      for (const form of [
+        text.replace('{"keys"', `{"note":"a${u(code)}b","keys"`),
+        text.replace('{"keys"', `{"no${u(code)}te":1,"keys"`),
+        text.replace('"kid":"key-0"', `"kid":"key${u(code)}0"`),
+      ]) {
+        assert.notEqual(form, text);
+        JSON.parse(form);
+        for (const levels of [0, 1, 2, 3]) {
+          assertAccepted(nestedIn(form, levels));
+          assertFlagged(nestedIn(form.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
+        }
+      }
+    }
+    // An escape of an escaped level: the body's own text spells the escape, one level down.
+    const inner = JSON.stringify({ body: text }).replace('{\\"keys\\"', `{\\"note\\":\\"a\\${u('0041')}b\\",\\"keys\\"`);
+    assert.equal(JSON.parse(JSON.parse(inner).body).note, 'aAb');
+    assertAccepted(inner);
+  }
+});
+test('r10: keeps the bound for an escape that spells a quote or a backslash, and for escaped kty names (#341)', () => {
+  // An escape that decodes to a quote or a backslash, at any level, changes which quotes Redactor reads, so a text
+  // with one is not read as strict and the loose member beside three masked JWKs stays flagged, which fails safe.
+  const text = jwks341(3);
+  for (const code of ['0022', '005c', '005C']) {
+    for (const form of [
+      text.replace('{"keys"', `{"note":"a\\u${code}b","keys"`),
+      text.replace('{"keys"', `{"note":"a\\\\u${code}b","keys"`),
+      // Spelled through other escapes: a u, and hex digits, that only a level down make the escape.
+      text.replace('{"keys"', `{"note":"a\\\\\\u0075${code}b","keys"`),
+      text.replace('{"keys"', `{"note":"a\\\\u${code.slice(0, 2)}\\u003${code[2]}${code[3]}b","keys"`),
+    ]) {
+      JSON.parse(form);
+      for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
+    }
+  }
+  // The r7 forms (kty names no object holds, enough to spend Redactor's budget) in a string beside the masked JWKS,
+  // with their quotes or letters spelled as unicode escapes: Redactor masks the private member after them
+  // (RedactorTest.masksAPrivateMemberAfterEscapedLooseKtyNamesBesideMaskedJwks), so the scanner flags it.
+  const escapedAll = t => [...t].map(c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const loose = '"kty":"'.repeat(63) + '"d":"FAKE_PRIVATE_KEY_341"';
+  for (const junk of [
+    JSON.stringify(loose).slice(1, -1).replaceAll('kty', '\\\\u006bty'),
+    JSON.stringify(loose).slice(1, -1).replaceAll('kty', 'k\\\\u0074y'),
+    loose.replaceAll('"', '\\u0022'),
+    escapedAll(loose),
+    JSON.stringify(loose).slice(1, -1).replaceAll('kty', '\\u006bty'),
+  ]) {
+    const form = text.replace('{"keys"', `{"note":"${junk}","keys"`);
+    JSON.parse(form);
+    for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
+  }
+});
+test('r10: leaves the letters kty in an ordinary string out of the bound beside masked JWKs (#341)', () => {
+  // Automated review on 019d3ca, decided by the owner on the issue (2026-11-20): a kty occurrence counts only where
+  // it could be a member name at some nesting level. In a string with no escape, of well-formed JSON, it is one only
+  // as a whole unescaped member name (a strict one): a key identifier, a value or a longer name that holds the letters
+  // is none at any level, as Redactor keeps each text
+  // (RedactorTest.keepsALoosePrivateMemberNextToAnyNumberOfMaskedJwks), so the scanner accepts it, bare and nested.
+  for (const keys of [3, 4, 12]) {
+    const text = jwks341(keys);
+    for (const form of [
+      text.replaceAll('"kid":"key-', '"kid":"kty-'),
+      text.replaceAll('"use":"sig"', '"use":"kty"'),
+      text.replaceAll('"alg":', '"x-kty":'),
+      text.replaceAll('"kid":"key-', '"kid":"kty-').replaceAll('"use":"sig"', '"use":"kty kty"'),
+    ]) {
+      assert.notEqual(form, text);
+      JSON.parse(form);
+      for (const levels of [0, 1, 2, 3]) {
+        assertAccepted(nestedIn(form, levels));
+        assertFlagged(nestedIn(form.replace('"d":"[REDACTED]"', '"d":"FAKE_PRIVATE_KEY_341"'), levels));
+      }
+    }
+  }
+  // Beside such strings, the r7 form (kty names no object holds, in a string that holds escapes) still spends
+  // Redactor's budget, and so does one in a string of a nested level: the loose member stays flagged.
+  const ids = jwks341(3).replaceAll('"kid":"key-', '"kid":"kty-');
+  const loose = '"kty":"'.repeat(63) + '"d":"FAKE_PRIVATE_KEY_341"';
+  const form = ids.replace('{"keys"', `{"note":${JSON.stringify(loose)},"keys"`);
+  JSON.parse(form);
+  for (const levels of [0, 1, 2]) assertFlagged(nestedIn(form, levels));
+});
+test('flags every text of the JWK search budget grid the Redactor changes, at all three entry points (#341)', () => {
+  // RedactorTest.recordsItsOutputsForTheJwkSearchBudgetGrid checks that the committed grid holds the Redactor's outputs
+  // for its seeded texts: a JWKS of masked keys and a private-member name in no JWK beside other kty names (loose ones,
+  // a nested JWKS, cut or repeated-name objects, plain words, backslashes before a u, unicode escapes, the letters
+  // kty in ordinary strings), bare, nested, after prose
+  // or cut. The scanner's bound on the Redactor's JWK search must stay at least as strict as the search: every text the
+  // Redactor changes is flagged at every entry point. The kept texts the scanner accepts are pinned, 139 of 409 (main
+  // accepted 62), so a bound that loosens or tightens shows here; the rest are flagged by the bound or by the
+  // canonical reading, which fails safe.
+  const pairs = redactorGrid('jwk-search-budget-grid');
+  assert.equal(pairs.length, 1500);
+  const brief = text => `${text.length}: ${text.slice(0, 120)}`;
+  const missed = [];
+  let kept = 0;
+  let accepted = 0;
+  for (const [input, out] of pairs) {
+    const bits = entryBits(input);
+    if (maskedBy(input, out)) {
+      if (bits !== 7) missed.push(`${bits} ${brief(input)}`);
+    } else {
+      kept++;
+      if (bits === 0) accepted++;
+    }
+  }
+  assert.deepEqual(missed.slice(0, 3), [], `${missed.length} changed texts not flagged at every entry point`);
+  assert.deepEqual([kept, accepted], [409, 139]);
 });
