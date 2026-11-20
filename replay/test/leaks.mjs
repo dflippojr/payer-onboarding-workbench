@@ -125,37 +125,65 @@ const mayExhaustJwkSearch = (n, positions, strict = 0) => {
   return false;
 };
 
-/** What a JSON string's escape decodes to, by the character after its backslash; a text with a unicode escape is not read. */
+/** What a JSON string's short escape decodes to, by the character after its backslash. */
 const STRICT_ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 
-/**
- * A unicode escape as Redactor's readers find one: a backslash, u and four hex digits anywhere in the text, after any
- * number of backslashes. A backslash before a u that no four hex digits follow (an escaped backslash before a word)
- * is none, in the text or in any view of it: taking escaping off leaves a backslash of every run, and no other escape
- * decodes to a hex digit, so no view or decoded string gains one.
- */
+/** A backslash, u and four hex digits, as Redactor's readers find a unicode escape: anywhere, after any backslashes. */
 const STRICT_UNICODE_ESCAPE = /\\u[0-9A-Fa-f]{4}/;
+
+/** Such an escape of a quote or a backslash. */
+const STRICT_QUOTE_ESCAPE = /\\u(?:0022|005[cC])/;
+
+/** A run of backslashes and, after it, the unicode escape its last backslash starts, if any. */
+const STRICT_RUN = /(\\+)(?:(?<=\\)u([0-9A-Fa-f]{4}))?/g;
+
+/**
+ * Whether some escape level of `text` spells a quote or a backslash as a unicode escape (#341): then Redactor reads
+ * quotes the text does not hold as such, in views the strict reading does not follow, and no name of the text is
+ * strict. The levels are read as text, apart from Redactor's code: at each, a unicode escape (an odd run of
+ * backslashes, then u and four hex digits) becomes the character it spells and each pair of backslashes one, so an
+ * escape that only a level down is one (after an escaped backslash, or spelled with an escaped u or hex digit) is
+ * found there. A text that still holds an escape after MAX_LEVELS levels is taken to spell one. Without any unicode
+ * escape left no later level has one: taking escaping off leaves a backslash of every run, and nothing else moves.
+ */
+function spellsQuoteEscape(text, ctx) {
+  let view = text;
+  for (let level = 0; level <= MAX_LEVELS; level++) {
+    ctx.work += view.length;
+    if (STRICT_QUOTE_ESCAPE.test(view)) return true;
+    if (!STRICT_UNICODE_ESCAPE.test(view)) return false;
+    view = view.replace(STRICT_RUN, (run, backslashes, code) => {
+      const odd = backslashes.length % 2 === 1;
+      const kept = '\\'.repeat((backslashes.length - (odd ? 1 : 0)) / 2);
+      if (odd && code !== undefined) return kept + String.fromCharCode(parseInt(code, 16));
+      return kept + (odd ? '\\' : '') + (code !== undefined ? `u${code}` : '');
+    });
+  }
+  return true;
+}
 
 /** The deepest nesting of objects and arrays strictKtyNames reads in one JSON value. */
 const STRICT_DEPTH = 128;
 
 /**
  * Where in `text` the k of each strict kty name starts (#341): a member name spelled "kty", with no escape, in
- * well-formed JSON at its own level. The text must be one JSON value (JSON.parse reads it) with no unicode escape
- * anywhere (STRICT_UNICODE_ESCAPE),
- * no object that repeats a name and no nesting past STRICT_DEPTH; a string of it that holds an escape is decoded, and
- * if that is one such JSON value too (it opens with a bracket or a quote) its names are strict a level down, and so
- * on. Anything else gives no strict name at all, here or in a string, so the scanner's bound stays as it was for it.
+ * well-formed JSON at its own level. The text must be one JSON value (JSON.parse reads it) in which no escape level
+ * spells a quote or a backslash as a unicode escape (spellsQuoteEscape), no object repeats a name and nothing nests
+ * past STRICT_DEPTH; a string of it that holds an escape is decoded, any other unicode escape to the character it
+ * spells, and if that is one such JSON value too (it opens with a bracket or a quote) its names are strict a level
+ * down, and so on. Anything else gives no strict name at all, here or in a string, so the scanner's bound stays as it
+ * was for it.
  *
- * Such a name costs Redactor's JWK search little, whatever else the level holds (mayExhaustJwkSearch): with no unicode
- * escape Redactor's view of a level is the text with whole levels of escaping taken off, so there the name's quotes
- * are the level's own, every quote inside its JSON value is escaped at least as far, and the value sits between the
- * two bare quotes of the string that holds it. Written apart from Redactor's code: it reads JSON with JSON.parse and
- * a walk of its own over the strings.
+ * Such a name costs Redactor's JWK search little, whatever else the level holds (mayExhaustJwkSearch): Redactor's
+ * view of a level is the text with whole levels of escaping taken off and the level's unicode escapes decoded, none
+ * of them to a quote or a backslash, so there the name's quotes are the level's own, every quote inside its JSON
+ * value is escaped at least as far, and the value sits between the two bare quotes of the string that holds it. A
+ * name spelled with an escape (a letter of kty as one) is not strict: the scanner's own kty spellings count it.
+ * Written apart from Redactor's code: it reads JSON with JSON.parse and a walk of its own over the strings.
  */
 function strictKtyNames(text, ctx) {
   const strict = new Set();
-  if (STRICT_UNICODE_ESCAPE.test(text)) return strict;
+  if (spellsQuoteEscape(text, ctx)) return strict;
   // Adds the strict names of `json`, a view `level` levels down whose characters start at toRoot(index) in the text,
   // and of the strings in it, if it is one JSON value. Throws for a repeated name or nesting past STRICT_DEPTH.
   const walk = (json, toRoot, level) => {
@@ -182,7 +210,14 @@ function strictKtyNames(text, ctx) {
       let end = i + 1;
       for (; json[end] !== '"'; end++) {
         starts.push(end);
-        decoded += json[end] === '\\' ? STRICT_ESCAPES[json[++end]] : json[end];
+        if (json[end] !== '\\') {
+          decoded += json[end];
+        } else if (json[++end] === 'u') {
+          decoded += String.fromCharCode(parseInt(json.slice(end + 1, end + 5), 16));
+          end += 4;
+        } else {
+          decoded += STRICT_ESCAPES[json[end]];
+        }
       }
       starts.push(end);
       const escaped = end - i - 1 > decoded.length;
