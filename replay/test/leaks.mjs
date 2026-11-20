@@ -2338,7 +2338,8 @@ function readFlatJwks(text, ctx, toRoot, cut) {
   ctx.budget -= Math.max(0, allowance - (ctx.work - before));
 }
 
-const isJsonSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r';
+/** Whitespace as Redactor's patterns read it around a member's comma and colon: Java's \s, ASCII only. */
+const isJsonSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\x0B';
 
 /** Where the JSON string whose opening quote is at `i` in `text` ends (after its closing quote), or -1 if it does not. */
 const stringEnd = (text, i) => {
@@ -2349,15 +2350,22 @@ const stringEnd = (text, i) => {
 /**
  * Where the member that follows the value open at `from` in `text` starts (its comma) and ends: the value's closing
  * quote, a comma, then a name, a colon and a value (a string, an object or array with its brackets matched, or a
- * scalar). Null when the text there is not that, so nothing is left out.
+ * scalar). Null when the text there is not that, so nothing is left out. Also where the value closes (`close`, -1 if it
+ * does not) and how far the read went (`read`), so a caller charges the read and reads each value once.
  */
 function memberAfter(text, from) {
+  const close = stringEnd(text, from - 1);
+  if (close < 0) return { close, read: text.length, member: null };
+  const member = memberAt(text, close);
+  return { close, read: member === null ? close : member.to, member };
+}
+
+/** memberAfter's member, its value closed at `close`: a comma, a name, a colon and a value, or null. */
+function memberAt(text, close) {
   const skip = k => {
     while (k < text.length && isJsonSpace(text[k])) k++;
     return k;
   };
-  const close = stringEnd(text, from - 1);
-  if (close < 0) return null;
   const comma = skip(close);
   if (text[comma] !== ',') return null;
   const name = skip(comma + 1);
@@ -2398,11 +2406,18 @@ function memberAfter(text, from) {
  */
 function joinedSkipping(text, breaks, ctx) {
   const removed = [];
+  // Where the value the last break was in closes: a later break before it is in the same value, whose member was read
+  // already, so each value and member is read once (automated review on c1178a6: 8,000 breaks in one value read the
+  // member after it 8,000 times, uncharged).
+  let close = -1;
   for (const b of breaks) {
+    if (b < close) continue;
+    const after = memberAfter(text, b);
+    ctx.work += after.read - b;
+    close = after.close < 0 ? text.length : after.close;
     // A break inside a member left out still leaves out the member after its own value.
-    const member = memberAfter(text, b);
+    const member = after.member;
     if (member === null || (removed.length > 0 && member.from < removed[removed.length - 1].to)) continue;
-    ctx.work += member.to - b;
     removed.push(member);
   }
   if (removed.length === 0) return { text, at: j => j, reachesEnd: true };
