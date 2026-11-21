@@ -4296,15 +4296,12 @@ class RedactorTest {
 
     /** The source of {@link Redactor}, read from this module. */
     private static String redactorSource() throws java.io.IOException {
-        return java.nio.file.Files.readString(java.nio.file.Path.of(
-                "src/main/java/io/github/dflippojr/payerworkbench/core/Redactor.java"));
+        return CompiledSource.read("Redactor");
     }
 
     /** {@code source} with its one {@code target} replaced, failing if {@code target} is not there exactly once. */
     private static String replaceOnce(String source, String target, String replacement) {
-        int at = source.indexOf(target);
-        assertTrue(at >= 0 && source.indexOf(target, at + 1) < 0, () -> "not found once in Redactor.java:\n" + target);
-        return source.substring(0, at) + replacement + source.substring(at + target.length());
+        return CompiledSource.replaceOnce(source, target, replacement);
     }
 
     /** Asserts that {@link #labelIndexViolations} reports each of {@code expected} (as a substring) for {@code source}. */
@@ -4333,31 +4330,9 @@ class RedactorTest {
      * compiles to a hash code. Comments and literals are not part of the tree it reads.
      */
     private static List<String> labelIndexViolations(String source) {
-        javax.tools.JavaCompiler compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
-        org.junit.jupiter.api.Assertions.assertNotNull(compiler, "the hash-free guard needs the JDK's compiler");
-        javax.tools.JavaFileObject file = new javax.tools.SimpleJavaFileObject(java.net.URI.create(
-                "string:///io/github/dflippojr/payerworkbench/core/Redactor.java"), javax.tools.JavaFileObject.Kind.SOURCE) {
-            @Override
-            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
-                return source;
-            }
-        };
-        javax.tools.DiagnosticCollector<javax.tools.JavaFileObject> diagnostics = new javax.tools.DiagnosticCollector<>();
-        String classPath = "target/classes" + java.io.File.pathSeparator + System.getProperty("java.class.path");
-        com.sun.source.util.JavacTask task = (com.sun.source.util.JavacTask) compiler.getTask(null, null, diagnostics,
-                List.of("-proc:none", "-implicit:none", "-classpath", classPath), null, List.of(file));
-        List<com.sun.source.tree.CompilationUnitTree> units = new ArrayList<>();
-        try {
-            task.parse().forEach(units::add);
-            task.analyze();
-        } catch (java.io.IOException e) {
-            throw new java.io.UncheckedIOException(e);
-        }
-        List<String> errors = diagnostics.getDiagnostics().stream()
-                .filter(d -> d.getKind() == javax.tools.Diagnostic.Kind.ERROR).map(Object::toString).toList();
-        assertTrue(errors.isEmpty(), () -> "Redactor.java does not compile:\n" + String.join("\n", errors));
-        com.sun.source.util.Trees trees = com.sun.source.util.Trees.instance(task);
-        javax.lang.model.util.Elements elements = task.getElements();
+        CompiledSource compiled = CompiledSource.compile("Redactor", source);
+        com.sun.source.util.Trees trees = compiled.trees();
+        javax.lang.model.util.Elements elements = compiled.elements();
         javax.lang.model.element.TypeElement redactor = elements.getTypeElement(Redactor.class.getName());
         String labelsClass = Redactor.class.getName() + ".ArmorLabels";
 
