@@ -201,6 +201,95 @@ class JsonRedactionPlainObjectTest {
         assertTrue(((Map<?, ?>) back).containsKey("AaBB"));
     }
 
+    /** Records the class of every object the stream writes, after its writeReplace. */
+    private static final class Recording extends ObjectOutputStream {
+        final List<Class<?>> written = new ArrayList<>();
+
+        Recording(ByteArrayOutputStream bytes) throws IOException {
+            super(bytes);
+            enableReplaceObject(true);
+        }
+
+        @Override
+        protected Object replaceObject(Object object) {
+            written.add(object.getClass());
+            return object;
+        }
+    }
+
+    /**
+     * Its serialized form is a proxy of its members in order (#404), not its backing state: the stream writes no
+     * {@code PlainObject} or {@code Names} and none of their fields, and the map read back is the same type, equal, in
+     * the same order and unmodifiable at every level; the name index is not serializable on its own.
+     */
+    @Test
+    void serializesThroughAProxyWithoutItsBackingState() throws IOException, ClassNotFoundException {
+        Map<String, Object> out = redacted(tree());
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        List<Class<?>> written;
+        try (Recording stream = new Recording(bytes)) {
+            stream.writeObject(out);
+            written = stream.written;
+        }
+        assertFalse(written.contains(JsonRedaction.PlainObject.class), String.valueOf(written));
+        assertFalse(written.contains(JsonRedaction.Names.class), String.valueOf(written));
+        assertTrue(written.stream().anyMatch(type -> type.getName().startsWith(JsonRedaction.PlainObject.class.getName()
+                + "$")), String.valueOf(written));
+        String text = bytes.toString(java.nio.charset.StandardCharsets.ISO_8859_1);
+        for (String state : List.of("memberValues", "leaves", "sample", JsonRedaction.Names.class.getName())) {
+            assertFalse(text.contains(state), state);
+        }
+        Map<?, ?> back;
+        try (ObjectInputStream stream = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            back = (Map<?, ?>) stream.readObject();
+        }
+        assertSame(out.getClass(), back.getClass());
+        assertEquals(out, back);
+        assertEquals(List.copyOf(out.keySet()), List.copyOf(back.keySet()));
+        Map<?, ?> nested = (Map<?, ?>) back.get("nested");
+        assertSame(out.get("nested").getClass(), nested.getClass());
+        assertEquals(Map.of("inner", "v"), nested);
+        for (Map<?, ?> map : List.of(back, nested)) {
+            assertThrows(UnsupportedOperationException.class, map::clear);
+            assertThrows(UnsupportedOperationException.class, () -> map.remove("missing"));
+        }
+        assertFalse(java.io.Serializable.class.isAssignableFrom(JsonRedaction.Names.class));
+    }
+
+    /** A stream that claims to hold the map's own state is refused: it is only ever written as the proxy (#404). */
+    @Test
+    void refusesToReadItsOwnStateFromAStream() throws ReflectiveOperationException {
+        java.lang.reflect.Method read =
+                JsonRedaction.PlainObject.class.getDeclaredMethod("readObject", ObjectInputStream.class);
+        read.setAccessible(true);
+        JsonRedaction.PlainObject object = new JsonRedaction.PlainObject(0);
+        java.lang.reflect.InvocationTargetException thrown = assertThrows(
+                java.lang.reflect.InvocationTargetException.class, () -> read.invoke(object, (Object) null));
+        assertTrue(thrown.getCause() instanceof JsonRedaction.Unreadable, String.valueOf(thrown.getCause()));
+    }
+
+    /** A proxy whose names and values do not pair up, or name no member or one twice, is refused (#404). */
+    @Test
+    void refusesAProxyWhoseMembersDoNotPairUp() throws ReflectiveOperationException {
+        JsonRedaction.PlainObject object = new JsonRedaction.PlainObject(2);
+        object.append("a", 1);
+        object.append("b", 2);
+        java.lang.reflect.Method replace = JsonRedaction.PlainObject.class.getDeclaredMethod("writeReplace");
+        replace.setAccessible(true);
+        Object proxy = replace.invoke(object);
+        java.lang.reflect.Method resolve = proxy.getClass().getDeclaredMethod("readResolve");
+        resolve.setAccessible(true);
+        assertEquals(Map.of("a", 1, "b", 2), resolve.invoke(proxy));
+        java.lang.reflect.Field names = proxy.getClass().getDeclaredField("memberNames");
+        names.setAccessible(true);
+        for (String[] bad : new String[][] {{"a"}, {"a", null}, {"a", "a"}, null}) {
+            names.set(proxy, bad);
+            java.lang.reflect.InvocationTargetException thrown =
+                    assertThrows(java.lang.reflect.InvocationTargetException.class, () -> resolve.invoke(proxy));
+            assertTrue(thrown.getCause() instanceof JsonRedaction.Unreadable, String.valueOf(thrown.getCause()));
+        }
+    }
+
     /**
      * A name given twice is unreadable, as two names that redact to one are in {@code JsonRedaction.redact}, which
      * comes first on the path, so the map never pairs a value with the wrong name.
