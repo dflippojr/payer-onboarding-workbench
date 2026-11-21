@@ -375,8 +375,10 @@ final class JsonRedaction {
     /**
      * The member names of one object, to tell whether a name is already among them (#398): a crit-bit tree over the
      * names, compared exactly as {@link String#equals} compares them, that takes no hash of a name. A hashed set costs
-     * a log factor more per name on names chosen to collide; this index costs at most a constant times the name's
-     * length plus one, whatever the other names are, and keeps only references to the names.
+     * a log factor more per name on names chosen to collide; this index's walks and compare cost at most a constant
+     * times the name's length plus one, whatever the other names are, and it keeps only references to the names. Its
+     * backing arrays double when full, so the add that fills them also copies them, in proportion to the names already
+     * there: one add is bounded only amortized, and adding all of an object's names stays linear in their total length.
      *
      * <p>A name is read as the sequence {@code key(name, i)}: {@code charAt(i) + 1} for {@code i} below its length,
      * {@code 0} past it, so a name differs from a longer name it begins at its own length. Each inner node tests one
@@ -397,7 +399,8 @@ final class JsonRedaction {
      *
      * <p>Both walks pass only nodes testing positions no later than the name's length, each a later bit than the one
      * before, so each takes at most 17 times the length plus one steps, and the compare reads the length plus one
-     * characters.
+     * characters. Growing the arrays at a capacity boundary adds a copy of the index so far; doubling makes the copies
+     * sum to less than twice the final size, so that cost is amortized, not per name.
      */
     static final class Names {
         /** The number of bits in a key: {@code key(name, i)} is at most {@code Character.MAX_VALUE + 1}. */
