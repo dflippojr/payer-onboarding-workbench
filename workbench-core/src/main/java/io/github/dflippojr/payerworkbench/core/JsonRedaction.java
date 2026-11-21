@@ -1,14 +1,23 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.AbstractCollection;
+import java.util.AbstractMap;
+import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 import tools.jackson.core.ObjectReadContext;
@@ -258,15 +267,18 @@ final class JsonRedaction {
         return plain(redact(root, 0, Place.ROOT));
     }
 
-    /** A redacted node read from a tree, as plain data. */
+    /**
+     * A redacted node read from a tree, as plain data. An object's members go into a {@link PlainObject}, in order,
+     * wrapped as {@link Collections#unmodifiableMap} wraps any map: its names are indexed without a hash (#402).
+     */
     private static Object plain(Node node) {
         if (node instanceof Scalar scalar) {
             return scalar.string() ? scalar.text() : scalar.value();
         }
         Container container = (Container) node;
         if (container.object()) {
-            Map<String, Object> out = new LinkedHashMap<>();
-            container.members().forEach(member -> out.put(member.name(), plain(member.value())));
+            PlainObject out = new PlainObject(container.members().size());
+            container.members().forEach(member -> out.append(member.name(), plain(member.value())));
             return Collections.unmodifiableMap(out);
         }
         List<Object> out = new ArrayList<>(container.members().size());
@@ -402,7 +414,9 @@ final class JsonRedaction {
      * characters. Growing the arrays at a capacity boundary adds a copy of the index so far; doubling makes the copies
      * sum to less than twice the final size, so that cost is amortized, not per name.
      */
-    static final class Names {
+    static final class Names implements Serializable {
+        private static final long serialVersionUID = 1L;
+
         /** The number of bits in a key: {@code key(name, i)} is at most {@code Character.MAX_VALUE + 1}. */
         private static final int KEY_BITS = 17;
 
@@ -428,11 +442,7 @@ final class JsonRedaction {
                 return true;
             }
             int length = name.length();
-            int node = root;
-            while (node >= 0 && at[node] <= length) {
-                node = side(name, node);
-            }
-            String other = leaves[node >= 0 ? sample[node] : ~node];
+            String other = leaves[closest(name)];
             int end = Math.min(length, other.length());
             int differ = 0;
             while (differ < end && name.charAt(differ) == other.charAt(differ)) {
@@ -445,7 +455,7 @@ final class JsonRedaction {
             int newBit = Integer.highestOneBit(otherKey ^ key(name, differ));
             int parent = -1;
             boolean parentSet = false;
-            node = root;
+            int node = root;
             while (node >= 0 && (at[node] < differ || (at[node] == differ && bit[node] > newBit))) {
                 parent = node;
                 parentSet = (key(name, at[node]) & bit[node]) != 0;
@@ -462,6 +472,38 @@ final class JsonRedaction {
                 clear[parent] = inner;
             }
             return true;
+        }
+
+        /** The index of {@code name} among the names, in the order added, or {@code -1} if it is not among them. */
+        int indexOf(String name) {
+            if (size == 0) {
+                return -1;
+            }
+            int closest = closest(name);
+            return leaves[closest].equals(name) ? closest : -1;
+        }
+
+        /** The number of names. */
+        int size() {
+            return size;
+        }
+
+        /** The name added {@code index}th, from {@code 0}. */
+        String name(int index) {
+            return leaves[index];
+        }
+
+        /**
+         * The index of the name that {@code name} shares the most with (step 1 of {@link #add}): the leaf, or the
+         * representative of the first node testing a position later than its length, that its own bits lead to. If
+         * {@code name} is among the names, that is its index. There must be a name.
+         */
+        private int closest(String name) {
+            int node = root;
+            while (node >= 0 && at[node] <= name.length()) {
+                node = side(name, node);
+            }
+            return node >= 0 ? sample[node] : ~node;
         }
 
         /** The side of inner node {@code node} that {@code name} goes to. */
@@ -499,6 +541,189 @@ final class JsonRedaction {
             set[nodes] = setSide;
             sample[nodes] = representative;
             return nodes++;
+        }
+    }
+
+    /**
+     * The members of one object read from a tree, redacted, as plain data (#402): an ordered map whose names are
+     * indexed in {@link Names}, so building it, and looking up a name in it, takes no hash of a name and costs a
+     * constant times the name's length plus one, amortized, whatever the other names are. A hashed map costs a log
+     * factor more per name on names chosen to collide. {@link #plain} hands it out only wrapped by
+     * {@link Collections#unmodifiableMap}, so callers get the same type, order, equality and errors as before;
+     * {@link #append} is the only way to change it.
+     */
+    static final class PlainObject extends AbstractMap<String, Object> implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private final Names names = new Names();
+        private final Object[] memberValues;
+
+        /** An empty object with room for {@code capacity} members. */
+        PlainObject(int capacity) {
+            memberValues = new Object[capacity];
+        }
+
+        /**
+         * Adds a member after the others. The names of one object are distinct once redacted, as {@link #redact}
+         * checks; one that is not is unreadable, as it is there.
+         */
+        void append(String name, Object value) {
+            int index = names.size();
+            if (!names.add(name)) {
+                throw new Unreadable();
+            }
+            memberValues[index] = value;
+        }
+
+        @Override
+        public int size() {
+            return names.size();
+        }
+
+        @Override
+        public boolean containsKey(Object key) {
+            return indexOf(key) >= 0;
+        }
+
+        @Override
+        public Object get(Object key) {
+            int index = indexOf(key);
+            return index < 0 ? null : memberValues[index];
+        }
+
+        private int indexOf(Object key) {
+            return key instanceof String name ? names.indexOf(name) : -1;
+        }
+
+        /*
+         * The three views are ordered as a LinkedHashMap's are: their iterators walk the members in the order added,
+         * and their spliterators say so (ORDERED, and DISTINCT for the two sets), so a stream over them, parallel or
+         * not, keeps that order. Looking up a name in the key or entry view goes through the index.
+         */
+
+        @Override
+        public Set<String> keySet() {
+            return new Keys();
+        }
+
+        @Override
+        public Collection<Object> values() {
+            return new Values();
+        }
+
+        @Override
+        public Set<Map.Entry<String, Object>> entrySet() {
+            return new Entries();
+        }
+
+        /** The names in order, read-only. */
+        private final class Keys extends AbstractSet<String> {
+            @Override
+            public int size() {
+                return names.size();
+            }
+
+            @Override
+            public boolean contains(Object name) {
+                return containsKey(name);
+            }
+
+            @Override
+            public Iterator<String> iterator() {
+                return new KeysInOrder();
+            }
+
+            @Override
+            public Spliterator<String> spliterator() {
+                return Spliterators.spliterator(this, Spliterator.ORDERED | Spliterator.DISTINCT);
+            }
+        }
+
+        /** The values in order, read-only. */
+        private final class Values extends AbstractCollection<Object> {
+            @Override
+            public int size() {
+                return names.size();
+            }
+
+            @Override
+            public Iterator<Object> iterator() {
+                return new ValuesInOrder();
+            }
+
+            @Override
+            public Spliterator<Object> spliterator() {
+                return Spliterators.spliterator(this, Spliterator.ORDERED);
+            }
+        }
+
+        /** The members in order, read-only. */
+        private final class Entries extends AbstractSet<Map.Entry<String, Object>> {
+            @Override
+            public int size() {
+                return names.size();
+            }
+
+            @Override
+            public boolean contains(Object member) {
+                if (!(member instanceof Map.Entry<?, ?> entry)) {
+                    return false;
+                }
+                int index = indexOf(entry.getKey());
+                return index >= 0 && Objects.equals(memberValues[index], entry.getValue());
+            }
+
+            @Override
+            public Iterator<Map.Entry<String, Object>> iterator() {
+                return new EntriesInOrder();
+            }
+
+            @Override
+            public Spliterator<Map.Entry<String, Object>> spliterator() {
+                return Spliterators.spliterator(this, Spliterator.ORDERED | Spliterator.DISTINCT);
+            }
+        }
+
+        /** Walks the members in the order they were added, giving {@link #at} of each. */
+        private abstract class InOrder<T> implements Iterator<T> {
+            private int next;
+
+            @Override
+            public boolean hasNext() {
+                return next < names.size();
+            }
+
+            @Override
+            public T next() {
+                if (next >= names.size()) {
+                    throw new NoSuchElementException();
+                }
+                return at(next++);
+            }
+
+            /** What the walk gives for the member added {@code index}th. */
+            abstract T at(int index);
+        }
+
+        private final class KeysInOrder extends InOrder<String> {
+            @Override
+            String at(int index) {
+                return names.name(index);
+            }
+        }
+
+        private final class ValuesInOrder extends InOrder<Object> {
+            @Override
+            Object at(int index) {
+                return memberValues[index];
+            }
+        }
+
+        private final class EntriesInOrder extends InOrder<Map.Entry<String, Object>> {
+            @Override
+            Map.Entry<String, Object> at(int index) {
+                return new AbstractMap.SimpleImmutableEntry<>(names.name(index), memberValues[index]);
+            }
         }
     }
 

@@ -47,6 +47,7 @@ class JsonRedactionNamesTest {
 
     private static final String JSON_REDACTION = JsonRedaction.class.getName();
     private static final String NAMES = JSON_REDACTION + ".Names";
+    private static final String PLAIN_OBJECT = JSON_REDACTION + ".PlainObject";
 
     /**
      * The name index takes no hash, and the name checks go through it. The log factor a hashed index costs on names
@@ -123,6 +124,29 @@ class JsonRedactionNamesTest {
                         "            int length = name.length();\n",
                         "            int length = switch (name) { case \"kty\" -> 3; default -> name.length(); };\n"),
                 "in Names: switches on a String");
+        // The tree path builds the maps it returns in a hashed map again, as before #402.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            PlainObject out = new PlainObject(container.members().size());\n"
+                                + "            container.members().forEach(member -> out.append(member.name(), plain(member.value())));\n",
+                        "            java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();\n"
+                                + "            container.members().forEach(member -> out.put(member.name(), plain(member.value())));\n"),
+                "in JsonRedaction.plain: constructs java.util.LinkedHashMap",
+                "in JsonRedaction.plain: indexes with java.util.Map<java.lang.String,java.lang.Object>.put");
+        // Or hands the hash-free map to a factory that copies it into a hashed one.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            return Collections.unmodifiableMap(out);\n",
+                        "            return java.util.Map.copyOf(out);\n"),
+                "in JsonRedaction.plain: makes a java.util.Map<java.lang.String,java.lang.Object> with java.util.Map.copyOf");
+        // The returned map hashes a name to look it up, or keeps a hashed map of its names beside the index.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            return key instanceof String name ? names.indexOf(name) : -1;\n",
+                        "            return key instanceof String name ? names.indexOf(name) + name.hashCode() * 0 : -1;\n"),
+                "in PlainObject: hashes with java.lang.String.hashCode");
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            return key instanceof String name ? names.indexOf(name) : -1;\n",
+                        "            return key instanceof String name ? new java.util.HashMap<String, Integer>()"
+                                + ".getOrDefault(name, names.indexOf(name)) : -1;\n"),
+                "in PlainObject: calls java.util.HashMap.<init>", "in PlainObject: calls java.util.HashMap.getOrDefault");
         // A name check that drops the index altogether.
         assertViolations(CompiledSource.replaceOnce(source,
                         "            if (!names.add(redactedName)) {\n",
@@ -188,6 +212,59 @@ class JsonRedactionNamesTest {
                 String added = name.toString();
                 int at = round;
                 assertEquals(oracle.add(added), names.add(added), () -> "round " + at + ": " + escaped(added));
+            }
+        }
+    }
+
+    /**
+     * The index finds each name at the place it was first added, and finds no name it was not given, as a list of the
+     * distinct names does, on the edge names in both orders and on seeded sequences like those of
+     * {@link #agreesWithAHashSet}; {@code JsonRedaction.PlainObject} looks its names up this way (#402).
+     */
+    @Test
+    void findsNamesWhereAListOfThemDoes() {
+        JsonRedaction.Names empty = new JsonRedaction.Names();
+        assertEquals(-1, empty.indexOf(""));
+        assertEquals(0, empty.size());
+        for (List<String> order : List.of(EDGE_NAMES, EDGE_NAMES.reversed())) {
+            JsonRedaction.Names names = new JsonRedaction.Names();
+            List<String> oracle = new ArrayList<>();
+            for (String name : order) {
+                assertEquals(-1, names.indexOf(name), () -> "before: " + escaped(name));
+                names.add(name);
+                oracle.add(name);
+                for (String probe : EDGE_NAMES) {
+                    assertEquals(oracle.indexOf(probe), names.indexOf(new String(probe.toCharArray())),
+                            () -> "probe " + escaped(probe) + " after " + escaped(name));
+                }
+            }
+            for (int i = 0; i < oracle.size(); i++) {
+                assertEquals(oracle.get(i), names.name(i));
+            }
+        }
+        char[] alphabet = {'\0', '\u0001', 'a', 'b', 'A', 'B', '\u7FFF', '\u8000', '\uD800', '\uDC00', '\uFFFE', '\uFFFF'};
+        Random random = new Random(402);
+        for (int round = 0; round < 2_000; round++) {
+            JsonRedaction.Names names = new JsonRedaction.Names();
+            List<String> oracle = new ArrayList<>();
+            int letters = 1 + random.nextInt(alphabet.length);
+            int count = random.nextInt(60);
+            int longest = random.nextInt(8);
+            String shared = random.nextBoolean() ? "" : "p".repeat(random.nextInt(20));
+            for (int i = 0; i < 2 * count; i++) {
+                StringBuilder name = new StringBuilder(shared);
+                for (int length = random.nextInt(longest + 1); length > 0; length--) {
+                    name.append(alphabet[random.nextInt(letters)]);
+                }
+                String next = name.toString();
+                int at = round;
+                // Every other name is only looked up, so misses are as common as hits.
+                if (i % 2 == 0 && !oracle.contains(next)) {
+                    oracle.add(next);
+                    names.add(next);
+                }
+                assertEquals(oracle.indexOf(next), names.indexOf(next), () -> "round " + at + ": " + escaped(next));
+                assertEquals(oracle.size(), names.size());
             }
         }
     }
@@ -347,6 +424,19 @@ class JsonRedactionNamesTest {
     /** The classes whose methods {@code JsonRedaction.Names} may call: none of them hashes what it is given. */
     private static final Set<String> NAMES_CALLEES = Set.of("java.lang.Object", "java.lang.String", "java.lang.Integer",
             "java.lang.Math", "java.util.Arrays");
+    /**
+     * The classes whose methods {@code JsonRedaction.PlainObject}, the map the tree path returns for an object (#402),
+     * may call besides those: its names go into {@code Names}; it is built on the JDK's skeletal map, set, collection
+     * and entry, and its views' spliterators on {@code Spliterators}, none of which hashes in what it calls; it reads
+     * an entry it is asked about and compares values with {@code Objects.equals}; its unreadable member is the path's
+     * own error.
+     */
+    private static final Set<String> PLAIN_OBJECT_CALLEES = Set.of("java.lang.Object", "java.util.AbstractMap",
+            "java.util.AbstractSet", "java.util.AbstractCollection", "java.util.AbstractMap.SimpleImmutableEntry",
+            "java.util.Map.Entry", "java.util.Objects", "java.util.Spliterators", "java.util.NoSuchElementException",
+            NAMES, JSON_REDACTION + ".Unreadable");
+    /** The one static factory that makes a map on the sites: it wraps a map it is given and indexes nothing itself. */
+    private static final String WRAPPER = "java.util.Collections.unmodifiableMap";
     /** Methods that hash, or look up a hash table, whatever class declares them. */
     private static final Set<String> HASHING_METHODS = Set.of("hashCode", "identityHashCode", "intern", "hash");
     /** Methods that add to a set or map: building an index of names other than {@code Names}. */
@@ -354,21 +444,23 @@ class JsonRedactionNamesTest {
             "computeIfAbsent", "compute", "merge");
     /**
      * The methods that check names, {@code Owner.method}, and whether each must call {@code Names.add}: the text
-     * reader's object, the tree reader's name, the redaction of a node; and the tree reader's value, which makes the
-     * index for each map.
+     * reader's object, the tree reader's name, the redaction of a node; the tree reader's value, which makes the
+     * index for each map; and the tree path's entry point, which also builds the maps it returns (#402).
      */
     private static final List<String> NAME_CHECKS = List.of("Reader.readContainer", "TreeReader.name",
             "JsonRedaction.redact(Node)");
     private static final List<String> NAME_SITES = List.of("Reader.readContainer", "TreeReader.name",
-            "TreeReader.read", "JsonRedaction.redact(Node)");
+            "TreeReader.read", "JsonRedaction.redact(Node)", "JsonRedaction.redactTree");
 
     /**
      * What breaks the hash-free rule in {@code source}, a version of {@code JsonRedaction.java}: in
      * {@code JsonRedaction.Names}, a call or method reference to a class other than {@code Names} itself and
      * {@link #NAMES_CALLEES}, a call to one of {@link #HASHING_METHODS}, or a switch on a {@code String}, which
-     * compiles to a hash code; a method of {@link #NAME_CHECKS} that does not call {@code Names.add}; and in the
-     * methods of {@link #NAME_SITES} and every method of {@link JsonRedaction} they reach, any set or map they make (constructed, or returned by a static factory), any
-     * {@link #INDEXING_METHODS} call on a set or map, or a switch on a {@code String}. Fixed sets of names that are
+     * compiles to a hash code; the same in {@code JsonRedaction.PlainObject}, which may also call
+     * {@link #PLAIN_OBJECT_CALLEES}; a method of {@link #NAME_CHECKS} that does not call {@code Names.add}; and in the
+     * methods of {@link #NAME_SITES} and every method of {@link JsonRedaction} they reach, any set or map they make
+     * (constructed, or returned by a static factory) other than a {@code PlainObject} or the {@link #WRAPPER} of one,
+     * any {@link #INDEXING_METHODS} call on a set or map, or a switch on a {@code String}. Fixed sets of names that are
      * only looked up, such as {@link Redactor#JWK_PRIVATE_MEMBERS}, are not indexes and are not reported.
      */
     static List<String> namesIndexViolations(String source) {
@@ -381,7 +473,15 @@ class JsonRedactionNamesTest {
             violations.add("JsonRedaction has no class Names");
         } else {
             TreePath path = trees.getPath(names);
-            new Rules(trees, types, "Names", violations, true).scan(path, null);
+            new Rules(trees, types, "Names", violations, NAMES_CALLEES).scan(path, null);
+        }
+        TypeElement plainObject = compiled.elements().getTypeElement(PLAIN_OBJECT);
+        if (plainObject == null) {
+            violations.add("JsonRedaction has no class PlainObject");
+        } else {
+            Set<String> callees = new LinkedHashSet<>(NAMES_CALLEES);
+            callees.addAll(PLAIN_OBJECT_CALLEES);
+            new Rules(trees, types, "PlainObject", violations, callees).scan(trees.getPath(plainObject), null);
         }
         TypeElement redaction = compiled.type(JSON_REDACTION);
         ArrayDeque<ExecutableElement> pending = new ArrayDeque<>();
@@ -391,7 +491,7 @@ class JsonRedactionNamesTest {
                 violations.add("JsonRedaction has no method " + site);
                 continue;
             }
-            Rules rules = new Rules(trees, types, site, violations, false);
+            Rules rules = new Rules(trees, types, site, violations, null);
             TreePath path = trees.getPath(method);
             rules.scan(new TreePath(path, ((MethodTree) path.getLeaf()).getBody()), null);
             if (NAME_CHECKS.contains(site) && !rules.called.contains(NAMES + ".add")) {
@@ -410,7 +510,7 @@ class JsonRedactionNamesTest {
                 continue;
             }
             String where = ((TypeElement) next.getEnclosingElement()).getSimpleName() + "." + next.getSimpleName();
-            Rules rules = new Rules(trees, types, where, violations, false);
+            Rules rules = new Rules(trees, types, where, violations, null);
             rules.scan(new TreePath(path, tree.getBody()), null);
             pending.addAll(rules.reached);
         }
@@ -442,18 +542,24 @@ class JsonRedactionNamesTest {
         private final Types types;
         private final String where;
         private final List<String> violations;
-        /** Whether this is {@code Names} itself, which may call only itself and {@link #NAMES_CALLEES}. */
+        /** Whether this is one of the hash-free classes, which may call only themselves and {@link #callees}. */
         private final boolean index;
+        /** The classes a hash-free class may call besides the hash-free classes; {@code null} on the sites. */
+        private final Set<String> callees;
         final Set<String> called = new LinkedHashSet<>();
-        /** The methods and constructors of {@link JsonRedaction} and its nested classes, other than {@code Names}, called. */
+        /**
+         * The methods and constructors of {@link JsonRedaction} and its nested classes, other than the hash-free
+         * classes, called.
+         */
         final Set<ExecutableElement> reached = new LinkedHashSet<>();
 
-        Rules(Trees trees, Types types, String where, List<String> violations, boolean index) {
+        Rules(Trees trees, Types types, String where, List<String> violations, Set<String> callees) {
             this.trees = trees;
             this.types = types;
             this.where = where;
             this.violations = violations;
-            this.index = index;
+            this.index = callees != null;
+            this.callees = callees;
         }
 
         @Override
@@ -464,8 +570,11 @@ class JsonRedactionNamesTest {
                 // A factory such as Set.of or Collectors.toSet; a set an instance hands out, such as a map's
                 // entries, is read, not made.
                 TypeMirror returned = trees.getTypeMirror(getCurrentPath());
-                if (isCollection(returned, "java.util.Set") || isCollection(returned, "java.util.Map")
-                        || isCollection(returned, "java.util.stream.Collector")) {
+                String factory = ((TypeElement) method.getEnclosingElement()).getQualifiedName() + "."
+                        + method.getSimpleName();
+                if (!factory.equals(WRAPPER) && (isCollection(returned, "java.util.Set")
+                        || isCollection(returned, "java.util.Map")
+                        || isCollection(returned, "java.util.stream.Collector"))) {
                     violations.add("in " + where + ": makes a " + returned + " with " + node.getMethodSelect());
                 }
             }
@@ -487,7 +596,9 @@ class JsonRedactionNamesTest {
             reach(target, node);
             if (!index && target != null) {
                 TypeMirror made = target.getEnclosingElement().asType();
-                if (isCollection(made, "java.util.Set") || isCollection(made, "java.util.Map")) {
+                boolean hashFree = target.getEnclosingElement() instanceof TypeElement type
+                        && type.getQualifiedName().contentEquals(PLAIN_OBJECT);
+                if (!hashFree && (isCollection(made, "java.util.Set") || isCollection(made, "java.util.Map"))) {
                     violations.add("in " + where + ": constructs " + types.erasure(made));
                 }
             }
@@ -527,14 +638,20 @@ class JsonRedactionNamesTest {
             String owner = ((TypeElement) method.getEnclosingElement()).getQualifiedName().toString();
             String name = method.getSimpleName().toString();
             called.add(owner + "." + name);
-            if ((owner.equals(JSON_REDACTION) || owner.startsWith(JSON_REDACTION + ".")) && !owner.equals(NAMES)) {
+            if ((owner.equals(JSON_REDACTION) || owner.startsWith(JSON_REDACTION + ".")) && !hashFree(owner)) {
                 reached.add(method);
             }
             if (HASHING_METHODS.contains(name)) {
                 violations.add("in " + where + ": hashes with " + owner + "." + name);
-            } else if (index && !owner.equals(NAMES) && !NAMES_CALLEES.contains(owner)) {
+            } else if (index && !owner.equals(where.startsWith("Names") ? NAMES : PLAIN_OBJECT)
+                    && !owner.startsWith(PLAIN_OBJECT + ".") && !callees.contains(owner)) {
                 violations.add("in " + where + ": calls " + owner + "." + name);
             }
+        }
+
+        /** Whether {@code owner} is one of the hash-free classes, read by their own rules, or nested in one. */
+        private static boolean hashFree(String owner) {
+            return owner.equals(NAMES) || owner.equals(PLAIN_OBJECT) || owner.startsWith(PLAIN_OBJECT + ".");
         }
 
         /** Whether {@code type} is, erased, {@code collection} or a subtype of it. */
