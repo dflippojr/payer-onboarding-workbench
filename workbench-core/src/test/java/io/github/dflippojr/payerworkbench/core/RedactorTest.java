@@ -4093,6 +4093,111 @@ class RedactorTest {
         assertTrue(withBlocks > 5_000, "too few texts with blocks: " + withBlocks);
     }
 
+    /**
+     * Guards the structural open-key check (#396), {@link Redactor#opensAnUnterminatedKey}, which a JSON string's text
+     * reaches: it must take time that grows about linearly with the text for the footer label shapes of
+     * {@link #openKeyShapes}. Timed as {@link #findsJwksInLinearTime} times its shapes, by the growth of CPU time over
+     * eight times the length; the timeout only ends a hang.
+     */
+    @Test
+    void findsUnterminatedKeysInLinearTime() {
+        List<String> small = openKeyShapes(SMALL);
+        List<String> large = openKeyShapes(8 * SMALL);
+        // Each shape reaches the open-key check through the structural path, which masks the whole text.
+        for (String shape : java.util.stream.Stream.concat(small.stream(), large.stream()).toList()) {
+            String content = shape.substring(1, shape.length() - 1).replace("\\n", "\n");
+            assertTrue(Redactor.opensAnUnterminatedKey(content), () -> shape.substring(0, 80));
+            assertEquals(Redactor.MASK, Redactor.redact(shape), () -> shape.substring(0, 80));
+        }
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2),
+                () -> growthBeyondLinear(small, large));
+        assertTrue(tooSlow.isEmpty(), "time grows more than " + MAX_GROWTH_PER_DOUBLING + " times per doubling of the text: "
+                + tooSlow);
+    }
+
+    /**
+     * The shapes that {@link #findsUnterminatedKeysInLinearTime} times, each a JSON string of about {@code n} footer
+     * lines: an unterminated private key header and many private key footers of adversarial label shapes, of one
+     * label, or of labels that are prefixes of one another, and many headers.
+     */
+    private static List<String> openKeyShapes(int n) {
+        int lines = (int) Math.round(Math.sqrt(n) * 8);
+        String prefix = "A".repeat(lines);
+        StringBuilder sameHash = new StringBuilder();
+        StringBuilder distinct = new StringBuilder();
+        StringBuilder nestedLabels = new StringBuilder();
+        for (int i = 0; i < lines; i++) {
+            StringBuilder label = new StringBuilder(prefix);
+            for (int bit = 0; bit < 16; bit++) {
+                label.append((i >> bit & 1) == 0 ? "AO" : "B0");
+            }
+            sameHash.append("-----END ").append(label).append(" PRIVATE KEY-----\\n");
+            distinct.append("-----END ").append(prefix).append(i).append(" PRIVATE KEY-----\\n");
+            nestedLabels.append("-----END ").append("A".repeat(i)).append(" PRIVATE KEY-----\\n");
+        }
+        String header = "-----BEGIN Z PRIVATE KEY-----\\n";
+        return List.of(
+                "\"" + header + sameHash + "\"",
+                "\"" + header + distinct + "\"",
+                "\"" + header + nestedLabels + "\"",
+                "\"" + header + "-----END PRIVATE KEY-----\\n".repeat(n) + "\"",
+                "\"" + "-----BEGIN PRIVATE KEY-----\\n".repeat(n) + "\"",
+                "\"" + sameHash + header.replace("BEGIN", "END").repeat(n / 8) + header + "\"");
+    }
+
+    /** The private key header and footer patterns of {@link Redactor}, for {@link #opensAnUnterminatedKeyByHash}. */
+    private static final java.util.regex.Pattern PRIVATE_KEY_HEADER = java.util.regex.Pattern.compile(
+            "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
+    private static final java.util.regex.Pattern PRIVATE_KEY_FOOTER = java.util.regex.Pattern.compile(
+            "-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
+
+    /** The open-key check before #396, with its footer labels in a hash map, which the trie must match. */
+    private static boolean opensAnUnterminatedKeyByHash(String text) {
+        if (!text.contains("-----BEGIN ")) {
+            return false;
+        }
+        Map<String, Integer> lastFooter = new java.util.HashMap<>();
+        java.util.regex.Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
+        while (footer.find()) {
+            lastFooter.put(footer.group(1), footer.start());
+        }
+        java.util.regex.Matcher header = PRIVATE_KEY_HEADER.matcher(text);
+        while (header.find()) {
+            if (lastFooter.getOrDefault(header.group(1), -1) < header.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Test
+    void opensTheSameKeysAsTheHashIndex() {
+        // Seeded texts of armor pieces: private key headers and footers of a few labels (also prefixes of one another,
+        // PGP blocks, lower case or spaced), extra and missing dashes, and filler, so footers come before, after and
+        // between headers, overlap the dashes of the one before, and close other labels.
+        List<String> pieces = List.of("-----BEGIN ", "-----END ", "-----", "-", "A", "B", " ", "a", "\n", "x",
+                "PRIVATE KEY", " BLOCK", "PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----",
+                "-----BEGIN A PRIVATE KEY-----", "-----END A PRIVATE KEY-----", "-----BEGIN AA PRIVATE KEY-----",
+                "-----END AA PRIVATE KEY-----", "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+                "-----END PGP PRIVATE KEY BLOCK-----", "------END PRIVATE KEY------", "-----END PRIVATE KEY BLOCK-----",
+                "-----BEGIN AO PRIVATE KEY-----", "-----END B0 PRIVATE KEY-----", "-----END AO PRIVATE KEY-----");
+        java.util.Random random = new java.util.Random(396);
+        int open = 0;
+        int closed = 0;
+        for (int i = 0; i < 50_000; i++) {
+            StringBuilder text = new StringBuilder();
+            for (int n = random.nextInt(16); n > 0; n--) {
+                text.append(pieces.get(random.nextInt(pieces.size())));
+            }
+            boolean expected = opensAnUnterminatedKeyByHash(text.toString());
+            assertEquals(expected, Redactor.opensAnUnterminatedKey(text.toString()), text::toString);
+            boolean hasHeader = text.indexOf("PRIVATE KEY") >= 0 && text.indexOf("-----BEGIN ") >= 0;
+            open += expected ? 1 : 0;
+            closed += !expected && hasHeader ? 1 : 0;
+        }
+        assertTrue(open > 5_000 && closed > 2_000, "too few texts of one kind: " + open + " open, " + closed + " closed");
+    }
+
     @Test
     void masksAChainPastTheNestingCapWhoseStringIsQuotedWithUnicodeEscapes() {
         // Codex security round 5: past NESTED_LEVELS, a string whose quotes are spelled \\u0022 in the text has no
