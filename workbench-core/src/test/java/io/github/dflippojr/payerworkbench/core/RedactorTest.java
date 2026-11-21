@@ -4146,6 +4146,75 @@ class RedactorTest {
     }
 
     /**
+     * Guards the open-key check (#399) on texts where most headers are closed: every shape of {@link #closedKeyShapes}
+     * makes {@link Redactor#opensAnUnterminatedKey} find a footer for many headers in turn before its answer, so work
+     * done again for each closed header (a search on from the header, a walk along its label's footers, or the footer
+     * index built again) grows with the square of the text. {@link #findsUnterminatedKeysInLinearTime} cannot see that:
+     * each of its shapes is answered at its first header that is found. Timed as {@link #findsJwksInLinearTime} times
+     * its shapes, by the growth of CPU time over eight times the length; the timeout only ends a hang.
+     */
+    @Test
+    void findsFootersForManyClosedHeadersInLinearTime() {
+        List<String> small = closedKeyShapes(SMALL / 4);
+        List<String> large = closedKeyShapes(2 * SMALL);
+        for (List<String> shapes : List.of(small, large)) {
+            int lines = shapes == small ? SMALL / 4 : 2 * SMALL;
+            for (int shape = 0; shape < shapes.size(); shape++) {
+                String json = shapes.get(shape);
+                String content = json.substring(1, json.length() - 1).replace("\\n", "\n");
+                // Shapes 1 and 2 close every header; 3 and 4 end with one header no footer closes.
+                boolean open = shape >= 2;
+                assertEquals(open, opensAnUnterminatedKeyByHash(content), () -> json.substring(0, 80));
+                assertEquals(open, Redactor.opensAnUnterminatedKey(content), () -> json.substring(0, 80));
+                assertTrue(closedHeaders(content) >= lines, () -> json.substring(0, 80));
+                if (open) {
+                    assertEquals(Redactor.MASK, Redactor.redact(json), () -> json.substring(0, 80));
+                }
+            }
+        }
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2),
+                () -> growthBeyondLinear(small, large));
+        assertTrue(tooSlow.isEmpty(), "time grows more than " + MAX_GROWTH_PER_DOUBLING + " times per doubling of the text: "
+                + tooSlow);
+    }
+
+    /**
+     * The shapes that {@link #findsFootersForManyClosedHeadersInLinearTime} times, each a JSON string of {@code n}
+     * private key headers and then {@code n} footers that close them: of one label, or of a distinct label each; then,
+     * in the last two, one more header after every footer of its label.
+     */
+    private static List<String> closedKeyShapes(int n) {
+        StringBuilder distinctHeaders = new StringBuilder();
+        StringBuilder distinctFooters = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            distinctHeaders.append("-----BEGIN K").append(i).append(" PRIVATE KEY-----\\n");
+            distinctFooters.append("-----END K").append(i).append(" PRIVATE KEY-----\\n");
+        }
+        String oneLabel = "-----BEGIN PRIVATE KEY-----\\n".repeat(n) + "-----END PRIVATE KEY-----\\n".repeat(n);
+        String distinct = distinctHeaders.toString() + distinctFooters;
+        return List.of(
+                "\"" + oneLabel + "\"",
+                "\"" + distinct + "\"",
+                "\"" + oneLabel + "-----BEGIN PRIVATE KEY-----\\n" + "\"",
+                "\"" + distinct + "-----BEGIN K0 PRIVATE KEY-----\\n" + "\"");
+    }
+
+    /** The private key headers of {@code text} that a footer of the same label after them closes. */
+    private static int closedHeaders(String text) {
+        Map<String, Integer> lastFooter = new java.util.HashMap<>();
+        java.util.regex.Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
+        while (footer.find()) {
+            lastFooter.put(footer.group(1), footer.start());
+        }
+        int closed = 0;
+        java.util.regex.Matcher header = PRIVATE_KEY_HEADER.matcher(text);
+        while (header.find()) {
+            closed += lastFooter.getOrDefault(header.group(1), -1) >= header.end() ? 1 : 0;
+        }
+        return closed;
+    }
+
+    /**
      * The open-key check (#396) and the label trie it uses take no hash of a label: a hashed index costs a log factor
      * more on labels chosen to collide, which {@link #findsUnterminatedKeysInLinearTime} cannot tell from noise on this
      * path, so the absence of hashing is checked in the source. Fails if either body names a hash-based collection or
