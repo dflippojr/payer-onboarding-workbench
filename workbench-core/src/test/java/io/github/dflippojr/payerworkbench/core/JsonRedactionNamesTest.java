@@ -354,13 +354,13 @@ class JsonRedactionNamesTest {
             "computeIfAbsent", "compute", "merge");
     /**
      * The methods that check names, {@code Owner.method}, and whether each must call {@code Names.add}: the text
-     * reader's object, the tree reader's name, the redaction of a node; and the tree reader's value, which makes the
-     * index for each map.
+     * reader's object, the tree reader's name, the redaction of a node; the tree reader's value, which makes the
+     * index for each map; and the tree path's entry point, which also builds the maps it returns (#402).
      */
     private static final List<String> NAME_CHECKS = List.of("Reader.readContainer", "TreeReader.name",
             "JsonRedaction.redact(Node)");
     private static final List<String> NAME_SITES = List.of("Reader.readContainer", "TreeReader.name",
-            "TreeReader.read", "JsonRedaction.redact(Node)");
+            "TreeReader.read", "JsonRedaction.redact(Node)", "JsonRedaction.redactTree");
 
     /**
      * What breaks the hash-free rule in {@code source}, a version of {@code JsonRedaction.java}: in
