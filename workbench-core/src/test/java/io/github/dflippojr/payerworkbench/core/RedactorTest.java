@@ -10,6 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.github.dflippojr.payerworkbench.core.Canonical.assertKept;
 import static io.github.dflippojr.payerworkbench.core.Canonical.assertRedactsTo;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
@@ -17,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -648,10 +651,81 @@ class RedactorTest {
         assertRedactsTo("{\"\\u0041uthorization\":\"SCRAM-SHA-256 [REDACTED]\"}", "{\"\\u0041uthorization\":\"SCRAM-SHA-256 PRIVSCRAM\"}");
     }
 
+    /** The length unit of the smaller size that {@link #findsJwksInLinearTime} times. */
+    private static final int SMALL = 1_000;
+    /** Samples per size in {@link #findsJwksInLinearTime}: each shape keeps its fastest. */
+    private static final int SAMPLES = 5;
+    /** Shortest timed run in {@link #findsJwksInLinearTime}, so that a fast shape is not timed as clock noise. */
+    private static final long MIN_SAMPLE_NANOS = 1_000_000L;
+    /** Growth in time allowed per doubling of length: linear growth doubles the time, quadratic quadruples it. */
+    private static final double MAX_GROWTH_PER_DOUBLING = 2.5;
+
+    /**
+     * Guards against a quadratic regression in the JWK search: redaction must take time that grows about linearly
+     * with the length of the text. Each shape of {@link #linearTimeShapes} is timed at {@link #SMALL} and at eight
+     * times that length, in this JVM after warm-up. Its growth is the exponent of the time ratio over the length
+     * ratio, 1 for linear and 2 for quadratic, and it must stay below log2 of {@link #MAX_GROWTH_PER_DOUBLING}. The
+     * check uses the CPU time of this thread and the ratio of two sizes, so a busy machine does not change the
+     * result; the timeout only ends a hang and is not a speed claim.
+     */
     @Test
     void findsJwksInLinearTime() {
-        // About 1 MB each: linear time takes well under a second, quadratic time minutes.
-        int n = 80_000;
+        List<String> small = linearTimeShapes(SMALL);
+        List<String> large = linearTimeShapes(8 * SMALL);
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2),
+                () -> growthBeyondLinear(small, large));
+        assertTrue(tooSlow.isEmpty(), "time grows more than " + MAX_GROWTH_PER_DOUBLING + " times per doubling of the text: "
+                + tooSlow);
+    }
+
+    /** The shapes that {@link #findsJwksInLinearTime} times, in order, and the ones whose time grows too fast. */
+    private static List<String> growthBeyondLinear(List<String> small, List<String> large) {
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        for (int shape = 0; shape < small.size(); shape++) {
+            cpuNanosPerRun(threads, small.get(shape));
+            cpuNanosPerRun(threads, large.get(shape));
+        }
+        double[] smallNanos = new double[small.size()];
+        double[] largeNanos = new double[small.size()];
+        Arrays.fill(smallNanos, Double.MAX_VALUE);
+        Arrays.fill(largeNanos, Double.MAX_VALUE);
+        for (int sample = 0; sample < SAMPLES; sample++) {
+            for (int shape = 0; shape < small.size(); shape++) {
+                smallNanos[shape] = Math.min(smallNanos[shape], cpuNanosPerRun(threads, small.get(shape)));
+                largeNanos[shape] = Math.min(largeNanos[shape], cpuNanosPerRun(threads, large.get(shape)));
+            }
+        }
+        double maxExponent = Math.log(MAX_GROWTH_PER_DOUBLING) / Math.log(2);
+        List<String> tooSlow = new ArrayList<>();
+        for (int shape = 0; shape < small.size(); shape++) {
+            double lengthRatio = (double) large.get(shape).length() / small.get(shape).length();
+            double timeRatio = largeNanos[shape] / smallNanos[shape];
+            double exponent = Math.log(timeRatio) / Math.log(lengthRatio);
+            if (exponent >= maxExponent) {
+                tooSlow.add(String.format(Locale.ROOT, "shape %d (time x%.1f over length x%.1f, exponent %.2f)",
+                        shape + 1, timeRatio, lengthRatio, exponent));
+            }
+        }
+        return tooSlow;
+    }
+
+    /** CPU nanoseconds of one {@link Redactor#redact} of {@code text}, averaged over runs of at least {@link #MIN_SAMPLE_NANOS}. */
+    private static double cpuNanosPerRun(ThreadMXBean threads, String text) {
+        long start = threads.getCurrentThreadCpuTime();
+        int runs = 0;
+        long elapsed;
+        do {
+            Redactor.redact(text);
+            runs++;
+            elapsed = threads.getCurrentThreadCpuTime() - start;
+        } while (elapsed < MIN_SAMPLE_NANOS);
+        return (double) elapsed / runs;
+    }
+
+    /** The shapes that {@link #findsJwksInLinearTime} times, each made of about {@code n} units of its pattern. */
+    private static List<String> linearTimeShapes(int n) {
+        // distinctBackslashCounts(k) is about k * k characters long, so k grows with the root of n.
+        int k = (int) Math.round(3.5 * Math.sqrt(n));
         List<String> texts = List.of(
                 "[" + "{\"\\\"kty\":0},".repeat(n) + "{}]",
                 "]\"kty\":".repeat(n),
@@ -669,11 +743,11 @@ class RedactorTest {
                 // which every level reads again: there are at most log2 of its length levels.
                 nested(nested("{\"kty\":1,".repeat(n / 2))),
                 nested(nested(nested("{" + "\"kty\":1,".repeat(n / 4) + "\"d\":\"y\"}"))),
-                "{\"b\":\"" + "\\".repeat(1 << 20) + "\\\"kty\\\":1\"}",
+                "{\"b\":\"" + "\\".repeat(13 * n) + "\\\"kty\\\":1\"}",
                 // Members each quoted with a different number of backslashes after a kty (Codex security round 2),
                 // bare and as a recorded body in a report: every search is charged to its level's budget.
-                distinctBackslashCounts(1000), nested(distinctBackslashCounts(1000)));
-        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(Redactor::redact));
+                distinctBackslashCounts(k), nested(distinctBackslashCounts(k)));
+        return texts;
     }
 
     /** A JWK whose members after kty are each quoted with a different number of backslashes, 1 to {@code n}. */
