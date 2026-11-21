@@ -4024,6 +4024,75 @@ class RedactorTest {
         assertEquals(Redactor.MASK.repeat(64_001), out, out.substring(out.length() - 80));
     }
 
+    /**
+     * Guards the whole-block key search (#390): it must take time that grows about linearly with the text for the
+     * armor shapes of {@link #keyBlockShapes}. Timed as {@link #findsJwksInLinearTime} times its shapes, by the growth
+     * of CPU time over eight times the length; the timeout only ends a hang.
+     */
+    @Test
+    void findsKeyBlocksInLinearTime() {
+        List<String> small = keyBlockShapes(SMALL / 2);
+        List<String> large = keyBlockShapes(4 * SMALL);
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2),
+                () -> growthBeyondLinear(small, large));
+        assertTrue(tooSlow.isEmpty(), "time grows more than " + MAX_GROWTH_PER_DOUBLING + " times per doubling of the text: "
+                + tooSlow);
+    }
+
+    /** The shapes that {@link #findsKeyBlocksInLinearTime} times, each made of about {@code n} armor lines. */
+    private static List<String> keyBlockShapes(int n) {
+        StringBuilder labels = new StringBuilder();
+        StringBuilder sameHash = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            labels.append("-----BEGIN LABEL ").append(i).append("-----\n");
+            // Distinct labels with one shared prefix and the same String hash: AO and B0 hash alike.
+            StringBuilder label = new StringBuilder("KEY ".repeat(16));
+            for (int bit = 0; bit < 16; bit++) {
+                label.append((i >> bit & 1) == 0 ? "AO" : "B0");
+            }
+            sameHash.append("-----END ").append(label).append("-----\n-----BEGIN ").append(label).append("-----\n");
+        }
+        return List.of(
+                sameHash.toString(),
+                "-----BEGIN CERTIFICATE-----\n".repeat(n),
+                labels.toString(),
+                "-----BEGIN CERTIFICATE-----\n-----END PUBLIC KEY-----\n".repeat(n / 2),
+                ("-----BEGIN CERTIFICATE-----\n" + "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n").repeat(n / 2),
+                "-----BEGIN CERTIFICATE-----".repeat(n) + "-----END CERTIFICATE-----",
+                "-----BEGIN PRIVATE KEY-----\n".repeat(n));
+    }
+
+    /** The whole-block key search before #390, which {@link Redactor#keyBlocks} must match block for block. */
+    private static final java.util.regex.Pattern LAZY_KEY_BLOCK = java.util.regex.Pattern.compile(
+            "-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \\1-----", java.util.regex.Pattern.DOTALL);
+
+    @Test
+    void findsTheSameKeyBlocksAsTheLazySearch() {
+        // Seeded texts of armor pieces: headers and footers of a few labels (also empty, spaced, or lower case), extra
+        // and missing dashes, headers inside headers, and filler, so blocks nest, overlap, share footers and go unclosed.
+        List<String> pieces = List.of("-----BEGIN ", "-----END ", "-----", "-", "A", "B", "AB", " ", "a", "\n", "x",
+                "BEGIN ", "END ", "PRIVATE KEY", "-----BEGIN A-----", "-----END A-----", "-----BEGIN B-----",
+                "-----END B-----", "-----BEGIN AB-----", "-----END AB-----", "------END A------", "AO", "B0",
+                "-----BEGIN AOB0-----", "-----END B0AO-----", "-----END AOB0-----");
+        java.util.Random random = new java.util.Random(390);
+        int withBlocks = 0;
+        for (int i = 0; i < 50_000; i++) {
+            StringBuilder text = new StringBuilder();
+            for (int n = random.nextInt(24); n > 0; n--) {
+                text.append(pieces.get(random.nextInt(pieces.size())));
+            }
+            List<String> expected = new ArrayList<>();
+            java.util.regex.Matcher block = LAZY_KEY_BLOCK.matcher(text);
+            while (block.find()) {
+                expected.add(block.start() + "-" + block.end());
+            }
+            List<String> found = Redactor.keyBlocks(text.toString()).stream().map(b -> b[0] + "-" + b[1]).toList();
+            assertEquals(expected, found, text::toString);
+            withBlocks += expected.isEmpty() ? 0 : 1;
+        }
+        assertTrue(withBlocks > 5_000, "too few texts with blocks: " + withBlocks);
+    }
+
     @Test
     void masksAChainPastTheNestingCapWhoseStringIsQuotedWithUnicodeEscapes() {
         // Codex security round 5: past NESTED_LEVELS, a string whose quotes are spelled \\u0022 in the text has no
