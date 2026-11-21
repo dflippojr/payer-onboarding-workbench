@@ -4215,39 +4215,274 @@ class RedactorTest {
     }
 
     /**
-     * The open-key check (#396) and the label trie it uses take no hash of a label: a hashed index costs a log factor
-     * more on labels chosen to collide, which {@link #findsUnterminatedKeysInLinearTime} cannot tell from noise on this
-     * path, so the absence of hashing is checked in the source. Fails if either body names a hash-based collection or
-     * takes a hash code.
+     * The armor-label index (#396, #399) takes no hash of a label: a hashed index costs a log factor more on labels
+     * chosen to collide, which {@link #findsUnterminatedKeysInLinearTime} cannot tell from noise on this path, so the
+     * absence of hashing is checked in the code. {@link #labelIndexViolations} reads the code as the compiler does, so
+     * comments and literals play no part: {@link Redactor#opensAnUnterminatedKey} and {@link Redactor#keyBlocks} must
+     * each add and find labels through {@code ArmorLabels}, and they, and every method or constructor of
+     * {@link Redactor} they reach, may call only {@link #LABEL_INDEX_CALLEES}, never a hashing method.
      */
     @Test
     void indexesFooterLabelsWithoutHashing() throws java.io.IOException {
-        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
-                "src/main/java/io/github/dflippojr/payerworkbench/core/Redactor.java"));
-        String check = body(source, "static boolean opensAnUnterminatedKey(String text)");
-        String trie = body(source, "private static final class ArmorLabels");
-        java.util.regex.Pattern hashing = java.util.regex.Pattern.compile(
-                "\\b(?:\\w*Map|\\w*Set|Hashtable|hashCode|Objects\\.hash|\\w*Hash\\w*)\\b");
-        for (String body : List.of(check, trie)) {
-            java.util.regex.Matcher found = hashing.matcher(body);
-            assertFalse(found.find(), () -> "hashes labels with " + found.group() + ":\n" + body);
-        }
-        assertTrue(check.contains("new ArmorLabels()"), check);
+        List<String> found = labelIndexViolations(redactorSource());
+        assertTrue(found.isEmpty(), () -> String.join("\n", found));
     }
 
-    /** The braced body that follows {@code declaration} in {@code source}, braces included. */
-    private static String body(String source, String declaration) {
-        int at = source.indexOf(declaration);
-        assertTrue(at >= 0, declaration);
-        int open = source.indexOf('{', at);
-        int depth = 0;
-        for (int i = open; i < source.length(); i++) {
-            depth += source.charAt(i) == '{' ? 1 : source.charAt(i) == '}' ? -1 : 0;
-            if (depth == 0) {
-                return source.substring(open, i + 1);
+    @Test
+    void hashFreeGuardIgnoresCommentsAndLiterals() throws java.io.IOException {
+        String source = redactorSource();
+        String named = "        // A HashMap, HashSet, Hashtable or Objects.hash here would hash the labels.\n"
+                + "        String hashing = \"new java.util.HashMap<>().put(label.hashCode(), label)\";\n";
+        String variant = replaceOnce(source, "    static boolean opensAnUnterminatedKey(String text) {\n",
+                "    static boolean opensAnUnterminatedKey(String text) {\n" + named);
+        variant = replaceOnce(variant, "    static List<int[]> keyBlocks(String text) {\n",
+                "    static List<int[]> keyBlocks(String text) {\n" + named);
+        List<String> found = labelIndexViolations(variant);
+        assertTrue(found.isEmpty(), () -> String.join("\n", found));
+    }
+
+    @Test
+    void hashFreeGuardFailsWhenTheIndexStopsGoingThroughArmorLabels() throws java.io.IOException {
+        String source = redactorSource();
+        // The open-key check looks its headers up in a hash map instead of the trie.
+        assertViolations(replaceOnce(source,
+                """
+                            int node = labels.find(text, header.start(1), header.end(1));
+                            if (node < 0 || labels.last.get(node) < header.end()) {
+                """,
+                """
+                            Integer node = new HashMap<String, Integer>().get(header.group(1));
+                            if (node == null || node < header.end()) {
+                """),
+                "opensAnUnterminatedKey does not call Redactor.ArmorLabels.find",
+                "calls java.util.HashMap.<init>", "calls java.util.HashMap.get");
+        // The block search looks its headers up in a sorted map: no hash, but not the trie either.
+        assertViolations(replaceOnce(source,
+                "            int node = labels.find(text, labelStart, labelEnd);\n",
+                "            int node = new TreeMap<String, Integer>().getOrDefault(text.substring(labelStart, labelEnd), -1);\n"),
+                "keyBlocks does not call Redactor.ArmorLabels.find", "calls java.util.TreeMap.<init>",
+                "calls java.util.Map.getOrDefault");
+        // The trie hands each label to a helper outside it that hashes it.
+        String delegated = replaceOnce(source,
+                """
+                        int find(String text, int start, int end) {
+                            int node = 0;
+                """,
+                """
+                        int find(String text, int start, int end) {
+                            int node = labelSlot(text.substring(start, end)) < 0 ? -1 : 0;
+                """);
+        delegated = replaceOnce(delegated, "    /** A growable list of ints, without boxing. */\n",
+                "    static int labelSlot(String label) {\n        return Math.floorMod(java.util.Objects.hash(label), 64);\n    }\n\n"
+                        + "    /** A growable list of ints, without boxing. */\n");
+        assertViolations(delegated, "in Redactor.labelSlot(java.lang.String): hashes with java.util.Objects.hash");
+        // A switch on a label hashes it with no call in the source.
+        assertViolations(replaceOnce(source,
+                "            int node = labels.find(text, header.start(1), header.end(1));\n",
+                "            int node = switch (header.group(1)) { case \"PRIVATE KEY\" -> 0; default -> labels.find(text, header.start(1), header.end(1)); };\n"),
+                "switches on a String");
+        // The trie takes a hash code itself.
+        assertViolations(replaceOnce(source,
+                """
+                        private int child(int node, char c) {
+                            int child = firstChild.get(node);
+                """,
+                """
+                        private int child(int node, char c) {
+                            int child = firstChild.get(node) + edge.toString().hashCode() * 0;
+                """),
+                "hashes with java.lang.String.hashCode");
+    }
+
+    /** The source of {@link Redactor}, read from this module. */
+    private static String redactorSource() throws java.io.IOException {
+        return java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/io/github/dflippojr/payerworkbench/core/Redactor.java"));
+    }
+
+    /** {@code source} with its one {@code target} replaced, failing if {@code target} is not there exactly once. */
+    private static String replaceOnce(String source, String target, String replacement) {
+        int at = source.indexOf(target);
+        assertTrue(at >= 0 && source.indexOf(target, at + 1) < 0, () -> "not found once in Redactor.java:\n" + target);
+        return source.substring(0, at) + replacement + source.substring(at + target.length());
+    }
+
+    /** Asserts that {@link #labelIndexViolations} reports each of {@code expected} (as a substring) for {@code source}. */
+    private static void assertViolations(String source, String... expected) {
+        List<String> found = labelIndexViolations(source);
+        for (String violation : expected) {
+            assertTrue(found.stream().anyMatch(f -> f.contains(violation)),
+                    () -> "missing \"" + violation + "\" in:\n" + String.join("\n", found));
+        }
+    }
+
+    /** The classes whose methods the armor-label index code may call: none of them hashes what it is given. */
+    private static final Set<String> LABEL_INDEX_CALLEES = Set.of("java.lang.Object", "java.lang.String",
+            "java.lang.StringBuilder", "java.lang.AbstractStringBuilder", "java.lang.Math", "java.util.regex.Pattern", "java.util.regex.Matcher",
+            "java.util.List", "java.util.ArrayList", "java.util.Arrays");
+    /** Methods that hash, or look up a hash table, whatever class declares them. */
+    private static final Set<String> HASHING_METHODS = Set.of("hashCode", "identityHashCode", "intern", "hash");
+
+    /**
+     * What breaks the hash-free rule in {@code source}, a version of {@code Redactor.java}, as compiled by the JDK's
+     * compiler against this module's classes. From {@code opensAnUnterminatedKey} and {@code keyBlocks} it follows
+     * every method and constructor of {@link Redactor} or its nested classes that they call, with the field
+     * initializers of each class whose constructor is called, and reports: a root that does not call
+     * {@code ArmorLabels.add} and {@code ArmorLabels.find}; a call or method reference to any other class not in
+     * {@link #LABEL_INDEX_CALLEES}; a call to one of {@link #HASHING_METHODS}; and a switch on a {@code String}, which
+     * compiles to a hash code. Comments and literals are not part of the tree it reads.
+     */
+    private static List<String> labelIndexViolations(String source) {
+        javax.tools.JavaCompiler compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
+        org.junit.jupiter.api.Assertions.assertNotNull(compiler, "the hash-free guard needs the JDK's compiler");
+        javax.tools.JavaFileObject file = new javax.tools.SimpleJavaFileObject(java.net.URI.create(
+                "string:///io/github/dflippojr/payerworkbench/core/Redactor.java"), javax.tools.JavaFileObject.Kind.SOURCE) {
+            @Override
+            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+                return source;
+            }
+        };
+        javax.tools.DiagnosticCollector<javax.tools.JavaFileObject> diagnostics = new javax.tools.DiagnosticCollector<>();
+        String classPath = "target/classes" + java.io.File.pathSeparator + System.getProperty("java.class.path");
+        com.sun.source.util.JavacTask task = (com.sun.source.util.JavacTask) compiler.getTask(null, null, diagnostics,
+                List.of("-proc:none", "-implicit:none", "-classpath", classPath), null, List.of(file));
+        List<com.sun.source.tree.CompilationUnitTree> units = new ArrayList<>();
+        try {
+            task.parse().forEach(units::add);
+            task.analyze();
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        List<String> errors = diagnostics.getDiagnostics().stream()
+                .filter(d -> d.getKind() == javax.tools.Diagnostic.Kind.ERROR).map(Object::toString).toList();
+        assertTrue(errors.isEmpty(), () -> "Redactor.java does not compile:\n" + String.join("\n", errors));
+        com.sun.source.util.Trees trees = com.sun.source.util.Trees.instance(task);
+        javax.lang.model.util.Elements elements = task.getElements();
+        javax.lang.model.element.TypeElement redactor = elements.getTypeElement(Redactor.class.getName());
+        String labelsClass = Redactor.class.getName() + ".ArmorLabels";
+
+        List<String> violations = new ArrayList<>();
+        Map<javax.lang.model.element.Element, Set<String>> calls = new LinkedHashMap<>();
+        ArrayDeque<javax.lang.model.element.Element> pending = new ArrayDeque<>();
+        Set<javax.lang.model.element.Element> seen = new LinkedHashSet<>();
+        List<javax.lang.model.element.ExecutableElement> roots = new ArrayList<>();
+        for (String name : List.of("opensAnUnterminatedKey", "keyBlocks")) {
+            javax.lang.model.element.ExecutableElement root = redactor.getEnclosedElements().stream()
+                    .filter(e -> e.getKind() == javax.lang.model.element.ElementKind.METHOD
+                            && e.getSimpleName().contentEquals(name))
+                    .map(javax.lang.model.element.ExecutableElement.class::cast).findFirst()
+                    .orElseThrow(() -> new AssertionError("Redactor has no method " + name));
+            roots.add(root);
+            pending.add(root);
+        }
+        while (!pending.isEmpty()) {
+            javax.lang.model.element.Element next = pending.poll();
+            if (!seen.add(next)) {
+                continue;
+            }
+            Set<String> called = calls.computeIfAbsent(next, e -> new LinkedHashSet<>());
+            String where = next instanceof javax.lang.model.element.TypeElement type
+                    ? simpleName(type) + " fields"
+                    : simpleName((javax.lang.model.element.TypeElement) next.getEnclosingElement()) + "." + next;
+            List<com.sun.source.util.TreePath> bodies = new ArrayList<>();
+            if (next instanceof javax.lang.model.element.TypeElement type) {
+                // The instance field initializers and initializer blocks that a constructor of the class runs.
+                com.sun.source.util.TreePath typePath = trees.getPath(type);
+                for (com.sun.source.tree.Tree member : ((com.sun.source.tree.ClassTree) typePath.getLeaf()).getMembers()) {
+                    boolean instance = member instanceof com.sun.source.tree.VariableTree variable
+                            ? !variable.getModifiers().getFlags().contains(javax.lang.model.element.Modifier.STATIC)
+                            : member instanceof com.sun.source.tree.BlockTree block && !block.isStatic();
+                    if (instance) {
+                        bodies.add(new com.sun.source.util.TreePath(typePath, member));
+                    }
+                }
+            } else {
+                com.sun.source.util.TreePath path = trees.getPath(next);
+                com.sun.source.tree.Tree leaf = path == null ? null : path.getLeaf();
+                if (!(leaf instanceof com.sun.source.tree.MethodTree method) || method.getBody() == null) {
+                    violations.add("in " + where + ": no body to follow");
+                    continue;
+                }
+                bodies.add(new com.sun.source.util.TreePath(path, method.getBody()));
+            }
+            com.sun.source.util.TreePathScanner<Void, Void> scanner = new com.sun.source.util.TreePathScanner<>() {
+                @Override
+                public Void visitMethodInvocation(com.sun.source.tree.MethodInvocationTree node, Void unused) {
+                    reach(trees.getElement(getCurrentPath()), node);
+                    return super.visitMethodInvocation(node, unused);
+                }
+
+                @Override
+                public Void visitNewClass(com.sun.source.tree.NewClassTree node, Void unused) {
+                    reach(trees.getElement(getCurrentPath()), node);
+                    return super.visitNewClass(node, unused);
+                }
+
+                @Override
+                public Void visitMemberReference(com.sun.source.tree.MemberReferenceTree node, Void unused) {
+                    reach(trees.getElement(getCurrentPath()), node);
+                    return super.visitMemberReference(node, unused);
+                }
+
+                @Override
+                public Void visitSwitch(com.sun.source.tree.SwitchTree node, Void unused) {
+                    selector(node.getExpression());
+                    return super.visitSwitch(node, unused);
+                }
+
+                @Override
+                public Void visitSwitchExpression(com.sun.source.tree.SwitchExpressionTree node, Void unused) {
+                    selector(node.getExpression());
+                    return super.visitSwitchExpression(node, unused);
+                }
+
+                private void selector(com.sun.source.tree.ExpressionTree expression) {
+                    javax.lang.model.type.TypeMirror type = trees.getTypeMirror(
+                            new com.sun.source.util.TreePath(getCurrentPath(), expression));
+                    if (type != null && type.toString().equals("java.lang.String")) {
+                        violations.add("in " + where + ": switches on a String, which hashes it");
+                    }
+                }
+
+                private void reach(javax.lang.model.element.Element target, com.sun.source.tree.Tree node) {
+                    if (!(target instanceof javax.lang.model.element.ExecutableElement method)) {
+                        violations.add("in " + where + ": cannot resolve " + node);
+                        return;
+                    }
+                    javax.lang.model.element.TypeElement owner =
+                            (javax.lang.model.element.TypeElement) method.getEnclosingElement();
+                    String ownerName = owner.getQualifiedName().toString();
+                    String name = method.getSimpleName().toString();
+                    called.add(ownerName + "." + name);
+                    if (HASHING_METHODS.contains(name)) {
+                        violations.add("in " + where + ": hashes with " + ownerName + "." + name);
+                    } else if (ownerName.equals(Redactor.class.getName())
+                            || ownerName.startsWith(Redactor.class.getName() + ".")) {
+                        pending.add(method);
+                        if (method.getKind() == javax.lang.model.element.ElementKind.CONSTRUCTOR) {
+                            pending.add(owner);
+                        }
+                    } else if (!LABEL_INDEX_CALLEES.contains(ownerName)) {
+                        violations.add("in " + where + ": calls " + ownerName + "." + name);
+                    }
+                }
+            };
+            bodies.forEach(body -> scanner.scan(body, null));
+        }
+        for (javax.lang.model.element.ExecutableElement root : roots) {
+            for (String operation : List.of("add", "find")) {
+                if (!calls.get(root).contains(labelsClass + "." + operation)) {
+                    violations.add(root.getSimpleName() + " does not call Redactor.ArmorLabels." + operation);
+                }
             }
         }
-        throw new AssertionError("unbalanced braces after " + declaration);
+        return violations;
+    }
+
+    /** {@code type}'s name inside its package, such as {@code Redactor.ArmorLabels}. */
+    private static String simpleName(javax.lang.model.element.TypeElement type) {
+        String qualified = type.getQualifiedName().toString();
+        return qualified.substring(qualified.lastIndexOf('.', qualified.lastIndexOf("Redactor")) + 1);
     }
 
     /** The private key header and footer patterns of {@link Redactor}, for {@link #opensAnUnterminatedKeyByHash}. */
