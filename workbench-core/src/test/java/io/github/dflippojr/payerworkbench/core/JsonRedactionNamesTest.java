@@ -19,6 +19,7 @@ import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -91,6 +92,18 @@ class JsonRedactionNamesTest {
                         "            if (!names.add(redactedName)) {\n",
                         "            if (!names.add(redactedName) || java.util.Set.of(redactedName).isEmpty()) {\n"),
                 "in JsonRedaction.redact(Node): makes a java.util.Set<java.lang.String>");
+        // A name check hands its names to a helper of the class that indexes them in a hash set.
+        assertViolations(CompiledSource.replaceOnce(CompiledSource.replaceOnce(source,
+                        "            if (!names.add(redactedName)) {\n",
+                        "            if (!names.add(redactedName) || !seenBefore(seen, redactedName)) {\n"),
+                        "    /** {@code text} as Jackson's encoder spells a JSON string, quotes included. */\n",
+                        "    private static final java.util.Set<String> seen = new java.util.HashSet<>();\n\n"
+                                + "    private static boolean seenBefore(java.util.Set<String> seen, String name) {\n"
+                                + "        java.util.Set<String> copy = new java.util.HashSet<>(seen);\n"
+                                + "        return copy.add(name);\n    }\n\n"
+                                + "    /** {@code text} as Jackson's encoder spells a JSON string, quotes included. */\n"),
+                "in JsonRedaction.seenBefore: constructs java.util.HashSet",
+                "in JsonRedaction.seenBefore: indexes with java.util.Set<java.lang.String>.add");
         // The index hands each name to a helper outside it that hashes it.
         assertViolations(CompiledSource.replaceOnce(source,
                         "            int length = name.length();\n",
@@ -259,7 +272,7 @@ class JsonRedactionNamesTest {
                 fanOutNames(16 * scale, 2_048), prefixChainNames(256 * scale, 64));
     }
 
-    /** {@code 2^pairs} distinct names of equal hash: a shared beginning, then each pair one of two equal-hash pairs. */
+    /** {@code 2^pairs} distinct names chosen to collide in a hash. */
     static List<String> collidingNames(int pairs, int shared) {
         String start = "n".repeat(shared);
         List<String> names = new ArrayList<>(1 << pairs);
@@ -354,7 +367,7 @@ class JsonRedactionNamesTest {
      * {@code JsonRedaction.Names}, a call or method reference to a class other than {@code Names} itself and
      * {@link #NAMES_CALLEES}, a call to one of {@link #HASHING_METHODS}, or a switch on a {@code String}, which
      * compiles to a hash code; a method of {@link #NAME_CHECKS} that does not call {@code Names.add}; and in the
-     * methods of {@link #NAME_SITES}, any set or map they make (constructed, or returned by a static factory), any
+     * methods of {@link #NAME_SITES} and every method of {@link JsonRedaction} they reach, any set or map they make (constructed, or returned by a static factory), any
      * {@link #INDEXING_METHODS} call on a set or map, or a switch on a {@code String}. Fixed sets of names that are
      * only looked up, such as {@link Redactor#JWK_PRIVATE_MEMBERS}, are not indexes and are not reported.
      */
@@ -371,6 +384,7 @@ class JsonRedactionNamesTest {
             new Rules(trees, types, "Names", violations, true).scan(path, null);
         }
         TypeElement redaction = compiled.type(JSON_REDACTION);
+        ArrayDeque<ExecutableElement> pending = new ArrayDeque<>();
         for (String site : NAME_SITES) {
             ExecutableElement method = method(compiled, redaction, site);
             if (method == null) {
@@ -383,6 +397,22 @@ class JsonRedactionNamesTest {
             if (NAME_CHECKS.contains(site) && !rules.called.contains(NAMES + ".add")) {
                 violations.add(site + " does not call JsonRedaction.Names.add");
             }
+            pending.addAll(rules.reached);
+        }
+        // What the sites call in JsonRedaction, transitively, follows the same rules: an index built in a helper is
+        // still an index of the names. Calls out of JsonRedaction (Jackson, the text engine) are not followed.
+        Set<ExecutableElement> seen = new LinkedHashSet<>();
+        while (!pending.isEmpty()) {
+            ExecutableElement next = pending.poll();
+            TreePath path = trees.getPath(next);
+            if (!seen.add(next) || path == null || !(path.getLeaf() instanceof MethodTree tree) || tree.getBody() == null) {
+                // A record's implicit members have no body of their own.
+                continue;
+            }
+            String where = ((TypeElement) next.getEnclosingElement()).getSimpleName() + "." + next.getSimpleName();
+            Rules rules = new Rules(trees, types, where, violations, false);
+            rules.scan(new TreePath(path, tree.getBody()), null);
+            pending.addAll(rules.reached);
         }
         return violations;
     }
@@ -415,6 +445,8 @@ class JsonRedactionNamesTest {
         /** Whether this is {@code Names} itself, which may call only itself and {@link #NAMES_CALLEES}. */
         private final boolean index;
         final Set<String> called = new LinkedHashSet<>();
+        /** The methods and constructors of {@link JsonRedaction} and its nested classes, other than {@code Names}, called. */
+        final Set<ExecutableElement> reached = new LinkedHashSet<>();
 
         Rules(Trees trees, Types types, String where, List<String> violations, boolean index) {
             this.trees = trees;
@@ -495,6 +527,9 @@ class JsonRedactionNamesTest {
             String owner = ((TypeElement) method.getEnclosingElement()).getQualifiedName().toString();
             String name = method.getSimpleName().toString();
             called.add(owner + "." + name);
+            if ((owner.equals(JSON_REDACTION) || owner.startsWith(JSON_REDACTION + ".")) && !owner.equals(NAMES)) {
+                reached.add(method);
+            }
             if (HASHING_METHODS.contains(name)) {
                 violations.add("in " + where + ": hashes with " + owner + "." + name);
             } else if (index && !owner.equals(NAMES) && !NAMES_CALLEES.contains(owner)) {

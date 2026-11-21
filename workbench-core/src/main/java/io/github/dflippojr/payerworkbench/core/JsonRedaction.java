@@ -684,7 +684,7 @@ final class JsonRedaction {
         Container container = (Container) node;
         boolean jwk = container.object() && container.members().stream().anyMatch(m -> KTY.equals(m.name()));
         List<Member> members = new ArrayList<>(container.members().size());
-        Names names = new Names();
+        Names names = container.object() ? new Names() : null;
         for (Member member : container.members()) {
             if (!container.object()) {
                 members.add(new Member(null, null, null, redact(member.value(), level, Place.ITEM)));
