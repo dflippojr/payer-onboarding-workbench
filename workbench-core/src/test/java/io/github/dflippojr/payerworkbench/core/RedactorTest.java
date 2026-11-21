@@ -680,10 +680,19 @@ class RedactorTest {
 
     /** The shapes that {@link #findsJwksInLinearTime} times, in order, and the ones whose time grows too fast. */
     private static List<String> growthBeyondLinear(List<String> small, List<String> large) {
+        return growthBeyondLinear(small, large, String::length, Redactor::redact);
+    }
+
+    /**
+     * The shapes whose time to {@code run} grows too fast from {@code small} to {@code large}, each shape timed as
+     * {@link #findsJwksInLinearTime} times its texts, with {@code length} as its length.
+     */
+    static <T> List<String> growthBeyondLinear(List<T> small, List<T> large, java.util.function.ToIntFunction<T> length,
+            java.util.function.Consumer<T> run) {
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         for (int shape = 0; shape < small.size(); shape++) {
-            cpuNanosPerRun(threads, small.get(shape));
-            cpuNanosPerRun(threads, large.get(shape));
+            cpuNanosPerRun(threads, small.get(shape), run);
+            cpuNanosPerRun(threads, large.get(shape), run);
         }
         double[] smallNanos = new double[small.size()];
         double[] largeNanos = new double[small.size()];
@@ -691,14 +700,14 @@ class RedactorTest {
         Arrays.fill(largeNanos, Double.MAX_VALUE);
         for (int sample = 0; sample < SAMPLES; sample++) {
             for (int shape = 0; shape < small.size(); shape++) {
-                smallNanos[shape] = Math.min(smallNanos[shape], cpuNanosPerRun(threads, small.get(shape)));
-                largeNanos[shape] = Math.min(largeNanos[shape], cpuNanosPerRun(threads, large.get(shape)));
+                smallNanos[shape] = Math.min(smallNanos[shape], cpuNanosPerRun(threads, small.get(shape), run));
+                largeNanos[shape] = Math.min(largeNanos[shape], cpuNanosPerRun(threads, large.get(shape), run));
             }
         }
         double maxExponent = Math.log(MAX_GROWTH_PER_DOUBLING) / Math.log(2);
         List<String> tooSlow = new ArrayList<>();
         for (int shape = 0; shape < small.size(); shape++) {
-            double lengthRatio = (double) large.get(shape).length() / small.get(shape).length();
+            double lengthRatio = (double) length.applyAsInt(large.get(shape)) / length.applyAsInt(small.get(shape));
             double timeRatio = largeNanos[shape] / smallNanos[shape];
             double exponent = Math.log(timeRatio) / Math.log(lengthRatio);
             if (exponent >= maxExponent) {
@@ -709,13 +718,13 @@ class RedactorTest {
         return tooSlow;
     }
 
-    /** CPU nanoseconds of one {@link Redactor#redact} of {@code text}, averaged over runs of at least {@link #MIN_SAMPLE_NANOS}. */
-    private static double cpuNanosPerRun(ThreadMXBean threads, String text) {
+    /** CPU nanoseconds of one {@code run} of {@code shape}, averaged over runs of at least {@link #MIN_SAMPLE_NANOS}. */
+    private static <T> double cpuNanosPerRun(ThreadMXBean threads, T shape, java.util.function.Consumer<T> run) {
         long start = threads.getCurrentThreadCpuTime();
         int runs = 0;
         long elapsed;
         do {
-            Redactor.redact(text);
+            run.accept(shape);
             runs++;
             elapsed = threads.getCurrentThreadCpuTime() - start;
         } while (elapsed < MIN_SAMPLE_NANOS);
@@ -4296,15 +4305,12 @@ class RedactorTest {
 
     /** The source of {@link Redactor}, read from this module. */
     private static String redactorSource() throws java.io.IOException {
-        return java.nio.file.Files.readString(java.nio.file.Path.of(
-                "src/main/java/io/github/dflippojr/payerworkbench/core/Redactor.java"));
+        return CompiledSource.read("Redactor");
     }
 
     /** {@code source} with its one {@code target} replaced, failing if {@code target} is not there exactly once. */
     private static String replaceOnce(String source, String target, String replacement) {
-        int at = source.indexOf(target);
-        assertTrue(at >= 0 && source.indexOf(target, at + 1) < 0, () -> "not found once in Redactor.java:\n" + target);
-        return source.substring(0, at) + replacement + source.substring(at + target.length());
+        return CompiledSource.replaceOnce(source, target, replacement);
     }
 
     /** Asserts that {@link #labelIndexViolations} reports each of {@code expected} (as a substring) for {@code source}. */
@@ -4333,31 +4339,9 @@ class RedactorTest {
      * compiles to a hash code. Comments and literals are not part of the tree it reads.
      */
     private static List<String> labelIndexViolations(String source) {
-        javax.tools.JavaCompiler compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
-        org.junit.jupiter.api.Assertions.assertNotNull(compiler, "the hash-free guard needs the JDK's compiler");
-        javax.tools.JavaFileObject file = new javax.tools.SimpleJavaFileObject(java.net.URI.create(
-                "string:///io/github/dflippojr/payerworkbench/core/Redactor.java"), javax.tools.JavaFileObject.Kind.SOURCE) {
-            @Override
-            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
-                return source;
-            }
-        };
-        javax.tools.DiagnosticCollector<javax.tools.JavaFileObject> diagnostics = new javax.tools.DiagnosticCollector<>();
-        String classPath = "target/classes" + java.io.File.pathSeparator + System.getProperty("java.class.path");
-        com.sun.source.util.JavacTask task = (com.sun.source.util.JavacTask) compiler.getTask(null, null, diagnostics,
-                List.of("-proc:none", "-implicit:none", "-classpath", classPath), null, List.of(file));
-        List<com.sun.source.tree.CompilationUnitTree> units = new ArrayList<>();
-        try {
-            task.parse().forEach(units::add);
-            task.analyze();
-        } catch (java.io.IOException e) {
-            throw new java.io.UncheckedIOException(e);
-        }
-        List<String> errors = diagnostics.getDiagnostics().stream()
-                .filter(d -> d.getKind() == javax.tools.Diagnostic.Kind.ERROR).map(Object::toString).toList();
-        assertTrue(errors.isEmpty(), () -> "Redactor.java does not compile:\n" + String.join("\n", errors));
-        com.sun.source.util.Trees trees = com.sun.source.util.Trees.instance(task);
-        javax.lang.model.util.Elements elements = task.getElements();
+        CompiledSource compiled = CompiledSource.compile("Redactor", source);
+        com.sun.source.util.Trees trees = compiled.trees();
+        javax.lang.model.util.Elements elements = compiled.elements();
         javax.lang.model.element.TypeElement redactor = elements.getTypeElement(Redactor.class.getName());
         String labelsClass = Redactor.class.getName() + ".ArmorLabels";
 
