@@ -4054,6 +4054,36 @@ class RedactorTest {
                 "-----BEGIN PRIVATE KEY-----\n".repeat(n));
     }
 
+    /** The whole-block key search before #390, which {@link Redactor#keyBlocks} must match block for block. */
+    private static final java.util.regex.Pattern LAZY_KEY_BLOCK = java.util.regex.Pattern.compile(
+            "-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \\1-----", java.util.regex.Pattern.DOTALL);
+
+    @Test
+    void findsTheSameKeyBlocksAsTheLazySearch() {
+        // Seeded texts of armor pieces: headers and footers of a few labels (also empty, spaced, or lower case), extra
+        // and missing dashes, headers inside headers, and filler, so blocks nest, overlap, share footers and go unclosed.
+        List<String> pieces = List.of("-----BEGIN ", "-----END ", "-----", "-", "A", "B", "AB", " ", "a", "\n", "x",
+                "BEGIN ", "END ", "PRIVATE KEY", "-----BEGIN A-----", "-----END A-----", "-----BEGIN B-----",
+                "-----END B-----", "-----BEGIN AB-----", "-----END AB-----", "------END A------");
+        java.util.Random random = new java.util.Random(390);
+        int withBlocks = 0;
+        for (int i = 0; i < 50_000; i++) {
+            StringBuilder text = new StringBuilder();
+            for (int n = random.nextInt(24); n > 0; n--) {
+                text.append(pieces.get(random.nextInt(pieces.size())));
+            }
+            List<String> expected = new ArrayList<>();
+            java.util.regex.Matcher block = LAZY_KEY_BLOCK.matcher(text);
+            while (block.find()) {
+                expected.add(block.start() + "-" + block.end());
+            }
+            List<String> found = Redactor.keyBlocks(text.toString()).stream().map(b -> b[0] + "-" + b[1]).toList();
+            assertEquals(expected, found, text::toString);
+            withBlocks += expected.isEmpty() ? 0 : 1;
+        }
+        assertTrue(withBlocks > 5_000, "too few texts with blocks: " + withBlocks);
+    }
+
     @Test
     void masksAChainPastTheNestingCapWhoseStringIsQuotedWithUnicodeEscapes() {
         // Codex security round 5: past NESTED_LEVELS, a string whose quotes are spelled \\u0022 in the text has no

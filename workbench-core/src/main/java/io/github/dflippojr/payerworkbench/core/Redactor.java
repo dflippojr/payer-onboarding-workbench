@@ -55,12 +55,15 @@ public final class Redactor {
     /** Replacement text for masked material. */
     public static final String MASK = "[REDACTED]";
 
-    private static final Pattern PEM_BLOCK = Pattern.compile(
-            "-----BEGIN ([A-Z0-9 ]+)-----.*?-----END \\1-----", Pattern.DOTALL);
+    /** Where an armor header starts: its label follows, then {@link #ARMOR_DASHES}. */
+    private static final String ARMOR_BEGIN = "-----BEGIN ";
+    /** Where an armor footer starts: the label of the header it closes follows, then {@link #ARMOR_DASHES}. */
+    private static final String ARMOR_END = "-----END ";
+    private static final String ARMOR_DASHES = "-----";
 
     /**
      * A private key header, PEM or PGP ({@code PRIVATE KEY BLOCK}), not already masked. One that is in no
-     * {@link #PEM_BLOCK} has no matching footer (a truncated paste) and is masked to the end of the text.
+     * {@link #keyBlocks} block has no matching footer (a truncated paste) and is masked to the end of the text.
      */
     private static final Pattern UNTERMINATED_PEM_KEY = Pattern.compile(
             "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----(?!\\s*" + Pattern.quote(MASK) + ")");
@@ -2318,11 +2321,9 @@ public final class Redactor {
      */
     private static List<Mask> pemMasks(String text) {
         List<Mask> masks = new ArrayList<>();
-        Matcher block = PEM_BLOCK.matcher(text);
-        List<int[]> blocks = new ArrayList<>();
-        while (block.find()) {
-            masks.add(new Mask(block.start(), block.end(), MASK));
-            blocks.add(new int[] {block.start(), block.end()});
+        List<int[]> blocks = keyBlocks(text);
+        for (int[] block : blocks) {
+            masks.add(new Mask(block[0], block[1], MASK));
         }
         // The blocks are in order and apart: one pointer walks them as the headers are found, and a header in a
         // block resumes the search after that block, so the text is read once.
@@ -2346,6 +2347,62 @@ public final class Redactor {
             masks.add(new Mask(armor.start(), armor.end(), MASK));
         }
         return masks;
+    }
+
+    /**
+     * Every terminated armor block in the text, in order, as {@code {start, end}}: an armor header of a label of
+     * capital letters, digits and spaces, up to the first footer of the same label after it, and the next block
+     * searched for after that footer. A header with no such footer opens no block. This is what the regular expression
+     * {@code -----BEGIN ([A-Z0-9 ]+)-----.*?-----END \1-----} (DOTALL) finds in turn, found in one linear pass (#390).
+     *
+     * <p>A label is the whole run of label characters after the armor word, as the dashes after it are not label
+     * characters, so each header and footer has one label. The footers are listed by label first. The headers are
+     * then read in order, and a header's end is past every earlier header's, so a footer that starts before it can
+     * close no later header either and is dropped: each footer is passed once.
+     */
+    static List<int[]> keyBlocks(String text) {
+        Map<String, java.util.ArrayDeque<int[]>> footers = new HashMap<>();
+        for (int at = text.indexOf(ARMOR_END); at >= 0; at = text.indexOf(ARMOR_END, at + 1)) {
+            int labelStart = at + ARMOR_END.length();
+            int labelEnd = armorLabelEnd(text, labelStart);
+            if (labelEnd > labelStart && text.startsWith(ARMOR_DASHES, labelEnd)) {
+                footers.computeIfAbsent(text.substring(labelStart, labelEnd), label -> new java.util.ArrayDeque<>())
+                        .add(new int[] {at, labelEnd + ARMOR_DASHES.length()});
+            }
+        }
+        List<int[]> blocks = new ArrayList<>();
+        int from = 0;
+        for (int at = text.indexOf(ARMOR_BEGIN); at >= 0; at = text.indexOf(ARMOR_BEGIN, Math.max(at + 1, from))) {
+            int labelStart = at + ARMOR_BEGIN.length();
+            int labelEnd = armorLabelEnd(text, labelStart);
+            if (labelEnd == labelStart || !text.startsWith(ARMOR_DASHES, labelEnd)) {
+                continue;
+            }
+            java.util.ArrayDeque<int[]> closing = footers.get(text.substring(labelStart, labelEnd));
+            int headerEnd = labelEnd + ARMOR_DASHES.length();
+            while (closing != null && !closing.isEmpty() && closing.peekFirst()[0] < headerEnd) {
+                closing.pollFirst();
+            }
+            if (closing != null && !closing.isEmpty()) {
+                int end = closing.pollFirst()[1];
+                blocks.add(new int[] {at, end});
+                from = end;
+            }
+        }
+        return blocks;
+    }
+
+    /** Where the run of armor label characters (capital letters, digits and spaces) that starts at {@code at} ends. */
+    private static int armorLabelEnd(String text, int at) {
+        int end = at;
+        while (end < text.length() && isArmorLabelChar(text.charAt(end))) {
+            end++;
+        }
+        return end;
+    }
+
+    private static boolean isArmorLabelChar(char c) {
+        return c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == ' ';
     }
 
     /**
