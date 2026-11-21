@@ -680,10 +680,19 @@ class RedactorTest {
 
     /** The shapes that {@link #findsJwksInLinearTime} times, in order, and the ones whose time grows too fast. */
     private static List<String> growthBeyondLinear(List<String> small, List<String> large) {
+        return growthBeyondLinear(small, large, String::length, Redactor::redact);
+    }
+
+    /**
+     * The shapes whose time to {@code run} grows too fast from {@code small} to {@code large}, each shape timed as
+     * {@link #findsJwksInLinearTime} times its texts, with {@code length} as its length.
+     */
+    static <T> List<String> growthBeyondLinear(List<T> small, List<T> large, java.util.function.ToIntFunction<T> length,
+            java.util.function.Consumer<T> run) {
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         for (int shape = 0; shape < small.size(); shape++) {
-            cpuNanosPerRun(threads, small.get(shape));
-            cpuNanosPerRun(threads, large.get(shape));
+            cpuNanosPerRun(threads, small.get(shape), run);
+            cpuNanosPerRun(threads, large.get(shape), run);
         }
         double[] smallNanos = new double[small.size()];
         double[] largeNanos = new double[small.size()];
@@ -691,14 +700,14 @@ class RedactorTest {
         Arrays.fill(largeNanos, Double.MAX_VALUE);
         for (int sample = 0; sample < SAMPLES; sample++) {
             for (int shape = 0; shape < small.size(); shape++) {
-                smallNanos[shape] = Math.min(smallNanos[shape], cpuNanosPerRun(threads, small.get(shape)));
-                largeNanos[shape] = Math.min(largeNanos[shape], cpuNanosPerRun(threads, large.get(shape)));
+                smallNanos[shape] = Math.min(smallNanos[shape], cpuNanosPerRun(threads, small.get(shape), run));
+                largeNanos[shape] = Math.min(largeNanos[shape], cpuNanosPerRun(threads, large.get(shape), run));
             }
         }
         double maxExponent = Math.log(MAX_GROWTH_PER_DOUBLING) / Math.log(2);
         List<String> tooSlow = new ArrayList<>();
         for (int shape = 0; shape < small.size(); shape++) {
-            double lengthRatio = (double) large.get(shape).length() / small.get(shape).length();
+            double lengthRatio = (double) length.applyAsInt(large.get(shape)) / length.applyAsInt(small.get(shape));
             double timeRatio = largeNanos[shape] / smallNanos[shape];
             double exponent = Math.log(timeRatio) / Math.log(lengthRatio);
             if (exponent >= maxExponent) {
@@ -709,13 +718,13 @@ class RedactorTest {
         return tooSlow;
     }
 
-    /** CPU nanoseconds of one {@link Redactor#redact} of {@code text}, averaged over runs of at least {@link #MIN_SAMPLE_NANOS}. */
-    private static double cpuNanosPerRun(ThreadMXBean threads, String text) {
+    /** CPU nanoseconds of one {@code run} of {@code shape}, averaged over runs of at least {@link #MIN_SAMPLE_NANOS}. */
+    private static <T> double cpuNanosPerRun(ThreadMXBean threads, T shape, java.util.function.Consumer<T> run) {
         long start = threads.getCurrentThreadCpuTime();
         int runs = 0;
         long elapsed;
         do {
-            Redactor.redact(text);
+            run.accept(shape);
             runs++;
             elapsed = threads.getCurrentThreadCpuTime() - start;
         } while (elapsed < MIN_SAMPLE_NANOS);

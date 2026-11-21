@@ -1,5 +1,8 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.source.tree.ExpressionTree;
@@ -15,9 +18,14 @@ import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
@@ -50,6 +58,277 @@ class JsonRedactionNamesTest {
     void indexesMemberNamesWithoutHashing() throws IOException {
         List<String> found = namesIndexViolations(CompiledSource.read("JsonRedaction"));
         assertTrue(found.isEmpty(), () -> String.join("\n", found));
+    }
+
+    @Test
+    void hashFreeGuardIgnoresCommentsAndLiterals() throws IOException {
+        String named = "            // A HashSet, HashMap or Objects.hash here would hash the names.\n"
+                + "            String hashing = \"new java.util.HashSet<String>().add(name.hashCode() + name)\";\n";
+        String variant = CompiledSource.replaceOnce(CompiledSource.read("JsonRedaction"),
+                "        boolean add(String name) {\n", "        boolean add(String name) {\n" + named);
+        List<String> found = namesIndexViolations(variant);
+        assertTrue(found.isEmpty(), () -> String.join("\n", found));
+    }
+
+    @Test
+    void hashFreeGuardFailsWhenANameCheckStopsGoingThroughNames() throws IOException {
+        String source = CompiledSource.read("JsonRedaction");
+        // The text reader checks its names in a hash set, as before #398.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            Names names = object ? new Names() : null;\n",
+                        "            java.util.Set<String> names = new java.util.HashSet<>();\n"),
+                "in Reader.readContainer: constructs java.util.HashSet",
+                "Reader.readContainer does not call JsonRedaction.Names.add");
+        // The tree reader checks its names in a sorted set: no hash, but not linear in the names either.
+        assertViolations(CompiledSource.replaceOnce(CompiledSource.replaceOnce(source,
+                        "                Names names = new Names();\n",
+                        "                java.util.Set<String> names = new java.util.TreeSet<>();\n"),
+                        "        private String name(String name, Names names) {",
+                        "        private String name(String name, java.util.Set<String> names) {"),
+                "in TreeReader.read: constructs java.util.TreeSet", "TreeReader.name does not call JsonRedaction.Names.add");
+        // The redacted names are collected by a factory instead.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            if (!names.add(redactedName)) {\n",
+                        "            if (!names.add(redactedName) || java.util.Set.of(redactedName).isEmpty()) {\n"),
+                "in JsonRedaction.redact(Node): makes a java.util.Set<java.lang.String>");
+        // The index hands each name to a helper outside it that hashes it.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            int length = name.length();\n",
+                        "            int length = name.length() + java.util.Objects.hash(name) * 0;\n"),
+                "in Names: hashes with java.util.Objects.hash");
+        // The index takes a hash code itself, or keeps its names in a hash map.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            int length = name.length();\n",
+                        "            int length = name.length() + name.hashCode() * 0;\n"),
+                "in Names: hashes with java.lang.String.hashCode");
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            int length = name.length();\n",
+                        "            int length = new java.util.HashMap<String, Integer>().getOrDefault(name, name.length());\n"),
+                "in Names: calls java.util.HashMap.<init>", "in Names: calls java.util.HashMap.getOrDefault");
+        // A switch on a name hashes it with no call in the source.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            int length = name.length();\n",
+                        "            int length = switch (name) { case \"kty\" -> 3; default -> name.length(); };\n"),
+                "in Names: switches on a String");
+        // A name check that drops the index altogether.
+        assertViolations(CompiledSource.replaceOnce(source,
+                        "            if (!names.add(redactedName)) {\n",
+                        "            if (redactedName == null) {\n"),
+                "JsonRedaction.redact(Node) does not call JsonRedaction.Names.add");
+    }
+
+    /** Asserts that {@link #namesIndexViolations} reports each of {@code expected} (as a substring) for {@code source}. */
+    private static void assertViolations(String source, String... expected) {
+        List<String> found = namesIndexViolations(source);
+        for (String violation : expected) {
+            assertTrue(found.stream().anyMatch(f -> f.contains(violation)),
+                    () -> "missing \"" + violation + "\" in:\n" + String.join("\n", found));
+        }
+    }
+
+    /** Names that the index must tell apart exactly: the empty name, prefixes, the extreme and the lone surrogate chars. */
+    private static final List<String> EDGE_NAMES = List.of("", "\0", "\0\0", "a", "a\0", "ab", "abc", "abd", "b",
+            "\uFFFF", "\uFFFF\uFFFF", "\uD800", "\uDC00", "\uD800\uDC00", "\uDBFF\uDFFF", "\u0001", "\u8000",
+            "\u7FFF", "Aa", "BB", "AaAa", "AaBB", "BBAa", "BBBB");
+
+    @Test
+    void tellsEdgeNamesApart() {
+        JsonRedaction.Names names = new JsonRedaction.Names();
+        for (String name : EDGE_NAMES) {
+            assertTrue(names.add(name), () -> "new: " + escaped(name));
+        }
+        for (String name : EDGE_NAMES) {
+            assertFalse(names.add(name), () -> "again: " + escaped(name));
+            assertFalse(names.add(new String(name.toCharArray())), () -> "equal copy: " + escaped(name));
+        }
+        // In reverse order the same: no name is taken for another whatever came first.
+        JsonRedaction.Names reversed = new JsonRedaction.Names();
+        for (int i = EDGE_NAMES.size() - 1; i >= 0; i--) {
+            assertTrue(reversed.add(EDGE_NAMES.get(i)));
+        }
+        for (String name : EDGE_NAMES) {
+            assertFalse(reversed.add(name));
+        }
+    }
+
+    /**
+     * The index agrees with a hash set on seeded sequences of names over a small alphabet that holds the empty name,
+     * prefixes, names that differ only in their last character, and characters at both ends of the char range, so
+     * names repeat, share long beginnings and end inside one another.
+     */
+    @Test
+    void agreesWithAHashSet() {
+        char[] alphabet = {'\0', '\u0001', 'a', 'b', 'A', 'B', '\u7FFF', '\u8000', '\uD800', '\uDC00', '\uFFFE', '\uFFFF'};
+        Random random = new Random(398);
+        for (int round = 0; round < 2_000; round++) {
+            JsonRedaction.Names names = new JsonRedaction.Names();
+            Set<String> oracle = new HashSet<>();
+            int letters = 1 + random.nextInt(alphabet.length);
+            int count = random.nextInt(60);
+            int longest = random.nextInt(8);
+            String shared = random.nextBoolean() ? "" : "p".repeat(random.nextInt(20));
+            for (int i = 0; i < count; i++) {
+                StringBuilder name = new StringBuilder(shared);
+                for (int length = random.nextInt(longest + 1); length > 0; length--) {
+                    name.append(alphabet[random.nextInt(letters)]);
+                }
+                String added = name.toString();
+                int at = round;
+                assertEquals(oracle.add(added), names.add(added), () -> "round " + at + ": " + escaped(added));
+            }
+        }
+    }
+
+    /**
+     * The index's cost per name does not grow with the other names: each shape of {@link #indexShapes} holds names
+     * chosen against it (names chosen to collide in a hash, names that branch at one position over many distinct
+     * characters, and names each a prefix of the next past a long shared beginning), and adding all of them must take
+     * time that grows about linearly with their total length, by the growth of CPU time over eight times the length.
+     * The timeout only ends a hang.
+     */
+    @Test
+    void indexesNamesInLinearTime() {
+        List<List<String>> small = indexShapes(1);
+        List<List<String>> large = indexShapes(8);
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2),
+                () -> RedactorTest.growthBeyondLinear(small, large, JsonRedactionNamesTest::totalLength,
+                        JsonRedactionNamesTest::addAll));
+        assertTrue(tooSlow.isEmpty(), () -> "time grows faster than linearly: " + tooSlow);
+    }
+
+    /**
+     * The name checks on the structural path take time about linear in the text for names chosen against them: each
+     * shape of {@link #indexShapes}, at a smaller size, is one object of those names, redacted as a text and as a
+     * tree, and must be kept as it is (so the checks run on every name and nothing is masked whole) in time that grows
+     * about linearly with its length. The per-name work of this path (decoding, the key-block check, redaction) is
+     * linear and large, so this guards a hang or a quadratic cost, not the log factor of a hashed index, which
+     * {@link #indexesMemberNamesWithoutHashing} guards. The timeout only ends a hang.
+     */
+    @Test
+    void checksMemberNamesInLinearTime() {
+        List<List<String>> smallNames = pathShapes(1);
+        List<List<String>> largeNames = pathShapes(8);
+        List<String> smallTexts = smallNames.stream().map(JsonRedactionNamesTest::object).toList();
+        List<String> largeTexts = largeNames.stream().map(JsonRedactionNamesTest::object).toList();
+        List<Map<String, Object>> smallTrees = smallNames.stream().map(JsonRedactionNamesTest::tree).toList();
+        List<Map<String, Object>> largeTrees = largeNames.stream().map(JsonRedactionNamesTest::tree).toList();
+        for (int shape = 0; shape < smallTexts.size(); shape++) {
+            for (String text : List.of(smallTexts.get(shape), largeTexts.get(shape))) {
+                assertEquals(text, Redactor.redact(text), () -> "shape kept as text: " + text.substring(0, 80));
+            }
+            for (Map<String, Object> tree : List.of(smallTrees.get(shape), largeTrees.get(shape))) {
+                assertEquals(tree, Redactor.redactTree(tree), "shape kept as tree");
+            }
+        }
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2), () -> {
+            List<String> slow = new ArrayList<>();
+            RedactorTest.growthBeyondLinear(smallTexts, largeTexts, String::length, Redactor::redact)
+                    .forEach(s -> slow.add("text " + s));
+            RedactorTest.growthBeyondLinear(smallTrees, largeTrees, t -> object(List.copyOf(t.keySet())).length(),
+                    Redactor::redactTree).forEach(s -> slow.add("tree " + s));
+            return slow;
+        });
+        assertTrue(tooSlow.isEmpty(), () -> "time grows faster than linearly: " + tooSlow);
+    }
+
+    /** The name shapes of {@link #indexShapes} at the size {@link #checksMemberNamesInLinearTime} redacts. */
+    private static List<List<String>> pathShapes(int scale) {
+        return List.of(collidingNames(7 + Integer.numberOfTrailingZeros(scale), 128), branchingNames(256 * scale, 64),
+                prefixChainNames(32 * scale, 64));
+    }
+
+    /** One JSON object of {@code names}, each with the value {@code 0}. */
+    private static String object(List<String> names) {
+        StringBuilder out = new StringBuilder("{");
+        for (String name : names) {
+            out.append(out.length() > 1 ? "," : "").append('"').append(name).append("\":0");
+        }
+        return out.append('}').toString();
+    }
+
+    /** One map of {@code names} in order, each with the value {@code 0}. */
+    private static Map<String, Object> tree(List<String> names) {
+        Map<String, Object> tree = new LinkedHashMap<>();
+        names.forEach(name -> tree.put(name, 0));
+        return tree;
+    }
+
+    /** Names that {@link #indexesNamesInLinearTime} adds, about {@code scale} times a base size per shape. */
+    static List<List<String>> indexShapes(int scale) {
+        return List.of(collidingNames(10 + Integer.numberOfTrailingZeros(scale), 512), branchingNames(4_096 * scale, 64),
+                fanOutNames(16 * scale, 2_048), prefixChainNames(256 * scale, 64));
+    }
+
+    /** {@code 2^pairs} distinct names of equal hash: a shared beginning, then each pair one of two equal-hash pairs. */
+    static List<String> collidingNames(int pairs, int shared) {
+        String start = "n".repeat(shared);
+        List<String> names = new ArrayList<>(1 << pairs);
+        for (int i = 0; i < 1 << pairs; i++) {
+            StringBuilder name = new StringBuilder(start);
+            for (int j = 0; j < pairs; j++) {
+                name.append(((i >> j) & 1) == 0 ? "Aa" : "BB");
+            }
+            names.add(name.toString());
+        }
+        return names;
+    }
+
+    /** {@code count} names, a shared beginning and then one distinct character each, so they branch at one position. */
+    static List<String> branchingNames(int count, int shared) {
+        String start = "n".repeat(shared);
+        List<String> names = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            names.add(start + (char) (0x4E00 + i));
+        }
+        return names;
+    }
+
+    /** {@code groups} groups of distinct single-character branches, each after a shared beginning of its own. */
+    static List<String> fanOutNames(int groups, int perGroup) {
+        List<String> names = new ArrayList<>(groups * perGroup);
+        for (int g = 0; g < groups; g++) {
+            String start = "g" + g + "-";
+            for (int i = 0; i < perGroup; i++) {
+                names.add(start + (char) (0x4E00 + i));
+            }
+        }
+        return names;
+    }
+
+    /** {@code count} names past a shared beginning, each one character longer than the one before. */
+    static List<String> prefixChainNames(int count, int shared) {
+        StringBuilder name = new StringBuilder("n".repeat(shared));
+        List<String> names = new ArrayList<>(count);
+        names.add(name.toString());
+        for (int i = 1; i < count; i++) {
+            names.add(name.append('x').toString());
+        }
+        // Longest first, so each shorter name is added after names that run past its end.
+        java.util.Collections.reverse(names);
+        return names;
+    }
+
+    private static int totalLength(List<String> names) {
+        int total = 0;
+        for (String name : names) {
+            total += name.length() + 1;
+        }
+        return total;
+    }
+
+    private static void addAll(List<String> names) {
+        JsonRedaction.Names index = new JsonRedaction.Names();
+        for (String name : names) {
+            if (!index.add(name)) {
+                throw new AssertionError("a distinct name was taken for another");
+            }
+        }
+    }
+
+    private static String escaped(String name) {
+        StringBuilder out = new StringBuilder();
+        name.chars().forEach(c -> out.append(String.format(java.util.Locale.ROOT, "\\u%04X", c)));
+        return out.toString();
     }
 
     /** The classes whose methods {@code JsonRedaction.Names} may call: none of them hashes what it is given. */

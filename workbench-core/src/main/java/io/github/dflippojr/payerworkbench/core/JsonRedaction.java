@@ -3,8 +3,8 @@ package io.github.dflippojr.payerworkbench.core;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -297,7 +297,7 @@ final class JsonRedaction {
             if (value instanceof Map<?, ?> map) {
                 enter(depth);
                 List<Member> members = new ArrayList<>();
-                Set<String> names = new HashSet<>();
+                Names names = new Names();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!(entry.getKey() instanceof String name)) {
                         throw new NotPlain();
@@ -332,7 +332,7 @@ final class JsonRedaction {
         }
 
         /** A member name; a name that repeats in one object is unreadable, as it is in a text. */
-        private String name(String name, Set<String> names) {
+        private String name(String name, Names names) {
             spelled(name);
             opensAKey |= Redactor.opensAnUnterminatedKey(name);
             if (!names.add(name)) {
@@ -369,6 +369,133 @@ final class JsonRedaction {
             if (weight > MAX_WEIGHT) {
                 throw new IllegalArgumentException("the tree weighs more than " + MAX_WEIGHT);
             }
+        }
+    }
+
+    /**
+     * The member names of one object, to tell whether a name is already among them (#398): a crit-bit tree over the
+     * names, compared exactly as {@link String#equals} compares them, that takes no hash of a name. A hashed set costs
+     * a log factor more per name on names chosen to collide; this index costs at most a constant times the name's
+     * length plus one, whatever the other names are, and keeps only references to the names.
+     *
+     * <p>A name is read as the sequence {@code key(name, i)}: {@code charAt(i) + 1} for {@code i} below its length,
+     * {@code 0} past it, so a name differs from a longer name it begins at its own length. Each inner node tests one
+     * bit ({@code bit}, of 17) of one position ({@code at}), and every name under it agrees on every bit before that
+     * one, positions first, higher bits first; on the path from the root the tested bits only go later. A new name
+     *
+     * <ol>
+     *   <li>walks down from the root by its own bits, but only through nodes testing a position no later than its
+     *       length, to a leaf or to a node testing a later position, and takes that node's representative (a name
+     *       under it, {@code sample}): every name under such a node agrees with the representative up to and
+     *       including the new name's length, so all of them first differ from the new name where the representative
+     *       does;
+     *   <li>compares itself with that one name up to its own length, which finds whether it is new and, if so, the
+     *       first bit where it differs from every name it shares the most with;
+     *   <li>walks down again to where that bit belongs, before the first node testing a later bit, and puts a node
+     *       testing it there, with the new name on one side and what was there on the other.
+     * </ol>
+     *
+     * <p>Both walks pass only nodes testing positions no later than the name's length, each a later bit than the one
+     * before, so each takes at most 17 times the length plus one steps, and the compare reads the length plus one
+     * characters.
+     */
+    static final class Names {
+        /** The number of bits in a key: {@code key(name, i)} is at most {@code Character.MAX_VALUE + 1}. */
+        private static final int KEY_BITS = 17;
+
+        /** The names, in the order added; a leaf is the index of one, written {@code ~index} where a node points to it. */
+        private String[] leaves = new String[4];
+        private int size;
+
+        /** Per inner node: the position and the bit it tests, its two sides and the leaf it keeps as representative. */
+        private int[] at = new int[4];
+        private int[] bit = new int[4];
+        private int[] clear = new int[4];
+        private int[] set = new int[4];
+        private int[] sample = new int[4];
+        private int nodes;
+
+        /** The root: {@code ~0}, the first name, until a second name adds a node; then node {@code 0} or a later one. */
+        private int root = ~0;
+
+        /** Whether {@code name} was not among the names; it is among them after. */
+        boolean add(String name) {
+            if (size == 0) {
+                leaf(name);
+                return true;
+            }
+            int length = name.length();
+            int node = root;
+            while (node >= 0 && at[node] <= length) {
+                node = side(name, node);
+            }
+            String other = leaves[node >= 0 ? sample[node] : ~node];
+            int end = Math.min(length, other.length());
+            int differ = 0;
+            while (differ < end && name.charAt(differ) == other.charAt(differ)) {
+                differ++;
+            }
+            if (differ == length && differ == other.length()) {
+                return false;
+            }
+            int otherKey = key(other, differ);
+            int newBit = Integer.highestOneBit(otherKey ^ key(name, differ));
+            int parent = -1;
+            boolean parentSet = false;
+            node = root;
+            while (node >= 0 && (at[node] < differ || (at[node] == differ && bit[node] > newBit))) {
+                parent = node;
+                parentSet = (key(name, at[node]) & bit[node]) != 0;
+                node = parentSet ? set[node] : clear[node];
+            }
+            int leaf = ~leaf(name);
+            int inner = node(differ, newBit, (otherKey & newBit) != 0 ? leaf : node,
+                    (otherKey & newBit) != 0 ? node : leaf, ~leaf);
+            if (parent < 0) {
+                root = inner;
+            } else if (parentSet) {
+                set[parent] = inner;
+            } else {
+                clear[parent] = inner;
+            }
+            return true;
+        }
+
+        /** The side of inner node {@code node} that {@code name} goes to. */
+        private int side(String name, int node) {
+            return (key(name, at[node]) & bit[node]) != 0 ? set[node] : clear[node];
+        }
+
+        /** {@code name}'s key at position {@code i}: its character there plus one, or {@code 0} past its end. */
+        private static int key(String name, int i) {
+            return i < name.length() ? name.charAt(i) + 1 : 0;
+        }
+
+        /** Adds {@code name} as a leaf and returns its index. */
+        private int leaf(String name) {
+            if (size == leaves.length) {
+                leaves = Arrays.copyOf(leaves, 2 * size);
+            }
+            leaves[size] = name;
+            return size++;
+        }
+
+        /** Adds an inner node and returns its index. */
+        private int node(int position, int tested, int clearSide, int setSide, int representative) {
+            if (nodes == at.length) {
+                int grown = 2 * nodes;
+                at = Arrays.copyOf(at, grown);
+                bit = Arrays.copyOf(bit, grown);
+                clear = Arrays.copyOf(clear, grown);
+                set = Arrays.copyOf(set, grown);
+                sample = Arrays.copyOf(sample, grown);
+            }
+            at[nodes] = position;
+            bit[nodes] = tested;
+            clear[nodes] = clearSide;
+            set[nodes] = setSide;
+            sample[nodes] = representative;
+            return nodes++;
         }
     }
 
@@ -448,7 +575,7 @@ final class JsonRedaction {
         private Container readContainer(boolean object) {
             String lead = lead(object ? '{' : '[');
             List<Member> members = new ArrayList<>();
-            Set<String> names = new HashSet<>();
+            Names names = object ? new Names() : null;
             JsonToken end = object ? JsonToken.END_OBJECT : JsonToken.END_ARRAY;
             JsonToken token;
             while ((token = parser.nextToken()) != end) {
@@ -557,7 +684,7 @@ final class JsonRedaction {
         Container container = (Container) node;
         boolean jwk = container.object() && container.members().stream().anyMatch(m -> KTY.equals(m.name()));
         List<Member> members = new ArrayList<>(container.members().size());
-        Set<String> names = new HashSet<>();
+        Names names = new Names();
         for (Member member : container.members()) {
             if (!container.object()) {
                 members.add(new Member(null, null, null, redact(member.value(), level, Place.ITEM)));
