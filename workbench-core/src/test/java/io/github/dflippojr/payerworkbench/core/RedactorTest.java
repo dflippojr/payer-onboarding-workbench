@@ -4145,6 +4145,42 @@ class RedactorTest {
                 "\"" + sameHash + header.replace("BEGIN", "END").repeat(n / 8) + header + "\"");
     }
 
+    /**
+     * The open-key check (#396) and the label trie it uses take no hash of a label: a hashed index costs a log factor
+     * more on labels chosen to collide, which {@link #findsUnterminatedKeysInLinearTime} cannot tell from noise on this
+     * path, so the absence of hashing is checked in the source. Fails if either body names a hash-based collection or
+     * takes a hash code.
+     */
+    @Test
+    void indexesFooterLabelsWithoutHashing() throws java.io.IOException {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/io/github/dflippojr/payerworkbench/core/Redactor.java"));
+        String check = body(source, "static boolean opensAnUnterminatedKey(String text)");
+        String trie = body(source, "private static final class ArmorLabels");
+        java.util.regex.Pattern hashing = java.util.regex.Pattern.compile(
+                "\\b(?:\\w*Map|\\w*Set|Hashtable|hashCode|Objects\\.hash|\\w*Hash\\w*)\\b");
+        for (String body : List.of(check, trie)) {
+            java.util.regex.Matcher found = hashing.matcher(body);
+            assertFalse(found.find(), () -> "hashes labels with " + found.group() + ":\n" + body);
+        }
+        assertTrue(check.contains("new ArmorLabels()"), check);
+    }
+
+    /** The braced body that follows {@code declaration} in {@code source}, braces included. */
+    private static String body(String source, String declaration) {
+        int at = source.indexOf(declaration);
+        assertTrue(at >= 0, declaration);
+        int open = source.indexOf('{', at);
+        int depth = 0;
+        for (int i = open; i < source.length(); i++) {
+            depth += source.charAt(i) == '{' ? 1 : source.charAt(i) == '}' ? -1 : 0;
+            if (depth == 0) {
+                return source.substring(open, i + 1);
+            }
+        }
+        throw new AssertionError("unbalanced braces after " + declaration);
+    }
+
     /** The private key header and footer patterns of {@link Redactor}, for {@link #opensAnUnterminatedKeyByHash}. */
     private static final java.util.regex.Pattern PRIVATE_KEY_HEADER = java.util.regex.Pattern.compile(
             "-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
