@@ -406,15 +406,17 @@ public final class Redactor {
         if (!text.contains("-----BEGIN ")) {
             return false;
         }
-        // Each label's last footer, found in one pass, so the work stays linear however many labels the text holds.
-        Map<String, Integer> lastFooter = new HashMap<>();
+        // Each label's last footer, found in one pass and kept in a trie (#396): a label is added and found in time
+        // linear in its length, with no hash of it taken, so the work stays linear however the labels are chosen.
+        ArmorLabels labels = new ArmorLabels();
         Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
         while (footer.find()) {
-            lastFooter.put(footer.group(1), footer.start());
+            labels.last.set(labels.add(text, footer.start(1), footer.end(1)), footer.start());
         }
         Matcher header = PRIVATE_KEY_HEADER.matcher(text);
         while (header.find()) {
-            if (lastFooter.getOrDefault(header.group(1), -1) < header.end()) {
+            int node = labels.find(text, header.start(1), header.end(1));
+            if (node < 0 || labels.last.get(node) < header.end()) {
                 return true;
             }
         }
@@ -2413,16 +2415,19 @@ public final class Redactor {
     }
 
     /**
-     * The footer labels of {@link #keyBlocks}, in a trie over the {@value #ARMOR_LABEL_CHARS} armor label characters,
-     * a node per distinct prefix. A node's children are chained as siblings, so finding a child reads at most that
-     * many nodes, and a label is added or found in time linear in its length: no hash of the label is taken, which
-     * labels could be chosen to collide on (automated review on #395).
+     * The footer labels of {@link #keyBlocks} and of {@link #opensAnUnterminatedKey}, in a trie over the
+     * {@value #ARMOR_LABEL_CHARS} armor label characters, a node per distinct prefix. A node's children are chained as
+     * siblings, so finding a child reads at most that many nodes, and a label is added or found in time linear in its
+     * length: no hash of the label is taken, which labels could be chosen to collide on (automated review on #395, #396).
      */
     private static final class ArmorLabels {
         private final IntList firstChild = new IntList();
         private final IntList nextSibling = new IntList();
         private final StringBuilder edge = new StringBuilder();
-        /** Per node: the first footer of its label not yet passed, and its label's last footer; -1 for none. */
+        /**
+         * Per node, -1 until set: in {@link #keyBlocks}, the first footer of its label not yet passed and its label's
+         * last footer; in {@link #opensAnUnterminatedKey}, {@code last} is where its label's last footer starts.
+         */
         final IntList first = new IntList();
         final IntList last = new IntList();
 
