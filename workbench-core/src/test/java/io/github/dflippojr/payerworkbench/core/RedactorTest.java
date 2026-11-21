@@ -4024,6 +4024,36 @@ class RedactorTest {
         assertEquals(Redactor.MASK.repeat(64_001), out, out.substring(out.length() - 80));
     }
 
+    /**
+     * Guards the whole-block key search (#390): it must take time that grows about linearly with the text for the
+     * armor shapes of {@link #keyBlockShapes}. Timed as {@link #findsJwksInLinearTime} times its shapes, by the growth
+     * of CPU time over eight times the length; the timeout only ends a hang.
+     */
+    @Test
+    void findsKeyBlocksInLinearTime() {
+        List<String> small = keyBlockShapes(SMALL / 2);
+        List<String> large = keyBlockShapes(4 * SMALL);
+        List<String> tooSlow = assertTimeoutPreemptively(Duration.ofMinutes(2),
+                () -> growthBeyondLinear(small, large));
+        assertTrue(tooSlow.isEmpty(), "time grows more than " + MAX_GROWTH_PER_DOUBLING + " times per doubling of the text: "
+                + tooSlow);
+    }
+
+    /** The shapes that {@link #findsKeyBlocksInLinearTime} times, each made of about {@code n} armor lines. */
+    private static List<String> keyBlockShapes(int n) {
+        StringBuilder labels = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            labels.append("-----BEGIN LABEL ").append(i).append("-----\n");
+        }
+        return List.of(
+                "-----BEGIN CERTIFICATE-----\n".repeat(n),
+                labels.toString(),
+                "-----BEGIN CERTIFICATE-----\n-----END PUBLIC KEY-----\n".repeat(n / 2),
+                ("-----BEGIN CERTIFICATE-----\n" + "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n").repeat(n / 2),
+                "-----BEGIN CERTIFICATE-----".repeat(n) + "-----END CERTIFICATE-----",
+                "-----BEGIN PRIVATE KEY-----\n".repeat(n));
+    }
+
     @Test
     void masksAChainPastTheNestingCapWhoseStringIsQuotedWithUnicodeEscapes() {
         // Codex security round 5: past NESTED_LEVELS, a string whose quotes are spelled \\u0022 in the text has no
