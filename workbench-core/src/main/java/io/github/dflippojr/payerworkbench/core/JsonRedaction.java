@@ -1,5 +1,7 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.io.ObjectInputStream;
+import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -414,9 +416,7 @@ final class JsonRedaction {
      * characters. Growing the arrays at a capacity boundary adds a copy of the index so far; doubling makes the copies
      * sum to less than twice the final size, so that cost is amortized, not per name.
      */
-    static final class Names implements Serializable {
-        private static final long serialVersionUID = 1L;
-
+    static final class Names {
         /** The number of bits in a key: {@code key(name, i)} is at most {@code Character.MAX_VALUE + 1}. */
         private static final int KEY_BITS = 17;
 
@@ -551,12 +551,18 @@ final class JsonRedaction {
      * factor more per name on names chosen to collide. {@link #plain} hands it out only wrapped by
      * {@link Collections#unmodifiableMap}, so callers get the same type, order, equality and errors as before;
      * {@link #append} is the only way to change it.
+     *
+     * <p>It serializes through a proxy (#404), {@link Members}: its names and values in order, never its own state or
+     * its {@link Names} index. Reading the proxy back appends the members again, so the copy is built without a hash as
+     * well, and, inside the {@link Collections#unmodifiableMap} wrapper that is serialized around it, it reads back as
+     * the same type, equal and in the same order. A stream that claims to hold a {@code PlainObject} itself, or a
+     * proxy whose names and values do not pair up, is refused as {@link Unreadable}.
      */
     static final class PlainObject extends AbstractMap<String, Object> implements Serializable {
         private static final long serialVersionUID = 1L;
 
-        private final Names names = new Names();
-        private final Object[] memberValues;
+        private final transient Names names = new Names();
+        private final transient Object[] memberValues;
 
         /** An empty object with room for {@code capacity} members. */
         PlainObject(int capacity) {
@@ -573,6 +579,52 @@ final class JsonRedaction {
                 throw new Unreadable();
             }
             memberValues[index] = value;
+        }
+
+        /** What is written in its place: its members in order. */
+        @Serial
+        private Object writeReplace() {
+            return new Members(this);
+        }
+
+        /** It is never written as itself, so a stream that holds one was not written by {@link #writeReplace}. */
+        @Serial
+        private void readObject(ObjectInputStream stream) {
+            throw new Unreadable();
+        }
+
+        /** The serialized form of a {@code PlainObject}: its member names and values, in the order added. */
+        private static final class Members implements Serializable {
+            @Serial
+            private static final long serialVersionUID = 1L;
+
+            private final String[] memberNames;
+            private final Object[] values;
+
+            Members(PlainObject object) {
+                int size = object.names.size();
+                memberNames = new String[size];
+                for (int i = 0; i < size; i++) {
+                    memberNames[i] = object.names.name(i);
+                }
+                values = Arrays.copyOf(object.memberValues, size);
+            }
+
+            /** The object again, its members appended in order: names that repeat are unreadable, as in append. */
+            @Serial
+            private Object readResolve() {
+                if (memberNames == null || values == null || memberNames.length != values.length) {
+                    throw new Unreadable();
+                }
+                PlainObject object = new PlainObject(memberNames.length);
+                for (int i = 0; i < memberNames.length; i++) {
+                    if (memberNames[i] == null) {
+                        throw new Unreadable();
+                    }
+                    object.append(memberNames[i], values[i]);
+                }
+                return object;
+            }
         }
 
         @Override
