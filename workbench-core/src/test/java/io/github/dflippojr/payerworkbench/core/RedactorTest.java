@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -3729,6 +3730,87 @@ class RedactorTest {
                 assertEquals(Redactor.MASK, Redactor.redact(text));
                 assertEquals(Redactor.MASK,
                         Redactor.redact(text.replaceFirst("\\[REDACTED]", "FAKE_PRIVATE_KEY_342")));
+            }
+        }
+    }
+
+    /** #349: a JWK copied twice over, its quotes \\u0022, with {@code inner} in its x and y values. */
+    private static String doubleEscapedJwk349(String name, String inner, boolean privateFirst) {
+        java.util.function.UnaryOperator<String> v = s -> "\\\\u0022" + s + "\\\\u0022";
+        String kty = v.apply("kty") + ":0";
+        String x = v.apply("x") + ":" + v.apply(inner);
+        String y = v.apply("y") + ":" + v.apply(inner);
+        String secret = v.apply(name) + ":" + v.apply("dimension");
+        return "{" + String.join(",", privateFirst ? List.of(kty, secret, x, y) : List.of(kty, x, y, secret)) + "}";
+    }
+
+    @Test
+    void keepsADoubleEscapedJwkWithAQuoteInsideItsValuesAfterAStrayQuoteAndARawLineBreak() {
+        // #349: one level down, each \u0022 in x and y is a bare quote inside a string the copy's quote opened, where the
+        // JWK reading stops, so the k (or d) after it is in no JWK and the text is kept. The stray quote is glued to the
+        // word before it, so the canonical reading does not skip it as prose (#352). The leak scanner flags these kept
+        // forms: the over-flag class the owner accepted on #349. Escaped once more (\\\u0022), or with the private member
+        // before them, the inner quotes stop nothing, and the member is masked.
+        for (String prefix : List.of("x\"", "he said\"", "{\"a\":\"b\"}\"", "{\"a\":\"x\"y\"")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String name : List.of("k", "d")) {
+                    for (String inner : List.of("@", "a@b", "@@")) {
+                        String text = prefix + lb + doubleEscapedJwk349(name, inner.replace("@", "\\u0022"), false);
+                        assertEquals(text, Redactor.redact(text));
+                        String nested = "{\"body\":\"" + text.replace("\\", "\\\\").replace("\"", "\\\"")
+                                .replace("\n", "\\n").replace("\r", "\\r") + "\"}";
+                        assertEquals(nested, Redactor.redact(nested));
+                        String once = prefix + lb + doubleEscapedJwk349(name, inner.replace("@", "\\\\\\u0022"), false);
+                        assertNotEquals(once, Redactor.redact(once));
+                        String first = prefix + lb + doubleEscapedJwk349(name, inner.replace("@", "\\u0022"), true);
+                        assertNotEquals(first, Redactor.redact(first));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void masksADoubleEscapedJwkWithAMemberBetweenItsInnerQuotesAndItsPrivateMember() {
+        // #349: the member right after the value whose inner quotes stop the JWK reading is not read, but a member after
+        // it is, so the private member is masked. Any scanner change for #349 must keep flagging these.
+        java.util.function.UnaryOperator<String> v = s -> "\\\\u0022" + s + "\\\\u0022";
+        List<List<String>> betweens = List.of(List.of(v.apply("other") + ":" + v.apply("x")), List.of(v.apply("other") + ":1"),
+                List.of(v.apply("a") + ":{" + v.apply("b") + ":1}"),
+                List.of(v.apply("o1") + ":" + v.apply("x"), v.apply("o2") + ":" + v.apply("x")));
+        for (String prefix : List.of("x\"", "he said\"", "{\"a\":\"b\"}\"", "{\"a\":\"x\"y\"")) {
+            for (String lb : List.of("\n", "\r\n")) {
+                for (String name : List.of("k", "d")) {
+                    for (String inner : List.of("@", "a@b", "@@")) {
+                        for (List<String> between : betweens) {
+                            List<String> members = new java.util.ArrayList<>(List.of(v.apply("kty") + ":0",
+                                    v.apply("x") + ":" + v.apply(inner), v.apply("y") + ":" + v.apply(inner)));
+                            members.addAll(between);
+                            members.add(v.apply(name) + ":" + v.apply("dimension"));
+                            String text = (prefix + lb + "{" + String.join(",", members) + "}").replace("@", "\\u0022");
+                            assertNotEquals(text, Redactor.redact(text));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void readsAFormFeedOrVerticalTabAroundTheMemberAfterTheInnerQuotesAsWhitespace() {
+        // #349: Java's \\s holds a form feed and a vertical tab, so around the member after the inner quotes they read as
+        // whitespace: the first form is kept, the second masked.
+        java.util.function.UnaryOperator<String> v = s -> "\\\\u0022" + s + "\\\\u0022";
+        for (String prefix : List.of("x\"", "{\"a\":\"b\"}\"")) {
+            for (String space : List.of("\f", "\u000B")) {
+                for (String inner : List.of("@", "@@")) {
+                    String head = v.apply("kty") + ":0," + v.apply("x") + ":" + v.apply(inner) + "," + v.apply("y") + ":" + v.apply(inner);
+                    String kept = (prefix + "\n{" + head + "," + space + v.apply("k") + ":" + v.apply("dimension") + "}").replace("@", "\\u0022");
+                    assertEquals(kept, Redactor.redact(kept));
+                    String masked = (prefix + "\n{" + head + "," + space + v.apply("o") + ":" + v.apply("x") + "," + space + v.apply("k") + ":"
+                            + v.apply("dimension") + "}").replace("@", "\\u0022");
+                    assertNotEquals(masked, Redactor.redact(masked));
+                }
             }
         }
     }
