@@ -426,11 +426,14 @@ class JsonRedactionNamesTest {
             "java.lang.Math", "java.util.Arrays");
     /**
      * The classes whose methods {@code JsonRedaction.PlainObject}, the map the tree path returns for an object (#402),
-     * may call besides those: its names go into {@code Names}, and it is built on the JDK's skeletal map, set and
-     * entry, none of which hashes in what it calls; its unreadable member is the path's own error.
+     * may call besides those: its names go into {@code Names}; it is built on the JDK's skeletal map, set, collection
+     * and entry, and its views' spliterators on {@code Spliterators}, none of which hashes in what it calls; it reads
+     * an entry it is asked about and compares values with {@code Objects.equals}; its unreadable member is the path's
+     * own error.
      */
     private static final Set<String> PLAIN_OBJECT_CALLEES = Set.of("java.lang.Object", "java.util.AbstractMap",
-            "java.util.AbstractSet", "java.util.AbstractMap.SimpleImmutableEntry", "java.util.NoSuchElementException",
+            "java.util.AbstractSet", "java.util.AbstractCollection", "java.util.AbstractMap.SimpleImmutableEntry",
+            "java.util.Map.Entry", "java.util.Objects", "java.util.Spliterators", "java.util.NoSuchElementException",
             NAMES, JSON_REDACTION + ".Unreadable");
     /** The one static factory that makes a map on the sites: it wraps a map it is given and indexes nothing itself. */
     private static final String WRAPPER = "java.util.Collections.unmodifiableMap";

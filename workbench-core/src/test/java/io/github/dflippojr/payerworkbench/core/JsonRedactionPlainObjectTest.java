@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Spliterator;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
@@ -143,6 +144,44 @@ class JsonRedactionPlainObjectTest {
         }
         assertFalse(members.hasNext());
         assertThrows(NoSuchElementException.class, members::next);
+    }
+
+    /**
+     * Its views are ordered as the map returned before: their spliterators have the same characteristics, so a
+     * stream over them, parallel or not, meets the members in the order added; and looking up a member in a view finds
+     * what the map holds.
+     */
+    @Test
+    void itsViewsStreamInOrderAsBefore() {
+        Map<String, Object> tree = new LinkedHashMap<>();
+        for (int i = 0; i < 5_000; i++) {
+            tree.put("member" + i, i);
+        }
+        Map<String, Object> out = redacted(tree);
+        Map<String, Object> was = before(tree);
+        assertEquals(was.keySet().spliterator().characteristics(), out.keySet().spliterator().characteristics());
+        assertEquals(was.values().spliterator().characteristics(), out.values().spliterator().characteristics());
+        assertEquals(was.entrySet().spliterator().characteristics(), out.entrySet().spliterator().characteristics());
+        assertTrue(out.keySet().spliterator().hasCharacteristics(Spliterator.ORDERED | Spliterator.DISTINCT));
+        assertTrue(out.values().spliterator().hasCharacteristics(Spliterator.ORDERED));
+        assertEquals(5_000, out.entrySet().spliterator().getExactSizeIfKnown());
+        assertEquals("member0", out.keySet().parallelStream().findFirst().orElseThrow());
+        assertEquals(0, out.values().parallelStream().findFirst().orElseThrow());
+        assertEquals("member0", out.entrySet().parallelStream().findFirst().orElseThrow().getKey());
+        assertEquals(List.copyOf(tree.keySet()), out.keySet().parallelStream().toList());
+        assertEquals(List.copyOf(tree.values()), out.values().parallelStream().toList());
+        assertEquals(List.copyOf(was.entrySet()), out.entrySet().parallelStream().toList());
+        assertTrue(out.keySet().contains("member4999"));
+        assertFalse(out.keySet().contains("member5000"));
+        assertTrue(out.values().contains(4_999));
+        assertTrue(out.entrySet().contains(Map.entry("member7", 7)));
+        assertFalse(out.entrySet().contains(Map.entry("member7", 8)));
+        assertFalse(out.entrySet().contains(Map.entry("member5000", 7)));
+        assertFalse(out.entrySet().contains("member7"));
+        assertFalse(out.entrySet().contains(new java.util.AbstractMap.SimpleEntry<>("alpha", null)));
+        Map<String, Object> nulls = redacted(tree());
+        assertTrue(nulls.entrySet().contains(new java.util.AbstractMap.SimpleEntry<>("alpha", null)));
+        assertFalse(nulls.entrySet().contains(new java.util.AbstractMap.SimpleEntry<>("alpha", "x")));
     }
 
     /** It survives Java serialization as the map returned before did, as an equal map in the same order. */

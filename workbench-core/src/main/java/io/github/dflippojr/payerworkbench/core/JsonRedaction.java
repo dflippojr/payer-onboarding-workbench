@@ -1,18 +1,23 @@
 package io.github.dflippojr.payerworkbench.core;
 
+import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.io.Serializable;
+import java.util.AbstractCollection;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 import tools.jackson.core.ObjectReadContext;
@@ -551,11 +556,11 @@ final class JsonRedaction {
         private static final long serialVersionUID = 1L;
 
         private final Names names = new Names();
-        private final Object[] values;
+        private final Object[] memberValues;
 
         /** An empty object with room for {@code capacity} members. */
         PlainObject(int capacity) {
-            values = new Object[capacity];
+            memberValues = new Object[capacity];
         }
 
         /**
@@ -567,7 +572,7 @@ final class JsonRedaction {
             if (!names.add(name)) {
                 throw new Unreadable();
             }
-            values[index] = value;
+            memberValues[index] = value;
         }
 
         @Override
@@ -583,16 +588,73 @@ final class JsonRedaction {
         @Override
         public Object get(Object key) {
             int index = indexOf(key);
-            return index < 0 ? null : values[index];
+            return index < 0 ? null : memberValues[index];
         }
 
         private int indexOf(Object key) {
             return key instanceof String name ? names.indexOf(name) : -1;
         }
 
+        /*
+         * The three views are ordered as a LinkedHashMap's are: their iterators walk the members in the order added,
+         * and their spliterators say so (ORDERED, and DISTINCT for the two sets), so a stream over them, parallel or
+         * not, keeps that order. Looking up a name in the key or entry view goes through the index.
+         */
+
+        @Override
+        public Set<String> keySet() {
+            return new Keys();
+        }
+
+        @Override
+        public Collection<Object> values() {
+            return new Values();
+        }
+
         @Override
         public Set<Map.Entry<String, Object>> entrySet() {
             return new Entries();
+        }
+
+        /** The names in order, read-only. */
+        private final class Keys extends AbstractSet<String> {
+            @Override
+            public int size() {
+                return names.size();
+            }
+
+            @Override
+            public boolean contains(Object name) {
+                return containsKey(name);
+            }
+
+            @Override
+            public Iterator<String> iterator() {
+                return new KeysInOrder();
+            }
+
+            @Override
+            public Spliterator<String> spliterator() {
+                return Spliterators.spliterator(this, Spliterator.ORDERED | Spliterator.DISTINCT);
+            }
+        }
+
+        /** The values in order, read-only. */
+        private final class Values extends AbstractCollection<Object> {
+            @Override
+            public int size() {
+                return names.size();
+            }
+
+            @Override
+            public Iterator<Object> iterator() {
+                return new ValuesInOrder();
+            }
+
+            @Override
+            public Spliterator<Object> spliterator() {
+                return Spliterators.spliterator(this, Spliterator.ORDERED);
+            }
         }
 
         /** The members in order, read-only. */
@@ -603,13 +665,27 @@ final class JsonRedaction {
             }
 
             @Override
+            public boolean contains(Object member) {
+                if (!(member instanceof Map.Entry<?, ?> entry)) {
+                    return false;
+                }
+                int index = indexOf(entry.getKey());
+                return index >= 0 && Objects.equals(memberValues[index], entry.getValue());
+            }
+
+            @Override
             public Iterator<Map.Entry<String, Object>> iterator() {
-                return new InOrder();
+                return new EntriesInOrder();
+            }
+
+            @Override
+            public Spliterator<Map.Entry<String, Object>> spliterator() {
+                return Spliterators.spliterator(this, Spliterator.ORDERED | Spliterator.DISTINCT);
             }
         }
 
-        /** Walks the members in the order they were added. */
-        private final class InOrder implements Iterator<Map.Entry<String, Object>> {
+        /** Walks the members in the order they were added, giving {@link #at} of each. */
+        private abstract class InOrder<T> implements Iterator<T> {
             private int next;
 
             @Override
@@ -618,12 +694,35 @@ final class JsonRedaction {
             }
 
             @Override
-            public Map.Entry<String, Object> next() {
+            public T next() {
                 if (next >= names.size()) {
                     throw new NoSuchElementException();
                 }
-                int index = next++;
-                return new AbstractMap.SimpleImmutableEntry<>(names.name(index), values[index]);
+                return at(next++);
+            }
+
+            /** What the walk gives for the member added {@code index}th. */
+            abstract T at(int index);
+        }
+
+        private final class KeysInOrder extends InOrder<String> {
+            @Override
+            String at(int index) {
+                return names.name(index);
+            }
+        }
+
+        private final class ValuesInOrder extends InOrder<Object> {
+            @Override
+            Object at(int index) {
+                return memberValues[index];
+            }
+        }
+
+        private final class EntriesInOrder extends InOrder<Map.Entry<String, Object>> {
+            @Override
+            Map.Entry<String, Object> at(int index) {
+                return new AbstractMap.SimpleImmutableEntry<>(names.name(index), memberValues[index]);
             }
         }
     }
