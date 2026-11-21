@@ -2356,18 +2356,33 @@ public final class Redactor {
      * {@code -----BEGIN ([A-Z0-9 ]+)-----.*?-----END \1-----} (DOTALL) finds in turn, found in one linear pass (#390).
      *
      * <p>A label is the whole run of label characters after the armor word, as the dashes after it are not label
-     * characters, so each header and footer has one label. The footers are listed by label first. The headers are
-     * then read in order, and a header's end is past every earlier header's, so a footer that starts before it can
-     * close no later header either and is dropped: each footer is passed once.
+     * characters, so each header and footer has one label. The footers are listed by label first, in
+     * {@link ArmorLabels}. The headers are then read in order, and a header's end is past every earlier header's, so a
+     * footer that starts before it can close no later header either and is dropped: each footer is passed once.
      */
     static List<int[]> keyBlocks(String text) {
-        Map<String, java.util.ArrayDeque<int[]>> footers = new HashMap<>();
+        ArmorLabels labels = new ArmorLabels();
+        // Footer i starts at footerAt[i] and ends at footerEnd[i]; the footers of one label are chained in order by
+        // nextFooter, from labels.first to labels.last of that label's node.
+        IntList footerAt = new IntList();
+        IntList footerEnd = new IntList();
+        IntList nextFooter = new IntList();
         for (int at = text.indexOf(ARMOR_END); at >= 0; at = text.indexOf(ARMOR_END, at + 1)) {
             int labelStart = at + ARMOR_END.length();
             int labelEnd = armorLabelEnd(text, labelStart);
             if (labelEnd > labelStart && text.startsWith(ARMOR_DASHES, labelEnd)) {
-                footers.computeIfAbsent(text.substring(labelStart, labelEnd), label -> new java.util.ArrayDeque<>())
-                        .add(new int[] {at, labelEnd + ARMOR_DASHES.length()});
+                int footer = footerAt.size();
+                footerAt.add(at);
+                footerEnd.add(labelEnd + ARMOR_DASHES.length());
+                nextFooter.add(-1);
+                int node = labels.add(text, labelStart, labelEnd);
+                int last = labels.last.get(node);
+                if (last < 0) {
+                    labels.first.set(node, footer);
+                } else {
+                    nextFooter.set(last, footer);
+                }
+                labels.last.set(node, footer);
             }
         }
         List<int[]> blocks = new ArrayList<>();
@@ -2378,18 +2393,112 @@ public final class Redactor {
             if (labelEnd == labelStart || !text.startsWith(ARMOR_DASHES, labelEnd)) {
                 continue;
             }
-            java.util.ArrayDeque<int[]> closing = footers.get(text.substring(labelStart, labelEnd));
+            int node = labels.find(text, labelStart, labelEnd);
+            if (node < 0) {
+                continue;
+            }
             int headerEnd = labelEnd + ARMOR_DASHES.length();
-            while (closing != null && !closing.isEmpty() && closing.peekFirst()[0] < headerEnd) {
-                closing.pollFirst();
+            int footer = labels.first.get(node);
+            while (footer >= 0 && footerAt.get(footer) < headerEnd) {
+                footer = nextFooter.get(footer);
             }
-            if (closing != null && !closing.isEmpty()) {
-                int end = closing.pollFirst()[1];
-                blocks.add(new int[] {at, end});
-                from = end;
+            if (footer >= 0) {
+                blocks.add(new int[] {at, footerEnd.get(footer)});
+                from = footerEnd.get(footer);
+                footer = nextFooter.get(footer);
             }
+            labels.first.set(node, footer);
         }
         return blocks;
+    }
+
+    /**
+     * The footer labels of {@link #keyBlocks}, in a trie over the {@value #ARMOR_LABEL_CHARS} armor label characters,
+     * a node per distinct prefix. A node's children are chained as siblings, so finding a child reads at most that
+     * many nodes, and a label is added or found in time linear in its length: no hash of the label is taken, which
+     * labels could be chosen to collide on (automated review on #395).
+     */
+    private static final class ArmorLabels {
+        private final IntList firstChild = new IntList();
+        private final IntList nextSibling = new IntList();
+        private final StringBuilder edge = new StringBuilder();
+        /** Per node: the first footer of its label not yet passed, and its label's last footer; -1 for none. */
+        final IntList first = new IntList();
+        final IntList last = new IntList();
+
+        ArmorLabels() {
+            node('\0');
+        }
+
+        /** The node of the label {@code text[start, end)}, added with its prefixes if new. */
+        int add(String text, int start, int end) {
+            int node = 0;
+            for (int i = start; i < end; i++) {
+                char c = text.charAt(i);
+                int child = child(node, c);
+                if (child < 0) {
+                    child = node(c);
+                    nextSibling.set(child, firstChild.get(node));
+                    firstChild.set(node, child);
+                }
+                node = child;
+            }
+            return node;
+        }
+
+        /** The node of the label {@code text[start, end)}, or -1 if no footer label starts with it. */
+        int find(String text, int start, int end) {
+            int node = 0;
+            for (int i = start; i < end && node >= 0; i++) {
+                node = child(node, text.charAt(i));
+            }
+            return node;
+        }
+
+        private int child(int node, char c) {
+            int child = firstChild.get(node);
+            while (child >= 0 && edge.charAt(child) != c) {
+                child = nextSibling.get(child);
+            }
+            return child;
+        }
+
+        private int node(char c) {
+            edge.append(c);
+            firstChild.add(-1);
+            nextSibling.add(-1);
+            first.add(-1);
+            last.add(-1);
+            return edge.length() - 1;
+        }
+    }
+
+    /** The number of armor label characters: capital letters, digits and space. */
+    private static final int ARMOR_LABEL_CHARS = 37;
+
+    /** A growable list of ints, without boxing. */
+    private static final class IntList {
+        private int[] values = new int[16];
+        private int size;
+
+        void add(int value) {
+            if (size == values.length) {
+                values = Arrays.copyOf(values, 2 * size);
+            }
+            values[size++] = value;
+        }
+
+        int get(int i) {
+            return values[i];
+        }
+
+        void set(int i, int value) {
+            values[i] = value;
+        }
+
+        int size() {
+            return size;
+        }
     }
 
     /** Where the run of armor label characters (capital letters, digits and spaces) that starts at {@code at} ends. */

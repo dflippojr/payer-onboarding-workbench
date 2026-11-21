@@ -4042,10 +4042,18 @@ class RedactorTest {
     /** The shapes that {@link #findsKeyBlocksInLinearTime} times, each made of about {@code n} armor lines. */
     private static List<String> keyBlockShapes(int n) {
         StringBuilder labels = new StringBuilder();
+        StringBuilder sameHash = new StringBuilder();
         for (int i = 0; i < n; i++) {
             labels.append("-----BEGIN LABEL ").append(i).append("-----\n");
+            // Distinct labels with one shared prefix and the same String hash: AO and B0 hash alike.
+            StringBuilder label = new StringBuilder("KEY ".repeat(16));
+            for (int bit = 0; bit < 16; bit++) {
+                label.append((i >> bit & 1) == 0 ? "AO" : "B0");
+            }
+            sameHash.append("-----END ").append(label).append("-----\n-----BEGIN ").append(label).append("-----\n");
         }
         return List.of(
+                sameHash.toString(),
                 "-----BEGIN CERTIFICATE-----\n".repeat(n),
                 labels.toString(),
                 "-----BEGIN CERTIFICATE-----\n-----END PUBLIC KEY-----\n".repeat(n / 2),
@@ -4064,7 +4072,8 @@ class RedactorTest {
         // and missing dashes, headers inside headers, and filler, so blocks nest, overlap, share footers and go unclosed.
         List<String> pieces = List.of("-----BEGIN ", "-----END ", "-----", "-", "A", "B", "AB", " ", "a", "\n", "x",
                 "BEGIN ", "END ", "PRIVATE KEY", "-----BEGIN A-----", "-----END A-----", "-----BEGIN B-----",
-                "-----END B-----", "-----BEGIN AB-----", "-----END AB-----", "------END A------");
+                "-----END B-----", "-----BEGIN AB-----", "-----END AB-----", "------END A------", "AO", "B0",
+                "-----BEGIN AOB0-----", "-----END B0AO-----", "-----END AOB0-----");
         java.util.Random random = new java.util.Random(390);
         int withBlocks = 0;
         for (int i = 0; i < 50_000; i++) {
