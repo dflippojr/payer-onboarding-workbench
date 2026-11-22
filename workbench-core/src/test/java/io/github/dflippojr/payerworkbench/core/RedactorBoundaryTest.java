@@ -92,6 +92,36 @@ class RedactorBoundaryTest {
         }
     }
 
+    @Test
+    void masksTheOutermostTextAtAnyLevelWhenAPlainOpenerAndItsFooterSitInSeparateStrings() {
+        // A string that opens a block it does not close, spelled plainly, with the closing armor in a later string of
+        // the same JSON: per string, the block is open, at every level and in every kind of place.
+        String split = "{\"a\":" + quoted(HEADER) + ",\"b\":" + quoted(FOOTER) + "}";
+        String closed = "{\"a\":" + quoted(HEADER + "\nbody\n" + FOOTER) + "}";
+        List<String> missed = new java.util.ArrayList<>();
+        for (int level : keyLevels()) {
+            for (Kind kind : kinds()) {
+                String cell = kind.name() + ", level " + level;
+                String nested = wrap(split, level - 1);
+                if (!maskedWhole(Redactor.redact(kind.text().apply(nested)))) {
+                    missed.add("text: " + cell);
+                }
+                if (!maskedWhole(Redactor.redactTree(kind.tree().apply(nested)))) {
+                    missed.add("tree: " + cell);
+                }
+                // The control: the same block closed in its own string keeps the outer text.
+                String control = wrap(closed, level - 1);
+                if (Redactor.MASK.equals(Redactor.redact(kind.text().apply(control)))) {
+                    missed.add("text control masked: " + cell);
+                }
+                if (Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(control)))) {
+                    missed.add("tree control masked: " + cell);
+                }
+            }
+        }
+        assertEquals(List.of(), missed);
+    }
+
     // ---- the unterminated-key rule at every bound where the structural path stops reading -----------------------------
 
     /**
