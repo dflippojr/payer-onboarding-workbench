@@ -91,6 +91,137 @@ class RedactorBoundaryTest {
         }
     }
 
+    // ---- a text whose root is one JSON string (Place.ROOT) -----------------------------------------------------------
+
+    /** A string the structural path writes anew: its first letter spelled as an escape, then a credential. */
+    private static final String ESCAPED_BEARER = escapedFirst("A Bearer " + SECRET);
+
+    @Test
+    void readsATextWhoseRootIsOneJsonStringOnTheTree() {
+        // On the tree: the escape is written anew, the credential masked and the whitespace around the root kept.
+        assertEquals("  \"A Bearer [REDACTED]\"\n", Redactor.redact("  \"" + ESCAPED_BEARER + "\"\n"));
+        // JSON held in the root string is read one level down: names that repeat there mask that string, not the text.
+        assertEquals("\"[REDACTED]\"", Redactor.redact(quoted(REPEATED)));
+        // Fails closed: a root string that opens a key block masks the text whole.
+        assertEquals(Redactor.MASK, Redactor.redact(quoted(HEADER)));
+        assertEquals(Redactor.MASK, Redactor.redact(quoted(textAt(openKeyJson(), JsonRedaction.MAX_LEVELS))));
+    }
+
+    @Test
+    void redactsATreeWhoseRootIsOneStringAsTheSameRootString() {
+        assertEquals("A Bearer [REDACTED]", Redactor.redactTree("A Bearer " + SECRET));
+        assertEquals(Redactor.MASK, Redactor.redactTree(REPEATED));
+        assertEquals(Redactor.MASK, Redactor.redactTree(HEADER));
+        assertEquals(Redactor.MASK, Redactor.redactTree(textAt(openKeyJson(), JsonRedaction.MAX_LEVELS)));
+    }
+
+    // ---- a text rejected for content after its root value ------------------------------------------------------------
+
+    /** One JSON value whose string the structural path would write anew. */
+    private static final String ESCAPED_OBJECT = "{\"a\":\"" + escapedFirst("A") + "\"}";
+
+    @Test
+    void readsATextWithContentAfterItsRootValueWithTheTextEngine() {
+        // Whitespace after the root value is not content: the text is read on the tree, and the whitespace kept.
+        assertEquals("{\"a\":\"A\"} \r\n\t", Redactor.redact(ESCAPED_OBJECT + " \r\n\t"));
+        // Words or a second value after it: the text engine reads the text, which keeps the escape as it is spelled.
+        for (String after : List.of(" trailing", " {}", "\"b\"", " 1")) {
+            assertEquals(ESCAPED_OBJECT + after, Redactor.redact(ESCAPED_OBJECT + after), after);
+        }
+        assertEquals("{\"password\":\"[REDACTED]\"} trailing", Redactor.redact("{\"password\":\"" + SECRET + "\"} trailing"));
+        // The same for JSON held in a string: only that string goes to the text engine.
+        String nested = "{\"b\":" + quoted(ESCAPED_OBJECT + " trailing") + ",\"c\":\"" + escapedFirst("C") + "\"}";
+        assertEquals("{\"b\":" + quoted(ESCAPED_OBJECT + " trailing") + ",\"c\":\"C\"}", Redactor.redact(nested));
+        // Fails closed: the rejected text is read for a key block it opens, before and after its root value.
+        assertEquals(Redactor.MASK, Redactor.redact("{\"a\":\"" + escapedFirst(HEADER) + "\"} {\"n\":" + quoted(REST) + "}"));
+        assertEquals(Redactor.MASK, Redactor.redact("{\"n\":1} {\"a\":\"" + escapedFirst(HEADER) + "\"}"));
+        assertEquals(Redactor.MASK, Redactor.redact(textAt(openKeyJson() + " trailing", 1)));
+    }
+
+    @Test
+    void redactsATreeStringWithContentAfterItsRootValueWithTheTextEngine() {
+        assertEquals(Map.of("b", "{\"a\":\"A\"} "), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " ")));
+        assertEquals(Map.of("b", ESCAPED_OBJECT + " trailing"), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " trailing")));
+        assertEquals(Redactor.MASK, Redactor.redactTree(treeAt(openKeyJson() + " trailing", 1)));
+    }
+
+    // ---- a text rejected through the parser's stream constraints, as against a plain read error ----------------------
+
+    /** {@code inner} inside {@code depth} arrays. */
+    private static String nestedIn(int depth, String inner) {
+        return "[".repeat(depth) + inner + "]".repeat(depth);
+    }
+
+    /** Nesting one past {@link JsonRedaction#MAX_DEPTH}: the parser's stream constraints stop it. */
+    private static String tooDeep(String string) {
+        return nestedIn(JsonRedaction.MAX_DEPTH + 1, "\"" + string + "\"");
+    }
+
+    /** A read error (a comma before a closing bracket) at {@link JsonRedaction#MAX_DEPTH}, within the bound. */
+    private static String readError(String string) {
+        return "[".repeat(JsonRedaction.MAX_DEPTH) + "\"" + string + "\",]" + "]".repeat(JsonRedaction.MAX_DEPTH - 1);
+    }
+
+    @Test
+    void masksJsonPastTheStreamConstraintsAndReadsAReadErrorWithTheTextEngine() {
+        String escaped = escapedFirst("A");
+        // Past the constraints: the text is masked whole, or the string that holds it.
+        assertEquals(Redactor.MASK, Redactor.redact(tooDeep(escaped)));
+        assertEquals("{\"b\":\"[REDACTED]\",\"c\":1}", Redactor.redact("{\"b\":" + quoted(tooDeep(escaped)) + ",\"c\":1}"));
+        // A read error within them: the text engine reads it, keeping the escape as it is spelled.
+        assertEquals(readError(escaped), Redactor.redact(readError(escaped)));
+        String nestedError = "{\"b\":" + quoted(readError(escaped)) + ",\"c\":1}";
+        assertEquals(nestedError, Redactor.redact(nestedError));
+        // Fails closed on both branches: a key block the rejected text opens masks the outermost text.
+        String opener = escapedFirst(HEADER);
+        for (String rejected : List.of(tooDeep(opener), readError(opener))) {
+            assertEquals(Redactor.MASK, Redactor.redact("{\"b\":" + quoted(rejected) + ",\"note\":" + quoted(REST) + "}"));
+            Map<String, Object> tree = new LinkedHashMap<>();
+            tree.put("b", rejected);
+            tree.put("note", REST);
+            assertEquals(Redactor.MASK, Redactor.redactTree(tree));
+        }
+    }
+
+    @Test
+    void redactsATreeStringPastTheStreamConstraintsAsTheSameTextString() {
+        String escaped = escapedFirst("A");
+        assertEquals(Map.of("b", Redactor.MASK), Redactor.redactTree(Map.of("b", tooDeep(escaped))));
+        assertEquals(Map.of("b", readError(escaped)), Redactor.redactTree(Map.of("b", readError(escaped))));
+    }
+
+    // ---- the last level the structural path reads, next to the first the text engine reads ---------------------------
+
+    /** JSON whose names repeat: the structural path masks the string that holds it, the text engine keeps it. */
+    private static final String REPEATED = "{\"a\":1,\"a\":2}";
+
+    /** The text at the level above {@link #REPEATED} once the structural path masks the string holding it. */
+    private static final String MASKED_HOLDER = "{\"b\":\"[REDACTED]\"}";
+
+    @Test
+    void readsAStringAtTheLastLevelOnTheTreeAndOneLevelDeeperWithTheTextEngine() {
+        int last = JsonRedaction.MAX_LEVELS - 1;
+        // A value: JSON at the last level is read on the tree and the string holding it masked.
+        assertEquals(wrap(MASKED_HOLDER, last - 1), Redactor.redact(wrap(REPEATED, last)));
+        assertEquals(Map.of("b", wrap(MASKED_HOLDER, last - 2)), Redactor.redactTree(Map.of("b", wrap(REPEATED, last - 1))));
+        // A name, the same.
+        assertEquals("{" + quoted(wrap(MASKED_HOLDER, last - 2)) + ":1}",
+                Redactor.redact("{" + quoted(wrap(REPEATED, last - 1)) + ":1}"));
+        assertEquals(Map.of(wrap(MASKED_HOLDER, last - 2), 1), Redactor.redactTree(Map.of(wrap(REPEATED, last - 1), 1)));
+        // One level deeper the text engine reads it and keeps it.
+        int first = JsonRedaction.MAX_LEVELS;
+        assertEquals(wrap(REPEATED, first), Redactor.redact(wrap(REPEATED, first)));
+        assertEquals(Map.of("b", wrap(REPEATED, first - 1)), Redactor.redactTree(Map.of("b", wrap(REPEATED, first - 1))));
+        assertEquals("{" + quoted(wrap(REPEATED, first - 1)) + ":1}",
+                Redactor.redact("{" + quoted(wrap(REPEATED, first - 1)) + ":1}"));
+        assertEquals(Map.of(wrap(REPEATED, first - 1), 1), Redactor.redactTree(Map.of(wrap(REPEATED, first - 1), 1)));
+        // A secret at either level is masked all the same, by the tree or by the text engine.
+        for (int level : List.of(last, first)) {
+            String out = Redactor.redact(wrap("{\"password\":\"" + SECRET + "\"}", level));
+            assertTrue(out.contains(Redactor.MASK) && !out.contains(SECRET), "level " + level);
+        }
+    }
+
     // ---- helpers -----------------------------------------------------------------------------------------------------
 
     /** {@code text} held {@code times} times over as the string value of a one-member object. */
