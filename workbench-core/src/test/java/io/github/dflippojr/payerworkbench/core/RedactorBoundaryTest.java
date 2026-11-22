@@ -93,24 +93,84 @@ class RedactorBoundaryTest {
     }
 
     @Test
-    void masksTheOutermostTextAtAnyLevelWhenAPlainOpenerAndItsFooterSitInSeparateStrings() {
-        // A string that opens a block it does not close, spelled plainly, with the closing armor in a later string of
-        // the same JSON: per string, the block is open, at every level and in every kind of place.
+    void masksTheOutermostTextWhenAStringAtAnyLevelOpensABlockItsOwnStringDoesNotClose() {
+        // A string that opens a block it does not close: spelled plainly with the closing armor in a later string of the
+        // same JSON, or as two overlapping headers of which its own string closes one. Per string, the block is open, at
+        // every level, structural or not, and in every kind of place; the same block closed in its own string is not.
         String split = "{\"a\":" + quoted(HEADER) + ",\"b\":" + quoted(FOOTER) + "}";
         String closed = "{\"a\":" + quoted(HEADER + "\nbody\n" + FOOTER) + "}";
+        List<String[]> shapes = List.of(new String[] {"split", split, closed},
+                new String[] {"overlapping, other first", decoded(overlapping(true)),
+                        decoded(overlapping(true)) + "\n" + FOOTER},
+                new String[] {"overlapping, other second", decoded(overlapping(false)),
+                        decoded(overlapping(false)) + "\n" + OTHER_FOOTER});
+        List<Integer> levels = new java.util.ArrayList<>();
+        for (int level = 1; level <= JsonRedaction.MAX_LEVELS + 1; level++) {
+            levels.add(level);
+        }
+        levels.add(deepestLevel());
         List<String> missed = new java.util.ArrayList<>();
-        for (int level : keyLevels()) {
-            for (Kind kind : kinds()) {
-                String cell = kind.name() + ", level " + level;
-                String nested = wrap(split, level - 1);
+        for (String[] shape : shapes) {
+            for (int level : levels) {
+                String nested = wrap(shape[1], level - 1);
+                String control = wrap(shape[2], level - 1);
+                if (nested.length() > JsonRedaction.MAX_CHARS / 2) {
+                    continue;
+                }
+                for (Kind kind : kinds()) {
+                    String cell = shape[0] + ", " + kind.name() + ", level " + level;
+                    if (!maskedWhole(Redactor.redact(kind.text().apply(nested)))) {
+                        missed.add("text: " + cell);
+                    }
+                    if (!maskedWhole(Redactor.redactTree(kind.tree().apply(nested)))) {
+                        missed.add("tree: " + cell);
+                    }
+                    if (Redactor.MASK.equals(Redactor.redact(kind.text().apply(control)))) {
+                        missed.add("text control masked: " + cell);
+                    }
+                    if (Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(control)))) {
+                        missed.add("tree control masked: " + cell);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), missed);
+    }
+
+    /** {@code spelled}, whose only escapes are line breaks, decoded. */
+    private static String decoded(String spelled) {
+        return spelled.replace("\\n", "\n");
+    }
+
+    /**
+     * Strings that need no decoding, holding JSON whose opener and footer sit in separate strings, behind each bound
+     * where the structural path stops reading: nesting past the depth bound, a read error, words after the root value,
+     * text that is not JSON, and the length bound, at it and past it.
+     */
+    @Test
+    void masksTheOutermostTextWhenAStringThatNeedsNoDecodingSplitsABlockBehindABound() {
+        String split = "{\"a\":" + quoted(HEADER) + ",\"b\":" + quoted(FOOTER);
+        String closed = "{\"a\":" + quoted(HEADER + "\nbody\n" + FOOTER);
+        List<java.util.function.UnaryOperator<String>> bounds = List.of(
+                json -> nestedIn(JsonRedaction.MAX_DEPTH + 1, json + "}"),
+                json -> json + ",oops}",
+                json -> json + "} words",
+                json -> "note: " + json + "}",
+                json -> padded(json, JsonRedaction.MAX_CHARS),
+                json -> padded(json, JsonRedaction.MAX_CHARS + 1));
+        List<String> missed = new java.util.ArrayList<>();
+        for (int b = 0; b < bounds.size(); b++) {
+            String nested = bounds.get(b).apply(split);
+            String control = bounds.get(b).apply(closed);
+            assertFalse(nested.contains("\\"), "needs no decoding: bound " + b);
+            for (Kind kind : b >= 4 ? kinds().subList(0, 1) : kinds()) {
+                String cell = "bound " + b + ", " + kind.name();
                 if (!maskedWhole(Redactor.redact(kind.text().apply(nested)))) {
                     missed.add("text: " + cell);
                 }
                 if (!maskedWhole(Redactor.redactTree(kind.tree().apply(nested)))) {
                     missed.add("tree: " + cell);
                 }
-                // The control: the same block closed in its own string keeps the outer text.
-                String control = wrap(closed, level - 1);
                 if (Redactor.MASK.equals(Redactor.redact(kind.text().apply(control)))) {
                     missed.add("text control masked: " + cell);
                 }
@@ -120,6 +180,12 @@ class RedactorBoundaryTest {
             }
         }
         assertEquals(List.of(), missed);
+    }
+
+    /** {@code json}, an object left open, padded with one more member to exactly {@code length} characters. */
+    private static String padded(String json, int length) {
+        String head = json + ",\"pad\":\"";
+        return head + "p".repeat(length - head.length() - 2) + "\"}";
     }
 
     // ---- the unterminated-key rule at every bound where the structural path stops reading -----------------------------
@@ -134,7 +200,30 @@ class RedactorBoundaryTest {
         String labelEscaped = HEADER.substring(0, letter) + escapedFirst(HEADER.substring(letter));
         String sharedDashes = escapedFirst(HEADER.substring(0, HEADER.length() - DASHES.length())) + HEADER + "\\n"
                 + "body" + "\\n" + FOOTER;
-        return List.of(escapedFirst(HEADER), labelEscaped, sharedDashes);
+        return List.of(escapedFirst(HEADER), labelEscaped, sharedDashes, content(overlapping(true)),
+                content(overlapping(false)));
+    }
+
+    /** {@code text} as the content of a JSON string: {@link #quoted} without its quotes. */
+    private static String content(String text) {
+        String quoted = quoted(text);
+        return quoted.substring(1, quoted.length() - 1);
+    }
+
+    /** A second label's opening and closing armor lines, built from their parts. */
+    private static final String OTHER_HEADER = DASHES + "BEGIN RSA " + "PRIVATE" + " KEY" + DASHES;
+
+    private static final String OTHER_FOOTER = DASHES + "END RSA " + "PRIVATE" + " KEY" + DASHES;
+
+    /**
+     * Two headers of different labels whose dashes overlap (the first one's closing dashes open the second), and the
+     * footer of only one of them: the other is open in this string. {@code otherFirst} puts the other label's header
+     * first and closes it, leaving {@link #HEADER}'s label open; otherwise {@link #HEADER} comes first and is closed.
+     */
+    private static String overlapping(boolean otherFirst) {
+        String first = otherFirst ? OTHER_HEADER : HEADER;
+        String second = otherFirst ? HEADER : OTHER_HEADER;
+        return first.substring(0, first.length() - DASHES.length()) + second + "\nm\n" + (otherFirst ? OTHER_FOOTER : FOOTER);
     }
 
     /** The control: a string with an escape that opens nothing. */
