@@ -91,6 +91,121 @@ class RedactorBoundaryTest {
         }
     }
 
+    // ---- the unterminated-key rule at every bound where the structural path stops reading -----------------------------
+
+    /**
+     * Spellings of a key block's opening armor line that only a decoding shows, as the content of a JSON string: its
+     * first character as an escape, a letter of its label as an escape, and one whose closing dashes are the opening
+     * dashes of a literal header that a literal footer closes.
+     */
+    private static List<String> hiddenOpeners() {
+        int letter = HEADER.indexOf('P');
+        String labelEscaped = HEADER.substring(0, letter) + escapedFirst(HEADER.substring(letter));
+        String sharedDashes = escapedFirst(HEADER.substring(0, HEADER.length() - DASHES.length())) + HEADER + "\\n"
+                + "body" + "\\n" + FOOTER;
+        return List.of(escapedFirst(HEADER), labelEscaped, sharedDashes);
+    }
+
+    /** The control: a string with an escape that opens nothing. */
+    private static final String PLAIN_OPENER = escapedFirst("plain words");
+
+    /** A text the structural path stops reading before or at {@code opener}, a JSON string's content. */
+    private record Shape(String name, java.util.function.UnaryOperator<String> around) {
+    }
+
+    private static List<Shape> rejectedShapes() {
+        return List.of(
+                new Shape("read error before it", o -> "[\"x\",oops,\"" + o + "\"]"),
+                new Shape("read error before it, as a name", o -> "{oops:1,\"" + o + "\":1}"),
+                new Shape("words after the root value", o -> "{\"a\":1} words \"" + o + "\""),
+                new Shape("not JSON", o -> "note: " + o),
+                new Shape("an unclosed string", o -> "[\"x\", \"" + o),
+                new Shape("an unescaped control character before it", o -> "[\"a\tb\",\"" + o + "\"]"),
+                new Shape("nesting at the depth bound", o -> nestedIn(JsonRedaction.MAX_DEPTH, "\"" + o + "\"")),
+                new Shape("nesting past the depth bound", o -> nestedIn(JsonRedaction.MAX_DEPTH + 1, "\"" + o + "\"")),
+                new Shape("nesting past the depth bound before it",
+                        o -> nestedIn(JsonRedaction.MAX_DEPTH + 1, "1") + "[\"" + o + "\"]"));
+    }
+
+    /** Where a string at level 1 sits: a value, a secret member's value, a JWK private member's value, a name, an item. */
+    private record Kind(String name, java.util.function.Function<String, String> text,
+            java.util.function.Function<String, Object> tree) {
+    }
+
+    private static List<Kind> kinds() {
+        return List.of(
+                new Kind("value", s -> "{\"x\":" + quoted(s) + ",\"note\":" + quoted(REST) + "}", s -> ordered("x", s, "note", REST)),
+                new Kind("secret value", s -> "{\"password\":" + quoted(s) + ",\"note\":" + quoted(REST) + "}",
+                        s -> ordered("password", s, "note", REST)),
+                new Kind("JWK private value", s -> "{\"kty\":\"RSA\",\"d\":" + quoted(s) + ",\"note\":" + quoted(REST) + "}",
+                        s -> {
+                            Map<String, Object> jwk = ordered("kty", "RSA", "d", s);
+                            jwk.put("note", REST);
+                            return jwk;
+                        }),
+                new Kind("name", s -> "{" + quoted(s) + ":1,\"note\":" + quoted(REST) + "}", s -> ordered(s, 1, "note", REST)),
+                new Kind("item", s -> "[" + quoted(s) + "," + quoted(REST) + "]", s -> List.of(s, REST)));
+    }
+
+    @Test
+    void masksTheOutermostTextWhenARejectedStringHidesAKeyBlockItDoesNotClose() {
+        // Every cell is run, and the ones that miss are listed together: a grid, not a first failure.
+        List<String> missed = new java.util.ArrayList<>();
+        for (Shape shape : rejectedShapes()) {
+            for (Kind kind : kinds()) {
+                List<String> openers = hiddenOpeners();
+                for (int i = 0; i < openers.size(); i++) {
+                    String nested = shape.around().apply(openers.get(i));
+                    String cell = shape.name() + ", " + kind.name() + ", opener " + i;
+                    if (!Redactor.MASK.equals(Redactor.redact(kind.text().apply(nested)))) {
+                        missed.add("text: " + cell);
+                    }
+                    if (!Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(nested)))) {
+                        missed.add("tree: " + cell);
+                    }
+                }
+                String control = shape.around().apply(PLAIN_OPENER);
+                if (Redactor.MASK.equals(Redactor.redact(kind.text().apply(control)))) {
+                    missed.add("text control masked: " + shape.name() + ", " + kind.name());
+                }
+                if (Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(control)))) {
+                    missed.add("tree control masked: " + shape.name() + ", " + kind.name());
+                }
+            }
+        }
+        assertEquals(List.of(), missed);
+    }
+
+    /** A text of exactly {@code length} characters holding {@code nested} at level 1 and {@link #REST} after it. */
+    private static String textOfLength(String nested, int length) {
+        String head = "{\"x\":" + quoted(nested) + ",\"pad\":\"";
+        String tail = "\",\"note\":" + quoted(REST) + "}";
+        return head + "p".repeat(length - head.length() - tail.length()) + tail;
+    }
+
+    /** A tree string of exactly {@code length} characters: JSON whose string holds {@code opener}, then padding. */
+    private static String stringOfLength(String opener, int length) {
+        String head = "{\"k\":\"" + opener + "\",\"pad\":\"";
+        return head + "p".repeat(length - head.length() - 2) + "\"}";
+    }
+
+    @Test
+    void masksTheOutermostTextWhenAStringHidesAKeyBlockAtTheLengthBound() {
+        for (int length : List.of(JsonRedaction.MAX_CHARS, JsonRedaction.MAX_CHARS + 1)) {
+            String text = textOfLength("{\"k\":\"" + escapedFirst(HEADER) + "\"}", length);
+            assertEquals(length, text.length());
+            assertEquals(Redactor.MASK, Redactor.redact(text), "text of length " + length);
+            String string = stringOfLength(escapedFirst(HEADER), length);
+            assertEquals(length, string.length());
+            assertEquals(Redactor.MASK, Redactor.redactTree(ordered("x", string, "note", REST)), "tree string of length " + length);
+            String plainText = textOfLength("{\"k\":\"" + PLAIN_OPENER + "\"}", length);
+            assertNotEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
+            String plainString = stringOfLength(PLAIN_OPENER, length);
+            assertNotEquals(Redactor.MASK, Redactor.redactTree(ordered("x", plainString, "note", REST)),
+                    "tree control of length " + length);
+        }
+    }
+
     // ---- a text whose root is one JSON string (Place.ROOT) -----------------------------------------------------------
 
     /** A string the structural path writes anew: its first letter spelled as an escape, then a credential. */
@@ -223,6 +338,14 @@ class RedactorBoundaryTest {
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------------
+
+    /** A map of two members in order. */
+    private static Map<String, Object> ordered(String a, Object aValue, String b, Object bValue) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put(a, aValue);
+        map.put(b, bValue);
+        return map;
+    }
 
     /** {@code text} held {@code times} times over as the string value of a one-member object. */
     private static String wrap(String text, int times) {
