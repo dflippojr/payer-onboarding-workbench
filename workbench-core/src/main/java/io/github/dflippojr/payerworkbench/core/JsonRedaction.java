@@ -160,8 +160,8 @@ final class JsonRedaction {
      * read for any key block it opens ({@link #opensAKeyAnywhere}): the key material may sit in a later string that
      * the rejected text's own handling (the text engine, or the mask over this one string) does not cover.
      *
-     * @throws UnterminatedKey if a string or name it decodes, at any level, opens a private key block it does not
-     *     close, whether or not the text is rejected
+     * @throws UnterminatedKey if a string or name it decodes, at any level down to {@link #MAX_LEVELS}, opens a private
+     *     key block it does not close, whether or not the text is rejected
      * @throws Unreadable if it is JSON this path will not read
      */
     private static Node parse(String text, int level) {
@@ -203,16 +203,10 @@ final class JsonRedaction {
 
     /**
      * Whether a string or name that {@code text}, at level {@code level}, decodes opens a private key block it does
-     * not close, or one in JSON held in such a string does, at any level, past {@link #MAX_LEVELS} too (#389): a string
-     * past that level goes to the text engine, which cannot make an outer level's text the mask. Every token Jackson
-     * can read is read, with no check for repeated names, up to the first read error or past the nesting bound, so a
-     * block before or after the point where the text is rejected is found; what follows a read error is not JSON this
-     * path can decode.
-     *
-     * <p>Each level reads only strings the level above decoded, and JSON held in a string one level down spells each
-     * of its quotes with at least one more backslash, which the level above spells as at least two characters; so a
-     * text of {@code n} characters holds JSON about {@code log2(n)} levels deep at most, and the scan is linear in the
-     * text for each of them.
+     * not close, or one in JSON held in such a string does, down to {@link #MAX_LEVELS}. Every token Jackson can read
+     * is read, with no check for repeated names, up to the first read error or past the nesting bound, so a block
+     * before or after the point where the text is rejected is found; what follows a read error is not JSON this path
+     * can decode.
      */
     static boolean opensAKeyAnywhere(String text, int level) {
         try (JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text)) {
@@ -220,7 +214,7 @@ final class JsonRedaction {
                 String decoded = token == JsonToken.PROPERTY_NAME ? parser.currentName()
                         : token == JsonToken.VALUE_STRING ? parser.getString() : null;
                 if (decoded != null && (Redactor.opensAnUnterminatedKey(decoded)
-                        || (mayBeJson(decoded) && opensAKeyAnywhere(decoded, level + 1)))) {
+                        || (level + 1 < MAX_LEVELS && mayBeJson(decoded) && opensAKeyAnywhere(decoded, level + 1)))) {
                     return true;
                 }
             }
@@ -1002,7 +996,7 @@ final class JsonRedaction {
 
     /**
      * Before a member's value at JSON-in-string level {@code level} is masked whole, each string and name in it is read as
-     * JSON as any other string is ({@link #checkNested}), at every level, and one that opens a private
+     * JSON down to {@link #MAX_LEVELS}, as any other string is ({@link Redactor#redactAt}), and one that opens a private
      * key block it does not close at any level makes the outermost text the mask: the key material may sit in a later
      * string the mask does not cover.
      *
@@ -1027,20 +1021,12 @@ final class JsonRedaction {
     /**
      * Reads {@code text}, a decoded string, as JSON at level {@code level} if it may be one JSON value there, as
      * {@link Redactor#redactAt} does ({@link #parse}, which also reads a text it rejects for a key block it opens), and
-     * checks each string and name in it for a key block it does not close, one level deeper each time. From
-     * {@link #MAX_LEVELS} on, where {@link Redactor#redactAt} hands the string to the text engine, only the key check
-     * reads it ({@link #opensAKeyAnywhere}), so the rule holds at every level (#389).
+     * checks each string and name in it for a key block it does not close, one level deeper each time.
      *
      * @throws UnterminatedKey if a string or name at any level opens a key block it does not close
      */
     private static void checkNested(String text, int level) {
-        if (!mayBeJson(text)) {
-            return;
-        }
-        if (level >= MAX_LEVELS) {
-            if (opensAKeyAnywhere(text, level)) {
-                throw new UnterminatedKey();
-            }
+        if (level >= MAX_LEVELS || !mayBeJson(text)) {
             return;
         }
         Node root;
