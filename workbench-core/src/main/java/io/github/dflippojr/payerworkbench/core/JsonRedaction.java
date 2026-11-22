@@ -322,7 +322,7 @@ final class JsonRedaction {
                     if (!(entry.getKey() instanceof String name)) {
                         throw new NotPlain();
                     }
-                    members.add(new Member("", name(name, names), quoted(name), read(entry.getValue(), depth + 1)));
+                    members.add(new Member("", name, name(name, names), read(entry.getValue(), depth + 1)));
                 }
                 return new Container("", true, members, "");
             }
@@ -351,14 +351,17 @@ final class JsonRedaction {
             return new Scalar("", true, string, raw, null);
         }
 
-        /** A member name; a name that repeats in one object is unreadable, as it is in a text. */
+        /**
+         * A member name as JSON spells it, quotes included: the one spelling both weighs it and is the node's
+         * {@code rawName} (#389). A name that repeats in one object is unreadable, as it is in a text.
+         */
         private String name(String name, Names names) {
-            spelled(name);
+            String raw = spelled(name);
             opensAKey |= Redactor.opensAnUnterminatedKey(name);
             if (!names.add(name)) {
                 throw new Unreadable();
             }
-            return name;
+            return raw;
         }
 
         /** A big number weighs about its digits, counted from its bits so it is never written out. */
