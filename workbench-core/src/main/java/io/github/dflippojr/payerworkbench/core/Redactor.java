@@ -415,6 +415,26 @@ public final class Redactor {
     }
 
     /**
+     * Whether a private key header in {@code text} has a quote between it and every matching footer: split at each
+     * quote, some piece before the last quote opens a block it does not close ({@link #opensAnUnterminatedKey}). In a
+     * decoding of a JSON text at level {@code k}, the strings of every level up to {@code k} are bounded by quotes, so
+     * a header whose own string at any of those levels holds no footer is found (#389). Linear in the text.
+     */
+    static boolean splitsAKeyAcrossStrings(String text) {
+        if (!text.contains(ARMOR_BEGIN)) {
+            return false;
+        }
+        int from = 0;
+        for (int quote = text.indexOf('"'); quote >= 0; quote = text.indexOf('"', from)) {
+            if (opensAnUnterminatedKey(text.substring(from, quote))) {
+                return true;
+            }
+            from = quote + 1;
+        }
+        return false;
+    }
+
+    /**
      * Whether {@code text} holds a private key header ({@link #PRIVATE_KEY_HEADER}) with no matching footer after it.
      * In one string of a JSON text, the key material may then be in the strings after it, which the structural path
      * reads one at a time ({@link JsonRedaction}), so the whole text is masked.
