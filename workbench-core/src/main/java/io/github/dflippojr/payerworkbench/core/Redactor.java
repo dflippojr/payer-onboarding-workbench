@@ -398,6 +398,23 @@ public final class Redactor {
     private static final Pattern PRIVATE_KEY_FOOTER = Pattern.compile("-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
 
     /**
+     * The number of places in {@code text} where a private key header ({@link #PRIVATE_KEY_HEADER}) starts, counted at
+     * every {@code -----BEGIN } however the headers overlap, so a header whose closing dashes open another is counted
+     * too (#389). Linear in the text: the label after each start is a run of label characters, and no two runs share
+     * a character.
+     */
+    static int privateKeyHeaderStarts(String text) {
+        int count = 0;
+        Matcher header = PRIVATE_KEY_HEADER.matcher(text);
+        for (int at = text.indexOf(ARMOR_BEGIN); at >= 0; at = text.indexOf(ARMOR_BEGIN, at + 1)) {
+            if (header.region(at, text.length()).lookingAt()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
      * Whether {@code text} holds a private key header ({@link #PRIVATE_KEY_HEADER}) with no matching footer after it.
      * In one string of a JSON text, the key material may then be in the strings after it, which the structural path
      * reads one at a time ({@link JsonRedaction}), so the whole text is masked.
@@ -431,13 +448,19 @@ public final class Redactor {
      * back with canonical escape spellings ({@link JsonRedaction}, #377); its whitespace, member order and numbers are
      * kept. JSON that path will not read (names that repeat in one object, nesting deeper than
      * {@link JsonRedaction#MAX_DEPTH}) is masked whole, and so is the text when anything on that path fails. Any other
-     * text goes to the text engine.
+     * text goes to the text engine. First, a text in which a decoding of its JSON escapes, at any depth, shows a private
+     * key header the text does not spell plainly ({@link JsonRedaction#hidesAKey}) is masked whole.
      */
     public static String redact(String text) {
         if (text == null || text.isEmpty()) {
             return text;
         }
         try {
+            if (JsonRedaction.hidesAKey(text, 0)) {
+                // A key opener only a decoding shows (#389): no bound the structural path stops at can then rule out
+                // key material in a later string, so the whole text is the mask.
+                return MASK;
+            }
             return redactAt(text, 0);
         } catch (RuntimeException | StackOverflowError failed) {
             // Fail closed (#377): nothing of a text the structural path could not finish is kept.
