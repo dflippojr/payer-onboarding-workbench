@@ -415,43 +415,46 @@ public final class Redactor {
     }
 
     /**
-     * Whether a private key header in {@code text} has a quote between it and every matching footer: split at each
-     * quote, some piece before the last quote opens a block it does not close ({@link #opensAnUnterminatedKey}). In a
-     * decoding of a JSON text at level {@code k}, the strings of every level up to {@code k} are bounded by quotes, so
-     * a header whose own string at any of those levels holds no footer is found (#389). Linear in the text.
+     * Whether a string in {@code text} opens a private key block it does not close: the one open-key predicate of the
+     * structural path and its entry check (#389). {@code text} is read in pieces split at each quote, and a private key
+     * header ({@link #PRIVATE_KEY_HEADER}) is open unless a footer of its own label ({@link #PRIVATE_KEY_FOOTER}) comes
+     * after it in the same piece. Headers are found at every {@code -----BEGIN }, however they overlap, so a header
+     * whose closing dashes open another is not hidden by the one before it.
+     *
+     * <p>A decoded JSON string holds no quote unless JSON held in it does, so for one string's text this is that
+     * string's own block check, and for JSON held in it, or a decoding of a whole text at level {@code k}, it is the
+     * check of each string at every level up to {@code k}, whose quotes bound it. In one string, the key material of an
+     * open block may be in the strings after it, which the structural path reads one at a time ({@link JsonRedaction}),
+     * so the whole text is masked.
+     *
+     * <p>Linear in the text: each piece that holds a header is read once for its footers and once for its headers, and
+     * pieces that hold none are only skipped.
      */
-    static boolean splitsAKeyAcrossStrings(String text) {
+    static boolean opensAnUnterminatedKey(String text) {
         if (!text.contains(ARMOR_BEGIN)) {
             return false;
         }
-        int from = 0;
-        for (int quote = text.indexOf('"'); quote >= 0; quote = text.indexOf('"', from)) {
-            if (opensAnUnterminatedKey(text.substring(from, quote))) {
-                return true;
-            }
-            from = quote + 1;
-        }
-        return false;
-    }
-
-    /**
-     * Whether {@code text} holds a private key header ({@link #PRIVATE_KEY_HEADER}) with no matching footer after it.
-     * In one string of a JSON text, the key material may then be in the strings after it, which the structural path
-     * reads one at a time ({@link JsonRedaction}), so the whole text is masked.
-     */
-    static boolean opensAnUnterminatedKey(String text) {
-        if (!text.contains("-----BEGIN ")) {
-            return false;
-        }
-        // Each label's last footer, found in one pass and kept in a trie (#396): a label is added and found in time
-        // linear in its length, with no hash of it taken, so the work stays linear however the labels are chosen.
-        ArmorLabels labels = new ArmorLabels();
-        Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
-        while (footer.find()) {
-            labels.last.set(labels.add(text, footer.start(1), footer.end(1)), footer.start());
-        }
+        // Each piece's footer labels, by their last footer, found in one pass and kept in a trie (#396): a label is
+        // added and found in time linear in its length, with no hash of it taken, so the work stays linear however the
+        // labels are chosen.
+        ArmorLabels labels = null;
+        int pieceEnd = -1;
         Matcher header = PRIVATE_KEY_HEADER.matcher(text);
-        while (header.find()) {
+        for (int at = text.indexOf(ARMOR_BEGIN); at >= 0; at = text.indexOf(ARMOR_BEGIN, at + 1)) {
+            if (at > pieceEnd) {
+                // The first header start in a new piece: index that piece's footers alone.
+                int pieceStart = text.lastIndexOf('"', at) + 1;
+                int quote = text.indexOf('"', at);
+                pieceEnd = quote < 0 ? text.length() : quote;
+                labels = new ArmorLabels();
+                Matcher footer = PRIVATE_KEY_FOOTER.matcher(text).region(pieceStart, pieceEnd);
+                while (footer.find()) {
+                    labels.last.set(labels.add(text, footer.start(1), footer.end(1)), footer.start());
+                }
+            }
+            if (!header.region(at, pieceEnd).lookingAt()) {
+                continue;
+            }
             int node = labels.find(text, header.start(1), header.end(1));
             if (node < 0 || labels.last.get(node) < header.end()) {
                 return true;

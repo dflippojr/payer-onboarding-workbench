@@ -244,12 +244,13 @@ final class JsonRedaction {
      * decoding of part of the text, one pass per level, so its text appears in the pass for its level: this
      * over-approximates every decoding that path can make. A header the text spells plainly has no backslash in it, so
      * no pass changes it, and no pass has fewer header starts ({@link Redactor#privateKeyHeaderStarts}) than the text:
-     * a pass with more holds a header only a decoding shows. A pass at level 1 or deeper in which a header has a quote
-     * between it and every matching footer ({@link Redactor#splitsAKeyAcrossStrings}) holds a header whose own string
-     * does not close it, spelled plainly or not. A text with no backslash has neither: it has no level below its own,
-     * which the structural path reads string by string. The passes stop when one decodes nothing; a text whose escapes
-     * still decode after {@link #MAX_KEY_LEVELS} levels counts as hiding one. Each pass is linear in the text and no
-     * longer than the one before.
+     * a pass with more holds a header only a decoding shows. Each pass, at level 1 or deeper, is also read by the one
+     * open-key predicate ({@link Redactor#opensAnUnterminatedKey}), whose quote-split pieces are the strings of every
+     * level up to the pass's: a header whose own string does not close it, spelled plainly or not, is found there. A
+     * text with no backslash has no pass; its callers read the text itself with that predicate, with no shortcut
+     * ({@link TreeReader}, and the parser's strings for a text). The passes stop when one decodes nothing; a text whose
+     * escapes still decode after {@link #MAX_KEY_LEVELS} levels counts as hiding one. Each pass is linear in the text
+     * and no longer than the one before.
      *
      * @param level the level of {@code text}: 0 for a text, 1 for a string in a tree, which is already decoded once
      */
@@ -260,16 +261,15 @@ final class JsonRedaction {
         int plain = Redactor.privateKeyHeaderStarts(text);
         String current = text;
         for (int at = level; ; at++) {
-            // From level 1 on, a header whose own string holds no footer: the structural path reads that string as one
-            // only down to MAX_LEVELS, and the text engine past it sees the footer in a later string as closing it.
-            if (at >= 1 && Redactor.splitsAKeyAcrossStrings(current)) {
-                return true;
-            }
             String next = unescaped(current);
             if (next == null) {
                 return false;
             }
-            if (at + 1 > MAX_KEY_LEVELS || Redactor.privateKeyHeaderStarts(next) > plain) {
+            // Each pass is a level of 1 or deeper: a string there whose own piece does not close a block it opens is
+            // read by the one open-key predicate, which the structural path stops applying string by string past
+            // MAX_LEVELS, past the nesting bound or at a read error.
+            if (at + 1 > MAX_KEY_LEVELS || Redactor.privateKeyHeaderStarts(next) > plain
+                    || Redactor.opensAnUnterminatedKey(next)) {
                 return true;
             }
             current = next;
