@@ -861,8 +861,9 @@ class RedactorTest {
     @Test
     void masksEscapeChainsWithoutBlowingUp() {
         // The review's shape: each quote of a JWK in a JSON string spelled \\u005c, then u005c again and again,
-        // then u0022, so every level decoded shows one more escape. Shallow or deep, the private value goes,
-        // the output is no longer than the input, and the text stays valid JSON.
+        // then u0022, so every level decoded shows one more escape. Shallow or deep, the private value goes and
+        // the output is no longer than the input. Within JsonRedaction.MAX_KEY_LEVELS levels of escapes the text
+        // stays valid JSON; a chain whose escapes still decode past that bound masks the whole text (#389).
         for (int links : List.of(1, 8, 40, 400)) {
             String quote = "\\u005c" + "u005c".repeat(links) + "u0022";
             String jwk = "{" + quote + "kty" + quote + ":" + quote + "oct" + quote + "," + quote + "k" + quote + ":" + quote
@@ -871,7 +872,11 @@ class RedactorTest {
             String out = assertTimeout(Duration.ofSeconds(5), () -> Redactor.redact(in));
             assertFalse(out.contains("PRIVATECHAINVALUE"), () -> links + ": " + out);
             assertTrue(out.length() <= in.length(), () -> links + ": " + out.length() + " > " + in.length());
-            assertTrue(JSON.readTree(out).has("body"), out);
+            if (links + 2 <= JsonRedaction.MAX_KEY_LEVELS) {
+                assertTrue(JSON.readTree(out).has("body"), out);
+            } else {
+                assertEquals(Redactor.MASK, out, () -> links + ": " + out);
+            }
         }
         // A sibling holding an escaped quote, or a stray quote in prose before the JSON, must not shift which quotes
         // bound the string that holds the chain (the review on 2334a77).
