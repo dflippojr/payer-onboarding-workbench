@@ -292,6 +292,8 @@ class RedactorBoundaryTest {
         // Fails closed: the rejected text is read for a key block it opens, before and after its root value.
         assertMaskedWhole(Redactor.redact("{\"a\":\"" + escapedFirst(HEADER) + "\"} {\"n\":" + quoted(REST) + "}"));
         assertMaskedWhole(Redactor.redact("{\"n\":1} {\"a\":\"" + escapedFirst(HEADER) + "\"}"));
+        // So with an opener the text spells plainly: the text engine alone would mask only from it on.
+        assertMaskedWhole(Redactor.redact("{\"a\":" + quoted(HEADER) + "} {\"n\":" + quoted(REST) + "}"));
         assertMaskedWhole(Redactor.redact(textAt(openKeyJson() + " trailing", 1)));
     }
 
