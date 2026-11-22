@@ -1,6 +1,7 @@
 package io.github.dflippojr.payerworkbench.core;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -77,8 +78,8 @@ class RedactorBoundaryTest {
         for (int level : keyLevels()) {
             String text = textAt(openKeyJson(), level);
             assertTrue(text.length() <= JsonRedaction.MAX_CHARS, "level " + level);
-            assertEquals(Redactor.MASK, Redactor.redact(text), "text, level " + level);
-            assertEquals(Redactor.MASK, Redactor.redactTree(treeAt(openKeyJson(), level)), "tree, level " + level);
+            assertMaskedWhole(Redactor.redact(text), "text, level " + level);
+            assertMaskedWhole(Redactor.redactTree(treeAt(openKeyJson(), level)), "tree, level " + level);
         }
     }
 
@@ -157,10 +158,10 @@ class RedactorBoundaryTest {
                 for (int i = 0; i < openers.size(); i++) {
                     String nested = shape.around().apply(openers.get(i));
                     String cell = shape.name() + ", " + kind.name() + ", opener " + i;
-                    if (!Redactor.MASK.equals(Redactor.redact(kind.text().apply(nested)))) {
+                    if (!maskedWhole(Redactor.redact(kind.text().apply(nested)))) {
                         missed.add("text: " + cell);
                     }
-                    if (!Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(nested)))) {
+                    if (!maskedWhole(Redactor.redactTree(kind.tree().apply(nested)))) {
                         missed.add("tree: " + cell);
                     }
                 }
@@ -194,16 +195,57 @@ class RedactorBoundaryTest {
         for (int length : List.of(JsonRedaction.MAX_CHARS, JsonRedaction.MAX_CHARS + 1)) {
             String text = textOfLength("{\"k\":\"" + escapedFirst(HEADER) + "\"}", length);
             assertEquals(length, text.length());
-            assertEquals(Redactor.MASK, Redactor.redact(text), "text of length " + length);
+            assertMaskedWhole(Redactor.redact(text), "text of length " + length);
             String string = stringOfLength(escapedFirst(HEADER), length);
             assertEquals(length, string.length());
-            assertEquals(Redactor.MASK, Redactor.redactTree(ordered("x", string, "note", REST)), "tree string of length " + length);
+            assertMaskedWhole(Redactor.redactTree(ordered("x", string, "note", REST)), "tree string of length " + length);
             String plainText = textOfLength("{\"k\":\"" + PLAIN_OPENER + "\"}", length);
             assertNotEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
             String plainString = stringOfLength(PLAIN_OPENER, length);
             assertNotEquals(Redactor.MASK, Redactor.redactTree(ordered("x", plainString, "note", REST)),
                     "tree control of length " + length);
         }
+    }
+
+    /**
+     * {@code c} spelled so that {@code levels} decodings show it: a unicode escape whose backslash is itself spelled as
+     * a unicode escape, {@code levels - 1} times over.
+     */
+    private static String chain(char c, int levels) {
+        String last = String.format("u%04x", (int) c);
+        return levels == 1 ? "\\" + last : "\\u005c" + "u005c".repeat(levels - 2) + last;
+    }
+
+    @Test
+    void masksTheOutermostTextAtTheEscapeLevelBound() {
+        String rest = HEADER.substring(1);
+        for (int levels : List.of(JsonRedaction.MAX_KEY_LEVELS, JsonRedaction.MAX_KEY_LEVELS + 1)) {
+            // A text's string is decoded once by the parser, so it is one level ahead of the same string in a tree.
+            String text = "{\"x\":\"" + chain('-', levels) + rest + "\",\"note\":" + quoted(REST) + "}";
+            assertMaskedWhole(Redactor.redact(text), "text, escape level " + levels);
+            assertMaskedWhole(Redactor.redactTree(ordered("x", chain('-', levels - 1) + rest, "note", REST)),
+                    "tree, escape level " + levels);
+        }
+        // The control: within the bound, escapes that show no key opener keep the text; past it, they mask it.
+        int bound = JsonRedaction.MAX_KEY_LEVELS;
+        String within = "{\"x\":\"" + chain('p', bound) + "lain words\",\"note\":\"n\"}";
+        assertNotEquals(Redactor.MASK, Redactor.redact(within));
+        assertNotEquals(Redactor.MASK, Redactor.redactTree(ordered("x", chain('p', bound - 1) + "lain words", "note", "n")));
+        String past = "{\"x\":\"" + chain('p', bound + 1) + "lain words\",\"note\":\"n\"}";
+        assertEquals(Redactor.MASK, Redactor.redact(past));
+        assertEquals(Redactor.MASK, Redactor.redactTree(ordered("x", chain('p', bound) + "lain words", "note", "n")));
+    }
+
+    @Test
+    void readsTheLongestEscapeChainWithinTheLengthBoundInLinearTime() {
+        // The escape-level bound keeps the passes few: an escape chain as long as a text may be is masked quickly.
+        int levels = (JsonRedaction.MAX_CHARS - 64) / 5;
+        String text = "{\"x\":\"" + chain('-', levels) + "\"}";
+        String string = chain('-', levels);
+        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(java.time.Duration.ofSeconds(20), () -> {
+            assertEquals(Redactor.MASK, Redactor.redact(text));
+            assertEquals(Redactor.MASK, Redactor.redactTree(Map.of("x", string)));
+        });
     }
 
     // ---- a text whose root is one JSON string (Place.ROOT) -----------------------------------------------------------
@@ -218,16 +260,16 @@ class RedactorBoundaryTest {
         // JSON held in the root string is read one level down: names that repeat there mask that string, not the text.
         assertEquals("\"[REDACTED]\"", Redactor.redact(quoted(REPEATED)));
         // Fails closed: a root string that opens a key block masks the text whole.
-        assertEquals(Redactor.MASK, Redactor.redact(quoted(HEADER)));
-        assertEquals(Redactor.MASK, Redactor.redact(quoted(textAt(openKeyJson(), JsonRedaction.MAX_LEVELS))));
+        assertMaskedWhole(Redactor.redact(quoted(HEADER)));
+        assertMaskedWhole(Redactor.redact(quoted(textAt(openKeyJson(), JsonRedaction.MAX_LEVELS))));
     }
 
     @Test
     void redactsATreeWhoseRootIsOneStringAsTheSameRootString() {
         assertEquals("A Bearer [REDACTED]", Redactor.redactTree("A Bearer " + SECRET));
-        assertEquals(Redactor.MASK, Redactor.redactTree(REPEATED));
-        assertEquals(Redactor.MASK, Redactor.redactTree(HEADER));
-        assertEquals(Redactor.MASK, Redactor.redactTree(textAt(openKeyJson(), JsonRedaction.MAX_LEVELS)));
+        assertMaskedWhole(Redactor.redactTree(REPEATED));
+        assertMaskedWhole(Redactor.redactTree(HEADER));
+        assertMaskedWhole(Redactor.redactTree(textAt(openKeyJson(), JsonRedaction.MAX_LEVELS)));
     }
 
     // ---- a text rejected for content after its root value ------------------------------------------------------------
@@ -248,16 +290,16 @@ class RedactorBoundaryTest {
         String nested = "{\"b\":" + quoted(ESCAPED_OBJECT + " trailing") + ",\"c\":\"" + escapedFirst("C") + "\"}";
         assertEquals("{\"b\":" + quoted(ESCAPED_OBJECT + " trailing") + ",\"c\":\"C\"}", Redactor.redact(nested));
         // Fails closed: the rejected text is read for a key block it opens, before and after its root value.
-        assertEquals(Redactor.MASK, Redactor.redact("{\"a\":\"" + escapedFirst(HEADER) + "\"} {\"n\":" + quoted(REST) + "}"));
-        assertEquals(Redactor.MASK, Redactor.redact("{\"n\":1} {\"a\":\"" + escapedFirst(HEADER) + "\"}"));
-        assertEquals(Redactor.MASK, Redactor.redact(textAt(openKeyJson() + " trailing", 1)));
+        assertMaskedWhole(Redactor.redact("{\"a\":\"" + escapedFirst(HEADER) + "\"} {\"n\":" + quoted(REST) + "}"));
+        assertMaskedWhole(Redactor.redact("{\"n\":1} {\"a\":\"" + escapedFirst(HEADER) + "\"}"));
+        assertMaskedWhole(Redactor.redact(textAt(openKeyJson() + " trailing", 1)));
     }
 
     @Test
     void redactsATreeStringWithContentAfterItsRootValueWithTheTextEngine() {
         assertEquals(Map.of("b", "{\"a\":\"A\"} "), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " ")));
         assertEquals(Map.of("b", ESCAPED_OBJECT + " trailing"), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " trailing")));
-        assertEquals(Redactor.MASK, Redactor.redactTree(treeAt(openKeyJson() + " trailing", 1)));
+        assertMaskedWhole(Redactor.redactTree(treeAt(openKeyJson() + " trailing", 1)));
     }
 
     // ---- a text rejected through the parser's stream constraints, as against a plain read error ----------------------
@@ -281,7 +323,7 @@ class RedactorBoundaryTest {
     void masksJsonPastTheStreamConstraintsAndReadsAReadErrorWithTheTextEngine() {
         String escaped = escapedFirst("A");
         // Past the constraints: the text is masked whole, or the string that holds it.
-        assertEquals(Redactor.MASK, Redactor.redact(tooDeep(escaped)));
+        assertMaskedWhole(Redactor.redact(tooDeep(escaped)));
         assertEquals("{\"b\":\"[REDACTED]\",\"c\":1}", Redactor.redact("{\"b\":" + quoted(tooDeep(escaped)) + ",\"c\":1}"));
         // A read error within them: the text engine reads it, keeping the escape as it is spelled.
         assertEquals(readError(escaped), Redactor.redact(readError(escaped)));
@@ -290,11 +332,11 @@ class RedactorBoundaryTest {
         // Fails closed on both branches: a key block the rejected text opens masks the outermost text.
         String opener = escapedFirst(HEADER);
         for (String rejected : List.of(tooDeep(opener), readError(opener))) {
-            assertEquals(Redactor.MASK, Redactor.redact("{\"b\":" + quoted(rejected) + ",\"note\":" + quoted(REST) + "}"));
+            assertMaskedWhole(Redactor.redact("{\"b\":" + quoted(rejected) + ",\"note\":" + quoted(REST) + "}"));
             Map<String, Object> tree = new LinkedHashMap<>();
             tree.put("b", rejected);
             tree.put("note", REST);
-            assertEquals(Redactor.MASK, Redactor.redactTree(tree));
+            assertMaskedWhole(Redactor.redactTree(tree));
         }
     }
 
@@ -338,6 +380,23 @@ class RedactorBoundaryTest {
     }
 
     // ---- helpers -----------------------------------------------------------------------------------------------------
+
+    /** Whether {@code out} is the mask alone: no byte of the synthetic secret is left, nor any armor. */
+    private static boolean maskedWhole(Object out) {
+        String text = String.valueOf(out);
+        return !text.contains(SECRET) && !text.contains(DASHES) && Redactor.MASK.equals(out);
+    }
+
+    private static void assertMaskedWhole(Object out, String cell) {
+        String text = String.valueOf(out);
+        assertFalse(text.contains(SECRET), "secret kept: " + cell);
+        assertFalse(text.contains(DASHES), "armor kept: " + cell);
+        assertEquals(Redactor.MASK, out, cell);
+    }
+
+    private static void assertMaskedWhole(Object out) {
+        assertMaskedWhole(out, "");
+    }
 
     /** A map of two members in order. */
     private static Map<String, Object> ordered(String a, Object aValue, String b, Object bValue) {
