@@ -91,13 +91,19 @@ final class ProseRedaction {
         int failed = -1;
         char[] chars = read ? text.toCharArray() : null;
         long budget = 2L * text.length() + 4096;
+        // Whether reading an embedded value met a sensitive value (Redactor#meets): the tree's secret-field rules read
+        // names the text patterns cannot, so the fail-closed branch below asks the tree, not only the vocabulary.
+        boolean[] valuesMet = {false};
         for (int at = nextStart(text, 0); at >= 0; ) {
             if (read && budget > 0 && spans.size() < BASE * BASE) {
                 int end = JsonRedaction.valueEnd(chars, at, level);
                 if (end < 0) {
                     budget -= Math.max(1, ~end - at);
                 } else {
-                    String value = redactedValue(text.substring(at, end), level);
+                    String json = text.substring(at, end);
+                    String[] attempt = {null};
+                    valuesMet[0] |= Redactor.meets(json.length(), () -> attempt[0] = redactedValue(json, level));
+                    String value = attempt[0];
                     if (value != null) {
                         spans.add(new int[] {at, end});
                         values.add(value);
@@ -112,8 +118,9 @@ final class ProseRedaction {
             at = nextStart(text, at + 1);
         }
         if (!spans.isEmpty() && holdsPlaceholderCharacters(text)) {
-            // A placeholder could not be told apart from the text: fail closed.
-            return hasVocabulary(text) ? Redactor.maskedWhole(text) : text;
+            // A placeholder could not be told apart from the text: fail closed. The text comes back as it came only when no
+            // embedded value met a sensitive value and the text holds no vocabulary (automated review r1 on #412).
+            return valuesMet[0] || hasVocabulary(text) ? Redactor.maskedWhole(text) : text;
         }
         StringBuilder prose = new StringBuilder(text.length());
         int copied = 0;
