@@ -118,13 +118,19 @@ final class FuzzCorpus {
 
     /** A JWT whose payload or header holds a claim drawn at random, its signature a synthetic secret. */
     private String claimJwt() {
-        String claim = switch (rnd.nextInt(7)) {
+        String claim = switch (rnd.nextInt(9)) {
             case 0 -> "\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":\"" + secret() + "\"";
             case 1 -> "\"ctx\":{\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":\"" + secret() + "\"}";
             case 2 -> "\"jwk\":{\"kty\":\"RSA\",\"d\":\"" + secret() + "\"}";
             case 3 -> "\"note\":\"Bearer " + secret() + "\"";
             case 4 -> "\"pem\":\"-----BEGIN PRIVATE KEY-----\\n" + secret() + "\\n-----END PRIVATE KEY-----\"";
             case 5 -> "\"body\":" + quote("{\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":\"" + secret() + "\"}");
+            // A secret name whose value holds no letter or digit of its own (#406 redesign): punctuation, masking
+            // markers, empty or whitespace, plain or nested. A synthetic secret rides in a harmless claim beside it, so a
+            // token kept whole shows it.
+            case 7 -> "\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":" + domainValue() + ",\"tag\":\"" + secret() + "\"";
+            case 8 -> "\"ctx\":{\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":" + domainValue() + "},\"tag\":\""
+                    + secret() + "\"";
             default -> "\"sub\":\"user-" + rnd.nextInt(1000) + "\"";
         };
         boolean inHeader = rnd.nextInt(4) == 0;
@@ -132,6 +138,19 @@ final class FuzzCorpus {
         String payload = inHeader ? "{\"sub\":\"x\"}" : "{\"iss\":\"p\"," + claim + "}";
         // Sometimes the signature is empty, as in a token cut after its second dot.
         return base64Url(header) + "." + base64Url(payload) + "." + (rnd.nextInt(5) == 0 ? "" : secret());
+    }
+
+    /** A JSON value with no credential character in it: punctuation, masking markers, empty or whitespace. */
+    private String domainValue() {
+        String m = Redactor.MASK;
+        String[] values = {",", ":", "\\\"", "{}", "[]", "\\\\", " , ", m + m, m + " " + m, m + ",", m + "\\\"", " " + m,
+            "Bearer " + m + m, "", " ", "\\t", "\\n"};
+        String v = values[rnd.nextInt(values.length)];
+        return switch (rnd.nextInt(4)) {
+            case 0 -> "[\"" + v + "\"]";
+            case 1 -> "{\"v\":\"" + v + "\"}";
+            default -> "\"" + v + "\"";
+        };
     }
 
     private static String base64Url(String json) {

@@ -504,7 +504,10 @@ class ProseRedactionTest {
                 v -> Map.of("apiKey", v), v -> Map.of("kty", "oct", "k", v),
                 v -> Map.of("ctx", Map.of("access_token", v)), v -> Map.of("list", List.of(Map.of("password", v))),
                 v -> Map.of("body", JSON.writeValueAsString(Map.of("client_secret", v))),
-                v -> Map.of("jwk", Map.of("kty", "RSA", "d", v)));
+                v -> Map.of("jwk", Map.of("kty", "RSA", "d", v)),
+                // A token in a claim whose own claim holds the value, unsigned so no signature is masked in it: the
+                // inner decision must reach the outer one through the memo.
+                v -> Map.of("inner", base64Url("{\"alg\":\"none\"}") + "." + base64Url(JSON.writeValueAsString(Map.of("password", v))) + "."));
         String plainHeader = base64Url("{\"alg\":\"none\"}");
         String harmless = base64Url("{\"sub\":\"x\"}");
         List<String> failures = new ArrayList<>();
@@ -539,12 +542,50 @@ class ProseRedactionTest {
         for (Map<String, ?> claimSet : List.<Map<String, ?>>of(Map.<String, Object>of("sub", "x", "password", m),
                 Map.<String, Object>of("sub", "x", "authorization", "Bearer " + m), Map.of("sub", "x", "kty", "oct", "k", m),
                 Map.<String, Object>of("sub", "x", "ctx", Map.of("client_secret", m)),
-                new java.util.HashMap<>(java.util.Collections.singletonMap("password", null)))) {
+                new java.util.HashMap<>(java.util.Collections.singletonMap("password", null)),
+                new java.util.HashMap<>(Map.of("kty", "oct", "x", "y", "k", "")) {{ put("k", null); }},
+                Map.<String, Object>of("sub", "x", "authorization", List.of("Bearer " + m)))) {
             String segment = base64Url(JSON.writeValueAsString(claimSet));
             String text = "see " + plainHeader + "." + segment + ".SIG then";
             String out = Redactor.redact(text);
             assertTrue(out.contains(plainHeader + "." + segment + ".") && !out.contains("SIG"), () -> claimSet + " => " + out);
         }
+    }
+
+    @Test
+    void judgesTheSettledAndFailedStartChecksByTheSecretFieldRulesOverTheSameValueDomain() {
+        // #406 redesign: the settled check (a decoding of the output) and the vocabulary check after a failed start
+        // decide by the same structural signal as the claim check, not by comparing text with punctuation and masks
+        // dropped. A secret-named field at a depth only a decoding reads, or after a failed start, with a value of
+        // punctuation, masking markers or whitespace, must not come back as it was written.
+        String m = Redactor.MASK;
+        List<String> values = List.of(",", ":", "{}", "[]", " , ", "-", m + m, m + " " + m, m + ",", m + ":", m + "}", " " + m,
+                m + " ", "", " ", "Bearer " + m + m);
+        List<String> failures = new ArrayList<>();
+        int cases = 0;
+        for (String v : values) {
+            for (String name : List.of("password", "client_secret", "authorization")) {
+                String field = JSON.writeValueAsString(Map.of(name, v));
+                String inner = field.substring(1, field.length() - 1);
+                // Two and three escape levels deep in prose and in a JSON value: only a decoding of the output reads it.
+                String twice = JSON.writeValueAsString(JSON.writeValueAsString(inner));
+                String thrice = JSON.writeValueAsString(twice);
+                List<String> texts = List.of("note " + twice.substring(1, twice.length() - 1) + " end",
+                        "note " + thrice.substring(1, thrice.length() - 1) + " end",
+                        JSON.writeValueAsString(Map.of("note", "x " + thrice.substring(1, thrice.length() - 1))),
+                        // After a failed start.
+                        "he said {\"a\":1,, " + inner + " more", "he said [\"a\" " + inner + "] more");
+                for (String text : texts) {
+                    cases++;
+                    String out = Redactor.redact(text);
+                    if (holdsAtAnyDecoding(out, inner)) {
+                        failures.add(name + " value class " + values.indexOf(v) + " text form " + texts.indexOf(text));
+                    }
+                }
+            }
+        }
+        assertTrue(cases >= 240, "grid size " + cases);
+        assertEquals(List.of(), failures.subList(0, Math.min(8, failures.size())), () -> failures.size() + " of " + 240 + " texts kept the field");
     }
 
     /** Whether {@code out} holds {@code part} at any decoding of its JSON escapes. */
