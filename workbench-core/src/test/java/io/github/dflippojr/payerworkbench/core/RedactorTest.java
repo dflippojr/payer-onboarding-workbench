@@ -1036,12 +1036,12 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(RedactorTest::nested,
                     RedactorTest::nestedEscapingQuotes, t -> nested(nested(t)), t -> nestedEscapingQuotes(nested(t)),
                     t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(wrapped(wrap, pair[1]), wrap.apply(pair[0]), wrap.apply(pair[0]));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(pair[0])), wrap.apply(pair[0]), wrap.apply(pair[0]));
             }
         }
         // A value opened with a plain quote is a JSON string, where \\u0022 is a character of it: masked through its
         // plain closing quote, as JSON_FIELD masks it on main (review on 47c938e), so no part of the value is kept.
-        assertRedactsTo("{\"client_secret\":\"[REDACTED]\"", "{\"client_secret\":\"s3cr3t\\u0022,\"client_id\":\"app\"}");
+        assertRedactsTo(Redactor.MASK, "{\"client_secret\":\"s3cr3t\\u0022,\"client_id\":\"app\"}");
         assertRedactsTo("{\"password\":\"[REDACTED]\"}", "{\"password\":\"ab\\u0022cd\"}");
         // Non-secret names spelled the same way stay byte for byte.
         for (String in : List.of("{\"client_id\":\\u0022app\\u0022}", "{\\u0022client_id\\u0022:\"app\"}",
@@ -1064,11 +1064,11 @@ class RedactorTest {
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
                     t -> nestedEscapingQuotes(nested(t)), t -> nested(nestedEscapingQuotes(t)),
                     t -> nested(nested(nestedEscapingQuotes(t))))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(pair[0]), wrap.apply(pair[0]));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(pair[0])), wrap.apply(pair[0]), wrap.apply(pair[0]));
             }
         }
         // The same with every quote of the text spelled \\u0022.
-        assertRedactsTo("{QxQ:QQclient_secretQ:Q[REDACTED]Q}".replace("Q", "\\u0022"), "{QxQ:QQclient_secretQ:Qs3cr3tQ}".replace("Q", "\\u0022"));
+        assertRedactsTo(Redactor.MASK, "{QxQ:QQclient_secretQ:Qs3cr3tQ}".replace("Q", "\\u0022"));
         // A non-secret name in the same place is kept.
         String kept = nested(nested("{\"x\":\"\"client_id\":\"app\"}"));
         assertRedactsTo(kept, kept);
@@ -1107,7 +1107,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(Redactor.MASK, Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1126,7 +1126,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes)) {
-                assertEquals(Redactor.MASK, Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
         String in = "{\"private_key\":{\"a\":\"x\\\\\",\"b\":[\"]\\\\\"]},\"client_id\":\"app\",\"n\":[1]}";
@@ -1150,7 +1150,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(Redactor.MASK, Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1173,7 +1173,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1200,7 +1200,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
         // A non-secret value so quoted keeps every byte.
@@ -1228,7 +1228,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1249,7 +1249,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(Redactor.MASK, Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1271,7 +1271,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1292,7 +1292,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertEquals(Redactor.MASK, Redactor.redact(wrap.apply(in)), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1312,7 +1312,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1356,7 +1356,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1467,7 +1467,7 @@ class RedactorTest {
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), t -> nested(nested(nested(t))), RedactorTest::nestedEscapingQuotes,
                     t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1507,7 +1507,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)))) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1529,7 +1529,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1590,7 +1590,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1610,7 +1610,7 @@ class RedactorTest {
             String out = pair[1].replace("Q", "\\u0022");
             for (UnaryOperator<String> wrap : List.<UnaryOperator<String>>of(t -> t, RedactorTest::nested,
                     t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes)) {
-                assertRedactsTo(Redactor.MASK, wrap.apply(in), wrap.apply(in));
+                assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(in)), wrap.apply(in), wrap.apply(in));
             }
         }
     }
@@ -1704,7 +1704,7 @@ class RedactorTest {
                 t -> nested(nested(t)), RedactorTest::nestedEscapingQuotes, t -> nested(nestedEscapingQuotes(t)),
                 RedactorTest::nestedEscapingBackslashes, t -> nested(nestedEscapingBackslashes(t)),
                 t -> nestedEscapingQuotes(nestedEscapingQuotes(t)))) {
-            assertEquals(Redactor.MASK, Redactor.redact(wrap.apply(doc)), wrap.apply(doc));
+            assertRedactsTo(wrap.apply(maskedFromItsFirstJsonStart(doc)), wrap.apply(doc), wrap.apply(doc));
         }
     }
 
