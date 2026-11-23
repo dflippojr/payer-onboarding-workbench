@@ -2245,7 +2245,9 @@ function remasked(input, out) {
  * `text` with each JSON string literal written as Jackson's encoder writes it and every character outside string
  * literals as it is, written apart from the Redactor. Only text that is one JSON value whose first character after JSON
  * whitespace opens an object, an array or a string is rewritten, as the Redactor reads it; a literal's content is
- * rewritten the same way first, to the Redactor's 8 levels (JsonRedaction.MAX_LEVELS). Canonical.java is the Java twin.
+ * rewritten the same way first, to the Redactor's 8 levels (JsonRedaction.MAX_LEVELS). Canonical.java is the Java twin
+ * for whole JSON values; text that is not one JSON value has its embedded values rewritten here (#406, embeddedCanonical),
+ * where RedactorTest states its expectations for such text with maskedFromItsFirstJsonStart.
  */
 function canonical(text, level = 0) {
   if (level >= 8) return text;

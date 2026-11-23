@@ -429,9 +429,12 @@ public final class Redactor {
      * <p>Text that is one JSON object, array or string is read with a JSON parser, redacted on the tree and written
      * back with canonical escape spellings ({@link JsonRedaction}, #377); its whitespace, member order and numbers are
      * kept. JSON that path will not read (names that repeat in one object, nesting deeper than
-     * {@link JsonRedaction#MAX_DEPTH}) is masked whole, and so is the text when anything on that path fails. Any other
-     * text goes to the text engine. First, a text in which a decoding of its JSON escapes, at any depth, shows a private
-     * key header the text does not spell plainly ({@link JsonRedaction#hidesAKey}) is masked whole.
+     * {@link JsonRedaction#MAX_DEPTH}) is masked whole, and so is the text when anything on that path fails. In any other
+     * text each embedded JSON value is read the same way and spliced back, a JSON-looking start that does not read masks
+     * to the end when secret vocabulary follows, and the text rules read only the rest ({@link ProseRedaction}, #406).
+     * First, a text in which a decoding of its JSON escapes, at any depth, shows a private key header the text does not
+     * spell plainly ({@link JsonRedaction#hidesAKey}) is masked whole; last, an output any decoding of whose escapes
+     * still holds material the text rules mask ({@link ProseRedaction#settled}) is masked whole.
      */
     public static String redact(String text) {
         if (text == null || text.isEmpty()) {
@@ -456,7 +459,7 @@ public final class Redactor {
     /**
      * {@code text} redacted at JSON-in-string level {@code level}: on the tree if it is one JSON value and
      * {@code level} is below {@link JsonRedaction#MAX_LEVELS}, the mask if it is JSON that path will not read, and
-     * otherwise by the text engine.
+     * otherwise as text with JSON embedded in it ({@link ProseRedaction}).
      */
     static String redactAt(String text, int level) {
         if (text.isEmpty()) {
@@ -476,9 +479,11 @@ public final class Redactor {
     }
 
     /**
-     * The text engine: {@code text} redacted by the patterns and readers below, adding to {@code reads}, unless it is
+     * The text rules: {@code text} redacted by the patterns and readers below, adding to {@code reads}, unless it is
      * {@code null}, each read JWK discovery makes: at which escape level, and how much of that level's budget was left
-     * before and after it.
+     * before and after it. Since #406 no JSON value reaches them from {@link #redact(String)} ({@link ProseRedaction}
+     * holds each one out), and deeper escape levels are read by {@link ProseRedaction#settled} on every decoding of
+     * their output; they read the plain spelling and JSON held in a string one level deep.
      */
     static String redact(String text, List<DiscoveryRead> reads) {
         return textRules(text, reads, true);
