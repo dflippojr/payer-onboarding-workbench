@@ -370,4 +370,23 @@ class ProseRedactionTest {
         String out = assertTimeoutPreemptively(Duration.ofSeconds(30), () -> Redactor.redact(big));
         assertFalse(out.contains("s3cr3t"));
     }
+
+    @Test
+    void checksTheClaimsOfJwtsNestedInClaimsAndOfALongTokenInBoundedTime() {
+        // #406 decisions (stage 2): a JWT's claims are redacted to decide whether it is secret-bearing, and a claim may
+        // hold another JWT. Tokens nested in claims up to about 2 MiB, the innermost secret-bearing, and one 4 MiB token.
+        String header = base64Url("{\"alg\":\"none\"}");
+        String jwt = header + "." + base64Url("{\"client_secret\":\"FAKE-NESTED\"}") + ".sig";
+        int levels = 1;
+        while (jwt.length() < 2_000_000) {
+            jwt = header + "." + base64Url("{\"sub\":\"x\",\"n\":{\"t\":[\"" + jwt + "\"]}}") + ".sig";
+            levels++;
+        }
+        String nested = "x " + jwt + " y";
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(60), () -> Redactor.redact(nested));
+        assertEquals("x [REDACTED] y", out, "levels " + levels);
+        String longToken = "x " + header + "." + base64Url("{\"sub\":\"" + "a".repeat(3_000_000) + "\"}") + ".sig y";
+        String kept = assertTimeoutPreemptively(Duration.ofSeconds(30), () -> Redactor.redact(longToken));
+        assertTrue(kept.endsWith(".[REDACTED] y") && kept.length() > 4_000_000);
+    }
 }
