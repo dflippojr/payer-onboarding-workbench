@@ -411,7 +411,14 @@ final class JsonRedaction {
         if (reader.opensAKey) {
             throw new UnterminatedKey();
         }
-        return plain(redact(root, 0));
+        Node redacted = redact(root, 0);
+        StringBuilder written = new StringBuilder();
+        write(redacted, written);
+        if (!ProseRedaction.settled(written.toString(), false)) {
+            // As for a text (Redactor#redact): a decoding of the output holds what the text rules mask.
+            throw new Unreadable();
+        }
+        return plain(redacted);
     }
 
     /**
@@ -941,9 +948,32 @@ final class JsonRedaction {
 
     /**
      * An object ({@code object}) or an array; an array's members have no name. {@code closeLead} is the text before
-     * its closing bracket.
+     * its closing bracket. {@code kty}: a string in it spells {@code kty} ({@link #mentionsKty}), set as it is built.
      */
-    private record Container(String lead, boolean object, List<Member> members, String closeLead) implements Node {
+    private record Container(String lead, boolean object, List<Member> members, String closeLead, boolean kty)
+            implements Node {
+        Container(String lead, boolean object, List<Member> members, String closeLead) {
+            this(lead, object, members, closeLead, mentionsKty(object, members));
+        }
+    }
+
+    /**
+     * Whether a string in a container with these {@code members} holds the letters {@code kty} at any decoding of its
+     * escapes ({@link #spellsKty}): a string value anywhere in it, or a member name other than a nested object's own
+     * {@code kty} member. Each container is asked once, as it is built, and reads only its own members and its containers' flags,
+     * so the tree is read once.
+     */
+    private static boolean mentionsKty(boolean object, List<Member> members) {
+        for (Member member : members) {
+            if (object && !KTY.equals(member.name()) && spellsKty(member.name())) {
+                return true;
+            }
+            if (member.value() instanceof Container container ? container.kty()
+                    : ((Scalar) member.value()).string() && spellsKty(((Scalar) member.value()).text())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1085,7 +1115,29 @@ final class JsonRedaction {
         }
     }
 
-    /** {@code node} redacted, at JSON-in-string level {@code level}. */
+    /**
+     * Whether {@code text}, or a decoding of its JSON escapes one level at a time ({@link #unescaped}), holds the letters
+     * {@code kty}, as the text rules' search for JWKs once counted them in any string. A text whose escapes still decode
+     * past {@link #MAX_KEY_LEVELS} levels counts.
+     */
+    private static boolean spellsKty(String text) {
+        String pass = text;
+        for (int level = 0; pass != null && level <= MAX_KEY_LEVELS; level++) {
+            if (pass.contains(KTY)) {
+                return true;
+            }
+            pass = unescaped(pass);
+        }
+        return pass != null;
+    }
+
+    /**
+     * {@code node} redacted, at JSON-in-string level {@code level}. An object is read as a JWK when it has a {@code kty}
+     * member, and also when a string in it spells {@code kty} ({@link Container#kty}, #377 stage 2): such a string may
+     * hold the object's own members, written into it so that a decoding of the text reads them as part of the object, as
+     * the text rules once read every text across its strings' quotes; so the object's private members are masked, fail
+     * closed.
+     */
     private static Node redact(Node node, int level) {
         if (node instanceof Scalar scalar) {
             return scalar.string()
@@ -1093,7 +1145,8 @@ final class JsonRedaction {
                     : scalar;
         }
         Container container = (Container) node;
-        boolean jwk = container.object() && container.members().stream().anyMatch(m -> KTY.equals(m.name()));
+        boolean jwk = container.object()
+                && (container.kty() || container.members().stream().anyMatch(m -> KTY.equals(m.name())));
         List<Member> members = new ArrayList<>(container.members().size());
         Names names = container.object() ? new Names() : null;
         for (Member member : container.members()) {
@@ -1119,7 +1172,7 @@ final class JsonRedaction {
             }
             members.add(new Member(member.lead(), redactedName, null, value));
         }
-        return new Container(container.lead(), container.object(), members, container.closeLead());
+        return new Container(container.lead(), container.object(), members, container.closeLead(), false);
     }
 
     /**
@@ -1218,7 +1271,7 @@ final class JsonRedaction {
                 }
                 items.add(new Member(null, null, null, Scalar.masked(item.value().lead(), masked)));
             }
-            return new Container(container.lead(), false, items, container.closeLead());
+            return new Container(container.lead(), false, items, container.closeLead(), false);
         }
         return Scalar.masked(value.lead(), Redactor.MASK);
     }

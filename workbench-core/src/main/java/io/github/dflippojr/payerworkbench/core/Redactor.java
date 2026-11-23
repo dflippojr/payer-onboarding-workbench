@@ -446,7 +446,7 @@ public final class Redactor {
             String out = redactAt(text, 0);
             // Settled (#377 stage 2): no decoding of the output's escapes may hold anything the text rules mask. Each
             // level reads its own strings; this reads them across their quotes, as the text rules once read every text.
-            return ProseRedaction.settled(out) ? out : MASK;
+            return ProseRedaction.settled(out, false) ? out : MASK;
         } catch (RuntimeException | StackOverflowError failed) {
             // Fail closed (#377): nothing of a text the structural path could not finish is kept.
             return MASK;
@@ -481,6 +481,14 @@ public final class Redactor {
      * before and after it.
      */
     static String redact(String text, List<DiscoveryRead> reads) {
+        return textRules(text, reads, true);
+    }
+
+    /**
+     * The text rules, as {@link #redact(String, List)}; {@code jwkContext}: whether a {@code kty} name in the text makes
+     * every JWK private member name in it a secret one ({@link ProseRedaction#settled}).
+     */
+    static String textRules(String text, List<DiscoveryRead> reads, boolean jwkContext) {
         if (text == null || text.isEmpty()) {
             return text;
         }
@@ -503,7 +511,7 @@ public final class Redactor {
         out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
         // A JWK's private members in a fragment no object bounds (#377 stage 2): the text rules see no JSON value, so
         // any kty name in the text makes every private member name a secret one.
-        boolean jwk = KTY_NAME.matcher(out).find() || EMBEDDED_KTY_NAME.matcher(out).find();
+        boolean jwk = jwkContext && (KTY_NAME.matcher(out).find() || EMBEDDED_KTY_NAME.matcher(out).find());
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false, jwk);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true, jwk);
         out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecret(decodeName(m.group(1)), jwk)

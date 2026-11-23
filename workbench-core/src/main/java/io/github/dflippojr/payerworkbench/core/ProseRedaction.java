@@ -110,7 +110,7 @@ final class ProseRedaction {
         boolean maskTail = proseFailed >= 0 && hasVocabulary(text.substring(failed));
         String head = maskTail ? prose.substring(0, proseFailed) : prose.toString();
         String out = Redactor.redact(head, null);
-        if (!settled(out)) {
+        if (!settled(out, true)) {
             return Redactor.MASK;
         }
         String restored = restore(out, values);
@@ -171,7 +171,7 @@ final class ProseRedaction {
     static boolean hasVocabulary(String text) {
         String pass = text;
         for (int level = 0; ; level++) {
-            if (VOCABULARY.matcher(pass).find() || !Redactor.redact(pass, null).equals(pass)) {
+            if (VOCABULARY.matcher(pass).find() || !Redactor.textRules(pass, null, true).equals(pass)) {
                 return true;
             }
             String next = JsonRedaction.unescaped(pass);
@@ -188,16 +188,18 @@ final class ProseRedaction {
     /**
      * Whether no decoding of {@code out}'s JSON escapes, one level at a time, holds anything the text rules mask: the
      * text rules' output, read at every escape level below the one they read. A text whose escapes still decode after
-     * {@link JsonRedaction#MAX_KEY_LEVELS} levels is not settled.
+     * {@link JsonRedaction#MAX_KEY_LEVELS} levels is not settled. {@code jwkContext}: whether a {@code kty} name in a
+     * decoding makes every JWK private member name in it a secret one, as it does for the text rules' own text; the
+     * outermost output and a tree's are read without it, since their JWKs were read on the tree.
      */
-    static boolean settled(String out) {
+    static boolean settled(String out, boolean jwkContext) {
         String pass = out;
         for (int level = 0; ; level++) {
             String next = JsonRedaction.unescaped(pass);
             if (next == null) {
                 return true;
             }
-            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || !Redactor.redact(next, null).equals(next)) {
+            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || !Redactor.textRules(next, null, jwkContext).equals(next)) {
                 return false;
             }
             pass = next;
