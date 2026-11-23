@@ -331,6 +331,33 @@ class ProseRedactionTest {
     }
 
     @Test
+    void masksATextHoldingAPlaceholderCharacterWhenAnEmbeddedValueMeetsASecretTheTextPatternsCannotName() {
+        // Automated review r1 on #412: with a placeholder character in the text, the fail-closed branch kept the text as
+        // it came unless the regex vocabulary named a secret; a name the tree's secret-field rules read but the patterns
+        // do not (separators in runs, or past their 64-character limit) kept its value. The branch now also masks when
+        // reading any embedded value met a sensitive value (the structural signal). Names and values built at runtime.
+        String secret = "FAKE-PH-" + Long.toString(new java.util.Random().nextLong() & Long.MAX_VALUE, 36);
+        List<String> names = List.of("p" + "_".repeat(70) + "assword", "client" + "-_".repeat(40) + "secret",
+                "a_p_i_k_e_y".repeat(1).replace("_", "__"), "access" + "_".repeat(64) + "token");
+        List<String> failures = new ArrayList<>();
+        for (char placeholder : new char[] {'\uE000', '\uE0FF', '\uEFFF'}) {
+            for (String name : names) {
+                for (String value : List.of(secret, ",", Redactor.MASK + Redactor.MASK, "")) {
+                    String json = JSON.writeValueAsString(Map.of(name, value));
+                    for (String text : List.of(placeholder + " " + json, "see " + json + " then " + placeholder,
+                            placeholder + " " + JSON.writeValueAsString(Map.of("kty", "oct", "k", value)) + " x")) {
+                        String out = Redactor.redact(text);
+                        if (!out.equals(Redactor.MASK)) {
+                            failures.add(names.indexOf(name) + "/" + value.length() + "/" + (int) placeholder + " => kept");
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), failures.subList(0, Math.min(8, failures.size())), () -> failures.size() + " texts kept");
+    }
+
+    @Test
     void restoresEachPlaceholderTheTextRulesKeptAndRefusesOneCutRepeatedOrMoved() {
         List<String> values = List.of("{\"a\":1}", "[2]");
         String first = "{\uE000\uE001\uE001}";
