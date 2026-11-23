@@ -147,6 +147,36 @@ class RedactorTreeTest {
      * Checks {@code tree}, and the same tree as Jackson reads its JSON text into plain data, against its JSON text,
      * adding what differs to {@code wrong}; the number of trees checked.
      */
+    @Test
+    void redactsATreeWhoseNamesOrStringsHoldQuotesAndSeparatorsAsItsJsonText() {
+        // Automated review r2 on #412: the settled check read a caller tree written without the colons and commas its
+        // JSON text has, so a name holding a quote before a secret name kept its value where the text masks it. Names
+        // and strings that put a quote, a colon or a comma before a secret name, in an object, a list and nested.
+        List<String> wrong = new ArrayList<>();
+        int checked = 0;
+        for (String before : List.of("prefix\"", "\"", "a\":\"", "a\",\"", "x\" ", "{\"", "a\\\"")) {
+            for (String secretName : List.of("password", "client_secret", "Authorization", "d")) {
+                for (Object value : List.of(SECRET, ",", "", 7, List.of(SECRET))) {
+                    Map<String, Object> named = new LinkedHashMap<>();
+                    named.put("kty", "oct");
+                    named.put(before + secretName, value);
+                    Map<String, Object> second = new LinkedHashMap<>();
+                    second.put("a", 1);
+                    second.put(before + secretName, value);
+                    List<Object> strings = new ArrayList<>();
+                    strings.add(before + secretName + "\":\"" + SECRET);
+                    strings.add(value);
+                    for (Object tree : List.of(named, second, Map.of("outer", second), List.of(second), strings,
+                            Map.of("s", before + secretName + "\":\"" + SECRET))) {
+                        checked += check(tree, wrong);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), wrong.subList(0, Math.min(5, wrong.size())), () -> wrong.size() + " of the trees differ");
+        assertTrue(checked > 1_500, "checked " + checked);
+    }
+
     private static int check(Object tree, List<String> wrong) {
         String text = JSON.writeValueAsString(tree);
         same(text, Redactor.redact(text), Redactor.redactTree(tree), "plain", wrong);
