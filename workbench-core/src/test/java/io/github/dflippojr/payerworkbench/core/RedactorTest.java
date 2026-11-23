@@ -2019,7 +2019,8 @@ class RedactorTest {
                 Map.entry("generic-separator-level-chain-grid", new int[] {7926, 0}),
                 Map.entry("generic-separator-level-wrapped-grid", new int[] {14045, 0}),
                 // #377: 15 rows that already hold a mask were masked again by the reading of each string as spelled.
-                Map.entry("generic-separator-level-generated-grid", new int[] {15705, 313}),
+                // #406 decisions (stage 2): 16 more rows masked, a secret value not already masked judged before rewrites.
+                Map.entry("generic-separator-level-generated-grid", new int[] {15721, 297}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {18200, 0}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();

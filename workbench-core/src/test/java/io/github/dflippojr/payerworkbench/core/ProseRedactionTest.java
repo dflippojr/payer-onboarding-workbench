@@ -106,8 +106,10 @@ class ProseRedactionTest {
             String out = Redactor.redact(text);
             assertFalse(out.contains("SECRETTAIL"), () -> text + " => " + out);
         }
-        // A field that ends where a value ends keeps what follows it.
-        assertEquals("note \"password\":\"[REDACTED]\", \"n\":1 tail", Redactor.redact("note \"password\":\"abc\", \"n\":1 tail"));
+        // #406 decisions (stage 2): a value that was not already masked masks from the colon on even where it ends at a
+        // strict value end, as main did (on dcfa2f5 what followed it was kept); an already-masked one keeps what follows.
+        assertEquals("note \"password\":\"[REDACTED]\"", Redactor.redact("note \"password\":\"abc\", \"n\":1 tail"));
+        assertEquals("note \"password\":\"[REDACTED]\", \"n\":1 tail", Redactor.redact("note \"password\":\"[REDACTED]\", \"n\":1 tail"));
     }
 
     @Test

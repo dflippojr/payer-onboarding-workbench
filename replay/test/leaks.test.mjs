@@ -3490,7 +3490,9 @@ test('reads every spelling of a secret field\'s quotes and of a closing backslas
   assert.equal(overmasks, 0, 'masked texts the scanner accepts (#406)');
   // #377: the Redactor's reading of a decoded string masks 15 kept texts whose value already is the mask again. The 3
   // that main flags now count as masked, taking their 9 verdicts out of this count; the other 12 hold nothing to flag.
-  assert.equal(keptAsMain, 126, 'verdicts on kept texts main flags too');
+  // #406 decisions (stage 2): a secret value not already masked, judged before any rewrite, masks from its colon on;
+  // the texts that now mask take 48 more of these verdicts out (126 at dcfa2f5).
+  assert.equal(keptAsMain, 78, 'verdicts on kept texts main flags too');
   // #406 (gate change): every text that already holds the mask and that the Redactor masks counts here (12 at stage 1),
   // flagged at no more than some entry points, with its output accepted.
   assert.equal(remasks, 3_553, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');

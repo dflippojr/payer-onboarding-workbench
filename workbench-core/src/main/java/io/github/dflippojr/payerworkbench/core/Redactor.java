@@ -133,6 +133,17 @@ public final class Redactor {
             "(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?" + WORD_START + "eyJ)[A-Za-z0-9_-]*+)"
                     + "\\.([A-Za-z0-9_-]*+)\\.[A-Za-z0-9_-]++");
 
+    /** Where a {@link #JWT} match's header starts, as that pattern finds it: its first {@code eyJ} at a word start. */
+    private static final Pattern JWT_HEADER = Pattern.compile(WORD_START + "eyJ");
+
+    /**
+     * A JWT cut short, or a header with no signature: a run of token characters from its first {@code eyJ} at a word
+     * start, with at most one dot and no signature after it (a whole {@link #JWT} is not one: its second dot follows).
+     */
+    private static final Pattern JWT_FRAGMENT = Pattern.compile(
+            "(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?" + WORD_START + "eyJ)[A-Za-z0-9_-]*+)(?:\\.([A-Za-z0-9_-]*+))?+"
+                    + "(?![A-Za-z0-9_.-])");
+
     /**
      * JSON field names whose values are always masked, lower case without {@code _} and {@code -}
      * (see {@link #isSecretField(String)}).
@@ -493,14 +504,20 @@ public final class Redactor {
      * The text rules, as {@link #redact(String, List)}; {@code jwkContext}: whether a {@code kty} name in the text makes
      * every JWK private member name in it a secret one ({@link ProseRedaction#settled}).
      */
-    static String textRules(String text, List<DiscoveryRead> reads, boolean jwkContext) {
-        if (text == null || text.isEmpty()) {
-            return text;
+    static String textRules(String given, List<DiscoveryRead> reads, boolean jwkContext) {
+        if (given == null || given.isEmpty()) {
+            return given;
         }
+        // Fail closed on the text as it came (#406 decisions, stage 2): a secret name whose value is not already a form
+        // the rules write, at a strict value end, masks from its colon to the end before any rule rewrites that value.
+        // Judged after a rewrite, an early-closing value the field rules had just masked would pass, and the bytes after
+        // its separator would stay (security round 1 on #408, #409).
+        String text = maskUnreadSecretNames(given, jwkContext && (KTY_NAME.matcher(given).find()
+                || EMBEDDED_KTY_NAME.matcher(given).find()));
         // The JWKs' private members and the PEM and PGP blocks are found in the text as it came, and masked
         // together: masking either first would hide the other (an unterminated block masked to the end of the
         // text may hold the JWK's kty; a JWK member's mask may hold the block's header).
-        Discovery discovery = new Discovery(text.length(), reads);
+        Discovery discovery = new Discovery(given.length(), reads);
         List<Mask> masks = jwkMasks(text, discovery);
         List<Mask> pem = pemMasks(text);
         masks.addAll(pem);
@@ -513,7 +530,10 @@ public final class Redactor {
             out = applyMasks(out, jwkMasks(out, discovery));
         }
         out = maskSchemeCredentials(out);
-        out = JWT.matcher(out).replaceAll("$1.$2." + Matcher.quoteReplacement(MASK));
+        String tokens = out;
+        out = JWT.matcher(tokens).replaceAll(m -> Matcher.quoteReplacement(maskedJwt(tokens, m)));
+        String fragments = out;
+        out = JWT_FRAGMENT.matcher(fragments).replaceAll(m -> Matcher.quoteReplacement(maskedJwtFragment(fragments, m)));
         // A JWK's private members in a fragment no object bounds (#377 stage 2): the text rules see no JSON value, so
         // any kty name in the text makes every private member name a secret one.
         boolean jwk = jwkContext && (KTY_NAME.matcher(out).find() || EMBEDDED_KTY_NAME.matcher(out).find());
@@ -529,6 +549,50 @@ public final class Redactor {
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
         return maskUnreadSecretNames(out, jwk);
+    }
+
+    /**
+     * A {@link #JWT} match with its signature masked, its header and payload kept (#406 option A), unless a decoded claim
+     * in either is secret-bearing ({@link #secretBearing}): then the whole token is the mask (#406 decisions, stage 2).
+     * What comes before the token's {@code eyJ} goes back unchanged.
+     */
+    private static String maskedJwt(String text, MatchResult m) {
+        String first = m.group(1);
+        Matcher start = JWT_HEADER.matcher(text).region(m.start(1), m.end(1)).useTransparentBounds(true);
+        int header = start.find() ? start.start() - m.start(1) : 0;
+        if (secretBearing(first.substring(header)) || secretBearing(m.group(2))) {
+            return first.substring(0, header) + MASK;
+        }
+        return first + "." + m.group(2) + "." + MASK;
+    }
+
+    /**
+     * A {@link #JWT_FRAGMENT} match as it is, unless its header or the segment after its dot is secret-bearing
+     * ({@link #secretBearing}): a JWT cut short still holds its claims (#406 decisions, stage 2).
+     */
+    private static String maskedJwtFragment(String text, MatchResult m) {
+        String first = m.group(1);
+        Matcher start = JWT_HEADER.matcher(text).region(m.start(1), m.end(1)).useTransparentBounds(true);
+        int header = start.find() ? start.start() - m.start(1) : 0;
+        boolean secret = secretBearing(first.substring(header)) || (m.group(2) != null && secretBearing(m.group(2)));
+        return secret ? first.substring(0, header) + MASK : m.group();
+    }
+
+    /**
+     * Whether the base64url segment {@code segment} of a JWT decodes to text the Redactor masks material in: a
+     * secret-named claim, a JWK private member, a scheme credential, a key block or a JWT holding one, at any level. A
+     * segment that does not decode as base64url is secret-bearing: nothing shows it holds no credential.
+     */
+    private static boolean secretBearing(String segment) {
+        String run = segment.length() % 4 == 1 ? segment.substring(0, segment.length() - 1) : segment;
+        byte[] bytes;
+        try {
+            bytes = Base64.getUrlDecoder().decode(run);
+        } catch (IllegalArgumentException notBase64) {
+            return true;
+        }
+        String decoded = new String(bytes, StandardCharsets.UTF_8);
+        return ProseRedaction.masksMaterial(decoded, redact(decoded));
     }
 
     /** Whether a member named {@code name} is masked by the text rules: a secret name, or with {@code jwk} a JWK private member. */
@@ -557,7 +621,14 @@ public final class Redactor {
                 }
             }
         }
-        return cut < 0 ? text : text.substring(0, cut) + quote + MASK + quote;
+        if (cut < 0) {
+            return text;
+        }
+        // The spaces after the colon stay, as the field rules keep them.
+        while (cut < text.length() && (text.charAt(cut) == ' ' || text.charAt(cut) == '\t')) {
+            cut++;
+        }
+        return text.substring(0, cut) + quote + MASK + quote;
     }
 
     /**
