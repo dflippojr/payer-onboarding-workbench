@@ -96,6 +96,21 @@ class ProseRedactionTest {
     }
 
     @Test
+    void masksTheRestOfAFragmentWhoseSecretValueClosesEarlyBeforeMoreBytes() {
+        // Automated review round 1 on #408: in prose with no brace, a secret value whose quote closes before more of its
+        // bytes was masked only up to that quote. Main masked from the colon on; so does the head, plain, one level deep,
+        // after a scheme kept and before a value the rules mask as a whole string.
+        for (String text : List.of("note \"password\":\"abc\"defSECRETTAIL more", "note \"password\": \"abc\"defSECRETTAIL",
+                "note \\\"password\\\":\\\"abc\\\"defSECRETTAIL more", "note \"authorization\":\"Bearer abc\"defSECRETTAIL",
+                "note \"password\":123SECRETTAIL x", "line\n\"client_secret\":\"\"SECRETTAIL\"")) {
+            String out = Redactor.redact(text);
+            assertFalse(out.contains("SECRETTAIL"), () -> text + " => " + out);
+        }
+        // A field that ends where a value ends keeps what follows it.
+        assertEquals("note \"password\":\"[REDACTED]\", \"n\":1 tail", Redactor.redact("note \"password\":\"abc\", \"n\":1 tail"));
+    }
+
+    @Test
     void masksTheOutermostTextWhenAnEmbeddedValueOrAFailedStartOpensAKeyBlockItDoesNotClose() {
         String opener = "\"-----BEGIN PRIVATE KEY-----\"";
         // A value that reads, one whose names repeat, one cut short, and one nested past the depth bound before it.
