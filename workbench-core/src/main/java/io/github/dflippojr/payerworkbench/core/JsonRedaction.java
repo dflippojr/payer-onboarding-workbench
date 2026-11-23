@@ -1115,6 +1115,24 @@ final class JsonRedaction {
         }
     }
 
+    /** A quote that a colon follows: where a decoding of a name reads one member's name ending and its value starting. */
+    private static final java.util.regex.Pattern MEMBER_BOUNDARY = java.util.regex.Pattern.compile("\"[ \\t\\r\\n]*:");
+
+    /**
+     * Whether a member name, or a decoding of its JSON escapes one level at a time ({@link #unescaped}), holds a quote that
+     * a colon follows ({@link #MEMBER_BOUNDARY}). A name whose escapes still decode past {@link #MAX_KEY_LEVELS} counts.
+     */
+    private static boolean spellsAMember(String name) {
+        String pass = name;
+        for (int level = 0; pass != null && level <= MAX_KEY_LEVELS; level++) {
+            if (pass.indexOf('"') >= 0 && MEMBER_BOUNDARY.matcher(pass).find()) {
+                return true;
+            }
+            pass = unescaped(pass);
+        }
+        return pass != null;
+    }
+
     /**
      * Whether {@code text}, or a decoding of its JSON escapes one level at a time ({@link #unescaped}), holds the letters
      * {@code kty}, as the text rules' search for JWKs once counted them in any string. A text whose escapes still decode
@@ -1155,6 +1173,11 @@ final class JsonRedaction {
                 continue;
             }
             String name = member.name();
+            if (jwk && spellsAMember(name)) {
+                // A name in a JWK that a decoding reads as more than one member (#406): which part is the member a private
+                // value belongs to is not established, so the text is masked whole.
+                throw new Unreadable();
+            }
             Node value;
             if (Redactor.isSecretKey(name)) {
                 checkMaskedValue(member.value(), level);

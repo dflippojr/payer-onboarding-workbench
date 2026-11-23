@@ -159,6 +159,7 @@ class RedactorBoundaryTest {
                 json -> padded(json, JsonRedaction.MAX_CHARS),
                 json -> padded(json, JsonRedaction.MAX_CHARS + 1));
         List<String> missed = new java.util.ArrayList<>();
+        List<String> controlsMasked = new java.util.ArrayList<>();
         for (int b = 0; b < bounds.size(); b++) {
             String nested = bounds.get(b).apply(split);
             String control = bounds.get(b).apply(closed);
@@ -172,7 +173,7 @@ class RedactorBoundaryTest {
                     missed.add("tree: " + cell);
                 }
                 if (Redactor.MASK.equals(Redactor.redact(kind.text().apply(control)))) {
-                    missed.add("text control masked: " + cell);
+                    controlsMasked.add(cell);
                 }
                 if (Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(control)))) {
                     missed.add("tree control masked: " + cell);
@@ -180,6 +181,9 @@ class RedactorBoundaryTest {
             }
         }
         assertEquals(List.of(), missed);
+        // #406 (gate change, toward masking): at these bounds the control's text is no JSON value with armor after its
+        // first brace, so it is masked from there, here whole.
+        assertEquals(List.of("bound 4, value", "bound 5, value"), controlsMasked);
     }
 
     /** {@code json}, an object left open, padded with one more member to exactly {@code length} characters. */
@@ -271,6 +275,7 @@ class RedactorBoundaryTest {
     void masksTheOutermostTextWhenARejectedStringHidesAKeyBlockItDoesNotClose() {
         // Every cell is run, and the ones that miss are listed together: a grid, not a first failure.
         List<String> missed = new java.util.ArrayList<>();
+        List<String> controlsMasked = new java.util.ArrayList<>();
         for (Shape shape : rejectedShapes()) {
             for (Kind kind : kinds()) {
                 List<String> openers = hiddenOpeners();
@@ -286,7 +291,7 @@ class RedactorBoundaryTest {
                 }
                 String control = shape.around().apply(PLAIN_OPENER);
                 if (Redactor.MASK.equals(Redactor.redact(kind.text().apply(control)))) {
-                    missed.add("text control masked: " + shape.name() + ", " + kind.name());
+                    controlsMasked.add(shape.name() + ", " + kind.name());
                 }
                 if (Redactor.MASK.equals(Redactor.redactTree(kind.tree().apply(control)))) {
                     missed.add("tree control masked: " + shape.name() + ", " + kind.name());
@@ -294,6 +299,13 @@ class RedactorBoundaryTest {
             }
         }
         assertEquals(List.of(), missed);
+        // #406 (gate change, toward masking): a control whose text is no JSON value (an unescaped control character) and
+        // holds armor after its first brace is masked from there, here whole; stage 1 read it with the text engine.
+        assertEquals(List.of("an unescaped control character before it, value",
+                "an unescaped control character before it, secret value",
+                "an unescaped control character before it, JWK private value",
+                "an unescaped control character before it, name", "an unescaped control character before it, item"),
+                controlsMasked);
     }
 
     /** A text of exactly {@code length} characters holding {@code nested} at level 1 and {@link #REST} after it. */
@@ -319,7 +331,13 @@ class RedactorBoundaryTest {
             assertEquals(length, string.length());
             assertMaskedWhole(Redactor.redactTree(ordered("x", string, "note", REST)), "tree string of length " + length);
             String plainText = textOfLength("{\"k\":\"" + PLAIN_OPENER + "\"}", length);
-            assertNotEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
+            if (length > JsonRedaction.MAX_CHARS) {
+                // #406 (gate change, toward masking): past the length bound no value is read, and a JSON-looking start
+                // with secret vocabulary after it (the armor) masks to the end, here the whole text.
+                assertEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
+            } else {
+                assertNotEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
+            }
             String plainString = stringOfLength(PLAIN_OPENER, length);
             assertNotEquals(Redactor.MASK, Redactor.redactTree(ordered("x", plainString, "note", REST)),
                     "tree control of length " + length);
@@ -400,14 +418,15 @@ class RedactorBoundaryTest {
     void readsATextWithContentAfterItsRootValueWithTheTextEngine() {
         // Whitespace after the root value is not content: the text is read on the tree, and the whitespace kept.
         assertEquals("{\"a\":\"A\"} \r\n\t", Redactor.redact(ESCAPED_OBJECT + " \r\n\t"));
-        // Words or a second value after it: the text engine reads the text, which keeps the escape as it is spelled.
+        // Words or a second value after it: the value is read on the tree as embedded JSON (#406), so its escape is written
+        // as the encoder spells it (stage 1 kept it as spelled), and what follows is kept.
         for (String after : List.of(" trailing", " {}", "\"b\"", " 1")) {
-            assertEquals(ESCAPED_OBJECT + after, Redactor.redact(ESCAPED_OBJECT + after), after);
+            assertEquals("{\"a\":\"A\"}" + after, Redactor.redact(ESCAPED_OBJECT + after), after);
         }
         assertEquals("{\"password\":\"[REDACTED]\"} trailing", Redactor.redact("{\"password\":\"" + SECRET + "\"} trailing"));
-        // The same for JSON held in a string: only that string goes to the text engine.
+        // The same for JSON held in a string.
         String nested = "{\"b\":" + quoted(ESCAPED_OBJECT + " trailing") + ",\"c\":\"" + escapedFirst("C") + "\"}";
-        assertEquals("{\"b\":" + quoted(ESCAPED_OBJECT + " trailing") + ",\"c\":\"C\"}", Redactor.redact(nested));
+        assertEquals("{\"b\":" + quoted("{\"a\":\"A\"} trailing") + ",\"c\":\"C\"}", Redactor.redact(nested));
         // Fails closed: the rejected text is read for a key block it opens, before and after its root value.
         assertMaskedWhole(Redactor.redact("{\"a\":\"" + escapedFirst(HEADER) + "\"} {\"n\":" + quoted(REST) + "}"));
         assertMaskedWhole(Redactor.redact("{\"n\":1} {\"a\":\"" + escapedFirst(HEADER) + "\"}"));
@@ -419,7 +438,7 @@ class RedactorBoundaryTest {
     @Test
     void redactsATreeStringWithContentAfterItsRootValueWithTheTextEngine() {
         assertEquals(Map.of("b", "{\"a\":\"A\"} "), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " ")));
-        assertEquals("{b={\"a\":\"A\"} trailing}", Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " trailing")));
+        assertEquals(Map.of("b", "{\"a\":\"A\"} trailing"), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " trailing")));
         assertMaskedWhole(Redactor.redactTree(treeAt(openKeyJson() + " trailing", 1)));
     }
 
