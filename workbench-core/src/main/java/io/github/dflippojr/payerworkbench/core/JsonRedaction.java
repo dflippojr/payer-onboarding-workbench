@@ -468,7 +468,10 @@ final class JsonRedaction {
                     if (!(entry.getKey() instanceof String name)) {
                         throw new NotPlain();
                     }
-                    members.add(new Member("", name, name(name, names), read(entry.getValue(), depth + 1)));
+                    // The separators a JSON text has (automated review r2 on #412): the settled check reads the tree as
+                    // written, so it must read the colons and commas the same tree written as a text holds.
+                    members.add(new Member(members.isEmpty() ? "" : ",", name, name(name, names),
+                            withLead(read(entry.getValue(), depth + 1), ":")));
                 }
                 return new Container("", true, members, "");
             }
@@ -476,11 +479,20 @@ final class JsonRedaction {
                 enter(depth);
                 List<Member> members = new ArrayList<>();
                 for (Object item : list) {
-                    members.add(new Member(null, null, null, read(item, depth + 1)));
+                    members.add(new Member(null, null, null, withLead(read(item, depth + 1), members.isEmpty() ? "" : ",")));
                 }
                 return new Container("", false, members, "");
             }
             throw new NotPlain();
+        }
+
+        /** {@code node} with {@code lead} before it, as a text's reader keeps a separator in front of a value. */
+        private static Node withLead(Node node, String lead) {
+            if (node instanceof Scalar scalar) {
+                return new Scalar(lead, scalar.string(), scalar.text(), scalar.raw(), scalar.value());
+            }
+            Container container = (Container) node;
+            return new Container(lead, container.object(), container.members(), container.closeLead(), container.kty());
         }
 
         /** A container at {@code depth}, the root's being 0: nesting past {@link #MAX_DEPTH} is unreadable. */
@@ -517,7 +529,9 @@ final class JsonRedaction {
             } else if (number instanceof BigDecimal big) {
                 weigh(1 + big.unscaledValue().bitLength() / 3);
             }
-            return value(number, "number");
+            // Written as a JSON number, so the settled check reads a scalar where the same tree as a text has one
+            // (automated review r2 on #412); one digit stands for any number, which is never written out.
+            return value(number, "0");
         }
 
         private Node value(Object value, String kind) {
