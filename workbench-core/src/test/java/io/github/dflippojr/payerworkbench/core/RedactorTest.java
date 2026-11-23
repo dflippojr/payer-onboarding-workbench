@@ -2009,16 +2009,16 @@ class RedactorTest {
                 Map.entry("generic-separator-level-flat-grid", new int[] {6400, 0}),
                 Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}),
                 Map.entry("generic-separator-level-escape-grid", new int[] {16320, 0}),
-                Map.entry("generic-separator-level-deeper-grid", new int[] {7120, 5660}),
+                Map.entry("generic-separator-level-deeper-grid", new int[] {8130, 4650}),
                 Map.entry("generic-separator-level-slice-grid", new int[] {2850, 0}),
                 Map.entry("generic-separator-level-whole-grid", new int[] {6440, 0}),
                 Map.entry("generic-separator-level-spelled-grid", new int[] {6288, 0}),
                 Map.entry("generic-separator-level-loose-grid", new int[] {4900, 0}),
                 Map.entry("generic-separator-level-respelled-grid", new int[] {15100, 0}),
-                Map.entry("generic-separator-level-chain-grid", new int[] {7836, 90}),
+                Map.entry("generic-separator-level-chain-grid", new int[] {7926, 0}),
                 Map.entry("generic-separator-level-wrapped-grid", new int[] {14045, 0}),
                 // #377: 15 rows that already hold a mask were masked again by the reading of each string as spelled.
-                Map.entry("generic-separator-level-generated-grid", new int[] {14714, 1304}),
+                Map.entry("generic-separator-level-generated-grid", new int[] {15513, 505}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {18200, 0}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();

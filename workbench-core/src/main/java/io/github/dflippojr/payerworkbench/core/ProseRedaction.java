@@ -208,7 +208,7 @@ final class ProseRedaction {
 
     /**
      * Whether the text rules' output {@code out} for {@code in} takes material out of it: a letter, digit or other
-     * character outside the masks already there that is not a quote, bracket, comma, colon, backslash or whitespace.
+     * character outside the masks already there that is not a quote, bracket, comma, colon or whitespace.
      * Read in a decoding of an output, the text rules may move a quote or a bracket (a header line's value runs on over
      * the quote that closes its string); that is no material of the text's.
      */
@@ -216,13 +216,13 @@ final class ProseRedaction {
         return !in.equals(out) && !material(in).equals(material(out));
     }
 
-    /** {@code text} without its masks and without quotes, brackets, commas, colons, backslashes and whitespace. */
+    /** {@code text} without its masks and without quotes, brackets, commas, colons and whitespace. */
     private static String material(String text) {
         String bare = text.replace(Redactor.MASK, "");
         StringBuilder kept = new StringBuilder(bare.length());
         for (int i = 0; i < bare.length(); i++) {
             char c = bare.charAt(i);
-            if ("\"'{}[],:\\".indexOf(c) < 0 && !Character.isWhitespace(c)) {
+            if ("\"'{}[],:".indexOf(c) < 0 && !Character.isWhitespace(c)) {
                 kept.append(c);
             }
         }
