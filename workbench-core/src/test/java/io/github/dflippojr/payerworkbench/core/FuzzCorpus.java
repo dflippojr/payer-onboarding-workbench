@@ -130,7 +130,8 @@ final class FuzzCorpus {
         boolean inHeader = rnd.nextInt(4) == 0;
         String header = inHeader ? "{\"alg\":\"none\"," + claim + "}" : "{\"alg\":\"none\"}";
         String payload = inHeader ? "{\"sub\":\"x\"}" : "{\"iss\":\"p\"," + claim + "}";
-        return base64Url(header) + "." + base64Url(payload) + "." + secret();
+        // Sometimes the signature is empty, as in a token cut after its second dot.
+        return base64Url(header) + "." + base64Url(payload) + "." + (rnd.nextInt(5) == 0 ? "" : secret());
     }
 
     private static String base64Url(String json) {

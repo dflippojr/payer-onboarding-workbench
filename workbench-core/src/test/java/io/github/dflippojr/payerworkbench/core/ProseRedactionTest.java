@@ -193,6 +193,22 @@ class ProseRedactionTest {
                 }
             }
         }
+        // The same token cut short: no signature, an empty one, no payload; and spelled with unicode escapes in a cut body.
+        for (String claim : claims) {
+            String header = plainHeader + "." + base64Url(claim);
+            String claimHeader = base64Url("{\"alg\":\"none\"," + claim.substring(1));
+            for (String jwt : List.of(header + ".", header, claimHeader, claimHeader + "." + harmless + ".",
+                    claimHeader + "." + harmless)) {
+                String respelled = jwt.replace("y", "\\u0079").replace("J", "\\u004A");
+                for (String text : List.of("x " + jwt + " y", "{\"jwt\":\"" + jwt + "\",\"n\":1}",
+                        "{\"a\":\"plain words\",\"jwt\":\"" + respelled + "\",\"b\":\"\\u")) {
+                    String out = Redactor.redact(text);
+                    if (leaksAtAnyDecoding(out, secret)) {
+                        failures.add(claim + " cut short: " + text + " => " + out);
+                    }
+                }
+            }
+        }
         assertEquals(List.of(), failures, () -> failures.size() + " JWT texts kept a secret-bearing claim");
         // A JWT whose claims hold no secret keeps its header and payload, the signature masked, in every context.
         String jwt = plainHeader + "." + harmless + ".FAKESIG";
