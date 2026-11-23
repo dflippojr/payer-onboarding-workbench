@@ -253,22 +253,36 @@ class ProseRedactionTest {
     static boolean leaksAtAnyDecoding(String out, String marker) {
         String pass = out;
         for (int level = 0; pass != null && level <= JsonRedaction.MAX_KEY_LEVELS; level++) {
-            if (pass.contains(marker)) {
+            if (leaksInTokens(pass, marker, 0)) {
                 return true;
             }
-            for (String run : pass.split("[^A-Za-z0-9_-]+")) {
-                if (run.length() >= 8) {
-                    try {
-                        byte[] bytes = java.util.Base64.getUrlDecoder().decode(run.length() % 4 == 1 ? run.substring(1) : run);
-                        if (new String(bytes, java.nio.charset.StandardCharsets.UTF_8).contains(marker)) {
+            pass = JsonRedaction.unescaped(pass);
+        }
+        return false;
+    }
+
+    /** Whether {@code marker} is in {@code text} or in the base64url decoding of a run of token characters in it, again and again. */
+    private static boolean leaksInTokens(String text, String marker, int depth) {
+        if (text.contains(marker)) {
+            return true;
+        }
+        if (depth > 64) {
+            return false;
+        }
+        for (String run : text.split("[^A-Za-z0-9_-]+")) {
+            if (run.length() >= 8) {
+                try {
+                    byte[] bytes = java.util.Base64.getUrlDecoder().decode(run.length() % 4 == 1 ? run.substring(1) : run);
+                    String decoded = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    for (String pass = decoded; pass != null; pass = JsonRedaction.unescaped(pass)) {
+                        if (leaksInTokens(pass, marker, depth + 1)) {
                             return true;
                         }
-                    } catch (IllegalArgumentException notBase64) {
-                        // not a token
                     }
+                } catch (IllegalArgumentException notBase64) {
+                    // not a token
                 }
             }
-            pass = JsonRedaction.unescaped(pass);
         }
         return false;
     }
@@ -388,5 +402,71 @@ class ProseRedactionTest {
         String longToken = "x " + header + "." + base64Url("{\"sub\":\"" + "a".repeat(3_000_000) + "\"}") + ".sig y";
         String kept = assertTimeoutPreemptively(Duration.ofSeconds(30), () -> Redactor.redact(longToken));
         assertTrue(kept.endsWith(".[REDACTED] y") && kept.length() > 4_000_000);
+    }
+
+    @Test
+    void checksEveryTokenRunFromAnEyjWhateverFollowsItSegmentBySegment() {
+        // #406 owner card (after automated review r4 on 8ff735c): a token is recognised by its run of token characters
+        // from an eyJ at a word start, whatever punctuation ends it, and each segment is checked. Grid: shape x what
+        // follows x context, with a secret claim generated at runtime; and harmless tokens keep header and payload.
+        java.util.Random rnd = new java.util.Random();
+        String secret = "FAKE-RUN-" + Long.toString(rnd.nextLong() & Long.MAX_VALUE, 36);
+        String plainHeader = base64Url("{\"alg\":\"none\"}");
+        String claimHeader = base64Url("{\"alg\":\"none\",\"api_key\":\"" + secret + "\"}");
+        String harmless = base64Url("{\"sub\":\"user-" + rnd.nextInt(1000) + "\"}");
+        String claim = base64Url("{\"sub\":\"x\",\"client_secret\":\"" + secret + "\"}");
+        List<String> shapes = List.of(plainHeader + "." + claim + ".SIG", plainHeader + "." + claim + ".",
+                plainHeader + "." + claim, claimHeader, claimHeader + "." + harmless + ".SIG", claimHeader + "." + harmless + ".",
+                claimHeader + "." + harmless, plainHeader + "." + claim + ".SIG.more", "id-" + plainHeader + "." + claim + ".");
+        List<String> follows = List.of("", ".", "..", "...", ",", ")", ".)", "\"", "'", "\\", " ", ";", ":", "!", "?", ".\n",
+                "\\n", "]", "}", "&a=b", "=", ". Next");
+        List<String> failures = new ArrayList<>();
+        int cases = 0;
+        for (String shape : shapes) {
+            for (String after : follows) {
+                String token = shape + after;
+                for (String text : List.of("see " + token + " then", "see " + token, token,
+                        JSON.writeValueAsString(Map.of("jwt", token)), "x " + JSON.writeValueAsString(Map.of("jwt", token)) + " y",
+                        JSON.writeValueAsString(Map.of("body", JSON.writeValueAsString(Map.of("jwt", token)))),
+                        "Authorization: Bearer " + token, "token=" + token + "&a=b")) {
+                    cases++;
+                    String out = Redactor.redact(text);
+                    if (leaksAtAnyDecoding(out, secret)) {
+                        failures.add(text + " => " + out);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), failures.subList(0, Math.min(5, failures.size())), failures.size() + " of grid texts kept a claim");
+        assertTrue(cases > 1500, "grid size " + cases);
+        for (String after : follows) {
+            String text = "see " + plainHeader + "." + harmless + ".SIG" + after + " then";
+            String out = Redactor.redact(text);
+            assertTrue(out.contains(plainHeader + "." + harmless + ".") && !out.contains("SIG"), () -> text + " => " + out);
+        }
+    }
+
+    @Test
+    void checksClaimsNestedWithAnEscapeBetweenLevelsInLinearTime() {
+        // #406 owner card (after automated review r4 on 8ff735c): tokens nested in claims with an escape between levels
+        // were checked again by every pass, so the work grew with each level. One shared budget per call and a memo of
+        // each segment's decision keep it linear; past the budget the token is masked.
+        String header = base64Url("{\"alg\":\"none\"}");
+        // A harmless innermost claim is the slow case: nothing is masked, so every pass reads the whole chain again.
+        for (String innermost : List.of("{\"sub\":\"x\"}", "{\"client_secret\":\"FAKE-NEST\"}"))
+        for (String escape : List.of("\\t", "\\n", "\\\\", "\\\"", "\\u0041")) {
+            for (String end : List.of(".", "", ".SIG")) {
+                String token = header + "." + base64Url(innermost) + end;
+                int levels = 1;
+                while (levels < 26) {
+                    token = header + "." + base64Url("{\"n\":\"" + token + escape + "\"}") + end;
+                    levels++;
+                }
+                String text = "x " + token + " y";
+                String out = assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(text),
+                        () -> "escape " + escape + ", end '" + end + "', " + text.length() + " chars");
+                assertFalse(leaksAtAnyDecoding(out, "FAKE-NEST"), () -> escape + end);
+            }
+        }
     }
 }
