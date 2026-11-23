@@ -1278,30 +1278,52 @@ final class JsonRedaction {
      */
     private static Node maskSecret(String name, Node value) {
         if (value instanceof Scalar scalar && !scalar.string()) {
-            return isNull(scalar) ? scalar : Scalar.masked(scalar.lead(), Redactor.MASK);
+            if (isNull(scalar)) {
+                return scalar;
+            }
+            Redactor.met();
+            return Scalar.masked(scalar.lead(), Redactor.MASK);
         }
         if (value instanceof Scalar scalar) {
-            return Scalar.masked(scalar.lead(), Redactor.masked(name, scalar.text()));
+            String masked = Redactor.masked(name, scalar.text());
+            Redactor.wrote(scalar.text(), masked);
+            return Scalar.masked(scalar.lead(), masked);
         }
         Container container = (Container) value;
         if (!container.object()) {
+            if (container.members().isEmpty()) {
+                // No form the rules write (#406 redesign): an empty list under a secret name is reported as met, as any
+                // value but the mask, a scheme form or null is.
+                Redactor.met();
+            }
             List<Member> items = new ArrayList<>(container.members().size());
             for (Member item : container.members()) {
                 String masked = item.value() instanceof Scalar scalar && scalar.string()
                         ? Redactor.masked(name, scalar.text()) : Redactor.MASK;
                 if (masked.equals(Redactor.MASK)) {
+                    Redactor.met();
                     return Scalar.masked(value.lead(), Redactor.MASK);
                 }
+                Redactor.wrote(((Scalar) item.value()).text(), masked);
                 items.add(new Member(null, null, null, Scalar.masked(item.value().lead(), masked)));
             }
             return new Container(container.lead(), false, items, container.closeLead(), false);
         }
+        Redactor.met();
         return Scalar.masked(value.lead(), Redactor.MASK);
     }
 
     /** The value of a JWK private member: the mask, unless it is {@code null}. */
     private static Node maskPrivate(Node value) {
-        return value instanceof Scalar scalar && isNull(scalar) ? scalar : Scalar.masked(value.lead(), Redactor.MASK);
+        if (value instanceof Scalar scalar && isNull(scalar)) {
+            return scalar;
+        }
+        if (value instanceof Scalar scalar && scalar.string()) {
+            Redactor.wrote(scalar.text(), Redactor.MASK);
+        } else {
+            Redactor.met();
+        }
+        return Scalar.masked(value.lead(), Redactor.MASK);
     }
 
     private static boolean isNull(Scalar scalar) {

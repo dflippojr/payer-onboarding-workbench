@@ -455,15 +455,15 @@ public final class Redactor {
             if (JsonRedaction.hidesAKey(text, 0)) {
                 // A key opener only a decoding shows (#389): no bound the structural path stops at can then rule out
                 // key material in a later string, so the whole text is the mask.
-                return MASK;
+                return maskedWhole(text);
             }
             String out = redactAt(text, 0);
             // Settled (#377 stage 2): no decoding of the output's escapes may hold anything the text rules mask. Each
             // level reads its own strings; this reads them across their quotes, as the text rules once read every text.
-            return ProseRedaction.settled(out, false) ? out : MASK;
+            return ProseRedaction.settled(out, false) ? out : maskedWhole(text);
         } catch (RuntimeException | StackOverflowError failed) {
             // Fail closed (#377): nothing of a text the structural path could not finish is kept.
-            return MASK;
+            return maskedWhole(text);
         }
     }
 
@@ -483,7 +483,7 @@ public final class Redactor {
                     return structural;
                 }
             } catch (JsonRedaction.Unreadable unreadable) {
-                return MASK;
+                return maskedWhole(text);
             }
         }
         return ProseRedaction.redact(text, level);
@@ -541,15 +541,32 @@ public final class Redactor {
         out = maskStructures(out, JSON_FIELD_STRUCTURE, false, jwk);
         out = maskStructures(out, EMBEDDED_JSON_FIELD_STRUCTURE, true, jwk);
         out = JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecret(decodeName(m.group(1)), jwk)
-                ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + masked(decodeName(m.group(1)), m.group(3)) + "\""
+                ? "\"" + m.group(1) + "\"" + m.group(2) + "\"" + maskedField(m) + "\""
                 : m.group()));
         out = EMBEDDED_JSON_FIELD.matcher(out).replaceAll(m -> Matcher.quoteReplacement(isSecret(decodeName(m.group(1)), jwk)
-                ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + masked(decodeName(m.group(1)), m.group(3)) + "\\\""
+                ? "\\\"" + m.group(1) + "\\\"" + m.group(2) + "\\\"" + maskedField(m) + "\\\""
                 : m.group()));
-        out = FORM_SECRET.matcher(out).replaceAll("$1=" + Matcher.quoteReplacement(MASK));
+        out = FORM_SECRET.matcher(out).replaceAll(m -> {
+            wrote(m.group().substring(m.end(1) - m.start() + 1), MASK);
+            return Matcher.quoteReplacement(m.group(1) + "=" + MASK);
+        });
         out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
         out = maskEscapedHeaderLines(out);
         return maskUnreadSecretNames(out, jwk);
+    }
+
+    /**
+     * The mask a {@link #JSON_FIELD} or {@link #EMBEDDED_JSON_FIELD} match of a secret field writes for its value, reported
+     * ({@link #wrote}): a string's content against that mask; a number or boolean is always a sensitive value.
+     */
+    private static String maskedField(MatchResult m) {
+        String written = masked(decodeName(m.group(1)), m.group(3));
+        if (m.group(3) == null) {
+            met();
+        } else {
+            wrote(m.group(3), written);
+        }
+        return written;
     }
 
     /**
@@ -594,6 +611,7 @@ public final class Redactor {
         int second = first == end ? end : text.indexOf('.', first + 1);
         second = second < 0 || second >= end ? end : second;
         if (secretBearing(text.substring(from, first)) || (first < end && secretBearing(text.substring(first + 1, second)))) {
+            met();
             out.append(MASK);
             return end;
         }
@@ -607,6 +625,7 @@ public final class Redactor {
             out.append(text, from, next);
             return next;
         }
+        met();
         out.append(text, from, second + 1).append(MASK);
         return signature;
     }
@@ -619,6 +638,18 @@ public final class Redactor {
     private static final class TokenChecks {
         private final Map<String, Boolean> decided = new HashMap<>();
         private long budget;
+
+        /**
+         * How many sensitive values the rules have met in this call so far (#406 redesign): only ever counts up, so a
+         * check reads what a nested run of the rules met as the difference ({@link #meets}).
+         */
+        private long met;
+
+        /**
+         * Whether the rules now read a decoding of an output ({@link ProseRedaction#settled}), where a quote may close
+         * the string that held a header line one level up ({@link #maskHeaderLine}). Never set inside a claim check.
+         */
+        private boolean decoding;
 
         private TokenChecks(int length) {
             budget = 2L * length + 4096;
@@ -642,10 +673,72 @@ public final class Redactor {
     }
 
     /**
-     * Whether the base64url segment {@code segment} of a token decodes to text the Redactor masks material in: a
-     * secret-named claim, a JWK private member, a scheme credential, a key block or a token holding one, at any level.
-     * Each segment is decided once per outermost call. Past the call's budget a segment is secret-bearing: nothing
-     * shows it holds no credential (fail closed).
+     * Records that a rule met a sensitive value (#406 redesign): it is about to write a mask over bytes that are not
+     * already exactly the form it writes. Every site that writes a mask reports here, so a check knows that the rules met
+     * a secret from the rules themselves, never from comparing the text before and after.
+     */
+    static void met() {
+        TokenChecks checks = TOKEN_CHECKS.get();
+        if (checks != null) {
+            checks.met++;
+        }
+    }
+
+    /**
+     * {@link #met} unless {@code original}, the bytes a rule is about to replace, already is exactly {@code written}, the
+     * form it writes: a value the Redactor masked before, read again, is no sensitive value.
+     */
+    static void wrote(CharSequence original, String written) {
+        if (!written.contentEquals(original)) {
+            met();
+        }
+    }
+
+    /** {@link #MASK} for the whole of {@code text}, reported as met ({@link #wrote}). */
+    static String maskedWhole(String text) {
+        wrote(text, MASK);
+        return MASK;
+    }
+
+    /**
+     * Whether {@code rules} meet a sensitive value ({@link #met}) while they run, inside the claim checks of the
+     * outermost call, opening them, sized by {@code length}, if there are none.
+     */
+    static boolean meets(int length, Runnable rules) {
+        return meets(length, false, rules);
+    }
+
+    /**
+     * {@link #meets(int, Runnable)}; {@code decoding}: whether {@code rules} read a decoding of an output, where a
+     * quote may close the string a header line was in ({@link #maskHeaderLine}).
+     */
+    static boolean meets(int length, boolean decoding, Runnable rules) {
+        return withTokenChecks(length, () -> {
+            TokenChecks checks = TOKEN_CHECKS.get();
+            long before = checks.met;
+            boolean was = checks.decoding;
+            checks.decoding = decoding;
+            try {
+                rules.run();
+            } finally {
+                checks.decoding = was;
+            }
+            return checks.met > before;
+        });
+    }
+
+    /** Whether the rules now read a decoding of an output ({@link #meets(int, boolean, Runnable)}). */
+    private static boolean decoding() {
+        TokenChecks checks = TOKEN_CHECKS.get();
+        return checks != null && checks.decoding;
+    }
+
+    /**
+     * Whether the base64url segment {@code segment} of a token is secret-bearing: redacting its decoded text, the rules
+     * meet a sensitive value ({@link #meets}), whatever its bytes are: a secret-named claim, a JWK private member, a
+     * scheme credential, a key block or a token holding one, at any level. Only the exact forms the rules write count as
+     * no secret. Each segment is decided once per outermost call. Past the call's budget a segment is secret-bearing:
+     * nothing shows it holds no credential (fail closed).
      */
     private static boolean secretBearing(String segment) {
         if (segment.isEmpty()) {
@@ -667,7 +760,8 @@ public final class Redactor {
         boolean secret;
         try {
             String decoded = new String(Base64.getUrlDecoder().decode(run), StandardCharsets.UTF_8);
-            secret = ProseRedaction.masksMaterial(decoded, redact(decoded));
+            // A claim is read as a text of its own, never as a decoding: every value is judged where the rules end it.
+            secret = meets(decoded.length(), false, () -> redact(decoded));
         } catch (IllegalArgumentException notBase64) {
             secret = true;
         }
@@ -704,6 +798,8 @@ public final class Redactor {
         if (cut < 0) {
             return text;
         }
+        // The value is not a form the rules write (readsAsMasked): a sensitive value.
+        met();
         // The spaces after the colon stay, as the field rules keep them.
         while (cut < text.length() && (text.charAt(cut) == ' ' || text.charAt(cut) == '\t')) {
             cut++;
@@ -760,6 +856,7 @@ public final class Redactor {
                 continue;
             }
             out = out == null ? new StringBuilder(text.length()) : out;
+            met();
             out.append(text, copied, m.start()).append(m.group(1)).append(' ').append(MASK);
             copied = m.end();
             from = copied;
@@ -775,8 +872,17 @@ public final class Redactor {
      */
     private static String maskHeaderLine(MatchResult m) {
         String value = m.group(3);
-        String line = keepsLine(m.group(2), value) ? m.group() : m.group(1) + masked(m.group(2), value);
-        return Matcher.quoteReplacement(line);
+        if (keepsLine(m.group(2), value)) {
+            return Matcher.quoteReplacement(m.group());
+        }
+        // In a decoding of an output, a quote may be the one that closed the string the line was in, a level up: the value
+        // judged ends there, as a header line read in its string ends at that quote (endOfEscapedLine). Anything after it
+        // is read by the field rules, which run first. A claim check never reads so (TokenChecks.decoding).
+        int quote = decoding() ? value.indexOf('"') : -1;
+        String judged = quote < 0 ? value : value.substring(0, quote);
+        wrote(judged, masked(m.group(2), judged));
+        String written = masked(m.group(2), value);
+        return Matcher.quoteReplacement(m.group(1) + written);
     }
 
     private static boolean keepsLine(String name, String value) {
@@ -799,7 +905,9 @@ public final class Redactor {
             from = Math.max(end, m.end() + 1);
             if (!keepsLine(m.group(2), value)) {
                 out = out == null ? new StringBuilder(text.length()) : out;
-                out.append(text, copied, m.end()).append(masked(m.group(2), value));
+                String written = masked(m.group(2), value);
+                wrote(value, written);
+                out.append(text, copied, m.end()).append(written);
                 copied = end;
             }
         }
@@ -915,6 +1023,7 @@ public final class Redactor {
             if (isSecret(decodeName(m.group(1)), jwk)) {
                 String quote = embedded ? "\\\"" : "\"";
                 out = out == null ? new StringBuilder(text.length()) : out;
+                met();
                 out.append(text, copied, m.end()).append(quote).append(MASK).append(quote);
                 copied = endOfStructure(text, m.end(), embedded);
                 from = copied;
@@ -1498,6 +1607,7 @@ public final class Redactor {
             while (i + 1 < masks.size() && masks.get(i + 1).start() < end) {
                 end = Math.max(end, masks.get(++i).end());
             }
+            wrote(text.subSequence(mask.start(), end), mask.replacement());
             out.append(text, copied, mask.start()).append(mask.replacement());
             copied = end;
         }
@@ -1740,6 +1850,7 @@ public final class Redactor {
             return JsonRedaction.redactTree(value);
         } catch (Exception | LinkageError | AssertionError | StackOverflowError failed) {
             // Fail closed (#360, #377): a caller value that cannot be read or redacted is not kept, nor is its error.
+            met();
             return MASK;
         }
     }

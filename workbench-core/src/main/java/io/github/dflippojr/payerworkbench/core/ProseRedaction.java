@@ -112,7 +112,7 @@ final class ProseRedaction {
         }
         if (!spans.isEmpty() && holdsPlaceholderCharacters(text)) {
             // A placeholder could not be told apart from the text: fail closed.
-            return hasVocabulary(text) ? Redactor.MASK : text;
+            return hasVocabulary(text) ? Redactor.maskedWhole(text) : text;
         }
         StringBuilder prose = new StringBuilder(text.length());
         int copied = 0;
@@ -134,13 +134,17 @@ final class ProseRedaction {
         String head = maskTail ? prose.substring(0, proseFailed) : prose.toString();
         String out = Redactor.redact(head, null);
         if (!settled(out, true)) {
-            return Redactor.MASK;
+            return Redactor.maskedWhole(text);
         }
         String restored = values.isEmpty() ? out : restore(out, values);
         if (restored == null) {
-            return Redactor.MASK;
+            return Redactor.maskedWhole(text);
         }
-        return maskTail ? restored + Redactor.MASK : restored;
+        if (maskTail) {
+            Redactor.wrote(text.substring(failed), Redactor.MASK);
+            return restored + Redactor.MASK;
+        }
+        return restored;
     }
 
     /** The JSON value {@code json} redacted on the tree, or {@code null} if that path will not read it. */
@@ -187,7 +191,7 @@ final class ProseRedaction {
     /**
      * Whether {@code text}, or any decoding of its JSON escapes ({@link JsonRedaction#unescaped}, one level at a time),
      * holds secret vocabulary: an armor header, a secret name whose value is not already the mask ({@link #keyName}),
-     * with a {@code kty} a JWK private member's quoted name so, or material the text rules mask ({@link #masksMaterial}). A text whose escapes still decode
+     * with a {@code kty} a JWK private member's quoted name so, or material the text rules mask ({@link #meetsSecret}). A text whose escapes still decode
      * after {@link JsonRedaction#MAX_KEY_LEVELS} levels counts as holding it.
      */
     static boolean hasVocabulary(String text) {
@@ -198,7 +202,7 @@ final class ProseRedaction {
             boolean decoded = level > 0;
             if (pass.contains("-----BEGIN") || keyName(SECRET_NAME, pass, decoded)
                     || (pass.contains("kty") && keyName(PRIVATE_NAME, pass, decoded))
-                    || masksMaterial(pass, Redactor.textRules(pass, null, true))) {
+                    || meetsSecret(pass, true, decoded)) {
                 return true;
             }
             String next = JsonRedaction.unescaped(pass);
@@ -214,7 +218,7 @@ final class ProseRedaction {
 
     /**
      * Whether no decoding of {@code out}'s JSON escapes, one level at a time, holds material the text rules mask
-     * ({@link #masksMaterial}): the text rules' output, read at every escape level below the one they read. A text whose escapes still decode after
+     * ({@link #meetsSecret}): the text rules' output, read at every escape level below the one they read. A text whose escapes still decode after
      * {@link JsonRedaction#MAX_KEY_LEVELS} levels is not settled. {@code jwkContext}: whether a {@code kty} name in a
      * decoding makes every JWK private member name in it a secret one, as it does for the text rules' own text; the
      * outermost output and a tree's are read without it, since their JWKs were read on the tree.
@@ -226,7 +230,7 @@ final class ProseRedaction {
             if (next == null) {
                 return true;
             }
-            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || masksMaterial(next, Redactor.textRules(next, null, jwkContext))) {
+            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || meetsSecret(next, jwkContext, true)) {
                 return false;
             }
             pass = next;
@@ -234,26 +238,13 @@ final class ProseRedaction {
     }
 
     /**
-     * Whether the text rules' output {@code out} for {@code in} takes material out of it: a letter, digit or other
-     * character outside the masks already there that is not a quote, bracket, comma, colon or whitespace.
-     * Read in a decoding of an output, the text rules may move a quote or a bracket (a header line's value runs on over
-     * the quote that closes its string); that is no material of the text's.
+     * Whether the text rules meet a sensitive value in {@code text} ({@link Redactor#meets}, #406 redesign): a rule
+     * writes a mask over bytes that are not already exactly the form it writes. No comparison of the text before and
+     * after decides it, so a secret value of punctuation, of masking markers or of whitespace counts as any other.
+     * {@code decoding}: {@code text} is a decoding of an output's escapes ({@link Redactor#meets(int, boolean, Runnable)}).
      */
-    static boolean masksMaterial(String in, String out) {
-        return !in.equals(out) && !material(in).equals(material(out));
-    }
-
-    /** {@code text} without its masks and without quotes, brackets, commas, colons and whitespace. */
-    private static String material(String text) {
-        String bare = text.replace(Redactor.MASK, "");
-        StringBuilder kept = new StringBuilder(bare.length());
-        for (int i = 0; i < bare.length(); i++) {
-            char c = bare.charAt(i);
-            if ("\"'{}[],:".indexOf(c) < 0 && !Character.isWhitespace(c)) {
-                kept.append(c);
-            }
-        }
-        return kept.toString();
+    private static boolean meetsSecret(String text, boolean jwkContext, boolean decoding) {
+        return Redactor.meets(text.length(), decoding, () -> Redactor.textRules(text, null, jwkContext));
     }
 
     /**
@@ -261,7 +252,7 @@ final class ProseRedaction {
      * after it) whose value is not already the mask ({@link #MASKED}), or, with {@code evenMasked}, whatever its value. An output of the Redactor read again (an excerpt
      * of a redacted body in a finding's evidence, say) names secrets whose values are gone, and a name in prose
      * ("access_token present") is no key: neither is vocabulary a broken start hides. The text rules' own reading
-     * ({@link #masksMaterial}) still counts every secret they would mask.
+     * ({@link #meetsSecret}) still counts every secret they would mask.
      */
     private static boolean keyName(Pattern names, String text, boolean evenMasked) {
         Matcher name = names.matcher(text);

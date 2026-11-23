@@ -3328,7 +3328,9 @@ test('reads no such field whose name opens with a quote of a deeper level than i
   const { wrong, keptAsMain, overmasks } = levelGridWrong('generic-separator-level-deeper-grid', pairs);
   // #406 (gate change): texts the Redactor now masks from a JSON-looking start that does not read, which the scanner
   // accepts at every entry point (nothing to flag; the outputs are accepted), pinned.
-  assert.equal(overmasks, 5_610, 'masked texts the scanner accepts (#406)');
+  // #406 redesign (gate change, toward masking): 1,050 more texts whose secret name only a decoding reads, with a mask
+  // cut at the text's end and no closing quote (no form the rules write), are masked whole.
+  assert.equal(overmasks, 6_660, 'masked texts the scanner accepts (#406)');
   assert.equal(keptAsMain, 405, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
@@ -3491,11 +3493,13 @@ test('reads every spelling of a secret field\'s quotes and of a closing backslas
   // #377: the Redactor's reading of a decoded string masks 15 kept texts whose value already is the mask again. The 3
   // that main flags now count as masked, taking their 9 verdicts out of this count; the other 12 hold nothing to flag.
   // #406 decisions (stage 2): a secret value not already masked, judged before any rewrite, masks from its colon on;
-  // the texts that now mask take 48 more of these verdicts out (126 at dcfa2f5).
-  assert.equal(keptAsMain, 78, 'verdicts on kept texts main flags too');
+  // the texts that now mask take 48 more of these verdicts out (126 at dcfa2f5). #406 redesign: 41 more kept texts
+  // holding a mask cut at the end, one level down, now mask, taking 66 more out.
+  assert.equal(keptAsMain, 12, 'verdicts on kept texts main flags too');
   // #406 (gate change): every text that already holds the mask and that the Redactor masks counts here (12 at stage 1),
   // flagged at no more than some entry points, with its output accepted.
-  assert.equal(remasks, 3_553, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');
+  // #406 redesign: 19 more of them, a mask cut at the end one level down.
+  assert.equal(remasks, 3_572, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 

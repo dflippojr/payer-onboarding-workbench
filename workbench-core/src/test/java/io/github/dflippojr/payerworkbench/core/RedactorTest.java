@@ -2010,7 +2010,9 @@ class RedactorTest {
                 Map.entry("generic-separator-level-flat-grid", new int[] {6400, 0}),
                 Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}),
                 Map.entry("generic-separator-level-escape-grid", new int[] {16320, 0}),
-                Map.entry("generic-separator-level-deeper-grid", new int[] {8880, 3900}),
+                // #406 redesign (toward masking): 1,050 kept texts whose secret name only a decoding reads, its value a
+                // mask cut at the text's end with no closing quote (no form the rules write), are masked whole.
+                Map.entry("generic-separator-level-deeper-grid", new int[] {9930, 2850}),
                 Map.entry("generic-separator-level-slice-grid", new int[] {2850, 0}),
                 Map.entry("generic-separator-level-whole-grid", new int[] {6440, 0}),
                 Map.entry("generic-separator-level-spelled-grid", new int[] {6288, 0}),
@@ -2020,7 +2022,8 @@ class RedactorTest {
                 Map.entry("generic-separator-level-wrapped-grid", new int[] {14045, 0}),
                 // #377: 15 rows that already hold a mask were masked again by the reading of each string as spelled.
                 // #406 decisions (stage 2): 16 more rows masked, a secret value not already masked judged before rewrites.
-                Map.entry("generic-separator-level-generated-grid", new int[] {15721, 297}),
+                // #406 redesign: 41 more, a mask cut at the end one level down (the deeper grid's class).
+                Map.entry("generic-separator-level-generated-grid", new int[] {15762, 256}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {18200, 0}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
