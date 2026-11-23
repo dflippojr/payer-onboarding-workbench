@@ -112,41 +112,50 @@ class ProseRedactionTest {
 
     @Test
     void aFragmentValueCountsAsMaskedOnlyInAFormTheRulesWriteAtAStrictValueEnd() {
-        // #406 decision (stage 2), closing the review family of rounds 1 and 2 on #408: in prose with no brace, a secret
-        // name's value is taken as already masked only when it is exactly a form the rules write (the mask, a kept scheme
-        // and the mask, or null), quoted as its name is, and followed by the end, whitespace, a comma or a closing bracket.
-        // Anything else masks from the colon to the end. Grid: value start x suffix x depth x name class.
+        // #406 decisions (stage 2), closing the review family of rounds 1 to 3 on #408 and #409: in prose with no brace, a
+        // secret name's value is taken as already masked only when the ORIGINAL text, before any rule rewrites it, holds
+        // exactly a form the rules write (the mask, a kept scheme and the mask, or null), quoted as its name is, followed
+        // by the end, whitespace, a comma or a closing bracket. Anything else masks from the colon to the end, separator
+        // or not. Grid: value start x suffix x depth (plain, one level deep, each inside a JSON string) x name class.
         record Name(String prefix, String name, List<String> starts) {}
         List<String> plainStarts = List.of("\"[REDACTED]\"", "null", "\"abc\"", "123", "true", "\"\"");
         List<String> schemeStarts = new ArrayList<>(plainStarts);
         schemeStarts.addAll(List.of("\"Bearer [REDACTED]\"", "\"Bearer abc\"", "\"Token [REDACTED]\""));
+        List<String> masked = List.of("\"[REDACTED]\"", "null", "\"Bearer [REDACTED]\"", "\"Token [REDACTED]\"");
         List<Name> names = List.of(new Name("note ", "password", plainStarts),
                 new Name("note ", "client_secret", plainStarts), new Name("note ", "authorization", schemeStarts),
                 new Name("note \"kty\":\"RSA\", ", "d", plainStarts));
         List<String> suffixes = List.of("SECRETTAIL", "7SECRETTAIL", ".SECRETTAIL", "-SECRETTAIL", "_SECRETTAIL",
                 ":SECRETTAIL", "\"SECRETTAIL", "'SECRETTAIL", "\\SECRETTAIL", "\\nSECRETTAIL", "\\\\SECRETTAIL",
                 "\\\"SECRETTAIL", "\\u0041SECRETTAIL", "/SECRETTAIL", "+SECRETTAIL", "=SECRETTAIL");
+        // Separators: a strict value end, then more bytes. They are kept only after a value that already was masked.
+        List<String> separators = List.of(" SECRETTAIL", ", SECRETTAIL", ",SECRETTAIL", "\tSECRETTAIL", "\nSECRETTAIL",
+                "}SECRETTAIL", "] SECRETTAIL", "  , SECRETTAIL");
         List<String> failures = new ArrayList<>();
         int cases = 0;
-        for (boolean embedded : new boolean[] {false, true}) {
-            String q = embedded ? "\\\"" : "\"";
-            for (Name n : names) {
-                String prefix = embedded ? n.prefix().replace("\"", "\\\"") : n.prefix();
-                for (String start : n.starts()) {
-                    String value = embedded ? start.replace("\"", "\\\"") : start;
-                    for (String suffix : suffixes) {
-                        String text = prefix + q + n.name() + q + ":" + value + suffix + " more";
-                        String out = Redactor.redact(text);
-                        cases++;
-                        if (out.contains("SECRETTAIL") || out.contains("more")) {
-                            failures.add(text + " => " + out);
+        for (boolean inString : new boolean[] {false, true}) {
+            for (boolean embedded : new boolean[] {false, true}) {
+                String q = embedded ? "\\\"" : "\"";
+                for (Name n : names) {
+                    String prefix = embedded ? n.prefix().replace("\"", "\\\"") : n.prefix();
+                    for (String start : n.starts()) {
+                        String value = embedded ? start.replace("\"", "\\\"") : start;
+                        for (String suffix : concat(suffixes, separators)) {
+                            String fragment = prefix + q + n.name() + q + ":" + value + suffix + " more";
+                            String text = inString ? JSON.writeValueAsString(Map.of("msg", fragment)) : fragment;
+                            String out = Redactor.redact(text);
+                            cases++;
+                            boolean keeps = masked.contains(start) && separators.contains(suffix);
+                            if (keeps ? !out.contains("SECRETTAIL") : out.contains("SECRETTAIL") || out.contains("more")) {
+                                failures.add((keeps ? "kept form changed: " : "") + text + " => " + out);
+                            }
                         }
                     }
                 }
             }
         }
         assertEquals(List.of(), failures, () -> failures.size() + " grid texts kept bytes after the value");
-        assertTrue(cases > 500, "grid size " + cases);
+        assertTrue(cases > 1500, "grid size " + cases);
         // The masked forms at a strict value end keep what follows them, plain and one level deep.
         for (String end : List.of("", " tail", ", \"n\":1", "} tail", "] tail", "\ttail", "\ntail")) {
             for (String form : List.of("\"password\":\"[REDACTED]\"", "\"password\": null", "\"authorization\":\"Bearer [REDACTED]\"",
@@ -155,6 +164,101 @@ class ProseRedactionTest {
                 assertEquals(text, Redactor.redact(text), text);
             }
         }
+    }
+
+    @Test
+    void masksAJwtWholeWhenADecodedClaimInItsHeaderOrPayloadIsSecretBearing() {
+        // #406 decision (stage 2): the option-A keep of a JWT's header and payload applies only where no decoded claim is
+        // secret-bearing. Claims are generated at runtime, so no fixed token can satisfy the test by accident.
+        java.util.Random rnd = new java.util.Random();
+        String secret = "FAKE-CLAIM-" + Long.toString(rnd.nextLong() & Long.MAX_VALUE, 36);
+        List<String> claims = List.of("{\"client_secret\":\"" + secret + "\"}", "{\"sub\":\"x\",\"password\":\"" + secret + "\"}",
+                "{\"ctx\":{\"apiKey\":\"" + secret + "\"}}", "{\"jwk\":{\"kty\":\"RSA\",\"d\":\"" + secret + "\"}}",
+                "{\"note\":\"Bearer " + secret + "\"}", "{\"body\":\"{\\\"access_token\\\":\\\"" + secret + "\\\"}\"}",
+                "{\"pem\":\"-----BEGIN PRIVATE KEY-----\\n" + secret + "\\n-----END PRIVATE KEY-----\"}");
+        String plainHeader = base64Url("{\"alg\":\"none\"}");
+        String harmless = base64Url("{\"sub\":\"user-" + rnd.nextInt(1000) + "\"}");
+        List<String> failures = new ArrayList<>();
+        for (String claim : claims) {
+            for (boolean inHeader : new boolean[] {false, true}) {
+                String header = inHeader ? base64Url("{\"alg\":\"none\"," + claim.substring(1)) : plainHeader;
+                String jwt = header + "." + (inHeader ? harmless : base64Url(claim)) + ".FAKESIG" + rnd.nextInt(1000);
+                for (String text : jwtContexts(jwt)) {
+                    String out = Redactor.redact(text);
+                    if (leaksAtAnyDecoding(out, secret)) {
+                        failures.add(claim + (inHeader ? " in header: " : " in payload: ") + text + " => " + out);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), failures, () -> failures.size() + " JWT texts kept a secret-bearing claim");
+        // A JWT whose claims hold no secret keeps its header and payload, the signature masked, in every context.
+        String jwt = plainHeader + "." + harmless + ".FAKESIG";
+        for (String text : jwtContexts(jwt)) {
+            String out = Redactor.redact(text);
+            assertTrue(out.contains(plainHeader + "." + harmless + ".") && !out.contains("FAKESIG"), () -> text + " => " + out);
+        }
+    }
+
+    @Test
+    void fuzzTextsWithCredentialClaimsInTheirJwtsKeepNoSecretAtAnyDecoding() {
+        // #406 decision (stage 2): the fuzz families, with every JWT carrying a claim drawn at runtime (a secret-named
+        // claim, a JWK private member, a scheme credential, a key block or JSON in a string holding one, or a harmless
+        // claim), in the payload or the header. No synthetic secret may survive in the output at any decoding of its
+        // escapes or of its base64url tokens.
+        long seed = System.nanoTime();
+        List<String> failures = new ArrayList<>();
+        for (String text : FuzzCorpus.textsWithClaims(seed, 3_000)) {
+            String out = Redactor.redact(text);
+            if (leaksAtAnyDecoding(out, "FAKE-FUZZ")) {
+                failures.add(text + " => " + out);
+            }
+        }
+        assertEquals(List.of(), failures.subList(0, Math.min(5, failures.size())),
+                () -> failures.size() + " of 3000 fuzz texts kept a secret (seed " + seed + ")");
+    }
+
+    /** {@code jwt} in prose, as a JSON value, in a JSON value in prose, inside a JSON string and after a scheme word. */
+    private static List<String> jwtContexts(String jwt) {
+        return List.of("x " + jwt + " y", "{\"jwt\":\"" + jwt + "\",\"n\":1}", "x {\"jwt\":\"" + jwt + "\",\"n\":1} y",
+                JSON.writeValueAsString(Map.of("body", "{\"jwt\":\"" + jwt + "\"}")), "token=" + jwt + "&a=b");
+    }
+
+    private static String base64Url(String json) {
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Whether {@code marker} is in {@code out} at any decoding of its JSON escapes, or in the base64url decoding of a run
+     * of token characters at any of those decodings.
+     */
+    static boolean leaksAtAnyDecoding(String out, String marker) {
+        String pass = out;
+        for (int level = 0; pass != null && level <= JsonRedaction.MAX_KEY_LEVELS; level++) {
+            if (pass.contains(marker)) {
+                return true;
+            }
+            for (String run : pass.split("[^A-Za-z0-9_-]+")) {
+                if (run.length() >= 8) {
+                    try {
+                        byte[] bytes = java.util.Base64.getUrlDecoder().decode(run.length() % 4 == 1 ? run.substring(1) : run);
+                        if (new String(bytes, java.nio.charset.StandardCharsets.UTF_8).contains(marker)) {
+                            return true;
+                        }
+                    } catch (IllegalArgumentException notBase64) {
+                        // not a token
+                    }
+                }
+            }
+            pass = JsonRedaction.unescaped(pass);
+        }
+        return false;
+    }
+
+    private static List<String> concat(List<String> a, List<String> b) {
+        List<String> all = new ArrayList<>(a);
+        all.addAll(b);
+        return all;
     }
 
     @Test
