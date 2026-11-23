@@ -861,8 +861,9 @@ class RedactorTest {
     @Test
     void masksEscapeChainsWithoutBlowingUp() {
         // The review's shape: each quote of a JWK in a JSON string spelled \\u005c, then u005c again and again,
-        // then u0022, so every level decoded shows one more escape. Shallow or deep, the private value goes,
-        // the output is no longer than the input, and the text stays valid JSON.
+        // then u0022, so every level decoded shows one more escape. Shallow or deep, the private value goes and
+        // the output is no longer than the input. Within JsonRedaction.MAX_KEY_LEVELS levels of escapes the text
+        // stays valid JSON; a chain whose escapes still decode past that bound masks the whole text (#389).
         for (int links : List.of(1, 8, 40, 400)) {
             String quote = "\\u005c" + "u005c".repeat(links) + "u0022";
             String jwk = "{" + quote + "kty" + quote + ":" + quote + "oct" + quote + "," + quote + "k" + quote + ":" + quote
@@ -871,7 +872,11 @@ class RedactorTest {
             String out = assertTimeout(Duration.ofSeconds(5), () -> Redactor.redact(in));
             assertFalse(out.contains("PRIVATECHAINVALUE"), () -> links + ": " + out);
             assertTrue(out.length() <= in.length(), () -> links + ": " + out.length() + " > " + in.length());
-            assertTrue(JSON.readTree(out).has("body"), out);
+            if (links + 2 <= JsonRedaction.MAX_KEY_LEVELS) {
+                assertTrue(JSON.readTree(out).has("body"), out);
+            } else {
+                assertEquals(Redactor.MASK, out, () -> links + ": " + out);
+            }
         }
         // A sibling holding an escaped quote, or a stray quote in prose before the JSON, must not shift which quotes
         // bound the string that holds the chain (the review on 2334a77).
@@ -4029,8 +4034,10 @@ class RedactorTest {
         String block = "-----BEGIN PRIVATE KEY-----\\nFAKEKEY\\n-----END PRIVATE KEY-----";
         String text = block.repeat(64_000) + "-----BEGIN PGP PRIVATE KEY BLOCK-----\\nFAKETAIL";
         String out = assertTimeoutPreemptively(Duration.ofSeconds(4), () -> Redactor.redact(text));
-        assertFalse(out.contains("FAKEKEY"), out.substring(0, 200));
-        assertEquals(Redactor.MASK.repeat(64_001), out, out.substring(out.length() - 80));
+        assertFalse(out.contains("FAKEKEY"), () -> out.substring(0, Math.min(200, out.length())));
+        assertFalse(out.contains("FAKETAIL"), () -> out.substring(0, Math.min(200, out.length())));
+        // Since #389 the open header, read in the text's decoding, masks the whole text.
+        assertEquals(Redactor.MASK, out, () -> out.substring(Math.max(0, out.length() - 80)));
     }
 
     /**
@@ -4475,20 +4482,27 @@ class RedactorTest {
     private static final java.util.regex.Pattern PRIVATE_KEY_FOOTER = java.util.regex.Pattern.compile(
             "-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
 
-    /** The open-key check before #396, with its footer labels in a hash map, which the trie must match. */
+    /**
+     * The open-key check with its footer labels in a hash map, which the trie must match: per piece between quotes, a
+     * header found at every {@code -----BEGIN }, overlapping or not (#389), is open unless a footer of its own label
+     * comes after it in that piece.
+     */
     private static boolean opensAnUnterminatedKeyByHash(String text) {
         if (!text.contains("-----BEGIN ")) {
             return false;
         }
-        Map<String, Integer> lastFooter = new java.util.HashMap<>();
-        java.util.regex.Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
-        while (footer.find()) {
-            lastFooter.put(footer.group(1), footer.start());
-        }
-        java.util.regex.Matcher header = PRIVATE_KEY_HEADER.matcher(text);
-        while (header.find()) {
-            if (lastFooter.getOrDefault(header.group(1), -1) < header.end()) {
-                return true;
+        for (String piece : text.split("\"", -1)) {
+            Map<String, Integer> lastFooter = new java.util.HashMap<>();
+            java.util.regex.Matcher footer = PRIVATE_KEY_FOOTER.matcher(piece);
+            while (footer.find()) {
+                lastFooter.put(footer.group(1), footer.start());
+            }
+            java.util.regex.Matcher header = PRIVATE_KEY_HEADER.matcher(piece);
+            for (int at = piece.indexOf("-----BEGIN "); at >= 0; at = piece.indexOf("-----BEGIN ", at + 1)) {
+                if (header.region(at, piece.length()).lookingAt()
+                        && lastFooter.getOrDefault(header.group(1), -1) < header.end()) {
+                    return true;
+                }
             }
         }
         return false;

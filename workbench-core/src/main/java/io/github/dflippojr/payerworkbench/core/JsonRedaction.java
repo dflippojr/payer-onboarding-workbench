@@ -68,6 +68,14 @@ final class JsonRedaction {
     /** The most levels of JSON in a JSON string read on the tree; a string past it goes to the text engine. */
     static final int MAX_LEVELS = 8;
 
+    /**
+     * The most levels of JSON escapes {@link #hidesAKey} decodes; escapes that still decode past it make the text the
+     * mask. JSON held in strings as Jackson writes it doubles the backslashes before a quote at each level, so a text
+     * within {@link #MAX_CHARS} holds it about 23 levels deep at most; a backslash spelled as a unicode escape at each
+     * level goes deeper, and is masked.
+     */
+    static final int MAX_KEY_LEVELS = 32;
+
     private static final JsonFactory FACTORY = JsonFactory.builder()
             .streamReadConstraints(StreamReadConstraints.builder()
                     .maxNestingDepth(MAX_DEPTH)
@@ -225,6 +233,109 @@ final class JsonRedaction {
     }
 
     /**
+     * Whether a decoding of {@code text}'s JSON escapes, at JSON-in-string level {@code level}, shows a private key
+     * header that {@code text} does not spell plainly, or could: the one rule for every bound where the structural path
+     * stops reading a string (#389). Past the level bound, the nesting bound, a read error, text after the root value,
+     * text that is not JSON or the length bound, the text engine reads the string as it is spelled and cannot make an
+     * outer level's text the mask; a key opener it does not see would leave the key material in a later string kept.
+     *
+     * <p>Each pass decodes every JSON escape in the whole text, left to right, whether or not it sits in a string; an
+     * escape that is not one ({@code \q}) is kept. Every string the structural path decodes, at any depth, is a
+     * decoding of part of the text, one pass per level, so its text appears in the pass for its level: this
+     * over-approximates every decoding that path can make. A header the text spells plainly has no backslash in it, so
+     * no pass changes it, and no pass has fewer header starts ({@link Redactor#privateKeyHeaderStarts}) than the text:
+     * a pass with more holds a header only a decoding shows. Each pass, at level 1 or deeper, is also read by the one
+     * open-key predicate ({@link Redactor#opensAnUnterminatedKey}), whose quote-split pieces are the strings of every
+     * level up to the pass's: a header whose own string does not close it, spelled plainly or not, is found there. A
+     * text with no backslash has no pass; its callers read the text itself with that predicate, with no shortcut
+     * ({@link TreeReader}, and the parser's strings for a text). The passes stop when one decodes nothing; a text whose
+     * escapes still decode after {@link #MAX_KEY_LEVELS} levels counts as hiding one. Each pass is linear in the text
+     * and no longer than the one before.
+     *
+     * @param level the level of {@code text}: 0 for a text, 1 for a string in a tree, which is already decoded once
+     */
+    static boolean hidesAKey(String text, int level) {
+        if (text.indexOf('\\') < 0) {
+            return false;
+        }
+        int plain = Redactor.privateKeyHeaderStarts(text);
+        String current = text;
+        for (int at = level; ; at++) {
+            String next = unescaped(current);
+            if (next == null) {
+                return false;
+            }
+            // Each pass is a level of 1 or deeper: a string there whose own piece does not close a block it opens is
+            // read by the one open-key predicate, which the structural path stops applying string by string past
+            // MAX_LEVELS, past the nesting bound or at a read error.
+            if (at + 1 > MAX_KEY_LEVELS || Redactor.privateKeyHeaderStarts(next) > plain
+                    || Redactor.opensAnUnterminatedKey(next)) {
+                return true;
+            }
+            current = next;
+        }
+    }
+
+    /**
+     * {@code text} with each JSON escape in it decoded, left to right, or {@code null} if it has none: a backslash and
+     * one of {@code " \ / b f n r t}, or a {@code u} and four hex digits. Any other backslash is kept as it is.
+     */
+    static String unescaped(String text) {
+        int at = text.indexOf('\\');
+        if (at < 0) {
+            return null;
+        }
+        StringBuilder out = null;
+        int copied = 0;
+        for (; at >= 0 && at < text.length() - 1; at = text.indexOf('\\', at)) {
+            char c = text.charAt(at + 1);
+            char decoded;
+            int length = 2;
+            switch (c) {
+                case '"', '\\', '/' -> decoded = c;
+                case 'b' -> decoded = '\b';
+                case 'f' -> decoded = '\f';
+                case 'n' -> decoded = '\n';
+                case 'r' -> decoded = '\r';
+                case 't' -> decoded = '\t';
+                case 'u' -> {
+                    int code = at + 6 <= text.length() ? hex4(text, at + 2) : -1;
+                    if (code < 0) {
+                        at++;
+                        continue;
+                    }
+                    decoded = (char) code;
+                    length = 6;
+                }
+                default -> {
+                    at++;
+                    continue;
+                }
+            }
+            if (out == null) {
+                out = new StringBuilder(text.length());
+            }
+            out.append(text, copied, at).append(decoded);
+            at += length;
+            copied = at;
+        }
+        return out == null ? null : out.append(text, copied, text.length()).toString();
+    }
+
+    /** The value of the four hex digits at {@code from}, or -1 if they are not four hex digits. */
+    private static int hex4(String text, int from) {
+        int value = 0;
+        for (int i = from; i < from + 4; i++) {
+            int digit = Character.digit(text.charAt(i), 16);
+            if (digit < 0) {
+                return -1;
+            }
+            value = value * 16 + digit;
+        }
+        return value;
+    }
+
+    /**
      * The most a tree given to {@link #redactTree} may weigh: one for each value, container and member name, and the
      * length of each string and name as JSON spells it, quotes included. A heavier tree is not read further.
      */
@@ -316,7 +427,7 @@ final class JsonRedaction {
                     if (!(entry.getKey() instanceof String name)) {
                         throw new NotPlain();
                     }
-                    members.add(new Member("", name(name, names), quoted(name), read(entry.getValue(), depth + 1)));
+                    members.add(new Member("", name, name(name, names), read(entry.getValue(), depth + 1)));
                 }
                 return new Container("", true, members, "");
             }
@@ -341,18 +452,21 @@ final class JsonRedaction {
 
         private Node string(String string) {
             String raw = spelled(string);
-            opensAKey |= Redactor.opensAnUnterminatedKey(string);
+            opensAKey |= Redactor.opensAnUnterminatedKey(string) || hidesAKey(string, 1);
             return new Scalar("", true, string, raw, null);
         }
 
-        /** A member name; a name that repeats in one object is unreadable, as it is in a text. */
+        /**
+         * A member name as JSON spells it, quotes included: the one spelling both weighs it and is the node's
+         * {@code rawName} (#389). A name that repeats in one object is unreadable, as it is in a text.
+         */
         private String name(String name, Names names) {
-            spelled(name);
-            opensAKey |= Redactor.opensAnUnterminatedKey(name);
+            String raw = spelled(name);
+            opensAKey |= Redactor.opensAnUnterminatedKey(name) || hidesAKey(name, 1);
             if (!names.add(name)) {
                 throw new Unreadable();
             }
-            return name;
+            return raw;
         }
 
         /** A big number weighs about its digits, counted from its bits so it is never written out. */

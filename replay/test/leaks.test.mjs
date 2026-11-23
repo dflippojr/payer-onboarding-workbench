@@ -2411,7 +2411,7 @@ test('fails the agreement when a report-form flag moves to another row (#377 cri
   const flaggedOut = pairs[flaggedRow][1];
   pairs[flaggedRow][1] = pairs[cleanRow][1];
   pairs[cleanRow][1] = flaggedOut;
-  assert.equal(pairs.filter(([, out]) => findTextLeaks(reportForm(out)).length > 0).length, 170);
+  assert.equal(pairs.filter(([, out]) => findTextLeaks(reportForm(out)).length > 0).length, 161);
   assert.ok(agreementWrong(pairs).length > 0, 'a flag swapped onto a row main does not flag was accepted');
 });
 

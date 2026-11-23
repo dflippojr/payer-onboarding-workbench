@@ -398,23 +398,63 @@ public final class Redactor {
     private static final Pattern PRIVATE_KEY_FOOTER = Pattern.compile("-----END ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----");
 
     /**
-     * Whether {@code text} holds a private key header ({@link #PRIVATE_KEY_HEADER}) with no matching footer after it.
-     * In one string of a JSON text, the key material may then be in the strings after it, which the structural path
-     * reads one at a time ({@link JsonRedaction}), so the whole text is masked.
+     * The number of places in {@code text} where a private key header ({@link #PRIVATE_KEY_HEADER}) starts, counted at
+     * every {@code -----BEGIN } however the headers overlap, so a header whose closing dashes open another is counted
+     * too (#389). Linear in the text: the label after each start is a run of label characters, and no two runs share
+     * a character.
+     */
+    static int privateKeyHeaderStarts(String text) {
+        int count = 0;
+        Matcher header = PRIVATE_KEY_HEADER.matcher(text);
+        for (int at = text.indexOf(ARMOR_BEGIN); at >= 0; at = text.indexOf(ARMOR_BEGIN, at + 1)) {
+            if (header.region(at, text.length()).lookingAt()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Whether a string in {@code text} opens a private key block it does not close: the one open-key predicate of the
+     * structural path and its entry check (#389). {@code text} is read in pieces split at each quote, and a private key
+     * header ({@link #PRIVATE_KEY_HEADER}) is open unless a footer of its own label ({@link #PRIVATE_KEY_FOOTER}) comes
+     * after it in the same piece. Headers are found at every {@code -----BEGIN }, however they overlap, so a header
+     * whose closing dashes open another is not hidden by the one before it.
+     *
+     * <p>A decoded JSON string holds no quote unless JSON held in it does, so for one string's text this is that
+     * string's own block check, and for JSON held in it, or a decoding of a whole text at level {@code k}, it is the
+     * check of each string at every level up to {@code k}, whose quotes bound it. In one string, the key material of an
+     * open block may be in the strings after it, which the structural path reads one at a time ({@link JsonRedaction}),
+     * so the whole text is masked.
+     *
+     * <p>Linear in the text: each piece that holds a header is read once for its footers and once for its headers, and
+     * pieces that hold none are only skipped.
      */
     static boolean opensAnUnterminatedKey(String text) {
-        if (!text.contains("-----BEGIN ")) {
+        if (!text.contains(ARMOR_BEGIN)) {
             return false;
         }
-        // Each label's last footer, found in one pass and kept in a trie (#396): a label is added and found in time
-        // linear in its length, with no hash of it taken, so the work stays linear however the labels are chosen.
-        ArmorLabels labels = new ArmorLabels();
-        Matcher footer = PRIVATE_KEY_FOOTER.matcher(text);
-        while (footer.find()) {
-            labels.last.set(labels.add(text, footer.start(1), footer.end(1)), footer.start());
-        }
+        // Each piece's footer labels, by their last footer, found in one pass and kept in a trie (#396): a label is
+        // added and found in time linear in its length, with no hash of it taken, so the work stays linear however the
+        // labels are chosen.
+        ArmorLabels labels = null;
+        int pieceEnd = -1;
         Matcher header = PRIVATE_KEY_HEADER.matcher(text);
-        while (header.find()) {
+        for (int at = text.indexOf(ARMOR_BEGIN); at >= 0; at = text.indexOf(ARMOR_BEGIN, at + 1)) {
+            if (at > pieceEnd) {
+                // The first header start in a new piece: index that piece's footers alone.
+                int pieceStart = text.lastIndexOf('"', at) + 1;
+                int quote = text.indexOf('"', at);
+                pieceEnd = quote < 0 ? text.length() : quote;
+                labels = new ArmorLabels();
+                Matcher footer = PRIVATE_KEY_FOOTER.matcher(text).region(pieceStart, pieceEnd);
+                while (footer.find()) {
+                    labels.last.set(labels.add(text, footer.start(1), footer.end(1)), footer.start());
+                }
+            }
+            if (!header.region(at, pieceEnd).lookingAt()) {
+                continue;
+            }
             int node = labels.find(text, header.start(1), header.end(1));
             if (node < 0 || labels.last.get(node) < header.end()) {
                 return true;
@@ -431,13 +471,19 @@ public final class Redactor {
      * back with canonical escape spellings ({@link JsonRedaction}, #377); its whitespace, member order and numbers are
      * kept. JSON that path will not read (names that repeat in one object, nesting deeper than
      * {@link JsonRedaction#MAX_DEPTH}) is masked whole, and so is the text when anything on that path fails. Any other
-     * text goes to the text engine.
+     * text goes to the text engine. First, a text in which a decoding of its JSON escapes, at any depth, shows a private
+     * key header the text does not spell plainly ({@link JsonRedaction#hidesAKey}) is masked whole.
      */
     public static String redact(String text) {
         if (text == null || text.isEmpty()) {
             return text;
         }
         try {
+            if (JsonRedaction.hidesAKey(text, 0)) {
+                // A key opener only a decoding shows (#389): no bound the structural path stops at can then rule out
+                // key material in a later string, so the whole text is the mask.
+                return MASK;
+            }
             return redactAt(text, 0);
         } catch (RuntimeException | StackOverflowError failed) {
             // Fail closed (#377): nothing of a text the structural path could not finish is kept.
