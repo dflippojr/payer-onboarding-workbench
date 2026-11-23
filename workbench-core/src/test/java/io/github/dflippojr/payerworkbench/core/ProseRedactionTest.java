@@ -111,6 +111,53 @@ class ProseRedactionTest {
     }
 
     @Test
+    void aFragmentValueCountsAsMaskedOnlyInAFormTheRulesWriteAtAStrictValueEnd() {
+        // #406 decision (stage 2), closing the review family of rounds 1 and 2 on #408: in prose with no brace, a secret
+        // name's value is taken as already masked only when it is exactly a form the rules write (the mask, a kept scheme
+        // and the mask, or null), quoted as its name is, and followed by the end, whitespace, a comma or a closing bracket.
+        // Anything else masks from the colon to the end. Grid: value start x suffix x depth x name class.
+        record Name(String prefix, String name, List<String> starts) {}
+        List<String> plainStarts = List.of("\"[REDACTED]\"", "null", "\"abc\"", "123", "true", "\"\"");
+        List<String> schemeStarts = new ArrayList<>(plainStarts);
+        schemeStarts.addAll(List.of("\"Bearer [REDACTED]\"", "\"Bearer abc\"", "\"Token [REDACTED]\""));
+        List<Name> names = List.of(new Name("note ", "password", plainStarts),
+                new Name("note ", "client_secret", plainStarts), new Name("note ", "authorization", schemeStarts),
+                new Name("note \"kty\":\"RSA\", ", "d", plainStarts));
+        List<String> suffixes = List.of("SECRETTAIL", "7SECRETTAIL", ".SECRETTAIL", "-SECRETTAIL", "_SECRETTAIL",
+                ":SECRETTAIL", "\"SECRETTAIL", "'SECRETTAIL", "\\SECRETTAIL", "\\nSECRETTAIL", "\\\\SECRETTAIL",
+                "\\\"SECRETTAIL", "\\u0041SECRETTAIL", "/SECRETTAIL", "+SECRETTAIL", "=SECRETTAIL");
+        List<String> failures = new ArrayList<>();
+        int cases = 0;
+        for (boolean embedded : new boolean[] {false, true}) {
+            String q = embedded ? "\\\"" : "\"";
+            for (Name n : names) {
+                String prefix = embedded ? n.prefix().replace("\"", "\\\"") : n.prefix();
+                for (String start : n.starts()) {
+                    String value = embedded ? start.replace("\"", "\\\"") : start;
+                    for (String suffix : suffixes) {
+                        String text = prefix + q + n.name() + q + ":" + value + suffix + " more";
+                        String out = Redactor.redact(text);
+                        cases++;
+                        if (out.contains("SECRETTAIL") || out.contains("more")) {
+                            failures.add(text + " => " + out);
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), failures, () -> failures.size() + " grid texts kept bytes after the value");
+        assertTrue(cases > 500, "grid size " + cases);
+        // The masked forms at a strict value end keep what follows them, plain and one level deep.
+        for (String end : List.of("", " tail", ", \"n\":1", "} tail", "] tail", "\ttail", "\ntail")) {
+            for (String form : List.of("\"password\":\"[REDACTED]\"", "\"password\": null", "\"authorization\":\"Bearer [REDACTED]\"",
+                    "\\\"password\\\":\\\"[REDACTED]\\\"", "\\\"authorization\\\":\\\"Token [REDACTED]\\\"")) {
+                String text = "note " + form + end;
+                assertEquals(text, Redactor.redact(text), text);
+            }
+        }
+    }
+
+    @Test
     void masksTheOutermostTextWhenAnEmbeddedValueOrAFailedStartOpensAKeyBlockItDoesNotClose() {
         String opener = "\"-----BEGIN PRIVATE KEY-----\"";
         // A value that reads, one whose names repeat, one cut short, and one nested past the depth bound before it.
