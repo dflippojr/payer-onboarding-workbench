@@ -300,12 +300,10 @@ class RedactorBoundaryTest {
         }
         assertEquals(List.of(), missed);
         // #406 (gate change, toward masking): a control whose text is no JSON value (an unescaped control character) and
-        // holds armor after its first brace is masked from there, here whole; stage 1 read it with the text engine.
-        assertEquals(List.of("an unescaped control character before it, value",
-                "an unescaped control character before it, secret value",
-                "an unescaped control character before it, JWK private value",
-                "an unescaped control character before it, name", "an unescaped control character before it, item"),
-                controlsMasked);
+        // holds a secret-named or JWK private member after its first brace is masked from there, here whole; stage 1
+        // read it with the text engine.
+        assertEquals(List.of("an unescaped control character before it, secret value",
+                "an unescaped control character before it, JWK private value"), controlsMasked);
     }
 
     /** A text of exactly {@code length} characters holding {@code nested} at level 1 and {@link #REST} after it. */
@@ -331,13 +329,7 @@ class RedactorBoundaryTest {
             assertEquals(length, string.length());
             assertMaskedWhole(Redactor.redactTree(ordered("x", string, "note", REST)), "tree string of length " + length);
             String plainText = textOfLength("{\"k\":\"" + PLAIN_OPENER + "\"}", length);
-            if (length > JsonRedaction.MAX_CHARS) {
-                // #406 (gate change, toward masking): past the length bound no value is read, and a JSON-looking start
-                // with secret vocabulary after it (the armor) masks to the end, here the whole text.
-                assertEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
-            } else {
-                assertNotEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
-            }
+            assertNotEquals(Redactor.MASK, Redactor.redact(plainText), "text control of length " + length);
             String plainString = stringOfLength(PLAIN_OPENER, length);
             assertNotEquals(Redactor.MASK, Redactor.redactTree(ordered("x", plainString, "note", REST)),
                     "tree control of length " + length);

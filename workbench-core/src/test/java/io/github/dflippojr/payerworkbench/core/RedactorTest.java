@@ -61,7 +61,8 @@ class RedactorTest {
 
     /**
      * What #406 makes of a text whose JSON does not read and that holds secret vocabulary after it: the text up to its
-     * first {@code {} or {@code [} that looks like JSON (an object's quote, backslash or close, or an array's first item)
+     * first {@code {} or {@code [} that looks like JSON (an object's quote, backslash or close, or an array's string,
+     * object, array or close)
      * and does not start one JSON value, then the mask; each value that does read before it is kept as Jackson's encoder
      * spells its strings ({@link Canonical#of}). Written apart from the Redactor (Jackson reads the values), so a test that
      * compares with it checks the rule itself.
@@ -86,7 +87,7 @@ class RedactorTest {
                 j++;
             }
             char next = j < text.length() ? text.charAt(j) : '"';
-            if ("\"'\\".indexOf(next) >= 0 || (c == '{' ? next == '}' : "]{[-0123456789".indexOf(next) >= 0)) {
+            if ("\"'\\".indexOf(next) >= 0 || (c == '{' ? next == '}' : "]{[".indexOf(next) >= 0)) {
                 return out.append(text, copied, i).append(Redactor.MASK).toString();
             }
         }
@@ -1997,10 +1998,10 @@ class RedactorTest {
         // brace looks like JSON and does not read, with the secret's name after it, so it is masked from there; the counts
         // moved (masked, kept) from the stage-1 values, and the committed grids hold every output.
         Map<String, int[]> counts = Map.ofEntries(
-                Map.entry("generic-separator-pin-grid", new int[] {57, 0}),
-                Map.entry("generic-separator-miss-grid", new int[] {7437, 0}),
+                Map.entry("generic-separator-pin-grid", new int[] {54, 3}),
+                Map.entry("generic-separator-miss-grid", new int[] {7365, 72}),
                 Map.entry("generic-separator-note-grid", new int[] {549, 0}),
-                Map.entry("generic-separator-mixed-grid", new int[] {4200, 0}),
+                Map.entry("generic-separator-mixed-grid", new int[] {4120, 80}),
                 Map.entry("generic-separator-level-miss-grid", new int[] {2560, 0}),
                 Map.entry("generic-separator-level-over-grid", new int[] {1920, 0}),
                 Map.entry("generic-separator-level-name-grid", new int[] {2880, 0}),
@@ -3638,13 +3639,16 @@ class RedactorTest {
             for (String value : List.of("FAKE_JWK_K_350", "[REDACTED]", "")) {
                 assertEquals(Redactor.MASK, Redactor.redact(head + value + "\\"));
             }
-            assertEquals(Redactor.MASK, Redactor.redact(head + "[REDACTED]\"\\"));
+            // #406: a value that already is the mask, its string closed, is the Redactor's own output read again: kept as it
+            // is (K), with the closed forms below, where it reads as text (stage 1 masked it whole).
+            String reread = head + "[REDACTED]\"\\";
+            verdicts.append(verdict(Redactor.redact(reread), reread, Redactor.MASK));
             // #406: where the head closes as one JWK, that object reads on the tree and the lone backslash after it is
             // prose, kept (K); where it does not (a JWKS cut inside its array), the text is masked whole (M). Pinned.
             String closed = head + "[REDACTED]\"}\\";
             verdicts.append(verdict(Redactor.redact(closed), closed, Redactor.MASK));
         }
-        assertEquals("KKKKKKKKKKM", verdicts.toString());
+        assertEquals("KKKKKKKKKKKKKKKKKKKKKK", verdicts.toString());
     }
 
     @Test

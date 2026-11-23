@@ -2,6 +2,7 @@ package io.github.dflippojr.payerworkbench.core;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -36,25 +37,47 @@ import java.util.regex.Pattern;
 final class ProseRedaction {
 
     /** Starts a placeholder, after its opening brace; two digits and the closing brace follow. */
-    private static final char HOLE = '';
+    private static final char HOLE = '\uE000';
 
-    /** The first placeholder digit; the digits are {@code FIRST_DIGIT} to {@code }. */
-    private static final char FIRST_DIGIT = '';
+    /** The first placeholder digit; the digits are {@code FIRST_DIGIT} to {@code \uEFFF}. */
+    private static final char FIRST_DIGIT = '\uE001';
 
     /** The number of placeholder digits. */
-    private static final int BASE = '' - FIRST_DIGIT + 1;
+    private static final int BASE = '\uEFFF' - FIRST_DIGIT + 1;
 
     /** The length of a placeholder: a brace, {@link #HOLE}, two digits and a brace. */
     private static final int HOLE_LENGTH = 5;
 
     /**
-     * Secret vocabulary: a secret field name with any {@code _} or {@code -} between its letters, a credential header
-     * name, the {@code kty} of a JWK, or an armor header, in any case.
+     * A secret name: a secret field name with any {@code _} or {@code -} between its letters, or a credential header
+     * name, in any case.
      */
-    private static final Pattern VOCABULARY = Pattern.compile("(?i)" + Redactor.SECRET_FIELDS.stream()
+    private static final Pattern SECRET_NAME = Pattern.compile("(?i)" + Redactor.SECRET_FIELDS.stream()
             .map(name -> String.join("[_-]?", name.split("")))
             .reduce((a, b) -> a + "|" + b).orElseThrow()
-            + "|" + String.join("|", Redactor.SENSITIVE_HEADERS).replace("-", "[_-]?") + "|kty|-----BEGIN");
+            + "|" + String.join("|", Redactor.SENSITIVE_HEADERS).replace("-", "[_-]?"));
+
+    /** A JWK private member's name in quotes, which a JWK's {@code kty} makes secret. */
+    private static final Pattern PRIVATE_NAME = Pattern.compile("\"(?:" + String.join("|", Redactor.JWK_PRIVATE_MEMBERS)
+            + ")\\\\*\"");
+
+    /**
+     * What may lie between a name and its key separator, and between that and its value: quotes, whitespace (also any
+     * Unicode space separator, which Java's {@code \\s} leaves out) and escapes
+     * ({@code \\n}, a {@code \\u} escape, also spelling a quote or a colon), at any depth of backslashes.
+     */
+    private static final String GAP = "(?:[\\s\\p{Z}\u0085\"']|\\\\++(?:u[0-9A-Fa-f]{4}|[A-Za-z\"]))*+";
+
+    /** A name's key separator, a colon or an equals sign, with the gap on both sides: the name is used as a key. */
+    private static final Pattern TO_VALUE = Pattern.compile(GAP + "[:=]" + GAP);
+
+    /**
+     * A value that already is the mask, an {@code Authorization}-style scheme kept in front of it or not, and nothing
+     * after it: the end, a delimiter, or a quote (one an odd run of backslashes escapes closes a string a level down).
+     * Backslashes before a quote in an even run are content of the value, so the value is not the mask.
+     */
+    private static final Pattern MASKED = Pattern.compile("(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*+ )?"
+            + Pattern.quote(Redactor.MASK) + "(?=$|[\"',}\\]\\s]|(?:\\\\\\\\)*+\\\\(?:\"|u0022))");
 
     private ProseRedaction() {
     }
@@ -113,7 +136,7 @@ final class ProseRedaction {
         if (!settled(out, true)) {
             return Redactor.MASK;
         }
-        String restored = restore(out, values);
+        String restored = values.isEmpty() ? out : restore(out, values);
         if (restored == null) {
             return Redactor.MASK;
         }
@@ -142,8 +165,9 @@ final class ProseRedaction {
 
     /**
      * Whether the {@code {} or {@code [} at {@code at} looks like the start of JSON: after JSON whitespace, an object's
-     * name or end ({@code "}, {@code '}, a backslash that may escape a quote, or {@code }}), or an array's first item
-     * or end (also a bracket, a brace, a digit or a minus). A {@code [INFO]} or {@code {code}} in prose does not.
+     * name or end ({@code "}, {@code '}, a backslash that may escape a quote, or {@code }}), or an array's string,
+     * object, array or end. A {@code [INFO]}, a {@code [2026-11-23 ...]} or {@code [5f3a...]} in a log line, or a
+     * {@code {code}} in prose does not: none holds a name a secret could follow.
      */
     static boolean looksLikeJson(String text, int at) {
         int i = at + 1;
@@ -157,21 +181,24 @@ final class ProseRedaction {
         if (c == '"' || c == '\'' || c == '\\') {
             return true;
         }
-        if (text.charAt(at) == '{') {
-            return c == '}';
-        }
-        return c == ']' || c == '[' || c == '{' || c == '-' || (c >= '0' && c <= '9');
+        return text.charAt(at) == '{' ? c == '}' : c == ']' || c == '[' || c == '{';
     }
 
     /**
      * Whether {@code text}, or any decoding of its JSON escapes ({@link JsonRedaction#unescaped}, one level at a time),
-     * holds secret vocabulary ({@link #VOCABULARY}) or anything the text rules mask. A text whose escapes still decode
+     * holds secret vocabulary: an armor header, a secret name whose value is not already the mask ({@link #keyName}),
+     * with a {@code kty} a JWK private member's quoted name so, or material the text rules mask ({@link #masksMaterial}). A text whose escapes still decode
      * after {@link JsonRedaction#MAX_KEY_LEVELS} levels counts as holding it.
      */
     static boolean hasVocabulary(String text) {
         String pass = text;
         for (int level = 0; ; level++) {
-            if (VOCABULARY.matcher(pass).find() || !Redactor.textRules(pass, null, true).equals(pass)) {
+            // As spelled, a name whose value already is the mask is the Redactor's own output read again; in a decoding,
+            // where quotes of several levels meet, every name used as a key counts.
+            boolean decoded = level > 0;
+            if (pass.contains("-----BEGIN") || keyName(SECRET_NAME, pass, decoded)
+                    || (pass.contains("kty") && keyName(PRIVATE_NAME, pass, decoded))
+                    || masksMaterial(pass, Redactor.textRules(pass, null, true))) {
                 return true;
             }
             String next = JsonRedaction.unescaped(pass);
@@ -229,6 +256,26 @@ final class ProseRedaction {
         return kept.toString();
     }
 
+    /**
+     * Whether a name {@code names} finds in {@code text} is used as a key ({@link #TO_VALUE}: a colon or an equals sign
+     * after it) whose value is not already the mask ({@link #MASKED}), or, with {@code evenMasked}, whatever its value. An output of the Redactor read again (an excerpt
+     * of a redacted body in a finding's evidence, say) names secrets whose values are gone, and a name in prose
+     * ("access_token present") is no key: neither is vocabulary a broken start hides. The text rules' own reading
+     * ({@link #masksMaterial}) still counts every secret they would mask.
+     */
+    private static boolean keyName(Pattern names, String text, boolean evenMasked) {
+        Matcher name = names.matcher(text);
+        Matcher between = TO_VALUE.matcher(text);
+        Matcher masked = MASKED.matcher(text);
+        while (name.find()) {
+            if (between.region(name.end(), text.length()).lookingAt()
+                    && (evenMasked || !masked.region(between.end(), text.length()).lookingAt())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Whether {@code text} holds a character a placeholder uses. */
     private static boolean holdsPlaceholderCharacters(String text) {
         for (int i = 0; i < text.length(); i++) {
@@ -240,14 +287,14 @@ final class ProseRedaction {
     }
 
     private static boolean isPlaceholderCharacter(char c) {
-        return c >= HOLE && c <= '';
+        return c >= HOLE && c <= '\uEFFF';
     }
 
     /**
      * {@code out} with each placeholder the text rules kept replaced by its value, or {@code null} if a placeholder was
      * cut, repeated or moved: each must be whole, in order, or gone with a mask.
      */
-    private static String restore(String out, List<String> values) {
+    static String restore(String out, List<String> values) {
         StringBuilder restored = null;
         int copied = 0;
         int last = -1;

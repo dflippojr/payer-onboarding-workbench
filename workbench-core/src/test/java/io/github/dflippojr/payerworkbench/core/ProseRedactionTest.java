@@ -1,0 +1,189 @@
+package io.github.dflippojr.payerworkbench.core;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
+
+/**
+ * The structural path for text that is not one JSON value (#406, #377 stage 2): each JSON value embedded in it is read
+ * on the tree, a JSON-looking start that does not read masks to the end when secret vocabulary follows, the text rules
+ * read only the rest, and every decoding of the result must be settled. Everything here is synthetic.
+ */
+class ProseRedactionTest {
+
+    private static final JsonMapper JSON = JsonMapper.builder().build();
+
+    /** The text inside a JSON string {@code levels} levels deep, each level the {@code body} of an object. */
+    private static String nested(String text, int levels) {
+        String out = text;
+        for (int i = 0; i < levels; i++) {
+            out = JSON.writeValueAsString(Map.of("body", out));
+        }
+        return out;
+    }
+
+    @Test
+    void redactsEachJsonValueEmbeddedInProseOnTheTreeAndKeepsTheProseAroundIt() {
+        assertEquals("payer said: {\"password\":\"[REDACTED]\",\"n\":1} then [1,2] and {\"a\":\"A\"} done",
+                Redactor.redact("payer said: {\"password\":\"s3cr3t\",\"n\":1} then [1,2] and {\"a\":\"\\u0041\"} done"));
+        // A JWK's private member, a scheme credential and a key block in a value, each as on the tree.
+        assertEquals("keys: {\"kty\":\"oct\",\"k\":\"[REDACTED]\"}; auth {\"h\":\"Bearer [REDACTED]\"}; {\"pem\":\"[REDACTED]\"}",
+                Redactor.redact("keys: {\"kty\":\"oct\",\"k\":\"FAKEK\"}; auth {\"h\":\"Bearer 9f8a7b6c5d4e\"};"
+                        + " {\"pem\":\"-----BEGIN PRIVATE KEY-----\\nFAKEKEY\\n-----END PRIVATE KEY-----\"}"));
+        // Brackets that start no JSON value are prose.
+        assertEquals("[INFO] {code} ok", Redactor.redact("[INFO] {code} ok"));
+        // The same text held in a JSON string, at every level the tree path reads.
+        for (int levels = 1; levels < JsonRedaction.MAX_LEVELS; levels++) {
+            String text = nested("payer said: {\"password\":\"s3cr3t\"} done", levels);
+            String out = Redactor.redact(text);
+            assertFalse(out.contains("s3cr3t"), out);
+            assertEquals(nested("payer said: {\"password\":\"[REDACTED]\"} done", levels), out);
+        }
+    }
+
+    @Test
+    void masksAnEmbeddedValueThatASecretNameFormKeyOrHeaderLineBeforeItMakesASecretOne() {
+        // The value reads on the tree, where it holds no secret name; the text around it makes it one. Shapes x value
+        // kinds x where the line starts x levels: the inner bytes are gone from every output.
+        List<String> shapes = List.of("\"password\": %s", "\\\"password\\\": %s", "password=%s", "client_secret=%s&x=1",
+                "Cookie: %s", "Authorization: %s", "\"x-api-key\":%s", "\"kty\":\"oct\",\"k\": %s",
+                "\\\"kty\\\":\\\"oct\\\",\\\"d\\\":%s");
+        List<String> values = List.of("{\"v\":\"INNERVAL\"}", "[\"INNERVAL\",{\"w\":\"INNERVAL\"}]", "{ \"v\" : [ \"INNERVAL\" ] }");
+        List<String> missed = new ArrayList<>();
+        int cases = 0;
+        for (String shape : shapes) {
+            for (String value : values) {
+                for (String before : List.of("", "note\n")) {
+                    for (int levels = 0; levels <= 2; levels++) {
+                        String text = nested(before + shape.formatted(value) + " tail", levels);
+                        cases++;
+                        if (Redactor.redact(text).contains("INNERVAL")) {
+                            missed.add(text);
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), missed, missed.size() + " of " + cases);
+        // A header name in the middle of a line is prose, as before (#262): the value after it is the tree's alone.
+        assertEquals("log: Cookie: {\"v\":\"kept\"}", Redactor.redact("log: Cookie: {\"v\":\"kept\"}"));
+    }
+
+    @Test
+    void masksFromAJsonLookingStartThatDoesNotReadToTheEndWhenSecretVocabularyFollows() {
+        assertEquals("error [REDACTED]", Redactor.redact("error {\"password\": oops"));
+        // Spelled with an escape, and in a value that reads after the start.
+        assertEquals("x [REDACTED]", Redactor.redact("x {\"p\\u0061ssword\": oops"));
+        assertEquals("x [REDACTED]", Redactor.redact("x {\"a\": oops} then {\"client_secret\":\"s3cr3t\"}"));
+        // A credential the text rules would mask counts as vocabulary too.
+        assertEquals("x [REDACTED]", Redactor.redact("x [\"a\" oops Bearer 9f8a7b6c5d4e"));
+        // No vocabulary after it: kept as it is.
+        assertEquals("error {\"note\": oops} and more", Redactor.redact("error {\"note\": oops} and more"));
+        // A bracket that does not look like JSON is not such a start, whatever follows it.
+        assertEquals("see {code} and [INFO] password", Redactor.redact("see {code} and [INFO] password"));
+        // A value whose names repeat does not read: with no vocabulary it is kept as it is spelled.
+        assertEquals("x {\"a\":1,\"a\":\"\\u0041\"} y", Redactor.redact("x {\"a\":1,\"a\":\"\\u0041\"} y"));
+        assertEquals("x [REDACTED]", Redactor.redact("x {\"a\":1,\"a\":2,\"secret\":3} y"));
+    }
+
+    @Test
+    void masksTheOutermostTextWhenAnEmbeddedValueOrAFailedStartOpensAKeyBlockItDoesNotClose() {
+        String opener = "\"-----BEGIN PRIVATE KEY-----\"";
+        // A value that reads, one whose names repeat, one cut short, and one nested past the depth bound before it.
+        for (String text : List.of("x {\"a\":" + opener + "} y \"FAKEKEYMATERIAL\"",
+                "x {\"a\":1,\"a\":" + opener + "} y \"FAKEKEYMATERIAL\"",
+                "x {\"a\":" + opener + ", \"FAKEKEYMATERIAL\"",
+                "x " + "[".repeat(JsonRedaction.MAX_DEPTH + 1) + opener + "] \"FAKEKEYMATERIAL\"")) {
+            assertEquals(Redactor.MASK, Redactor.redact(text), text);
+        }
+        // Controls: closed blocks, and the depth bound with no opener.
+        assertEquals("x {\"a\":\"[REDACTED]\"} y", Redactor.redact(
+                "x {\"a\":\"-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\"} y"));
+        String deep = "x " + "[".repeat(JsonRedaction.MAX_DEPTH + 1) + "1" + "]".repeat(JsonRedaction.MAX_DEPTH + 1) + " y";
+        assertEquals(deep, Redactor.redact(deep));
+    }
+
+    @Test
+    void readsNoValuePastTheLevelOrLengthBoundAndMasksAJsonLookingStartWithVocabularyThere() {
+        // At the level bound the text is no value's: kept as spelled, or masked from a start with vocabulary after it.
+        assertEquals("note {\"a\":\"\\u0041\"}", ProseRedaction.redact("note {\"a\":\"\\u0041\"}", JsonRedaction.MAX_LEVELS));
+        assertEquals("note [REDACTED]", ProseRedaction.redact("note {\"password\":\"s3cr3t\"}", JsonRedaction.MAX_LEVELS));
+        // Past the length bound the same.
+        String pad = "p".repeat(JsonRedaction.MAX_CHARS);
+        assertEquals("[REDACTED]", Redactor.redact("{\"password\":\"s3cr3t\",\"pad\":\"" + pad + "\"}"));
+        String plain = "{\"a\":\"\\u0041\",\"pad\":\"" + pad + "\"}";
+        assertEquals(plain, Redactor.redact(plain));
+    }
+
+    @Test
+    void masksAllOrKeepsAllWhenTheTextHoldsAPlaceholderCharacter() {
+        assertEquals(Redactor.MASK, Redactor.redact("\uE000 {\"password\":\"x\"}"));
+        assertEquals("\uE000 {\"a\":\"\\u0041\"}", Redactor.redact("\uE000 {\"a\":\"\\u0041\"}"));
+        // With no embedded value no placeholder is needed: the text rules read it as any other text.
+        assertEquals("\uE001 Bearer [REDACTED]", Redactor.redact("\uE001 Bearer 9f8a7b6c5d4e"));
+    }
+
+    @Test
+    void restoresEachPlaceholderTheTextRulesKeptAndRefusesOneCutRepeatedOrMoved() {
+        List<String> values = List.of("{\"a\":1}", "[2]");
+        String first = "{\uE000\uE001\uE001}";
+        String second = "{\uE000\uE001\uE002}";
+        assertEquals("x {\"a\":1} y [2] z", ProseRedaction.restore("x " + first + " y " + second + " z", values));
+        // One masked with the text around it is gone, the other restored.
+        assertEquals("x [REDACTED] y [2]", ProseRedaction.restore("x [REDACTED] y " + second, values));
+        // Cut, repeated, out of order, out of range, or a stray digit: refused.
+        for (String broken : List.of("x \uE000\uE001\uE001}", "x {\uE000\uE001", first + first, second + first,
+                "{\uE000\uE001\uE003}", "x \uE001 y", "{\uE000\uE000\uE001}")) {
+            assertNull(ProseRedaction.restore(broken, values), broken);
+        }
+    }
+
+    @Test
+    void readsEveryDecodingOfAnOutputUpToTheBoundAndCountsOnePastItAsUnsettled() {
+        String chain = "x" + "\\".repeat(1) + "u005c".repeat(JsonRedaction.MAX_KEY_LEVELS - 2) + "u0041";
+        assertTrue(ProseRedaction.settled(chain, false), chain);
+        String past = "x\\" + "u005c".repeat(JsonRedaction.MAX_KEY_LEVELS + 1) + "u0041";
+        assertFalse(ProseRedaction.settled(past, false));
+        assertTrue(ProseRedaction.hasVocabulary(past));
+        assertEquals(Redactor.MASK, Redactor.redact(past));
+        // A decoding that shows a secret field the text spells only with escapes is not settled.
+        assertFalse(ProseRedaction.settled("\\u0022password\\u0022: \\u0022s3cr3t\\u0022", false));
+        // One whose text rules only move a quote or a bracket is (a header line's value runs over its string's quote).
+        assertEquals("{\"debug\":\"echo:\\nX-Auth-Token: [REDACTED]\"}",
+                Redactor.redact("{\"debug\":\"echo:\\nX-Auth-Token: tok\"}"));
+    }
+
+    @Test
+    void readsManyStartsBeforeALongUnterminatedStringInLinearTime() {
+        // In prose (a text that starts with them is one JSON value nested past the depth bound, masked whole): each failed
+        // attempt reads to the depth bound or the end of the string, and the attempts' budget stops them after about
+        // twice the text's length.
+        String text = "x " + "[".repeat(100_000) + "\"" + "a".repeat(1_000_000) + " password=hunter2long";
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(text));
+        assertEquals("x " + Redactor.MASK, out);
+        String clean = "x " + "{\"a\":".repeat(100_000) + "\"" + "a".repeat(1_000_000);
+        assertEquals(clean, assertTimeoutPreemptively(Duration.ofSeconds(20), () -> Redactor.redact(clean)));
+    }
+
+    @Test
+    void readsProseWithEmbeddedJsonAtEveryLevelInBoundedTime() {
+        // Prose holding JSON whose string holds prose holding JSON, to the level bound, many times over: about 1 MB.
+        String text = "end {\"password\":\"s3cr3t\"}";
+        for (int level = 0; level < JsonRedaction.MAX_LEVELS; level++) {
+            text = "said " + JSON.writeValueAsString(Map.of("note", text)) + " then";
+        }
+        String unit = text;
+        String big = (unit + "\n").repeat(Math.max(1, 1_000_000 / unit.length()));
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(30), () -> Redactor.redact(big));
+        assertFalse(out.contains("s3cr3t"));
+    }
+}
