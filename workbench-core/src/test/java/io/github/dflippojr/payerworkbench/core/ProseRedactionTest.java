@@ -469,4 +469,92 @@ class ProseRedactionTest {
             }
         }
     }
+
+    @Test
+    void judgesAClaimSecretBearingByTheSecretFieldRulesOverTheWholeCredentialValueDomain() {
+        // #406 redesign (owner card after Codex security r2 on #408): a claim is secret-bearing when the secret-field
+        // rules meet a sensitive value in it, whatever its bytes are. Only the exact forms the rules write (the mask, a
+        // known scheme then the mask under an Authorization-style name, and null, which no rule rewrites) keep a token's
+        // header and payload. Grid: value class (punctuation only, masking markers only, empty and whitespace, short
+        // ordinary values, non-string values) x secret name class x nesting x token shape x where the claim sits x
+        // context. Every value is built at runtime; the claim's segment must be absent from the output at any decoding.
+        String m = Redactor.MASK;
+        List<Object> values = new ArrayList<>();
+        for (String punctuation : List.of(",", ":", "\"", "'", "{}", "[]", "}", "]", "\\", ",:", " , ", "\",\"", "-", ".", "!")) {
+            values.add(punctuation);
+        }
+        for (String markers : List.of(m + m, m + " " + m, m + ",", m + ":", m + "\"", "\"" + m, m + "}", m + " ", " " + m,
+                "[" + m + "]", "Bearer " + m + m, "Bearer " + m + " " + m, "Bearer  " + m, "bearer " + m + ",")) {
+            values.add(markers);
+        }
+        for (String blank : List.of("", " ", "\t", "\n", "  \r\n ")) {
+            values.add(blank);
+        }
+        values.add("x");
+        values.add("Bearer x");
+        values.add(0);
+        values.add(true);
+        values.add(Map.of());
+        values.add(List.of());
+        values.add(List.of(","));
+        values.add(List.of(m, m));
+        values.add(Map.of("v", ","));
+        List<java.util.function.Function<Object, Map<String, Object>>> claims = List.of(
+                v -> Map.of("client_secret", v), v -> Map.of("password", v), v -> Map.of("authorization", v),
+                v -> Map.of("apiKey", v), v -> Map.of("kty", "oct", "k", v),
+                v -> Map.of("ctx", Map.of("access_token", v)), v -> Map.of("list", List.of(Map.of("password", v))),
+                v -> Map.of("body", JSON.writeValueAsString(Map.of("client_secret", v))),
+                v -> Map.of("jwk", Map.of("kty", "RSA", "d", v)));
+        String plainHeader = base64Url("{\"alg\":\"none\"}");
+        String harmless = base64Url("{\"sub\":\"x\"}");
+        List<String> failures = new ArrayList<>();
+        int cases = 0;
+        for (Object value : values) {
+            for (var claim : claims) {
+                Map<String, Object> claimSet = new java.util.LinkedHashMap<>();
+                claimSet.put("sub", "x");
+                claimSet.putAll(claim.apply(value));
+                String segment = base64Url(JSON.writeValueAsString(claimSet));
+                for (boolean inHeader : new boolean[] {false, true}) {
+                    String head = inHeader ? segment : plainHeader;
+                    String body = inHeader ? harmless : segment;
+                    for (String jwt : List.of(head + "." + body + ".SIG", head + "." + body + ".", head + "." + body)) {
+                        for (String text : List.of("see " + jwt + " then", JSON.writeValueAsString(Map.of("jwt", jwt)),
+                                JSON.writeValueAsString(Map.of("body", "x " + jwt)))) {
+                            cases++;
+                            String out = Redactor.redact(text);
+                            if (holdsAtAnyDecoding(out, segment)) {
+                                failures.add(claimSet.keySet() + " value class " + values.indexOf(value)
+                                        + (inHeader ? " in header" : " in payload"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assertTrue(cases > 4000, "grid size " + cases);
+        assertEquals(List.of(), failures.subList(0, Math.min(8, failures.size())),
+                () -> failures.size() + " of " + values.size() * claims.size() * 18 + " grid texts kept a claim segment");
+        // The exact forms the rules write keep the header and payload; the signature is masked.
+        for (Map<String, ?> claimSet : List.<Map<String, ?>>of(Map.<String, Object>of("sub", "x", "password", m),
+                Map.<String, Object>of("sub", "x", "authorization", "Bearer " + m), Map.of("sub", "x", "kty", "oct", "k", m),
+                Map.<String, Object>of("sub", "x", "ctx", Map.of("client_secret", m)),
+                new java.util.HashMap<>(java.util.Collections.singletonMap("password", null)))) {
+            String segment = base64Url(JSON.writeValueAsString(claimSet));
+            String text = "see " + plainHeader + "." + segment + ".SIG then";
+            String out = Redactor.redact(text);
+            assertTrue(out.contains(plainHeader + "." + segment + ".") && !out.contains("SIG"), () -> claimSet + " => " + out);
+        }
+    }
+
+    /** Whether {@code out} holds {@code part} at any decoding of its JSON escapes. */
+    private static boolean holdsAtAnyDecoding(String out, String part) {
+        String pass = out;
+        for (int level = 0; pass != null && level <= JsonRedaction.MAX_KEY_LEVELS; level++, pass = JsonRedaction.unescaped(pass)) {
+            if (pass.contains(part)) {
+                return true;
+            }
+        }
+        return false;
+    }
 }
