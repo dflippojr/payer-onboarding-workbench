@@ -1030,11 +1030,14 @@ public final class Redactor {
             from = m.end();
             if (isSecret(decodeName(m.group(1)), jwk)) {
                 String quote = embedded ? "\\\"" : "\"";
-                out = out == null ? new StringBuilder(text.length()) : out;
                 int end = endOfStructure(text, m.end(), embedded);
-                if (!isWrittenSchemeList(decodeName(m.group(1)), text.substring(m.end(), end), quote)) {
-                    met();
+                if (isWrittenSchemeList(decodeName(m.group(1)), text.substring(m.end(), end), quote)) {
+                    // Already the form the tree's rule writes: no sensitive value, and left as it is, as the mask is.
+                    from = end;
+                    continue;
                 }
+                met();
+                out = out == null ? new StringBuilder(text.length()) : out;
                 out.append(text, copied, m.end()).append(quote).append(MASK).append(quote);
                 copied = end;
                 from = copied;
