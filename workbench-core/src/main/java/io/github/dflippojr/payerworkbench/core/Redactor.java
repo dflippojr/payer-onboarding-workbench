@@ -811,7 +811,8 @@ public final class Redactor {
     /**
      * Whether the value from {@code at}, after the secret name {@code name}'s colon, is exactly a form the rules write
      * (#406 decision, stage 2): {@code null}, or quoted as the name is, the mask or, for an {@code Authorization}-style
-     * name, one of {@link #AUTH_SCHEMES} then the mask ({@link #masked}). It must end where a value ends: the end of the
+     * name, one of {@link #AUTH_SCHEMES} then the mask ({@link #masked}), or a list of those scheme forms
+     * ({@link #isWrittenSchemeList}). It must end where a value ends: the end of the
      * text, whitespace, a comma or a closing bracket. Any other byte after it may be the rest of the secret, behind a
      * quote that closed early or a token that only starts like {@code null} (automated review rounds 1 and 2 on #408).
      */
@@ -822,6 +823,12 @@ public final class Redactor {
             return endsValue(text, i + 4);
         }
         String quote = embedded ? "\\\"" : "\"";
+        if (text.startsWith("[", i)) {
+            // The list form the tree's rule writes (isWrittenSchemeList), as the structure rule exempts it.
+            int end = endOfStructure(text, i, embedded);
+            return end > i && text.charAt(end - 1) == ']' && isWrittenSchemeList(name, text.substring(i, end), quote)
+                    && endsValue(text, end);
+        }
         if (!text.startsWith(quote, i)) {
             return false;
         }
@@ -1024,13 +1031,47 @@ public final class Redactor {
             if (isSecret(decodeName(m.group(1)), jwk)) {
                 String quote = embedded ? "\\\"" : "\"";
                 out = out == null ? new StringBuilder(text.length()) : out;
-                met();
+                int end = endOfStructure(text, m.end(), embedded);
+                if (!isWrittenSchemeList(decodeName(m.group(1)), text.substring(m.end(), end), quote)) {
+                    met();
+                }
                 out.append(text, copied, m.end()).append(quote).append(MASK).append(quote);
-                copied = endOfStructure(text, m.end(), embedded);
+                copied = end;
                 from = copied;
             }
         }
         return out == null ? text : out.append(text, copied, text.length()).toString();
+    }
+
+    /**
+     * Whether {@code structure}, the value of the secret-named {@code name}, is exactly a form the tree's secret-field
+     * rule writes for a list (#406 redesign; the owner's posture of 2026-11-19): a non-empty array of strings, each one
+     * of {@link #AUTH_SCHEMES}, a space and the mask, under an {@code Authorization}-style name, quoted with
+     * {@code quote}. Such a value re-read is no sensitive value; any other structure is.
+     */
+    private static boolean isWrittenSchemeList(String name, String structure, String quote) {
+        if (!keepsScheme(name) || structure.length() < 2 || structure.charAt(0) != '['
+                || structure.charAt(structure.length() - 1) != ']') {
+            return false;
+        }
+        Matcher item = Pattern.compile("\\s*" + Pattern.quote(quote) + "([A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*+) "
+                + Pattern.quote(MASK) + Pattern.quote(quote) + "\\s*").matcher(structure);
+        int at = 1;
+        int last = structure.length() - 1;
+        while (item.region(at, last).lookingAt()) {
+            if (!AUTH_SCHEMES.contains(item.group(1).toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+            at = item.end();
+            if (at == last) {
+                return true;
+            }
+            if (structure.charAt(at) != ',') {
+                return false;
+            }
+            at++;
+        }
+        return false;
     }
 
     /**
