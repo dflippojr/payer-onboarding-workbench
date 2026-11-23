@@ -3639,8 +3639,9 @@ class RedactorTest {
             for (String value : List.of("FAKE_JWK_K_350", "[REDACTED]", "")) {
                 assertEquals(Redactor.MASK, Redactor.redact(head + value + "\\"));
             }
-            // #406: a value that already is the mask, its string closed, is the Redactor's own output read again: kept as it
-            // is (K), with the closed forms below, where it reads as text (stage 1 masked it whole).
+            // #406 decision (stage 2): a value that already is the mask, its string closed, then a backslash, ends where no
+            // value ends: the backslash may start the rest of the secret, so the fragment is masked from its colon (M), as
+            // stage 1 masked it whole.
             String reread = head + "[REDACTED]\"\\";
             verdicts.append(verdict(Redactor.redact(reread), reread, Redactor.MASK));
             // #406: where the head closes as one JWK, that object reads on the tree and the lone backslash after it is
@@ -3648,7 +3649,7 @@ class RedactorTest {
             String closed = head + "[REDACTED]\"}\\";
             verdicts.append(verdict(Redactor.redact(closed), closed, Redactor.MASK));
         }
-        assertEquals("KKKKKKKKKKKKKKKKKKKKKK", verdicts.toString());
+        assertEquals("MKMKMKMKMKMKMKMKMKMKMK", verdicts.toString());
     }
 
     @Test

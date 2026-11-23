@@ -536,10 +536,6 @@ public final class Redactor {
         return isSecretKey(name) || (jwk && JWK_PRIVATE_MEMBERS.contains(name));
     }
 
-    /** A secret value the rules left as the mask: the mask, after an {@code Authorization}-style scheme or not. */
-    private static final Pattern MASKED_VALUE = Pattern.compile(
-            "(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*+ )?" + Pattern.quote(MASK));
-
     /**
      * Fail closed (owner decision on #339, kept through #377 stage 2): the first secret name, plain ({@code "name":}) or
      * in JSON held in a JSON string ({@code \"name\":}), whose value the rules before this left as anything but the
@@ -553,7 +549,8 @@ public final class Redactor {
         for (boolean embedded : new boolean[] {false, true}) {
             Matcher m = (embedded ? EMBEDDED_FIELD_NAME : FIELD_NAME).matcher(text);
             while (m.find() && (cut < 0 || m.end() < cut)) {
-                if (isSecret(decodeName(m.group(1)), jwk) && !readsAsMasked(text, m.end(), embedded)) {
+                String name = decodeName(m.group(1));
+                if (isSecret(name, jwk) && !readsAsMasked(text, m.end(), name, embedded)) {
                     cut = m.end();
                     quote = embedded ? "\\\"" : "\"";
                     break;
@@ -563,25 +560,37 @@ public final class Redactor {
         return cut < 0 ? text : text.substring(0, cut) + quote + MASK + quote;
     }
 
-    /** Whether the value from {@code at}, after a secret name's colon, is the mask ({@link #MASKED_VALUE}) or null. */
-    private static boolean readsAsMasked(String text, int at, boolean embedded) {
+    /**
+     * Whether the value from {@code at}, after the secret name {@code name}'s colon, is exactly a form the rules write
+     * (#406 decision, stage 2): {@code null}, or quoted as the name is, the mask or, for an {@code Authorization}-style
+     * name, one of {@link #AUTH_SCHEMES} then the mask ({@link #masked}). It must end where a value ends: the end of the
+     * text, whitespace, a comma or a closing bracket. Any other byte after it may be the rest of the secret, behind a
+     * quote that closed early or a token that only starts like {@code null} (automated review rounds 1 and 2 on #408).
+     */
+    private static boolean readsAsMasked(String text, int at, String name, boolean embedded) {
         Matcher space = SPACE_RUN.matcher(text);
         int i = space.region(at, text.length()).lookingAt() ? space.end() : at;
-        if (text.startsWith("null", i) && (i + 4 == text.length() || !Character.isLetterOrDigit(text.charAt(i + 4)))) {
-            return true;
+        if (text.startsWith("null", i)) {
+            return endsValue(text, i + 4);
         }
         String quote = embedded ? "\\\"" : "\"";
         if (!text.startsWith(quote, i)) {
             return false;
         }
-        Matcher masked = MASKED_VALUE.matcher(text).region(i + quote.length(), text.length());
-        if (!masked.lookingAt() || !text.startsWith(quote, masked.end())) {
+        int value = i + quote.length();
+        int close = text.indexOf(quote, value);
+        if (close < 0) {
             return false;
         }
-        // The value ends at its closing quote only where a value can end: more bytes right after it may be the rest of
-        // the secret, behind a quote that closed early (automated review round 1 on #408).
-        int after = masked.end() + quote.length();
-        return after == text.length() || ",}]\\".indexOf(text.charAt(after)) >= 0 || Character.isWhitespace(text.charAt(after));
+        String written = text.substring(value, close);
+        return (written.equals(MASK) || (keepsScheme(name) && written.endsWith(" " + MASK)
+                && AUTH_SCHEMES.contains(written.substring(0, written.length() - MASK.length() - 1).toLowerCase(Locale.ROOT))))
+                && endsValue(text, close + quote.length());
+    }
+
+    /** Whether a value ending just before {@code at} ends where a value can: the end, whitespace, a comma or a closing bracket. */
+    private static boolean endsValue(String text, int at) {
+        return at == text.length() || ",}]".indexOf(text.charAt(at)) >= 0 || Character.isWhitespace(text.charAt(at));
     }
 
     /**
