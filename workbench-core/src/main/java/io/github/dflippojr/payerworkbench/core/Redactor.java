@@ -575,7 +575,13 @@ public final class Redactor {
             return false;
         }
         Matcher masked = MASKED_VALUE.matcher(text).region(i + quote.length(), text.length());
-        return masked.lookingAt() && text.startsWith(quote, masked.end());
+        if (!masked.lookingAt() || !text.startsWith(quote, masked.end())) {
+            return false;
+        }
+        // The value ends at its closing quote only where a value can end: more bytes right after it may be the rest of
+        // the secret, behind a quote that closed early (automated review round 1 on #408).
+        int after = masked.end() + quote.length();
+        return after == text.length() || ",}]\\".indexOf(text.charAt(after)) >= 0 || Character.isWhitespace(text.charAt(after));
     }
 
     /**

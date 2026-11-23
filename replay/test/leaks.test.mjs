@@ -3328,8 +3328,8 @@ test('reads no such field whose name opens with a quote of a deeper level than i
   const { wrong, keptAsMain, overmasks } = levelGridWrong('generic-separator-level-deeper-grid', pairs);
   // #406 (gate change): texts the Redactor now masks from a JSON-looking start that does not read, which the scanner
   // accepts at every entry point (nothing to flag; the outputs are accepted), pinned.
-  assert.equal(overmasks, 4_950, 'masked texts the scanner accepts (#406)');
-  assert.equal(keptAsMain, 675, 'verdicts on kept texts main flags too');
+  assert.equal(overmasks, 5_610, 'masked texts the scanner accepts (#406)');
+  assert.equal(keptAsMain, 405, 'verdicts on kept texts main flags too');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -3490,10 +3490,10 @@ test('reads every spelling of a secret field\'s quotes and of a closing backslas
   assert.equal(overmasks, 0, 'masked texts the scanner accepts (#406)');
   // #377: the Redactor's reading of a decoded string masks 15 kept texts whose value already is the mask again. The 3
   // that main flags now count as masked, taking their 9 verdicts out of this count; the other 12 hold nothing to flag.
-  assert.equal(keptAsMain, 287, 'verdicts on kept texts main flags too');
+  assert.equal(keptAsMain, 126, 'verdicts on kept texts main flags too');
   // #406 (gate change): every text that already holds the mask and that the Redactor masks counts here (12 at stage 1),
   // flagged at no more than some entry points, with its output accepted.
-  assert.equal(remasks, 3_414, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');
+  assert.equal(remasks, 3_553, 'kept texts holding the mask that the Redactor masks again and nothing flags (#377)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 

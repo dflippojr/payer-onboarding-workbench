@@ -2010,7 +2010,7 @@ class RedactorTest {
                 Map.entry("generic-separator-level-flat-grid", new int[] {6400, 0}),
                 Map.entry("generic-separator-level-cut-grid", new int[] {2880, 0}),
                 Map.entry("generic-separator-level-escape-grid", new int[] {16320, 0}),
-                Map.entry("generic-separator-level-deeper-grid", new int[] {8130, 4650}),
+                Map.entry("generic-separator-level-deeper-grid", new int[] {8880, 3900}),
                 Map.entry("generic-separator-level-slice-grid", new int[] {2850, 0}),
                 Map.entry("generic-separator-level-whole-grid", new int[] {6440, 0}),
                 Map.entry("generic-separator-level-spelled-grid", new int[] {6288, 0}),
@@ -2019,7 +2019,7 @@ class RedactorTest {
                 Map.entry("generic-separator-level-chain-grid", new int[] {7926, 0}),
                 Map.entry("generic-separator-level-wrapped-grid", new int[] {14045, 0}),
                 // #377: 15 rows that already hold a mask were masked again by the reading of each string as spelled.
-                Map.entry("generic-separator-level-generated-grid", new int[] {15513, 505}),
+                Map.entry("generic-separator-level-generated-grid", new int[] {15705, 313}),
                 Map.entry("generic-separator-level-probe-grid", new int[] {18200, 0}));
         for (Map.Entry<String, int[]> grid : counts.entrySet()) {
             List<String[]> pairs = new ArrayList<>();
@@ -4143,9 +4143,10 @@ class RedactorTest {
                 + "X".repeat(10_000) + "-----END PRIVATE KEY-----";
         String pgp = key.replace("PRIVATE KEY-----", "PGP PRIVATE KEY BLOCK-----");
         // What 027fe1e made of the two raw inputs.
-        // Since #377 criterion 2 the block is masked whole, its armor too.
-        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"[REDACTED]", Redactor.redact(key));
-        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"[REDACTED]", Redactor.redact(pgp));
+        // Since #377 criterion 2 the block is masked whole, its armor too. Since #406 (review round 1) the value runs on past
+        // a quote that more bytes follow, so the block's mask goes with it.
+        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"", Redactor.redact(key));
+        assertEquals("\"kty\":\"".repeat(63) + "\"d\":\"[REDACTED]\"", Redactor.redact(pgp));
         // Embedded forms that keep the value and the block's header literal, so the second read runs at an escaped
         // level; each was masked on 027fe1e and kept on 3c47acc.
         List<org.junit.jupiter.api.function.Executable> embedded = new java.util.ArrayList<>();
