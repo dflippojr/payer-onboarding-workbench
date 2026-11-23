@@ -186,8 +186,8 @@ final class ProseRedaction {
     }
 
     /**
-     * Whether no decoding of {@code out}'s JSON escapes, one level at a time, holds anything the text rules mask: the
-     * text rules' output, read at every escape level below the one they read. A text whose escapes still decode after
+     * Whether no decoding of {@code out}'s JSON escapes, one level at a time, holds material the text rules mask
+     * ({@link #masksMaterial}): the text rules' output, read at every escape level below the one they read. A text whose escapes still decode after
      * {@link JsonRedaction#MAX_KEY_LEVELS} levels is not settled. {@code jwkContext}: whether a {@code kty} name in a
      * decoding makes every JWK private member name in it a secret one, as it does for the text rules' own text; the
      * outermost output and a tree's are read without it, since their JWKs were read on the tree.
@@ -199,11 +199,34 @@ final class ProseRedaction {
             if (next == null) {
                 return true;
             }
-            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || !Redactor.textRules(next, null, jwkContext).equals(next)) {
+            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || masksMaterial(next, Redactor.textRules(next, null, jwkContext))) {
                 return false;
             }
             pass = next;
         }
+    }
+
+    /**
+     * Whether the text rules' output {@code out} for {@code in} takes material out of it: a letter, digit or other
+     * character outside the masks already there that is not a quote, bracket, comma, colon, backslash or whitespace.
+     * Read in a decoding of an output, the text rules may move a quote or a bracket (a header line's value runs on over
+     * the quote that closes its string); that is no material of the text's.
+     */
+    static boolean masksMaterial(String in, String out) {
+        return !in.equals(out) && !material(in).equals(material(out));
+    }
+
+    /** {@code text} without its masks and without quotes, brackets, commas, colons, backslashes and whitespace. */
+    private static String material(String text) {
+        String bare = text.replace(Redactor.MASK, "");
+        StringBuilder kept = new StringBuilder(bare.length());
+        for (int i = 0; i < bare.length(); i++) {
+            char c = bare.charAt(i);
+            if ("\"'{}[],:\\".indexOf(c) < 0 && !Character.isWhitespace(c)) {
+                kept.append(c);
+            }
+        }
+        return kept.toString();
     }
 
     /** Whether {@code text} holds a character a placeholder uses. */

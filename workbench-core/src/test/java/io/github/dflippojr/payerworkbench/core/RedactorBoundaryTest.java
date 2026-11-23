@@ -419,7 +419,7 @@ class RedactorBoundaryTest {
     @Test
     void redactsATreeStringWithContentAfterItsRootValueWithTheTextEngine() {
         assertEquals(Map.of("b", "{\"a\":\"A\"} "), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " ")));
-        assertEquals(Map.of("b", ESCAPED_OBJECT + " trailing"), Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " trailing")));
+        assertEquals("{b={\"a\":\"A\"} trailing}", Redactor.redactTree(Map.of("b", ESCAPED_OBJECT + " trailing")));
         assertMaskedWhole(Redactor.redactTree(treeAt(openKeyJson() + " trailing", 1)));
     }
 
