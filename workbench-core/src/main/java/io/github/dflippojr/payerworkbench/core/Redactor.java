@@ -27,7 +27,8 @@ import java.util.stream.Collectors;
  *
  * <p>Covers {@code Bearer}, {@code Basic}, {@code Token} and {@code DPoP} credentials (a
  * {@code Bearer} one also URL-encoded, {@code Bearer%20} or {@code Bearer+}), JWT signatures
- * (the header and payload stay readable because their claims are useful for diagnosis), PEM
+ * (the header and payload stay readable because their claims are useful for diagnosis, unless the rules meet a
+ * sensitive value in a decoded claim ({@link #secretBearing}), when the token is masked whole), PEM
  * blocks and PGP private key blocks (whole, their armor header and footer too), the private members of a JWK ({@link #JWK_PRIVATE_MEMBERS}
  * of a JSON object with a {@code kty} member, also in JSON nested in JSON strings at any
  * depth), and the values of well-known secret fields such as {@code client_secret},
@@ -440,7 +441,7 @@ public final class Redactor {
      * to the end when secret vocabulary follows, and the text rules read only the rest ({@link ProseRedaction}, #406).
      * First, a text in which a decoding of its JSON escapes, at any depth, shows a private key header the text does not
      * spell plainly ({@link JsonRedaction#hidesAKey}) is masked whole; last, an output any decoding of whose escapes
-     * still holds material the text rules mask ({@link ProseRedaction#settled}) is masked whole.
+     * still holds a value the text rules meet as sensitive ({@link ProseRedaction#settled}) is masked whole.
      */
     public static String redact(String text) {
         if (text == null || text.isEmpty()) {

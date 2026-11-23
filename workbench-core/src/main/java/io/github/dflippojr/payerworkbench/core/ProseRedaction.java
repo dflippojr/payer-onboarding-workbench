@@ -26,7 +26,8 @@ import java.util.regex.Pattern;
  *       or header line in the text still masks the value after it: a placeholder the rules mask takes its value with
  *       it.
  *   <li>Fail closed: if any decoding of the result's JSON escapes ({@link JsonRedaction#unescaped}, one level at a
- *       time) still holds something the text rules mask, the whole text is the mask. The text rules read only the
+ *       time) still holds a value the text rules meet as sensitive ({@link Redactor#meets}: a rule writes a mask over
+ *       bytes that are not exactly the form it writes), the whole text is the mask. The text rules read only the
  *       plain spelling and JSON held in a string one level deep; this is what stands for every deeper escape level.
  * </ol>
  *
@@ -191,7 +192,7 @@ final class ProseRedaction {
     /**
      * Whether {@code text}, or any decoding of its JSON escapes ({@link JsonRedaction#unescaped}, one level at a time),
      * holds secret vocabulary: an armor header, a secret name whose value is not already the mask ({@link #keyName}),
-     * with a {@code kty} a JWK private member's quoted name so, or material the text rules mask ({@link #meetsSecret}). A text whose escapes still decode
+     * with a {@code kty} a JWK private member's quoted name so, or a value the text rules meet as sensitive ({@link #meetsSecret}). A text whose escapes still decode
      * after {@link JsonRedaction#MAX_KEY_LEVELS} levels counts as holding it.
      */
     static boolean hasVocabulary(String text) {
@@ -217,8 +218,8 @@ final class ProseRedaction {
     }
 
     /**
-     * Whether no decoding of {@code out}'s JSON escapes, one level at a time, holds material the text rules mask
-     * ({@link #meetsSecret}): the text rules' output, read at every escape level below the one they read. A text whose escapes still decode after
+     * Whether no decoding of {@code out}'s JSON escapes, one level at a time, holds a value the text rules meet as
+     * sensitive ({@link #meetsSecret}), read at every escape level below the one they read. A text whose escapes still decode after
      * {@link JsonRedaction#MAX_KEY_LEVELS} levels is not settled. {@code jwkContext}: whether a {@code kty} name in a
      * decoding makes every JWK private member name in it a secret one, as it does for the text rules' own text; the
      * outermost output and a tree's are read without it, since their JWKs were read on the tree.
