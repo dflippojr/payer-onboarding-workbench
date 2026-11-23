@@ -28,7 +28,6 @@ import tools.jackson.core.exc.StreamConstraintsException;
 import tools.jackson.core.exc.StreamReadException;
 import tools.jackson.core.io.JsonStringEncoder;
 import tools.jackson.core.json.JsonFactory;
-import tools.jackson.core.json.JsonReadFeature;
 
 /**
  * The structural path of {@link Redactor#redact(String)} (#377, stage 1): text that is one JSON value is read with
@@ -84,14 +83,6 @@ final class JsonRedaction {
                     .maxNameLength(MAX_CHARS)
                     .maxNumberLength(MAX_CHARS)
                     .build())
-            .build();
-
-    /**
-     * {@link #FACTORY} that also takes control characters in a string, as the text engine writes a line break into a
-     * masked private key block ({@link #decodedString}).
-     */
-    private static final JsonFactory LENIENT = FACTORY.rebuild()
-            .enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS)
             .build();
 
     private static final JsonStringEncoder ENCODER = JsonStringEncoder.getInstance();
@@ -156,7 +147,7 @@ final class JsonRedaction {
             return null;
         }
         StringBuilder out = new StringBuilder(text.length() + 16);
-        write(redact(root, level, Place.ROOT), out);
+        write(redact(root, level), out);
         return out.append(text, endOfValue(text), text.length()).toString();
     }
 
@@ -230,6 +221,49 @@ final class JsonRedaction {
             // What was decoded before the error was read; nothing after it can be.
         }
         return false;
+    }
+
+    /**
+     * Where the one JSON value that starts at {@code from} in {@code text}, an object or an array, ends (#377 stage 2):
+     * the index after its closing bracket, or, if no whole value reads there, {@code ~stop}, where {@code stop} is
+     * how far the attempt read. The parser is the one this path reads a text with, and every string and name it
+     * decodes up to the end of the value or the first read error is checked as {@link #opensAKeyAnywhere} checks a
+     * rejected text, so the check runs on what was read whether or not the value reads whole.
+     *
+     * @throws UnterminatedKey if a string or name it decodes, at any level down to {@link #MAX_LEVELS}, opens a private
+     *     key block it does not close
+     */
+    static int valueEnd(char[] text, int from, int level) {
+        JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text, from, text.length - from);
+        try (parser) {
+            int depth = 0;
+            for (JsonToken token = parser.nextToken(); token != null; token = parser.nextToken()) {
+                String decoded = token == JsonToken.PROPERTY_NAME ? parser.currentName()
+                        : token == JsonToken.VALUE_STRING ? parser.getString() : null;
+                if (decoded != null && (Redactor.opensAnUnterminatedKey(decoded)
+                        || (level + 1 < MAX_LEVELS && mayBeJson(decoded) && opensAKeyAnywhere(decoded, level + 1)))) {
+                    throw new UnterminatedKey();
+                }
+                if (token.isStructStart()) {
+                    depth++;
+                } else if (token.isStructEnd() && --depth == 0) {
+                    return from + Math.toIntExact(parser.currentLocation().getCharOffset());
+                } else if (depth == 0) {
+                    break;
+                }
+            }
+            return ~text.length;
+        } catch (StreamConstraintsException tooDeep) {
+            return ~stop(parser, from, text.length);
+        } catch (StreamReadException notJson) {
+            return ~stop(parser, from, text.length);
+        }
+    }
+
+    /** How far {@code parser}, reading from {@code from}, got: at least one character past it, at most {@code length}. */
+    private static int stop(JsonParser parser, int from, int length) {
+        long read = parser.currentLocation().getCharOffset();
+        return (int) Math.min(length, from + Math.max(1, read));
     }
 
     /**
@@ -377,7 +411,7 @@ final class JsonRedaction {
         if (reader.opensAKey) {
             throw new UnterminatedKey();
         }
-        return plain(redact(root, 0, Place.ROOT));
+        return plain(redact(root, 0));
     }
 
     /**
@@ -1051,28 +1085,11 @@ final class JsonRedaction {
         }
     }
 
-    /**
-     * Where a string stands in the JSON, as the text engine's reading of the string as the text spells it sees it
-     * ({@link #redactString}): the text around it, so the engine reads its quotes as a value's, a name's or an item's,
-     * as it read them in the whole text before the structural path.
-     */
-    private enum Place {
-        ROOT("", ""), VALUE("{\"v\":", "}"), ITEM("[", "]"), NAME("{", ":null}");
-
-        private final String before;
-        private final String after;
-
-        Place(String before, String after) {
-            this.before = before;
-            this.after = after;
-        }
-    }
-
-    /** {@code node} redacted, at JSON-in-string level {@code level}, in its {@code place}. */
-    private static Node redact(Node node, int level, Place place) {
+    /** {@code node} redacted, at JSON-in-string level {@code level}. */
+    private static Node redact(Node node, int level) {
         if (node instanceof Scalar scalar) {
             return scalar.string()
-                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), scalar.raw(), level, place), null, null)
+                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), level), null, null)
                     : scalar;
         }
         Container container = (Container) node;
@@ -1081,7 +1098,7 @@ final class JsonRedaction {
         Names names = container.object() ? new Names() : null;
         for (Member member : container.members()) {
             if (!container.object()) {
-                members.add(new Member(null, null, null, redact(member.value(), level, Place.ITEM)));
+                members.add(new Member(null, null, null, redact(member.value(), level)));
                 continue;
             }
             String name = member.name();
@@ -1093,9 +1110,9 @@ final class JsonRedaction {
                 checkMaskedValue(member.value(), level);
                 value = maskPrivate(member.value());
             } else {
-                value = redact(member.value(), level, Place.VALUE);
+                value = redact(member.value(), level);
             }
-            String redactedName = redactString(name, member.rawName(), level, Place.NAME);
+            String redactedName = redactString(name, level);
             if (!names.add(redactedName)) {
                 // Two names the redaction made one: the output would not read back as the same JSON.
                 throw new Unreadable();
@@ -1152,56 +1169,21 @@ final class JsonRedaction {
     }
 
     /**
-     * A string or name, decoded ({@code decoded}) and as the text spells it ({@code raw}), redacted: one JSON value on
-     * the tree one level deeper, any other text by the text engine.
+     * A decoded string or name redacted at the next level ({@link Redactor#redactAt}): one JSON value on the tree, any
+     * other text on the structural path for text with JSON embedded in it ({@link ProseRedaction}), which reads the
+     * values in it as this path reads a text and hands the text rules only the rest (#377 stage 2). The string is never
+     * read as the text spells it: every escape level below the decoded one is read by that path, value by value, and
+     * whatever no value holds is checked at every decoding of its escapes.
      *
-     * <p>Until the text engine's escape-level readers go (#377 stage 2), the text engine also reads the string as the
-     * text spells it, in its {@code place}, as it read every string before the structural path: a secret it finds
-     * through a spelling that decoding removes (a quote spelled as an escape of an escape, say) is masked too. If it
-     * masks anything there, the string it leaves is decoded and redacted instead, and if what it leaves is no longer one
-     * JSON string in that place, the whole string is the mask. So no string keeps anything the text engine masks in it.
-     * A spelling with no backslash is the decoded string in quotes, so only the decoded string is read.
-     *
-     * <p>Check first: before any of that, the decoded string, a value, a name or an item, is read for a key block it
-     * opens and does not close at any level ({@link #checkNested}). The text engine's reading of the spelling may mask
-     * the part that opens the block, and what it leaves would then pass the check while the key material, in a later
-     * string, is kept; so the check reads the string as it came, never what a rewrite left.
+     * <p>Check first: the decoded string, a value, a name or an item, is read for a key block it opens and does not close
+     * at any level ({@link #checkNested}) before anything rewrites it, so the check reads the string as it came.
      *
      * @throws UnterminatedKey if a string or name in the decoded string, at any level, opens a key block it does not
      *     close
      */
-    private static String redactString(String decoded, String raw, int level, Place place) {
+    private static String redactString(String decoded, int level) {
         checkNested(decoded, level + 1);
-        if (raw.indexOf('\\') < 0) {
-            // No escape in the spelling: it is the decoded string in quotes, with no spelling for decoding to remove.
-            return Redactor.redactAt(decoded, level + 1);
-        }
-        String spelled = place.before + raw + place.after;
-        String spelledOut = Redactor.redact(spelled, null);
-        if (spelledOut.equals(spelled)) {
-            return Redactor.redactAt(decoded, level + 1);
-        }
-        String kept = spelledOut.startsWith(place.before) && spelledOut.endsWith(place.after)
-                && spelledOut.length() >= place.before.length() + place.after.length()
-                ? decodedString(spelledOut.substring(place.before.length(), spelledOut.length() - place.after.length()))
-                : null;
-        return kept == null ? Redactor.MASK : Redactor.redactAt(kept, level + 1);
-    }
-
-    /**
-     * The value of {@code text} if it is one JSON string, otherwise {@code null}; the text engine's output, so a control
-     * character it wrote into the string is taken as it is.
-     */
-    private static String decodedString(String text) {
-        try (JsonParser parser = LENIENT.createParser(ObjectReadContext.empty(), text)) {
-            if (parser.nextToken() != JsonToken.VALUE_STRING) {
-                return null;
-            }
-            String value = parser.getString();
-            return parser.nextToken() == null ? value : null;
-        } catch (StreamReadException | StreamConstraintsException notOneString) {
-            return null;
-        }
+        return Redactor.redactAt(decoded, level + 1);
     }
 
     /** Where the JSON value in {@code text} ends: before the JSON whitespace that ends the text. */
