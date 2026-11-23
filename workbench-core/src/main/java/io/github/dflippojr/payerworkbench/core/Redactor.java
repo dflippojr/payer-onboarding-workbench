@@ -137,11 +137,12 @@ public final class Redactor {
     private static final Pattern JWT_HEADER = Pattern.compile(WORD_START + "eyJ");
 
     /**
-     * A JWT cut short, or a header with no signature: a run of token characters from its first {@code eyJ} at a word
-     * start, with at most one dot and no signature after it (a whole {@link #JWT} is not one: its second dot follows).
+     * A JWT cut short: a run of token characters from its first {@code eyJ} at a word start, then at most a payload and
+     * a second dot with no signature after it ({@code header}, {@code header.payload}, {@code header.payload.}). A
+     * {@link #JWT} the rules kept ({@code header.payload.[REDACTED]}) matches too, and is checked again.
      */
     private static final Pattern JWT_FRAGMENT = Pattern.compile(
-            "(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?" + WORD_START + "eyJ)[A-Za-z0-9_-]*+)(?:\\.([A-Za-z0-9_-]*+))?+"
+            "(?<![A-Za-z0-9_-])((?>[A-Za-z0-9_-]*?" + WORD_START + "eyJ)[A-Za-z0-9_-]*+)(?:\\.([A-Za-z0-9_-]*+)\\.?+)?+"
                     + "(?![A-Za-z0-9_.-])");
 
     /**
