@@ -28,7 +28,6 @@ import tools.jackson.core.exc.StreamConstraintsException;
 import tools.jackson.core.exc.StreamReadException;
 import tools.jackson.core.io.JsonStringEncoder;
 import tools.jackson.core.json.JsonFactory;
-import tools.jackson.core.json.JsonReadFeature;
 
 /**
  * The structural path of {@link Redactor#redact(String)} (#377, stage 1): text that is one JSON value is read with
@@ -84,14 +83,6 @@ final class JsonRedaction {
                     .maxNameLength(MAX_CHARS)
                     .maxNumberLength(MAX_CHARS)
                     .build())
-            .build();
-
-    /**
-     * {@link #FACTORY} that also takes control characters in a string, as the text engine writes a line break into a
-     * masked private key block ({@link #decodedString}).
-     */
-    private static final JsonFactory LENIENT = FACTORY.rebuild()
-            .enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS)
             .build();
 
     private static final JsonStringEncoder ENCODER = JsonStringEncoder.getInstance();
@@ -156,7 +147,7 @@ final class JsonRedaction {
             return null;
         }
         StringBuilder out = new StringBuilder(text.length() + 16);
-        write(redact(root, level, Place.ROOT), out);
+        write(redact(root, level), out);
         return out.append(text, endOfValue(text), text.length()).toString();
     }
 
@@ -230,6 +221,49 @@ final class JsonRedaction {
             // What was decoded before the error was read; nothing after it can be.
         }
         return false;
+    }
+
+    /**
+     * Where the one JSON value that starts at {@code from} in {@code text}, an object or an array, ends (#377 stage 2):
+     * the index after its closing bracket, or, if no whole value reads there, {@code ~stop}, where {@code stop} is
+     * how far the attempt read. The parser is the one this path reads a text with, and every string and name it
+     * decodes up to the end of the value or the first read error is checked as {@link #opensAKeyAnywhere} checks a
+     * rejected text, so the check runs on what was read whether or not the value reads whole.
+     *
+     * @throws UnterminatedKey if a string or name it decodes, at any level down to {@link #MAX_LEVELS}, opens a private
+     *     key block it does not close
+     */
+    static int valueEnd(char[] text, int from, int level) {
+        JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text, from, text.length - from);
+        try (parser) {
+            int depth = 0;
+            for (JsonToken token = parser.nextToken(); token != null; token = parser.nextToken()) {
+                String decoded = token == JsonToken.PROPERTY_NAME ? parser.currentName()
+                        : token == JsonToken.VALUE_STRING ? parser.getString() : null;
+                if (decoded != null && (Redactor.opensAnUnterminatedKey(decoded)
+                        || (level + 1 < MAX_LEVELS && mayBeJson(decoded) && opensAKeyAnywhere(decoded, level + 1)))) {
+                    throw new UnterminatedKey();
+                }
+                if (token.isStructStart()) {
+                    depth++;
+                } else if (token.isStructEnd() && --depth == 0) {
+                    return from + Math.toIntExact(parser.currentLocation().getCharOffset());
+                } else if (depth == 0) {
+                    break;
+                }
+            }
+            return ~text.length;
+        } catch (StreamConstraintsException tooDeep) {
+            return ~stop(parser, from, text.length);
+        } catch (StreamReadException notJson) {
+            return ~stop(parser, from, text.length);
+        }
+    }
+
+    /** How far {@code parser}, reading from {@code from}, got: at least one character past it, at most {@code length}. */
+    private static int stop(JsonParser parser, int from, int length) {
+        long read = parser.currentLocation().getCharOffset();
+        return (int) Math.min(length, from + Math.max(1, read));
     }
 
     /**
@@ -377,7 +411,14 @@ final class JsonRedaction {
         if (reader.opensAKey) {
             throw new UnterminatedKey();
         }
-        return plain(redact(root, 0, Place.ROOT));
+        Node redacted = redact(root, 0);
+        StringBuilder written = new StringBuilder();
+        write(redacted, written);
+        if (!ProseRedaction.settled(written.toString(), false)) {
+            // As for a text (Redactor#redact): a decoding of the output holds what the text rules mask.
+            throw new Unreadable();
+        }
+        return plain(redacted);
     }
 
     /**
@@ -907,9 +948,32 @@ final class JsonRedaction {
 
     /**
      * An object ({@code object}) or an array; an array's members have no name. {@code closeLead} is the text before
-     * its closing bracket.
+     * its closing bracket. {@code kty}: a string in it spells {@code kty} ({@link #mentionsKty}), set as it is built.
      */
-    private record Container(String lead, boolean object, List<Member> members, String closeLead) implements Node {
+    private record Container(String lead, boolean object, List<Member> members, String closeLead, boolean kty)
+            implements Node {
+        Container(String lead, boolean object, List<Member> members, String closeLead) {
+            this(lead, object, members, closeLead, mentionsKty(object, members));
+        }
+    }
+
+    /**
+     * Whether a string in a container with these {@code members} holds the letters {@code kty} at any decoding of its
+     * escapes ({@link #spellsKty}): a string value anywhere in it, or a member name other than a nested object's own
+     * {@code kty} member. Each container is asked once, as it is built, and reads only its own members and its containers' flags,
+     * so the tree is read once.
+     */
+    private static boolean mentionsKty(boolean object, List<Member> members) {
+        for (Member member : members) {
+            if (object && !KTY.equals(member.name()) && spellsKty(member.name())) {
+                return true;
+            }
+            if (member.value() instanceof Container container ? container.kty()
+                    : ((Scalar) member.value()).string() && spellsKty(((Scalar) member.value()).text())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1051,40 +1115,69 @@ final class JsonRedaction {
         }
     }
 
+    /** A quote that a colon follows: where a decoding of a name reads one member's name ending and its value starting. */
+    private static final java.util.regex.Pattern MEMBER_BOUNDARY = java.util.regex.Pattern.compile("\"[ \\t\\r\\n]*:");
+
     /**
-     * Where a string stands in the JSON, as the text engine's reading of the string as the text spells it sees it
-     * ({@link #redactString}): the text around it, so the engine reads its quotes as a value's, a name's or an item's,
-     * as it read them in the whole text before the structural path.
+     * Whether a member name, or a decoding of its JSON escapes one level at a time ({@link #unescaped}), holds a quote that
+     * a colon follows ({@link #MEMBER_BOUNDARY}). A name whose escapes still decode past {@link #MAX_KEY_LEVELS} counts.
      */
-    private enum Place {
-        ROOT("", ""), VALUE("{\"v\":", "}"), ITEM("[", "]"), NAME("{", ":null}");
-
-        private final String before;
-        private final String after;
-
-        Place(String before, String after) {
-            this.before = before;
-            this.after = after;
+    private static boolean spellsAMember(String name) {
+        String pass = name;
+        for (int level = 0; pass != null && level <= MAX_KEY_LEVELS; level++) {
+            if (pass.indexOf('"') >= 0 && MEMBER_BOUNDARY.matcher(pass).find()) {
+                return true;
+            }
+            pass = unescaped(pass);
         }
+        return pass != null;
     }
 
-    /** {@code node} redacted, at JSON-in-string level {@code level}, in its {@code place}. */
-    private static Node redact(Node node, int level, Place place) {
+    /**
+     * Whether {@code text}, or a decoding of its JSON escapes one level at a time ({@link #unescaped}), holds the letters
+     * {@code kty}, as the text rules' search for JWKs once counted them in any string. A text whose escapes still decode
+     * past {@link #MAX_KEY_LEVELS} levels counts.
+     */
+    private static boolean spellsKty(String text) {
+        String pass = text;
+        for (int level = 0; pass != null && level <= MAX_KEY_LEVELS; level++) {
+            if (pass.contains(KTY)) {
+                return true;
+            }
+            pass = unescaped(pass);
+        }
+        return pass != null;
+    }
+
+    /**
+     * {@code node} redacted, at JSON-in-string level {@code level}. An object is read as a JWK when it has a {@code kty}
+     * member, and also when a string in it spells {@code kty} ({@link Container#kty}, #377 stage 2): such a string may
+     * hold the object's own members, written into it so that a decoding of the text reads them as part of the object, as
+     * the text rules once read every text across its strings' quotes; so the object's private members are masked, fail
+     * closed.
+     */
+    private static Node redact(Node node, int level) {
         if (node instanceof Scalar scalar) {
             return scalar.string()
-                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), scalar.raw(), level, place), null, null)
+                    ? new Scalar(scalar.lead(), true, redactString(scalar.text(), level), null, null)
                     : scalar;
         }
         Container container = (Container) node;
-        boolean jwk = container.object() && container.members().stream().anyMatch(m -> KTY.equals(m.name()));
+        boolean jwk = container.object()
+                && (container.kty() || container.members().stream().anyMatch(m -> KTY.equals(m.name())));
         List<Member> members = new ArrayList<>(container.members().size());
         Names names = container.object() ? new Names() : null;
         for (Member member : container.members()) {
             if (!container.object()) {
-                members.add(new Member(null, null, null, redact(member.value(), level, Place.ITEM)));
+                members.add(new Member(null, null, null, redact(member.value(), level)));
                 continue;
             }
             String name = member.name();
+            if (jwk && spellsAMember(name)) {
+                // A name in a JWK that a decoding reads as more than one member (#406): which part is the member a private
+                // value belongs to is not established, so the text is masked whole.
+                throw new Unreadable();
+            }
             Node value;
             if (Redactor.isSecretKey(name)) {
                 checkMaskedValue(member.value(), level);
@@ -1093,16 +1186,16 @@ final class JsonRedaction {
                 checkMaskedValue(member.value(), level);
                 value = maskPrivate(member.value());
             } else {
-                value = redact(member.value(), level, Place.VALUE);
+                value = redact(member.value(), level);
             }
-            String redactedName = redactString(name, member.rawName(), level, Place.NAME);
+            String redactedName = redactString(name, level);
             if (!names.add(redactedName)) {
                 // Two names the redaction made one: the output would not read back as the same JSON.
                 throw new Unreadable();
             }
             members.add(new Member(member.lead(), redactedName, null, value));
         }
-        return new Container(container.lead(), container.object(), members, container.closeLead());
+        return new Container(container.lead(), container.object(), members, container.closeLead(), false);
     }
 
     /**
@@ -1152,56 +1245,21 @@ final class JsonRedaction {
     }
 
     /**
-     * A string or name, decoded ({@code decoded}) and as the text spells it ({@code raw}), redacted: one JSON value on
-     * the tree one level deeper, any other text by the text engine.
+     * A decoded string or name redacted at the next level ({@link Redactor#redactAt}): one JSON value on the tree, any
+     * other text on the structural path for text with JSON embedded in it ({@link ProseRedaction}), which reads the
+     * values in it as this path reads a text and hands the text rules only the rest (#377 stage 2). The string is never
+     * read as the text spells it: every escape level below the decoded one is read by that path, value by value, and
+     * whatever no value holds is checked at every decoding of its escapes.
      *
-     * <p>Until the text engine's escape-level readers go (#377 stage 2), the text engine also reads the string as the
-     * text spells it, in its {@code place}, as it read every string before the structural path: a secret it finds
-     * through a spelling that decoding removes (a quote spelled as an escape of an escape, say) is masked too. If it
-     * masks anything there, the string it leaves is decoded and redacted instead, and if what it leaves is no longer one
-     * JSON string in that place, the whole string is the mask. So no string keeps anything the text engine masks in it.
-     * A spelling with no backslash is the decoded string in quotes, so only the decoded string is read.
-     *
-     * <p>Check first: before any of that, the decoded string, a value, a name or an item, is read for a key block it
-     * opens and does not close at any level ({@link #checkNested}). The text engine's reading of the spelling may mask
-     * the part that opens the block, and what it leaves would then pass the check while the key material, in a later
-     * string, is kept; so the check reads the string as it came, never what a rewrite left.
+     * <p>Check first: the decoded string, a value, a name or an item, is read for a key block it opens and does not close
+     * at any level ({@link #checkNested}) before anything rewrites it, so the check reads the string as it came.
      *
      * @throws UnterminatedKey if a string or name in the decoded string, at any level, opens a key block it does not
      *     close
      */
-    private static String redactString(String decoded, String raw, int level, Place place) {
+    private static String redactString(String decoded, int level) {
         checkNested(decoded, level + 1);
-        if (raw.indexOf('\\') < 0) {
-            // No escape in the spelling: it is the decoded string in quotes, with no spelling for decoding to remove.
-            return Redactor.redactAt(decoded, level + 1);
-        }
-        String spelled = place.before + raw + place.after;
-        String spelledOut = Redactor.redact(spelled, null);
-        if (spelledOut.equals(spelled)) {
-            return Redactor.redactAt(decoded, level + 1);
-        }
-        String kept = spelledOut.startsWith(place.before) && spelledOut.endsWith(place.after)
-                && spelledOut.length() >= place.before.length() + place.after.length()
-                ? decodedString(spelledOut.substring(place.before.length(), spelledOut.length() - place.after.length()))
-                : null;
-        return kept == null ? Redactor.MASK : Redactor.redactAt(kept, level + 1);
-    }
-
-    /**
-     * The value of {@code text} if it is one JSON string, otherwise {@code null}; the text engine's output, so a control
-     * character it wrote into the string is taken as it is.
-     */
-    private static String decodedString(String text) {
-        try (JsonParser parser = LENIENT.createParser(ObjectReadContext.empty(), text)) {
-            if (parser.nextToken() != JsonToken.VALUE_STRING) {
-                return null;
-            }
-            String value = parser.getString();
-            return parser.nextToken() == null ? value : null;
-        } catch (StreamReadException | StreamConstraintsException notOneString) {
-            return null;
-        }
+        return Redactor.redactAt(decoded, level + 1);
     }
 
     /** Where the JSON value in {@code text} ends: before the JSON whitespace that ends the text. */
@@ -1236,7 +1294,7 @@ final class JsonRedaction {
                 }
                 items.add(new Member(null, null, null, Scalar.masked(item.value().lead(), masked)));
             }
-            return new Container(container.lead(), false, items, container.closeLead());
+            return new Container(container.lead(), false, items, container.closeLead(), false);
         }
         return Scalar.masked(value.lead(), Redactor.MASK);
     }

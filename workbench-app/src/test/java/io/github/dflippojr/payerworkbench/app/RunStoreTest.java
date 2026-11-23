@@ -4,6 +4,7 @@ import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.payerworkbench.core.Finding;
 import io.github.dflippojr.payerworkbench.core.HttpExchange;
 import io.github.dflippojr.payerworkbench.core.OnboardingRun;
+import io.github.dflippojr.payerworkbench.core.Redactor;
 import io.github.dflippojr.payerworkbench.core.Severity;
 import io.github.dflippojr.payerworkbench.core.StepResult;
 import org.junit.jupiter.api.Test;
@@ -140,7 +141,9 @@ class RunStoreTest {
     void keptPrefixCutThroughAMaskIsMaskedWhole() {
         String head = "{\"padding\":\"" + "a".repeat(ExchangeView.BODY_LIMIT_CHARS - 35) + "\",\"access_token\":\"";
         String kept = ExchangeView.kept(head + "[REDACTED]\"}" + "b".repeat(100));
-        assertTrue(kept.startsWith(head + "[REDACTED]\"\n[kept the first " + ExchangeView.BODY_LIMIT_CHARS + " of "), kept.substring(head.length()));
+        // #406 (gate change, toward masking): the kept prefix is cut JSON with the secret's name after its first brace, so
+        // the prefix is masked whole before the note (on main the mask the cut went through was made whole again).
+        assertTrue(kept.startsWith(Redactor.MASK + "\n[kept the first " + ExchangeView.BODY_LIMIT_CHARS + " of "), kept);
         assertEquals("short", ExchangeView.kept("short"));
     }
 
