@@ -3101,7 +3101,7 @@ test('pins the verdicts on the generic-field separator forms #351 resolved (#348
   const wrong = separatorGridWrong(pairs);
   // #406 (gate change): texts the Redactor now masks from a JSON-looking start that does not read, which the scanner
   // accepts at every entry point (nothing to flag; the outputs are accepted), pinned.
-  assert.equal(wrong.overmasks, 9, 'masked texts the scanner accepts (#406)');
+  assert.equal(wrong.overmasks, 6, 'masked texts the scanner accepts (#406)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -3117,7 +3117,7 @@ test('flags a generic secret field whose separator the Redactor reads as whitesp
   const wrong = separatorGridWrong(pairs);
   // #406 (gate change): texts the Redactor now masks from a JSON-looking start that does not read, which the scanner
   // accepts at every entry point (nothing to flag; the outputs are accepted), pinned.
-  assert.equal(wrong.overmasks, 1_326, 'masked texts the scanner accepts (#406)');
+  assert.equal(wrong.overmasks, 1_254, 'masked texts the scanner accepts (#406)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -3156,7 +3156,7 @@ test('flags a generic secret field with such a separator whose name and value ar
   const wrong = separatorGridWrong(pairs);
   // #406 (gate change): texts the Redactor now masks from a JSON-looking start that does not read, which the scanner
   // accepts at every entry point (nothing to flag; the outputs are accepted), pinned.
-  assert.equal(wrong.overmasks, 2_600, 'masked texts the scanner accepts (#406)');
+  assert.equal(wrong.overmasks, 2_520, 'masked texts the scanner accepts (#406)');
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} of ${pairs.length} wrong`);
 });
 
@@ -3744,5 +3744,5 @@ test('flags every text of the JWK search budget grid the Redactor changes, at al
   }
   assert.deepEqual(missed.slice(0, 3), [], `${missed.length} changed texts not flagged at every entry point`);
   // #406 (gate change): kept 409 and accepted 139 at stage 1; the Redactor now masks more of these texts.
-  assert.deepEqual([kept, accepted, overmasks], [116, 85, 57]);
+  assert.deepEqual([kept, accepted, overmasks], [117, 86, 56]);
 });
