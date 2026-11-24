@@ -21,15 +21,29 @@ final class FuzzCorpus {
         "scope", "error_description", "secretary", "d", "k", "data"};
 
     private final Random rnd;
+    private final boolean claims;
     private int counter;
 
-    private FuzzCorpus(long seed) {
+    private FuzzCorpus(long seed, boolean claims) {
         rnd = new Random(seed);
+        this.claims = claims;
     }
 
     /** {@code count} texts from seed {@code seed}, cycling through the families. */
     static List<String> texts(long seed, int count) {
-        FuzzCorpus corpus = new FuzzCorpus(seed);
+        return texts(new FuzzCorpus(seed, false), count);
+    }
+
+    /**
+     * {@code count} texts from seed {@code seed} whose JWTs carry claims (#406 decision, stage 2): a secret-named claim,
+     * a JWK private member, a scheme credential or a key block in the payload or the header, each holding a synthetic
+     * secret, or a harmless claim. Every other draw is as in {@link #texts}, so the same families hold these tokens.
+     */
+    static List<String> textsWithClaims(long seed, int count) {
+        return texts(new FuzzCorpus(seed, true), count);
+    }
+
+    private static List<String> texts(FuzzCorpus corpus, int count) {
         List<String> texts = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             texts.add(corpus.generate(FAMILIES[i % FAMILIES.length]));
@@ -96,10 +110,52 @@ final class FuzzCorpus {
         return switch (rnd.nextInt(5)) {
             case 0 -> "Bearer " + secret();
             case 1 -> "Authorization: Basic " + secret() + "==";
-            case 2 -> "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0." + secret();
+            case 2 -> claims ? claimJwt() : "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0." + secret();
             case 3 -> "client_secret=" + secret() + "&a=b";
             default -> "-----BEGIN PRIVATE KEY-----\n" + secret() + "\n-----END PRIVATE KEY-----";
         };
+    }
+
+    /** A JWT whose payload or header holds a claim drawn at random, its signature a synthetic secret. */
+    private String claimJwt() {
+        String claim = switch (rnd.nextInt(9)) {
+            case 0 -> "\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":\"" + secret() + "\"";
+            case 1 -> "\"ctx\":{\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":\"" + secret() + "\"}";
+            case 2 -> "\"jwk\":{\"kty\":\"RSA\",\"d\":\"" + secret() + "\"}";
+            case 3 -> "\"note\":\"Bearer " + secret() + "\"";
+            case 4 -> "\"pem\":\"-----BEGIN PRIVATE KEY-----\\n" + secret() + "\\n-----END PRIVATE KEY-----\"";
+            case 5 -> "\"body\":" + quote("{\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":\"" + secret() + "\"}");
+            // A secret name whose value holds no letter or digit of its own (#406 redesign): punctuation, masking
+            // markers, empty or whitespace, plain or nested. A synthetic secret rides in a harmless claim beside it, so a
+            // token kept whole shows it.
+            case 7 -> "\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":" + domainValue() + ",\"tag\":\"" + secret() + "\"";
+            case 8 -> "\"ctx\":{\"" + SECRET_NAMES[rnd.nextInt(SECRET_NAMES.length)] + "\":" + domainValue() + "},\"tag\":\""
+                    + secret() + "\"";
+            default -> "\"sub\":\"user-" + rnd.nextInt(1000) + "\"";
+        };
+        boolean inHeader = rnd.nextInt(4) == 0;
+        String header = inHeader ? "{\"alg\":\"none\"," + claim + "}" : "{\"alg\":\"none\"}";
+        String payload = inHeader ? "{\"sub\":\"x\"}" : "{\"iss\":\"p\"," + claim + "}";
+        // Sometimes the signature is empty, as in a token cut after its second dot.
+        return base64Url(header) + "." + base64Url(payload) + "." + (rnd.nextInt(5) == 0 ? "" : secret());
+    }
+
+    /** A JSON value with no credential character in it: punctuation, masking markers, empty or whitespace. */
+    private String domainValue() {
+        String m = Redactor.MASK;
+        String[] values = {",", ":", "\\\"", "{}", "[]", "\\\\", " , ", m + m, m + " " + m, m + ",", m + "\\\"", " " + m,
+            "Bearer " + m + m, "", " ", "\\t", "\\n"};
+        String v = values[rnd.nextInt(values.length)];
+        return switch (rnd.nextInt(4)) {
+            case 0 -> "[\"" + v + "\"]";
+            case 1 -> "{\"v\":\"" + v + "\"}";
+            default -> "\"" + v + "\"";
+        };
+    }
+
+    private static String base64Url(String json) {
+        return java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private String escapeSome(String name) {

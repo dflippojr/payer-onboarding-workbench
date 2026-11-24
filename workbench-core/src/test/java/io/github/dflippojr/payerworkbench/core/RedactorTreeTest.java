@@ -147,6 +147,70 @@ class RedactorTreeTest {
      * Checks {@code tree}, and the same tree as Jackson reads its JSON text into plain data, against its JSON text,
      * adding what differs to {@code wrong}; the number of trees checked.
      */
+    @Test
+    void redactsATreeWhoseNamesOrStringsHoldQuotesAndSeparatorsAsItsJsonText() {
+        // Automated review r2 on #412: the settled check read a caller tree written without the colons and commas its
+        // JSON text has, so a name holding a quote before a secret name kept its value where the text masks it. Names
+        // and strings that put a quote, a colon or a comma before a secret name, in an object, a list and nested.
+        List<String> wrong = new ArrayList<>();
+        int checked = 0;
+        for (String before : List.of("prefix\"", "\"", "a\":\"", "a\",\"", "x\" ", "{\"", "a\\\"")) {
+            for (String secretName : List.of("password", "client_secret", "Authorization", "d")) {
+                for (Object value : List.of(SECRET, ",", "", 7, List.of(SECRET))) {
+                    Map<String, Object> named = new LinkedHashMap<>();
+                    named.put("kty", "oct");
+                    named.put(before + secretName, value);
+                    Map<String, Object> second = new LinkedHashMap<>();
+                    second.put("a", 1);
+                    second.put(before + secretName, value);
+                    List<Object> strings = new ArrayList<>();
+                    strings.add(before + secretName + "\":\"" + SECRET);
+                    strings.add(value);
+                    for (Object tree : List.of(named, second, Map.of("outer", second), List.of(second), strings,
+                            Map.of("s", before + secretName + "\":\"" + SECRET))) {
+                        checked += check(tree, wrong);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), wrong.subList(0, Math.min(5, wrong.size())), () -> wrong.size() + " of the trees differ");
+        assertTrue(checked > 1_500, "checked " + checked);
+    }
+
+    @Test
+    void keepsARecordedExchangeWhoseHeaderListsAreTheWrittenSchemeFormsAndMasksAnyOtherList() {
+        // #406 redesign: a header map's list under an Authorization-style name, each item a known scheme then the mask,
+        // is the form the tree's rule writes; re-read beside a body string with escapes (where the settled check reads a
+        // decoding as JSON), it is no sensitive value on either path. Any other list under a secret name is.
+        String m = Redactor.MASK;
+        List<String> wrong = new ArrayList<>();
+        for (Object list : List.of(List.of("Basic " + m), List.of("Bearer " + m, "DPoP " + m), List.of("Basic " + m, ","),
+                List.of(m), List.of("Basic " + m + m), List.of("Nonscheme " + m), List.of())) {
+            Map<String, Object> headers = new LinkedHashMap<>();
+            headers.put("Authorization", list);
+            headers.put("Content-Type", List.of("application/json"));
+            Map<String, Object> exchange = new LinkedHashMap<>();
+            exchange.put("requestHeaders", headers);
+            exchange.put("responseBody", "{\"token_type\":\"Bearer\",\"expires_in\":300}");
+            check(Map.of("exchanges", List.of(exchange)), wrong);
+            Object out = Redactor.redactTree(Map.of("exchanges", List.of(exchange)));
+            // The written forms come back as they are; any other list is the mask. An empty list is no written form
+            // either: re-read in a decoding it counts as met, so the whole tree is the mask, as its text is.
+            boolean written = list.equals(List.of("Basic " + m)) || list.equals(List.of("Bearer " + m, "DPoP " + m));
+            if (((List<?>) list).isEmpty()) {
+                assertEquals(Redactor.MASK, out);
+                continue;
+            }
+            assertTrue(out instanceof Map<?, ?>, () -> list + " => " + out);
+            Object kept = ((Map<?, ?>) ((Map<?, ?>) ((List<?>) ((Map<?, ?>) out).get("exchanges")).get(0)).get("requestHeaders"))
+                    .get("Authorization");
+            Object expected = written ? list
+                    : list.equals(List.of("Basic " + m + m)) ? List.of("Basic " + m) : m;
+            assertEquals(expected, kept, () -> list + " => " + out);
+        }
+        assertEquals(List.of(), wrong);
+    }
+
     private static int check(Object tree, List<String> wrong) {
         String text = JSON.writeValueAsString(tree);
         same(text, Redactor.redact(text), Redactor.redactTree(tree), "plain", wrong);
