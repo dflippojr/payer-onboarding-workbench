@@ -9,7 +9,9 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { findJsonLeaks, findTextLeaks } from './invariants.mjs';
+import * as invariants from './invariants.mjs';
+
+const { findJsonLeaks, findTextLeaks } = invariants;
 import { build, generateCases, PIECE, placed } from './secret-cases.mjs';
 
 const MASK = '[REDACTED]';
@@ -582,6 +584,31 @@ test('judges each JSON value embedded in text, and the text around it', () => {
   assertAccepted(`a {"ok":1} b [{"body":"{\\"password\\":\\"${MASK}\\"}"}] c`);
 });
 
+test('automated review r1: a bundle file that repeats a member name is flagged, whatever JSON.parse keeps of it', () => {
+  const file = `{"steps":[{"details":{"password":"s3cr3t","password":"${MASK}"}}]}`;
+  assert.deepEqual(findJsonLeaks(JSON.parse(file)), [], 'parsed, the first member is gone');
+  assert.ok(invariants.findFileLeaks(file).length > 0);
+  assert.ok(invariants.findFileLeaks(`{"a":1,"a":2}`).length > 0);
+  assert.deepEqual(invariants.findFileLeaks(`{"requestHeaders":{"Cookie":["${MASK}"]},"runs":[{"a":1},{"a":2}]}`), []);
+  assert.ok(invariants.findFileLeaks('{"responseBody":"client_secret=s3cr3t"}').length > 0);
+  assert.ok(invariants.findFileLeaks('{"cut":').length > 0, 'a file that is not JSON');
+});
+
+test('automated review r1: a JWK that a decoding shows with a repeated private member is flagged', () => {
+  const B = '\\';
+  assertFlagged(`{"kty":"RSA","d${B}${B}":"s3cr3t","d":"${MASK}"}`);
+  assertFlagged(JSON.stringify({ body: `{"kty":"RSA","d${B}${B}":"s3cr3t","d":"${MASK}"}` }));
+  assertFlagged(`{"keys":[{"kty":"oct","k${B}${B}":"s3cr3t","k":null}]}`);
+  assertAccepted(`{"kty":"RSA","d${B}${B}":"${MASK}","d":"${MASK}"}`);
+});
+
+test('automated review r1: a private member a decoding shows must be the mask to where its value ends', () => {
+  const B = '\\';
+  assertFlagged(`{"kty":"RSA","d${B}${B}":"${MASK}${B}"FAKE-rest-0001"}`);
+  assertFlagged(`{"kty":"RSA","d${B}${B}":"${MASK}${B}"FAKE-rest-0001","n":"N"}`);
+  assertFlagged(`{"kty":"RSA","d${B}${B}":"null FAKE-rest-0001"}`);
+});
+
 test('shares no code with the Redactor: the check imports nothing', () => {
   const source = readFileSync(here('./invariants.mjs'), 'utf8');
   assert.doesNotMatch(source, /^\s*import\b|\bimport\s*\(|\brequire\s*\(/m);
@@ -830,6 +857,8 @@ const HOSTILE = {
   'broken starts before masked keys': n => `{"password":"${MASK}" `.repeat(n / 25),
   'strings that spell kty': n => JSON.stringify(Array.from({ length: n / 30 }, (_, i) => ({ a: `kty${i}`, d: MASK }))),
   'deep arrays': n => `${'['.repeat(n / 2)}${']'.repeat(n / 2)}`,
+  'whitespace before a brace in a decoding with a kty': n => `x\\n"kty" ${' '.repeat(n)}{} ${'{ '.repeat(8)}`,
+  'whitespace runs after commas in a decoding with a kty': n => `x\\n"kty":1 ${`,${' '.repeat(200)}x`.repeat(n / 202)}`,
 };
 
 test('reads long hostile texts in work that grows with their length, not its square', () => {
