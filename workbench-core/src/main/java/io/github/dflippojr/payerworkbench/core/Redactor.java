@@ -327,6 +327,13 @@ public final class Redactor {
             "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=(?:[^&\\s\"\\\\]++|" + BACKSLASH.repeat(2) + "|"
                     + BACKSLASH + "(?![nrtbf\"]))*+");
 
+    /**
+     * Every pattern of the text rules that reads a member, key or header name, for the tests that pin how its work grows
+     * with the length of a name.
+     */
+    static final List<Pattern> NAME_PATTERNS = List.of(JSON_FIELD, EMBEDDED_JSON_FIELD, JSON_FIELD_STRUCTURE,
+            EMBEDDED_JSON_FIELD_STRUCTURE, FIELD_NAME, EMBEDDED_FIELD_NAME, HEADER_LINE, ESCAPED_HEADER_LINE, FORM_SECRET);
+
     private Redactor() {
     }
 

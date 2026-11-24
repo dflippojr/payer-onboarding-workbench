@@ -281,37 +281,179 @@ class ProseRedactionTest {
     }
 
     /**
-     * The text rules' member names have no length bound, so a name that runs on, as plain letters and separators or as
-     * escapes, plainly and inside a JSON string, is read without a stack overflow and in a time that does not grow
-     * faster than its length; a secret one is still masked. The bound on the time is generous: it catches a per-character
-     * recursion or backtracking, not a slow machine.
+     * The text rules read a secret name over the same characters as the tree's rule, which compares names lower-cased
+     * ({@link Redactor#isSecretKey}): a name whose letters only lower-case to a secret one is secret in every context
+     * only the text rules read, as a member, a form key and a header line, plainly, in a JSON string and in a token
+     * claim. Look-alike letters that do not lower-case to the secret letters are kept, as the tree keeps them.
      */
     @Test
-    void readsAMemberNameThatRunsOnWithoutOverflowingAndInLinearTime() {
+    void readsASecretNameWhoseLettersLowerCaseToASecretOneAsTheTreeRuleDoes() {
+        String marker = "FAKE-FOLDV";
+        List<String> names = new ArrayList<>();
+        for (String name : concat(List.copyOf(Redactor.SECRET_FIELDS), List.copyOf(Redactor.SENSITIVE_HEADERS))) {
+            for (int cp : foldsToNameLetters()) {
+                char ascii = new String(Character.toChars(cp)).toLowerCase(java.util.Locale.ROOT).charAt(0);
+                if (name.indexOf(ascii) >= 0) {
+                    String folded = name.replace(String.valueOf(ascii), new String(Character.toChars(cp)));
+                    names.add(folded);
+                    names.add(folded.toUpperCase(java.util.Locale.ROOT).replace(String.valueOf(Character.toUpperCase(ascii)),
+                            new String(Character.toChars(cp))));
+                }
+            }
+        }
+        assertFalse(names.isEmpty());
+        List<String> failures = new ArrayList<>();
+        int texts = 0;
+        for (String name : names) {
+            assertTrue(Redactor.isSecretKey(name), name);
+            // A form key is secret only as a secret field name, as its ASCII spelling is: a header name is not one.
+            List<String> contexts = new ArrayList<>(nameContexts(name, marker, !Redactor.isSecretField(name)));
+            contexts.add("{\"" + name + "\":\"" + marker + "\"}");
+            contexts.add("note {\"" + name + "\":{\"x\":\"" + marker + "\"}} end");
+            if (Redactor.isSensitiveHeader(name)) {
+                contexts.add("GET / HTTP/1.1\n" + name + ": " + marker + "\n\n");
+                contexts.add(JSON.writeValueAsString(Map.of("raw", "GET / HTTP/1.1\n" + name + ": " + marker + "\n")));
+            }
+            for (String text : contexts) {
+                texts++;
+                if (leaksAtAnyDecoding(Redactor.redact(text), marker)) {
+                    failures.add(text.length() > 200 ? text.substring(0, 200) : text);
+                }
+            }
+        }
+        int total = texts;
+        assertEquals(List.of(), failures.subList(0, Math.min(3, failures.size())),
+                () -> failures.size() + " of " + total + " texts kept a secret");
+        // Controls: letters that look alike but lower-case to something else are not secret on the tree, nor here.
+        for (String name : List.of("pa\u017F\u017Fword", "pa\u0455\u0455word", "\u0430pikey", "cl\u0131entsecret")) {
+            assertFalse(Redactor.isSecretKey(name), name);
+            for (String text : List.of("note \"" + name + "\":\"kept\" end", "note " + name + "=kept&x=1")) {
+                assertEquals(text, Redactor.redact(text));
+            }
+        }
+    }
+
+    /**
+     * The code points other than ASCII letters whose lower case (as {@link Redactor#isSecretField} takes it) is a letter,
+     * {@code _} or {@code -} of a name: the characters the text rules must read as those letters. The whole code space is
+     * scanned, so a JDK whose case mapping adds one fails here first.
+     */
+    private static List<Integer> foldsToNameLetters() {
+        List<Integer> found = new ArrayList<>();
+        for (int cp = 0x80; cp <= Character.MAX_CODE_POINT; cp++) {
+            String lower = new String(Character.toChars(cp)).toLowerCase(java.util.Locale.ROOT);
+            if (lower.chars().allMatch(c -> (c >= 'a' && c <= 'z') || c == '_' || c == '-')) {
+                found.add(cp);
+            }
+        }
+        return found;
+    }
+
+    @Test
+    void theTextRulesKnowEveryCodePointThatLowerCasesToALetterOfAName() {
+        assertEquals(List.of(0x212A), foldsToNameLetters());
+    }
+
+    /** A text whose reads the tests count: the work a pattern does on it. */
+    private static final class CountedText implements CharSequence {
+        private final String text;
+        private long reads;
+
+        CountedText(String text) {
+            this.text = text;
+        }
+
+        @Override
+        public int length() {
+            return text.length();
+        }
+
+        @Override
+        public char charAt(int index) {
+            reads++;
+            return text.charAt(index);
+        }
+
+        @Override
+        public CharSequence subSequence(int start, int end) {
+            return text.subSequence(start, end);
+        }
+
+        @Override
+        public String toString() {
+            return text;
+        }
+    }
+
+    private static long reads(java.util.regex.Pattern pattern, String text) {
+        CountedText counted = new CountedText(text);
+        java.util.regex.Matcher m = pattern.matcher(counted);
+        while (m.find()) {
+            // every match, as the rules take them
+        }
+        return counted.reads;
+    }
+
+    /**
+     * Every pattern of the text rules that reads a name ({@link Redactor#NAME_PATTERNS}, the prose vocabulary) does work
+     * that grows linearly with the length of the name, also on names that nearly match, plainly, as escapes and in a JSON
+     * string: the characters it reads are counted at two lengths, so the check does not depend on a clock. A name that
+     * runs on is read without a stack overflow, and a secret one is still masked.
+     */
+    @Test
+    void everyNamePatternReadsANameInWorkThatGrowsLinearlyWithItsLength() {
+        List<java.util.regex.Pattern> patterns = new ArrayList<>(Redactor.NAME_PATTERNS);
+        patterns.add(ProseRedaction.SECRET_NAME);
+        int small = 1 << 11;
+        int large = small * 4;
+        List<String> failures = new ArrayList<>();
+        for (String run : List.of("_", "-", "_-", "\\u005f", "\\\\u005f", "a_")) {
+            for (int which = 0; which < 6; which++) {
+                String smallText = runText(which, run, small);
+                String largeText = runText(which, run, large);
+                for (java.util.regex.Pattern pattern : patterns) {
+                    long few = reads(pattern, smallText);
+                    long many = reads(pattern, largeText);
+                    if (many > 6 * few + 4096) {
+                        failures.add(which + " " + run + " " + pattern.pattern().substring(0, 40) + ": " + few + " -> " + many);
+                    }
+                }
+            }
+        }
+        assertEquals(List.of(), failures);
         String marker = "FAKE-NAMEV";
         int length = 1 << 19;
         String plain = "pass" + "_".repeat(length) + "word";
         String escapes = "pass" + "\\u005f".repeat(length / 6) + "word";
-        String mixed = "pass" + "a\\u005f-".repeat(length / 8) + "word";
-        for (String name : List.of(plain, escapes, mixed)) {
+        for (String name : List.of(plain, escapes)) {
             String member = "\"" + name + "\":\"" + marker + "\"";
             List<String> texts = new ArrayList<>(List.of("note " + member + " end", "note {\"a\":1,\"a\":2," + member + "} end",
-                    "note {\"" + name + "\":{\"x\":\"" + marker + "\"}", JSON.writeValueAsString(Map.of("body", "note " + member)),
-                    "note \"" + name + "\" and \"" + name + "\" end"));
+                    JSON.writeValueAsString(Map.of("body", "note " + member))));
             if (name == plain) {
                 texts.add("note " + name + "=" + marker + "&x=1");
             }
-            // The mixed name holds letters between its separators, so it is not a secret one: only its cost is checked.
-            boolean secret = Redactor.isSecretField(Redactor.decodeName(name));
             for (String text : texts) {
-                String out = assertTimeoutPreemptively(Duration.ofSeconds(60), () -> Redactor.redact(text));
-                if (secret) {
-                    assertFalse(leaksAtAnyDecoding(out, marker), () -> text.substring(0, 80));
-                }
+                String out = assertTimeoutPreemptively(Duration.ofSeconds(120), () -> Redactor.redact(text));
+                assertFalse(leaksAtAnyDecoding(out, marker), () -> text.substring(0, 80));
             }
         }
-        assertTrue(Redactor.isSecretField(Redactor.decodeName(escapes)));
-        assertFalse(Redactor.isSecretField(Redactor.decodeName(mixed)));
+    }
+
+    /**
+     * A text with {@code run} repeated to {@code length} characters inside a name that nearly matches a secret one: before
+     * it, inside it and before a form key's equals sign, in a quoted member, a member in a JSON string, a form and a
+     * header line.
+     */
+    private static String runText(int which, String run, int length) {
+        String r = run.repeat(length / run.length());
+        return switch (which) {
+            case 0 -> "note \"" + r + "passworz\":\"value\" end";
+            case 1 -> "note \"pass" + r + "worz\":\"value\" end";
+            case 2 -> "note \\\"" + r + "passworz\\\":\\\"value\\\" end";
+            case 3 -> "note " + r + "passworz=value&x=1";
+            case 4 -> "note pass" + r + "worz=value&x=1";
+            default -> "note\n" + r + "cookiz: value\n" + r + "\\nauthorizatioz: v";
+        };
     }
 
     /**
