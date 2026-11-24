@@ -529,7 +529,8 @@ public final class Redactor {
          * Whether {@code from} and {@code to} both lie inside one JSON value in {@link #text} that the parser reads
          * ({@link JsonRedaction#readsTo}): each object or array from the left that reads, the next one tried after its
          * end, as {@link ProseRedaction#redact} tries them, with attempts that fail reading at most {@code 2n + 4096}
-         * characters in all. Past {@link JsonRedaction#MAX_CHARS} no value reads.
+         * characters in all. Past {@link JsonRedaction#MAX_CHARS} no value reads. The values are found once and searched
+         * by binary search, so each check costs comparisons logarithmic in their number.
          */
         boolean inOneValue(int from, int to) {
             if (values == null) {
@@ -549,13 +550,22 @@ public final class Redactor {
                     }
                 }
             }
-            for (int[] value : values) {
+            // The values are in order and do not overlap, each found after the end of the one before, so only the last
+            // one that starts before from can hold it: a binary search finds that one.
+            int low = 0;
+            int high = values.size() - 1;
+            int last = -1;
+            while (low <= high) {
+                int middle = (low + high) >>> 1;
                 comparisons++;
-                if (value[0] < from && to < value[1]) {
-                    return true;
+                if (values.get(middle)[0] < from) {
+                    last = middle;
+                    low = middle + 1;
+                } else {
+                    high = middle - 1;
                 }
             }
-            return false;
+            return last >= 0 && to < values.get(last)[1];
         }
 
         /**
