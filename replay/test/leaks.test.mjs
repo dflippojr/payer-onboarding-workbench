@@ -805,6 +805,54 @@ for (const [name, [rows, masked]] of Object.entries(GRIDS)) {
   });
 }
 
+/** Whether each entry point flags `text`: as a recorded string, as a bundle file's text and, if it is JSON, as that file parsed. */
+function verdicts(text) {
+  const all = [flagged(text), invariants.findFileLeaks(text).length > 0];
+  try {
+    all.push(findJsonLeaks(JSON.parse(text)).length > 0);
+  } catch {
+    // Not JSON: there is no parsed form to judge.
+  }
+  return all;
+}
+
+test('one choke point: every entry point gives the same verdict on every grid row, corpus entry and generated secret', () => {
+  // Liaison decision on #425 (review r1 and r2, one family): a bundle file goes through the same path as a recorded
+  // string, and the only file-specific difference is a credential header's list of masked values.
+  const differ = [];
+  let judged = 0;
+  const judge = text => {
+    judged++;
+    const all = verdicts(text);
+    if (all.some(verdict => verdict !== all[0])) differ.push(`${all}: ${text.slice(0, 120)}`);
+    return all[0];
+  };
+  for (const name of Object.keys(GRIDS)) {
+    for (const [input, out] of grid(name)) {
+      const masked = out !== canonical(input);
+      if (judge(input) !== true && masked) differ.push(`masked row accepted: ${input.slice(0, 120)}`);
+      if (judge(out) !== false) differ.push(`output flagged: ${out.slice(0, 120)}`);
+    }
+  }
+  for (const e of corpus.text) if (!judge(e.input)) differ.push(`corpus entry accepted: ${e.id}`);
+  for (const e of corpus.harmless) if (judge(e.input)) differ.push(`harmless entry flagged: ${e.id}`);
+  for (const c of CASES) {
+    const { text } = build(c, placed(c));
+    if (text !== null && !judge(text)) differ.push(`generated secret accepted: ${describeCase(c)}`);
+  }
+  assert.ok(judged > 2 * 199_786, `${judged} texts judged`);
+  assert.deepEqual(differ.slice(0, 5), [], `${differ.length} texts on which the entry points differ or are wrong`);
+});
+
+test('one choke point: the header list of masked values is the only thing a bundle file is allowed that a text is not', () => {
+  const headers = JSON.stringify({ requestHeaders: { Cookie: [MASK], Authorization: [`Bearer ${MASK}`] } });
+  assert.deepEqual(invariants.findFileLeaks(headers), []);
+  assert.deepEqual(findJsonLeaks(JSON.parse(headers)), []);
+  assert.ok(flagged(headers));
+  // Inside a string of the file, the list is a recorded text's again.
+  assert.ok(invariants.findFileLeaks(JSON.stringify({ responseBody: headers })).length > 0);
+});
+
 test('accepts the Redactor\'s output for the corpus and the seeded fuzz corpus, also as a bundle file holds it', () => {
   // The agreement grid: the Redactor's output for every text and harmless corpus entry (135), 5,000 seeded fuzz texts
   // and 2,000 with credential claims in their JWTs (RedactorTest.recordsItsOutputsForTheCorpusAndTheFuzzCorpus...).
