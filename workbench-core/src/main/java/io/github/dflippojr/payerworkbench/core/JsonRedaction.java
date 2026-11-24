@@ -260,6 +260,32 @@ final class JsonRedaction {
         }
     }
 
+    /**
+     * Where the one JSON value that starts at {@code from} in {@code text}, an object or an array, ends, read by the
+     * parser alone, with no check on what it decodes: the index after its closing bracket, or {@code ~stop} as
+     * {@link #valueEnd} gives it.
+     */
+    static int readsTo(char[] text, int from) {
+        JsonParser parser = FACTORY.createParser(ObjectReadContext.empty(), text, from, text.length - from);
+        try (parser) {
+            int depth = 0;
+            for (JsonToken token = parser.nextToken(); token != null; token = parser.nextToken()) {
+                if (token.isStructStart()) {
+                    depth++;
+                } else if (token.isStructEnd() && --depth == 0) {
+                    return from + Math.toIntExact(parser.currentLocation().getCharOffset());
+                } else if (depth == 0) {
+                    break;
+                }
+            }
+            return ~text.length;
+        } catch (StreamConstraintsException tooDeep) {
+            return ~stop(parser, from, text.length);
+        } catch (StreamReadException notJson) {
+            return ~stop(parser, from, text.length);
+        }
+    }
+
     /** How far {@code parser}, reading from {@code from}, got: at least one character past it, at most {@code length}. */
     private static int stop(JsonParser parser, int from, int length) {
         long read = parser.currentLocation().getCharOffset();
@@ -315,6 +341,15 @@ final class JsonRedaction {
      * one of {@code " \ / b f n r t}, or a {@code u} and four hex digits. Any other backslash is kept as it is.
      */
     static String unescaped(String text) {
+        return unescaped(text, null);
+    }
+
+    /**
+     * {@link #unescaped(String)}, filling {@code sources}, unless it is {@code null}, with where in {@code text} each
+     * character of the result came from: its own index for a character copied as it was, the index of the backslash for
+     * one an escape decoded. {@code sources} is at least as long as {@code text}.
+     */
+    static String unescaped(String text, int[] sources) {
         int at = text.indexOf('\\');
         if (at < 0) {
             return null;
@@ -349,11 +384,29 @@ final class JsonRedaction {
             if (out == null) {
                 out = new StringBuilder(text.length());
             }
-            out.append(text, copied, at).append(decoded);
+            copy(text, copied, at, out, sources);
+            if (sources != null) {
+                sources[out.length()] = at;
+            }
+            out.append(decoded);
             at += length;
             copied = at;
         }
-        return out == null ? null : out.append(text, copied, text.length()).toString();
+        if (out == null) {
+            return null;
+        }
+        copy(text, copied, text.length(), out, sources);
+        return out.toString();
+    }
+
+    /** Appends {@code text} from {@code from} to {@code to} to {@code out}, each character's source its own index. */
+    private static void copy(String text, int from, int to, StringBuilder out, int[] sources) {
+        if (sources != null) {
+            for (int i = from, o = out.length(); i < to; i++, o++) {
+                sources[o] = i;
+            }
+        }
+        out.append(text, from, to);
     }
 
     /** The value of the four hex digits at {@code from}, or -1 if they are not four hex digits. */

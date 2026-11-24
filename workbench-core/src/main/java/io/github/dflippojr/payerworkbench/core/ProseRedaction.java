@@ -165,7 +165,7 @@ final class ProseRedaction {
     }
 
     /** Where the next {@code {} or {@code [} from {@code from} in {@code text} is, or -1. */
-    private static int nextStart(String text, int from) {
+    static int nextStart(String text, int from) {
         for (int i = from; i < text.length(); i++) {
             char c = text.charAt(i);
             if (c == '{' || c == '[') {
@@ -203,6 +203,7 @@ final class ProseRedaction {
      * after {@link JsonRedaction#MAX_KEY_LEVELS} levels counts as holding it.
      */
     static boolean hasVocabulary(String text) {
+        String above = null;
         String pass = text;
         for (int level = 0; ; level++) {
             // As spelled, a name whose value already is the mask is the Redactor's own output read again; in a decoding,
@@ -210,7 +211,7 @@ final class ProseRedaction {
             boolean decoded = level > 0;
             if (pass.contains("-----BEGIN") || keyName(SECRET_NAME, pass, decoded)
                     || (pass.contains("kty") && keyName(PRIVATE_NAME, pass, decoded))
-                    || meetsSecret(pass, true, decoded)) {
+                    || (decoded ? Redactor.meetsInDecoding(above, pass, true) : meetsSecret(pass, true))) {
                 return true;
             }
             String next = JsonRedaction.unescaped(pass);
@@ -220,6 +221,7 @@ final class ProseRedaction {
             if (level + 1 > JsonRedaction.MAX_KEY_LEVELS) {
                 return true;
             }
+            above = pass;
             pass = next;
         }
     }
@@ -238,7 +240,7 @@ final class ProseRedaction {
             if (next == null) {
                 return true;
             }
-            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || meetsSecret(next, jwkContext, true)) {
+            if (level + 1 > JsonRedaction.MAX_KEY_LEVELS || Redactor.meetsInDecoding(pass, next, jwkContext)) {
                 return false;
             }
             pass = next;
@@ -249,10 +251,9 @@ final class ProseRedaction {
      * Whether the text rules meet a sensitive value in {@code text} ({@link Redactor#meets}, #406 redesign): a rule
      * writes a mask over bytes that are not already exactly the form it writes. No comparison of the text before and
      * after decides it, so a secret value of punctuation, of masking markers or of whitespace counts as any other.
-     * {@code decoding}: {@code text} is a decoding of an output's escapes ({@link Redactor#meets(int, boolean, Runnable)}).
      */
-    private static boolean meetsSecret(String text, boolean jwkContext, boolean decoding) {
-        return Redactor.meets(text.length(), decoding, () -> Redactor.textRules(text, null, jwkContext));
+    private static boolean meetsSecret(String text, boolean jwkContext) {
+        return Redactor.meets(text.length(), () -> Redactor.textRules(text, null, jwkContext));
     }
 
     /**

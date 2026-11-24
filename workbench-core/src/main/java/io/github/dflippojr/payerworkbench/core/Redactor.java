@@ -506,13 +506,85 @@ public final class Redactor {
      * every JWK private member name in it a secret one ({@link ProseRedaction#settled}).
      */
     static String textRules(String given, List<DiscoveryRead> reads, boolean jwkContext) {
+        return textRules(given, reads, jwkContext, null);
+    }
+
+    /**
+     * The text one level of JSON escapes above a decoding the text rules read ({@link ProseRedaction#settled}): what
+     * proves where a header line only the decoding shows as a line ends ({@link #judgeDecodedHeaderLines}). It is passed
+     * down as a value, so no nested check (a token's claims, a nested settled check) can change what a check reads.
+     */
+    static final class Above {
+        private final String text;
+        private int[] sources;
+        private List<int[]> values;
+
+        Above(String text) {
+            this.text = text;
+        }
+
+        /**
+         * Whether {@code from} and {@code to} both lie inside one JSON value in {@link #text} that the parser reads
+         * ({@link JsonRedaction#readsTo}): each object or array from the left that reads, the next one tried after its
+         * end, as {@link ProseRedaction#redact} tries them, with attempts that fail reading at most {@code 2n + 4096}
+         * characters in all. Past {@link JsonRedaction#MAX_CHARS} no value reads.
+         */
+        private boolean inOneValue(int from, int to) {
+            if (values == null) {
+                values = new ArrayList<>();
+                if (text.length() <= JsonRedaction.MAX_CHARS) {
+                    char[] chars = text.toCharArray();
+                    long budget = 2L * text.length() + 4096;
+                    for (int at = ProseRedaction.nextStart(text, 0); at >= 0 && budget > 0; ) {
+                        int end = JsonRedaction.readsTo(chars, at);
+                        if (end >= 0) {
+                            values.add(new int[] {at, end});
+                            at = ProseRedaction.nextStart(text, end);
+                        } else {
+                            budget -= Math.max(1, ~end - at);
+                            at = ProseRedaction.nextStart(text, at + 1);
+                        }
+                    }
+                }
+            }
+            for (int[] value : values) {
+                if (value[0] < from && to < value[1]) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Where in {@link #text} each character of its decoding came from ({@link JsonRedaction#unescaped(String, int[])}),
+         * made the first time a header line needs it.
+         */
+        private int[] sources() {
+            if (sources == null) {
+                sources = new int[text.length()];
+                JsonRedaction.unescaped(text, sources);
+            }
+            return sources;
+        }
+    }
+
+    /**
+     * Whether the text rules meet a sensitive value ({@link #meets}) in {@code decoding}, the decoding of one level of
+     * the JSON escapes in {@code above} ({@link JsonRedaction#unescaped(String)}).
+     */
+    static boolean meetsInDecoding(String above, String decoding, boolean jwkContext) {
+        Above level = new Above(above);
+        return meets(decoding.length(), () -> textRules(decoding, null, jwkContext, level));
+    }
+
+    private static String textRules(String given, List<DiscoveryRead> reads, boolean jwkContext, Above above) {
         if (given == null || given.isEmpty()) {
             return given;
         }
-        return withTokenChecks(given.length(), () -> textRulesIn(given, reads, jwkContext));
+        return withTokenChecks(given.length(), () -> textRulesIn(given, reads, jwkContext, above));
     }
 
-    private static String textRulesIn(String given, List<DiscoveryRead> reads, boolean jwkContext) {
+    private static String textRulesIn(String given, List<DiscoveryRead> reads, boolean jwkContext, Above above) {
         // Fail closed on the text as it came (#406 decisions, stage 2): a secret name whose value is not already a form
         // the rules write, at a strict value end, masks from its colon to the end before any rule rewrites that value.
         // Judged after a rewrite, an early-closing value the field rules had just masked would pass, and the bytes after
@@ -551,7 +623,14 @@ public final class Redactor {
             wrote(m.group().substring(m.end(1) - m.start() + 1), MASK);
             return Matcher.quoteReplacement(m.group(1) + "=" + MASK);
         });
-        out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
+        if (above == null) {
+            out = HEADER_LINE.matcher(out).replaceAll(Redactor::maskHeaderLine);
+        } else {
+            // In a decoding, a header line's value is judged on the decoding as given, where the level above proves
+            // where it ends; the rewrite that follows only shapes what the later rules read.
+            judgeDecodedHeaderLines(given, above);
+            out = HEADER_LINE.matcher(out).replaceAll(Redactor::rewriteHeaderLine);
+        }
         out = maskEscapedHeaderLines(out);
         return maskUnreadSecretNames(out, jwk);
     }
@@ -646,12 +725,6 @@ public final class Redactor {
          */
         private long met;
 
-        /**
-         * Whether the rules now read a decoding of an output ({@link ProseRedaction#settled}), where a quote may close
-         * the string that held a header line one level up ({@link #maskHeaderLine}). Never set inside a claim check.
-         */
-        private boolean decoding;
-
         private TokenChecks(int length) {
             budget = 2L * length + 4096;
         }
@@ -706,32 +779,12 @@ public final class Redactor {
      * outermost call, opening them, sized by {@code length}, if there are none.
      */
     static boolean meets(int length, Runnable rules) {
-        return meets(length, false, rules);
-    }
-
-    /**
-     * {@link #meets(int, Runnable)}; {@code decoding}: whether {@code rules} read a decoding of an output, where a
-     * quote may close the string a header line was in ({@link #maskHeaderLine}).
-     */
-    static boolean meets(int length, boolean decoding, Runnable rules) {
         return withTokenChecks(length, () -> {
             TokenChecks checks = TOKEN_CHECKS.get();
             long before = checks.met;
-            boolean was = checks.decoding;
-            checks.decoding = decoding;
-            try {
-                rules.run();
-            } finally {
-                checks.decoding = was;
-            }
+            rules.run();
             return checks.met > before;
         });
-    }
-
-    /** Whether the rules now read a decoding of an output ({@link #meets(int, boolean, Runnable)}). */
-    private static boolean decoding() {
-        TokenChecks checks = TOKEN_CHECKS.get();
-        return checks != null && checks.decoding;
     }
 
     /**
@@ -761,8 +814,7 @@ public final class Redactor {
         boolean secret;
         try {
             String decoded = new String(Base64.getUrlDecoder().decode(run), StandardCharsets.UTF_8);
-            // A claim is read as a text of its own, never as a decoding: every value is judged where the rules end it.
-            secret = meets(decoded.length(), false, () -> redact(decoded));
+            secret = meets(decoded.length(), () -> redact(decoded));
         } catch (IllegalArgumentException notBase64) {
             secret = true;
         }
@@ -880,17 +932,58 @@ public final class Redactor {
      */
     private static String maskHeaderLine(MatchResult m) {
         String value = m.group(3);
+        if (!keepsLine(m.group(2), value)) {
+            wrote(value, masked(m.group(2), value));
+        }
+        return rewriteHeaderLine(m);
+    }
+
+    /** {@link #maskHeaderLine}'s rewrite of the line, reporting nothing. */
+    private static String rewriteHeaderLine(MatchResult m) {
+        String value = m.group(3);
         if (keepsLine(m.group(2), value)) {
             return Matcher.quoteReplacement(m.group());
         }
-        // In a decoding of an output, a quote may be the one that closed the string the line was in, a level up: the value
-        // judged ends there, as a header line read in its string ends at that quote (endOfEscapedLine). Anything after it
-        // is read by the field rules, which run first. A claim check never reads so (TokenChecks.decoding).
-        int quote = decoding() ? value.indexOf('"') : -1;
-        String judged = quote < 0 ? value : value.substring(0, quote);
-        wrote(judged, masked(m.group(2), judged));
-        String written = masked(m.group(2), value);
-        return Matcher.quoteReplacement(m.group(1) + written);
+        return Matcher.quoteReplacement(m.group(1) + masked(m.group(2), value));
+    }
+
+    /**
+     * Reports ({@link #wrote}) each header line in {@code decoding}, a decoding of {@code above}'s escapes, whose value
+     * is not the form {@link #maskHeaderLine} writes. The whole value to the end of the line is judged (Codex security
+     * r1 on #412), unless a parser proves where it ends: the line is one {@link #ESCAPED_HEADER_LINE} reads in
+     * {@code above}, inside a JSON value there that the parser reads, and its value ends where {@link #endOfEscapedLine}
+     * ends it inside that value. Those bytes are what that level's rule judged; the bytes after are read by the rules
+     * at that level as any other text.
+     */
+    private static void judgeDecodedHeaderLines(String decoding, Above above) {
+        Matcher m = HEADER_LINE.matcher(decoding);
+        Matcher spelled = ESCAPED_HEADER_LINE.matcher(above.text).useTransparentBounds(true).useAnchoringBounds(false);
+        while (m.find()) {
+            String name = m.group(2);
+            String value = m.group(3);
+            if (keepsLine(name, value)) {
+                continue;
+            }
+            int end = m.end(3);
+            int start = above.sources()[m.start()];
+            if (start > 1 && spelled.region(start, above.text.length()).lookingAt()) {
+                int depth = Integer.lowestOneBit(backslashesBefore(above.text, start - 1));
+                int limit = endOfEscapedLine(above.text, spelled.end(), depth);
+                // Only a parser proves the line is in a string and where that string ends: in a JSON value that reads,
+                // an escaped line break is inside a string, which the first quote no backslash escapes closes.
+                if (!above.inOneValue(start, limit)) {
+                    limit = Integer.MAX_VALUE;
+                }
+                for (int i = m.start(3); i < end; i++) {
+                    if (above.sources()[i] >= limit) {
+                        end = i;
+                        break;
+                    }
+                }
+            }
+            String judged = decoding.substring(m.start(3), end);
+            wrote(judged, masked(name, judged));
+        }
     }
 
     private static boolean keepsLine(String name, String value) {
