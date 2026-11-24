@@ -609,6 +609,49 @@ test('automated review r1: a private member a decoding shows must be the mask to
   assertFlagged(`{"kty":"RSA","d${B}${B}":"null FAKE-rest-0001"}`);
 });
 
+test('one shared terminator: a masked value ends only at a terminator, whatever masks stand behind it, for every rule and entry point', () => {
+  // Owner decision 3 on #425 (review r1 and r3, one family): one predicate decides where a masked value ends for every
+  // rule. Masks behind the value's own must themselves run to the end of the text or to a terminator.
+  const B = '\\';
+  const REST = 'FAKE-rest-0001';
+  const member = [',', '}', ']', ' ', '\n'];
+  const RULES = [
+    { rule: 'quoted member', head: `x "password":"${MASK}"`, terminators: member },
+    { rule: 'member quoted with escaped quotes', head: `x ${B}"password${B}":${B}"${MASK}${B}"`, terminators: member },
+    { rule: 'null member', head: 'x "password":null', terminators: member, noMasksBehind: true },
+    { rule: 'scheme', head: `rejected Bearer ${MASK}`, terminators: [' ', '"', ',', ';', ')'] },
+    { rule: 'form value', head: `sent client_secret=${MASK}`, terminators: ['&x=1', ' ', '"'] },
+    { rule: 'header line', head: `Cookie: ${MASK}`, terminators: ['\nnext'] },
+    // A private member that only a decoding shows: what follows its value sits behind an escaped quote.
+    { rule: 'private member in a decoding', json: (masks, follow) => `{"kty":"RSA","d${B}${B}":"${MASK}${follow === '' && masks === '' ? '' : `${B}"${masks}${follow}`}"}`, terminators: [] },
+  ];
+  /** As a recorded string, as a bundle file's text, and inside a bundle file (parsed, or as a line of a report value). */
+  const entryPoints = text => {
+    let third;
+    try {
+      third = findJsonLeaks(JSON.parse(text));
+    } catch {
+      third = findJsonLeaks({ evidence: [`lead\n${text}\ntail`] });
+    }
+    return [findTextLeaks(text), invariants.findFileLeaks(text), third].map(leaks => leaks.length > 0);
+  };
+  const wrong = [];
+  let judged = 0;
+  for (const { rule, head, json, terminators, noMasksBehind } of RULES) {
+    for (const behind of noMasksBehind ? [0] : [0, 1, 2]) {
+      for (const [follow, expected] of [['', false], ...terminators.map(t => [t, false]), [REST, true], [`${REST} more`, true]]) {
+        const masks = MASK.repeat(behind);
+        const text = json ? json(masks, follow) : `${head}${masks}${follow}`;
+        judged++;
+        const verdicts = entryPoints(text);
+        if (verdicts.some(flag => flag !== expected)) wrong.push(`${rule}, ${behind} masks behind, then ${JSON.stringify(follow)}: ${verdicts}, expected ${expected}`);
+      }
+    }
+  }
+  assert.ok(judged >= 7 * 2 * 3, `${judged} forms judged`);
+  assert.deepEqual(wrong, []);
+});
+
 test('shares no code with the Redactor: the check imports nothing', () => {
   const source = readFileSync(here('./invariants.mjs'), 'utf8');
   assert.doesNotMatch(source, /^\s*import\b|\bimport\s*\(|\brequire\s*\(/m);
