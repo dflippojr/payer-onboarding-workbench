@@ -155,7 +155,7 @@ test('reads a bundle file as it reads each recorded string in it', () => {
     }
   }
   for (const e of corpus.harmless) {
-    assert.deepEqual(findJsonLeaks({ responseBody: e.input, notes: [e.input], [e.input]: null }), []);
+    assert.deepEqual(findJsonLeaks({ responseBody: e.input, notes: [e.input], nested: { evidence: e.input } }), []);
   }
   assert.deepEqual(findJsonLeaks({ count: 3, ok: true, none: null, list: [1, 'two', { three: 3 }] }), []);
 });
@@ -232,10 +232,17 @@ test('invariant 3: flags the rest of a credential behind a mask', () => {
   for (const tail of [':SECRETPART', '/TAIL', '.TAIL', '%2FTAIL', '=', 'TAIL', '0', '_x', '-x']) {
     assertFlagged(`Bearer ${MASK}${tail}`);
     assertFlagged(JSON.stringify({ note: `rejected Basic ${MASK}${tail}` }));
+    assertFlagged(`client_secret=${MASK}${tail}`);
+    assertFlagged(`Cookie: ${MASK}${tail}`);
+    assertFlagged(`{"password":"${MASK}${tail}"}`);
+    assertFlagged(`cut {"a":1,"password":"${MASK}"${tail}`);
   }
-  for (const text of [`client_secret=${MASK}TAIL`, `{"note":"sid=${MASK}abc"}`, `x ${MASK}9`, `Bearer\n${MASK}TAIL`]) assertFlagged(text);
+  assertFlagged(`Bearer\n${MASK}TAIL`);
   for (const text of [`Bearer ${MASK}`, `Bearer ${MASK}, Basic ${MASK}`, `(Bearer ${MASK})`, `"Bearer ${MASK}"`, `a ${MASK}.`,
-    `${MASK}${MASK}`, `${MASK} tail`, `client_secret=${MASK}&x=1`]) assertAccepted(text);
+    `${MASK} tail`, `client_secret=${MASK}&x=1`]) assertAccepted(text);
+  // The mask the Redactor writes to the end of a text it stops reading may stand right behind a value's own mask.
+  for (const text of [`then Bearer ${MASK}${MASK}`, `api_key=${MASK}${MASK}`, `Cookie: ${MASK}${MASK}`, `he said "password":"${MASK}"${MASK}`,
+    `${MASK}${MASK}`]) assertAccepted(text);
 });
 
 test('invariant 3: flags key armor of any label, whole or cut', () => {
@@ -477,6 +484,48 @@ test('invariant 4: a masked value in a string must end before the string does', 
   assertAccepted(`{"note":"x${B}"password${B}":${B}"${MASK}${B}" "}`);
   assertAccepted(`{"note":"a${B}"","password":"${MASK}"}`);
   assertAccepted(`x${B}"password${B}":${B}"${MASK}${B}"`);
+});
+
+test('invariant 3: reads a scheme\'s separator and credential as JSON escapes in place, as spelled', () => {
+  const B = '\\';
+  // Text that is not JSON keeps its escapes: a credential a serializer escaped is one whatever it decodes to.
+  for (const text of [`Basic${B}np${B}u0064lan`, `rejected Bearer FakeTok${B}/tail-0001`, `Bearer${B}tFAKE-credential-0005`,
+    `Bearer${B}u0020Fake${B}u002Bcredential`, `x${B}nBearer FAKE-credential-0006`, `[{"m":"Basic${B}np${B}u0064lan"}`]) {
+    assertFlagged(text);
+  }
+  // In JSON the same escapes are the string's own spelling, and the decoded string is prose.
+  assertAccepted(`{"m":"Basic${B}np${B}u0064lan"}`);
+  assertAccepted(`{"m":"Missing bearer${B}ntoken"}`);
+});
+
+test('invariant 3: a header line that ends a text that is one JSON string ends at its closing quote', () => {
+  const B = '\\';
+  // No object or array bounds such a string, so the Redactor reads the line through the quote and masks the text.
+  for (const text of [`"he said ${B}"u0022${B}r${B}nCookie: ${MASK}"`, `"Cookie: ${MASK}${B}nSet-Cookie: ${MASK}"`,
+    `{"body":"${B}"he said ${B}${B}${B}"${B}${B}nCookie: ${MASK}${B}""}`]) {
+    assertFlagged(text);
+  }
+  for (const text of [`"Cookie: ${MASK}"`, `"Authorization: Bearer ${MASK}"`, `{"debug":"echoed:${B}nCookie: ${MASK}"}`,
+    `{"debug":"echoed:${B}nCookie: ${MASK}${B}nend"}`, `"he said ${B}nCookie: ${MASK}${B}n"`,
+    JSON.stringify(JSON.stringify({ body: `"x" "\nCookie: ${MASK}` }))]) {
+    assertAccepted(text);
+  }
+});
+
+test('invariant 4: reads a JWK that only a decoding shows, also one that is not JSON there', () => {
+  const B = '\\';
+  // A member name that a decoding reads as more than one member: which part a private value belongs to is unknown.
+  assertFlagged(`{"kty":"RSA","x${B}":1,${B}"y":"plain"}`);
+  assertFlagged(`{"note":"kty","x${B}":1,${B}"y":"plain"}`);
+  assertAccepted(`{"alg":"RS256","x${B}":1,${B}"y":"plain"}`);
+  // A JWK two decodings down whose private member has a value, between the same braces as its kty member.
+  const broken = `{"body":"{${B}"dp${B}${B}u0022:${B}t{${B}"x${B}":${B}"FAKE-jwk-0001${B}+"} ,${B}"kty${B}":${B}"o${B}"oct${B}"}`;
+  assertFlagged(`${broken}"}`);
+  assertFlagged(`evidence: ${broken}"} and more`);
+  // Not a member there, or not between a JWK's braces.
+  assertAccepted(`{"kty":"RSA","${B}"d":"plain"}`);
+  assertAccepted(`{"body":"kty${B}":${B}"oct${B}",${B}"d${B}":${B}"plain${B}"}"}`);
+  assertAccepted(`{"body":"{${B}"jwk${B}":{${B}"kty${B}":${B}"RSA${B}"},${B}"data${B}":{${B}"d${B}":${B}"2026-11-04${B}"}}"}`);
 });
 
 test('invariant 4: flags JSON nested deeper than the Redactor reads, and escapes deeper than the check decodes', () => {

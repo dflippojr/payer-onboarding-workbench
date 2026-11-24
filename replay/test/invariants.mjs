@@ -6,16 +6,27 @@
 //      Authorization-style name a listed scheme and the mask, or a list of such strings.
 //   2. In an object with a kty member (a JWK), a private member's value is the mask or null.
 //   3. No decoded string holds a scheme credential, key armor, a JWT signature (or a JWT whose header or payload
-//      holds a secret), a form secret, a credential header line, a quoted secret name whose value is not such a form,
-//      or text right behind a mask.
+//      holds a secret), a form secret, a credential header line, or a quoted secret name whose value is not such a
+//      form.
 //   4. No string holds secret vocabulary next to a spelling the Redactor does not write: a JSON-looking start that
 //      does not parse, JSON whose member names repeat, or a quote or backslash that only a decoding of the string's
 //      escapes shows.
 //
 // A string that is not JSON is text: each JSON value embedded in it is judged by 1 and 2, and the text around those
 // values by 3 and 4, as it is spelled and again at each decoding of its JSON escapes (a plain left-to-right unescape,
-// repeated until nothing decodes). No rule reads an escape spelling: a quote or backslash spelled as an escape is a
-// plain one in the next decoding, where the same rules read it.
+// repeated until nothing decodes). A string the workbench recorded whole is also judged as it is written out, each
+// JSON value in JSON's own spelling, at each decoding (judgeWritten): there the quotes and backslashes of every level
+// are plain. So the rules read plain spellings: a quote or backslash spelled as an escape is a plain one in the next
+// decoding, where the same rules read it. Two rules also read an escape in place, as the Redactor's do: a member
+// name's quotes may be escaped once (JSON held in a JSON string) and its letters spelled \u, and a scheme's
+// separator and credential may be JSON escapes.
+//
+// The check is at least as strict as the Redactor on every text the tests hold (the corpus, the committed grids,
+// generated secrets), and stricter in one place on purpose: the rest of a credential behind a mask is flagged, though
+// the Redactor leaves such text as it finds it. It is not a second Redactor. Three kinds of text the Redactor masks
+// whole, fail closed, hold no credential bytes and are accepted here: a mask right behind a value that already is the
+// mask, cut JSON that repeats a member name and names no secret, and a masked header line that ends at its JSON
+// string's own closing quote two or more decodings down.
 //
 // Independent of workbench-core's Redactor on purpose (#360): nothing here is generated from it or shared with it,
 // and this file imports nothing. The name lists below are the contract, as
@@ -66,9 +77,13 @@ const MAX_LEAKS = 64;
 /** The whitespace characters the JVM's regex \s reads, for use in a character class. */
 const WS = ' \\t\\n\\x0B\\f\\r';
 
-/** Whether the character at `at` ends a value: the end of the text, a comma, a closing bracket or whitespace. */
+/**
+ * Whether a value ends at `at`: at the end of the text, a comma, a closing bracket or whitespace, or where a mask
+ * follows it (the mask the Redactor writes to the end of a text it stops reading).
+ */
 const endsValue = (text, at) => at >= text.length
-  || /[,}\] \t\n\x0B\f\r\x1C-\x1F\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]/.test(text[at]);
+  || /[,}\] \t\n\x0B\f\r\x1C-\x1F\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]/.test(text[at])
+  || text.startsWith(MASK, at);
 
 /** Whether `value`, a string under the secret name `name`, is a form the Redactor writes. */
 function isMaskedString(name, value) {
@@ -154,6 +169,13 @@ function nestingDepth(text) {
   return deepest;
 }
 
+/** Whether a member name, at any decoding of its escapes, holds a quote that a colon follows: one member ending, the next starting. */
+function spellsAMember(name) {
+  if (!name.includes('"') && !name.includes('\\')) return false;
+  const { passes, more } = decodings(name);
+  return more || passes.some(pass => /"[ \t\r\n]*:/.test(pass));
+}
+
 /** Whether a string holds the letters kty at any decoding of its escapes. */
 const spellsKty = text => decodings(text).passes.some(pass => pass.includes('kty'));
 
@@ -209,6 +231,9 @@ function judgeValue(value, scan, level, recorded, known = new Map()) {
       if (!isMaskedMember(name, member, recorded, scan.tokenDepth > 0)) scan.flag('secret-named member', `${name}: ${JSON.stringify(member)}`);
     } else if (jwk && JWK_PRIVATE_MEMBERS.has(name)) {
       if (member !== null && member !== MASK) scan.flag('JWK private member', `${name}: ${JSON.stringify(member)}`);
+    } else if (jwk && spellsAMember(name)) {
+      // Which part of such a name a private value belongs to is not established; the Redactor masks the text.
+      scan.flag('JWK member name that reads as more than one member', name);
     } else {
       judgeValue(member, scan, level, recorded, known);
     }
@@ -299,6 +324,9 @@ function judgeText(text, scan, level) {
       }
       if (repeatsAName(text)) scan.flag('JSON that repeats a member name', text);
       judgeValue(json.value, scan, level, false);
+      // A text that is one JSON string: no object or array bounds it, so the quote that closes it is part of a
+      // header line that ends it, and the quote that opens it keeps a line at its start from being one.
+      if (typeof json.value === 'string') judgeHeaderLines(`"${json.value}"`, scan);
       if (level === 0) judgeWritten(JSON.stringify(json.value), scan);
       return;
     }
@@ -317,7 +345,7 @@ function judgeText(text, scan, level) {
   const { passes, more } = decodings(prose);
   if (more) scan.flag('escapes deeper than the check decodes', text);
   passes.forEach((pass, depth) => judgeProse(pass, scan, depth > 0));
-  if (failed >= 0 && decodings(text.slice(failed)).passes.some((pass, depth) => holdsVocabulary(pass, depth > 0))) {
+  if (failed >= 0 && decodings(text.slice(failed)).passes.some((pass, depth) => holdsVocabulary(pass, depth > 0, scan))) {
     scan.flag('JSON-looking start that does not parse, before secret vocabulary', text.slice(failed));
   }
   if (level === 0 && values.length > 0) judgeWritten(written + text.slice(copied), scan);
@@ -341,8 +369,42 @@ function judgeWritten(written, scan) {
       whole = [{ value: JSON.parse(pass) }];
     } catch {
       whole = embeddedValues(pass).values;
+      judgeJwksByBraces(pass, scan);
     }
     for (const { value } of whole) judgeJwks(value, scan);
+  }
+}
+
+/** A JWK private member's quoted name and its colon, where a member starts: after a brace or a comma. */
+const PRIVATE_MEMBER = new RegExp(`(?<=[{,][${WS}]*)"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})"[${WS}]*:[${WS}]*`, 'g');
+
+/** A kty member's quoted name and its colon, where a member starts. */
+const KTY_MEMBER = new RegExp(`(?<=[{,][${WS}]*)"kty"[${WS}]*:`, 'g');
+
+/**
+ * For a decoding that is not JSON: flags a private member whose value is not the mask between the same braces as a
+ * kty member. The braces are matched by count alone, with no reading of strings, so an object a stray quote breaks
+ * is still one.
+ */
+function judgeJwksByBraces(pass, scan) {
+  // For each position, the innermost brace or bracket open there (-1 for none), found in one walk.
+  const enclosing = new Int32Array(pass.length).fill(-1);
+  const open = [];
+  for (let i = 0; i < pass.length; i++) {
+    const c = pass[i];
+    if (c === '}' || c === ']') open.pop();
+    enclosing[i] = open.length > 0 ? open[open.length - 1] : -1;
+    if (c === '{' || c === '[') open.push(i);
+  }
+  const jwks = new Set();
+  for (const m of pass.matchAll(KTY_MEMBER)) if (pass[enclosing[m.index]] === '{') jwks.add(enclosing[m.index]);
+  if (jwks.size === 0) return;
+  for (const m of pass.matchAll(PRIVATE_MEMBER)) {
+    const at = m.index + m[0].length;
+    if (jwks.has(enclosing[m.index]) && !pass.startsWith(`"${MASK}"`, at) && !pass.startsWith('null', at)) {
+      scan.flag('JWK private member in a decoding', pass.slice(m.index, m.index + 60));
+      return;
+    }
   }
 }
 
@@ -359,14 +421,22 @@ function judgeJwks(value, scan) {
   }
 }
 
+/** A JSON escape of a token68 character, also escaped again: \/, or the \u escape of a letter, a digit or one of -._~+/=. */
+const ESCAPED_TOKEN_CHAR = String.raw`\\+(?:/|u00(?:2[BDEF]|3[0-9D]|[46][1-9A-F]|[57][0-9A]|5F|7E))`;
+
+/** Where a word starts: a word boundary, or right after a JSON escape that leaves a letter in front of the word. */
+const WORD_START = String.raw`(?:\b|(?<=\\[nrtbf]))`;
+
 /**
  * A scheme (1), its separator, its token68 part (2) and the rest up to whitespace, a quote, a comma, a semicolon or
- * a backslash (3). After Bearer the space may be URL-encoded; after Token and DPoP only spaces and tabs separate.
+ * a backslash (3). After Bearer the space may be URL-encoded; after Token and DPoP only spaces and tabs separate. The
+ * separator and the credential's characters may be JSON escapes, read in place: a credential a serializer escaped is
+ * still one, whatever the same text reads as once decoded.
  */
-const SCHEME_CREDENTIAL = new RegExp(String.raw`(?:\b|(?<=%[0-9A-Fa-f]{2})(?=Bearer))(Bearer|Basic|Token|DPoP)`
-  + String.raw`(?:[ \t]+|(?<=Bearer|Basic)[${WS}]+|(?<=Bearer)(?:%20|\+))`
+const SCHEME_CREDENTIAL = new RegExp(String.raw`(?:${WORD_START}|(?<=%[0-9A-Fa-f]{2})(?=Bearer))(Bearer|Basic|Token|DPoP)`
+  + String.raw`(?:(?:[ \t]|\\+(?:t|u00(?:20|09)))+|(?<=Bearer|Basic)(?:[${WS}]|\\+(?:[nrtf]|u00(?:20|0[9A-D])))+|(?<=Bearer)(?:%20|\+))`
   + String.raw`(?!(?:realm|error|error_description|scope)[${WS}]*=[${WS}]*[^${WS},])`
-  + String.raw`([A-Za-z0-9\-._~+/%]+=*)([^${WS}"',;\\]*)`, 'gi');
+  + String.raw`((?:[A-Za-z0-9\-._~+/%]|${ESCAPED_TOKEN_CHAR})+=*)((?:[^${WS}"',;\\]|${ESCAPED_TOKEN_CHAR})*)`, 'gi');
 
 /** Whether base64 `token` decodes to a user:pass pair, which may be all letters. */
 function isUserPass(token) {
@@ -392,11 +462,11 @@ function isProse(scheme, token, rest) {
   return /^[A-Za-z]{1,15}[.)]*$/.test(word) && !(scheme.toLowerCase() === 'basic' && isUserPass(token.replace(/\.+$/, '')));
 }
 
-/** A scheme in front of the mask, and what follows the mask: anything but where a credential ends is the rest of one. */
-const MASKED_SCHEME = new RegExp(String.raw`\b(?:Bearer|Basic|Token|DPoP)[${WS}]+\[REDACTED\]([^${WS}"',;\\&)\]}<]?)`, 'gi');
-
-/** The mask with a letter, a digit, _ or - right behind it: the mask stands for a whole value, so that is the rest of one. */
-const MASK_THEN_MORE = /\[REDACTED\][A-Za-z0-9_-]/;
+/**
+ * A scheme in front of the mask, and what follows the mask: anything but where a credential ends, another mask or the
+ * period that ends a sentence is the rest of a credential.
+ */
+const MASKED_SCHEME = new RegExp(String.raw`\b(?:Bearer|Basic|Token|DPoP)[${WS}]+\[REDACTED\](?!\[REDACTED\]|\.(?:$|[${WS}"')\]}]))([^${WS}"',;\\&)\]}<]?)`, 'gi');
 
 /** A run of token characters and dots, the unit a JWT is read from. */
 const TOKEN_RUN = /(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]+/g;
@@ -426,30 +496,42 @@ const FORM_SECRET = new RegExp(String.raw`(?<![_-])(?=[_-]*?\b)(${FIELD_KEY})=((
 const HEADER_LINE = new RegExp(String.raw`(?:^|(?<=[\n\r\u0085\u2028\u2029]))[ \t]*(${HEADER_NAME}):[ \t]*((?:[^\r\n\\]|\\\\|\\(?![nr]))*)`, 'gi');
 
 /**
- * A quoted member name (1) and its colon. A secret name holds only letters, _ and -, each also as a \u escape; the
- * whitespace around the colon may be an escaped line break or tab.
+ * A quoted member name (2) and its colon; (1) is its quote, a plain one or, in JSON held in a JSON string, an escaped
+ * one. A secret name holds only letters, _ and -, each also as a \u escape; the whitespace around the colon may be an
+ * escaped line break or tab.
  */
 const MEMBER_SPACE = String.raw`(?:[${WS}]|\\[nrt])*`;
-const MEMBER_NAME = new RegExp(String.raw`"((?:[A-Za-z\u212A_-]|\\u[0-9A-Fa-f]{4})+)"${MEMBER_SPACE}:${MEMBER_SPACE}`, 'g');
+const MEMBER_NAME = new RegExp(String.raw`(\\?")((?:[A-Za-z\u212A_-]|\\{1,2}u[0-9A-Fa-f]{4})+)\1${MEMBER_SPACE}:${MEMBER_SPACE}`, 'g');
 
 /** What may lie between a name and its key separator, and between that and its value: quotes, whitespace and escapes. */
 const GAP = String.raw`(?:[\s\p{Z}\u0085"']|\\+(?:u[0-9A-Fa-f]{4}|[A-Za-z"]))*`;
 
-/** A secret name used as a key, loosely: the name, a gap, a colon or an equals sign, a gap. */
-const KEY_NAME = new RegExp(`(?<![_-])(?:${FIELD_KEY}|${HEADER_NAME.replaceAll('-', '[_-]?')})${GAP}[:=]${GAP}`, 'giu');
+/**
+ * A secret name, loosely: a field name with any number of _ or - around and between its letters, from the first of
+ * them, or a header name.
+ */
+const SECRET_NAME = new RegExp(`(?<![_-])${FIELD_KEY}|${HEADER_NAME.replaceAll('-', '[_-]?')}`, 'gi');
 
-/** A JWK private member's quoted name used as a key, loosely. */
-const PRIVATE_KEY_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*"${GAP}[:=]${GAP}`, 'gu');
+/** A JWK private member's quoted name. */
+const PRIVATE_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*"`, 'g');
+
+/** A name's key separator, a colon or an equals sign, with a gap on both sides: the name is used as a key. */
+const TO_VALUE = new RegExp(`${GAP}[:=]${GAP}`, 'yu');
 
 /** The mask, a scheme in front of it or not, where a value ends: the end, a delimiter or a quote, also an escaped one. */
 const MASKED_VALUE = /(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* )?\[REDACTED\](?=$|["',}\]\s]|(?:\\\\)*\\(?:"|u0022))/y;
 
-/** Whether a name `names` finds in `text` is used as a key whose value is not already the mask or, `evenMasked`, any value. */
+/**
+ * Whether a name `names` finds in `text`, each read once from left to right, is used as a key whose value is not
+ * already the mask or, `evenMasked`, any value.
+ */
 function namesAKey(names, text, evenMasked) {
   names.lastIndex = 0;
   for (let m = names.exec(text); m; m = names.exec(text)) {
+    TO_VALUE.lastIndex = m.index + m[0].length;
+    if (!TO_VALUE.test(text)) continue;
     if (evenMasked) return true;
-    MASKED_VALUE.lastIndex = m.index + m[0].length;
+    MASKED_VALUE.lastIndex = TO_VALUE.lastIndex;
     if (!MASKED_VALUE.test(text)) return true;
   }
   return false;
@@ -457,35 +539,48 @@ function namesAKey(names, text, evenMasked) {
 
 /**
  * Whether `text`, from a JSON-looking start that does not parse, holds secret vocabulary (invariant 4): armor, a
- * secret name used as a key, or with a kty a JWK private member's name used as one. As spelled, a key whose value
- * already is the mask is redacted text read again; in a decoding, where quotes of several levels meet, every key counts.
+ * secret name used as a key, with a kty a JWK private member's name used as one, or anything the text rules flag in
+ * it, the JSON values that read after the start included. As spelled, a key whose value already is the mask is
+ * redacted text read again; in a decoding, where quotes of several levels meet, every key counts.
  */
-function holdsVocabulary(text, decoded) {
-  return text.includes('-----BEGIN') || namesAKey(KEY_NAME, text, decoded)
-    || (text.includes('kty') && namesAKey(PRIVATE_KEY_NAME, text, decoded));
+function holdsVocabulary(text, decoded, scan) {
+  if (text.includes('-----BEGIN') || namesAKey(SECRET_NAME, text, decoded)
+    || (text.includes('kty') && namesAKey(PRIVATE_NAME, text, decoded))) return true;
+  const rules = new Scan();
+  rules.segments = scan.segments;
+  rules.tokenDepth = scan.tokenDepth;
+  judgeProse(text, rules, decoded);
+  return rules.leaks.length > 0;
 }
 
 /** A JSON list of strings, each part read one way only. */
 const STRING_LIST = /\[[ \t\n\r]*(?:"(?:[^"\\]|\\.)*"[ \t\n\r]*(?:,[ \t\n\r]*"(?:[^"\\]|\\.)*"[ \t\n\r]*)*)?\]/y;
 
-/** Whether the value at `at`, after a secret name's colon, is a form the Redactor writes, at a strict value end. */
-function readsAsMasked(text, at, name) {
+/** The same in JSON held in a JSON string, each string between escaped quotes and with no quote or backslash in it. */
+const EMBEDDED_STRING_LIST = /\[[ \t\n\r]*(?:\\"[^"\\]*\\"[ \t\n\r]*(?:,[ \t\n\r]*\\"[^"\\]*\\"[ \t\n\r]*)*)?\]/y;
+
+/**
+ * Whether the value at `at`, after the colon of the secret name `name`, is a form the Redactor writes, at a strict
+ * value end: null, a masked string between the name's own `quote`s, or a list of scheme forms quoted the same way.
+ */
+function readsAsMasked(text, at, name, quote) {
   if (text.startsWith('null', at)) return endsValue(text, at + 4);
   if (text[at] === '[') {
-    STRING_LIST.lastIndex = at;
-    const list = STRING_LIST.exec(text);
+    const lists = quote === '"' ? STRING_LIST : EMBEDDED_STRING_LIST;
+    lists.lastIndex = at;
+    const list = lists.exec(text);
     if (!list) return false;
     let items;
     try {
-      items = JSON.parse(list[0]);
+      items = JSON.parse(quote === '"' ? list[0] : list[0].replaceAll('\\"', '"'));
     } catch {
       return false;
     }
     return items.every(item => item !== MASK && isMaskedString(name, item)) && endsValue(text, at + list[0].length);
   }
-  if (text[at] !== '"') return false;
-  const close = text.indexOf('"', at + 1);
-  return close > 0 && isMaskedString(name, text.slice(at + 1, close)) && endsValue(text, close + 1);
+  if (!text.startsWith(quote, at)) return false;
+  const close = text.indexOf(quote, at + quote.length);
+  return close > 0 && isMaskedString(name, text.slice(at + quote.length, close)) && endsValue(text, close + quote.length);
 }
 
 /** The text rules (invariant 3) on text that holds no JSON value, as spelled or, `decoded`, at a decoding of its escapes. */
@@ -504,24 +599,32 @@ function judgeProse(text, scan, decoded) {
   for (const m of text.matchAll(MASKED_SCHEME)) {
     if (m[1]) scan.flag('credential behind the mask', text.slice(m.index, m.index + 60));
   }
-  const more = MASK_THEN_MORE.exec(text);
-  if (more) scan.flag('text right behind the mask', text.slice(more.index, more.index + 60));
   if (text.includes('eyJ')) judgeTokens(text, scan);
   for (const m of text.matchAll(FORM_SECRET)) {
-    if (m[2] !== MASK) scan.flag('form secret', m[0]);
+    // One mask, or several where a mask to the end of the text follows the value's own.
+    if (!/^(?:\[REDACTED\])+$/.test(m[2])) scan.flag('form secret', m[0]);
   }
+  judgeHeaderLines(text, scan);
+  judgeMembers(text, scan, decoded, KTY_NAME.test(text));
+}
+
+/** A quoted kty name, its quotes plain or escaped, each letter as itself or as a \\u escape. */
+const KTY_NAME = /\\?"(?:k|\\{1,2}u006[bB])(?:t|\\{1,2}u0074)(?:y|\\{1,2}u0079)\\?"/;
+
+/** Flags each credential header line in `text` whose value is not one the Redactor leaves. */
+function judgeHeaderLines(text, scan) {
   for (const m of text.matchAll(HEADER_LINE)) {
     if (!keepsLine(m[1], m[2])) scan.flag('credential header line', m[0]);
   }
-  judgeMembers(text, scan, decoded, text.includes('"kty"'));
 }
 
 /**
- * Whether a credential header line's value is one the Redactor leaves: blank, the form it writes, or after an
- * Authorization-style name a Bearer or Basic the scheme rule reads as prose ("Bearer access token required").
+ * Whether a credential header line's value is one the Redactor leaves: blank, the form it writes (also with the mask
+ * it writes to the end of a text right behind it), or after an Authorization-style name a Bearer or Basic the scheme
+ * rule reads as prose ("Bearer access token required").
  */
 function keepsLine(name, value) {
-  if (value.trim() === '' || isMaskedString(name, value)) return true;
+  if (value.trim() === '' || isMaskedString(name, value.replace(/(?:\[REDACTED\])+$/, MASK))) return true;
   if (!keepsScheme(name)) return false;
   SCHEME_CREDENTIAL.lastIndex = 0;
   const scheme = SCHEME_CREDENTIAL.exec(value);
@@ -534,8 +637,8 @@ function keepsLine(name, value) {
  */
 function judgeMembers(text, scan, decoded, jwk) {
   for (const m of text.matchAll(MEMBER_NAME)) {
-    const name = m[1].replace(/\\u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
-    if ((isSecretName(name) || (jwk && JWK_PRIVATE_MEMBERS.has(name))) && !readsAsMasked(text, m.index + m[0].length, name)) {
+    const name = m[2].replace(/\\{1,2}u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+    if ((isSecretName(name) || (jwk && JWK_PRIVATE_MEMBERS.has(name))) && !readsAsMasked(text, m.index + m[0].length, name, m[1])) {
       scan.flag(decoded ? 'secret-named member in a decoding' : 'secret-named member in text', text.slice(m.index, m.index + 80));
       // One is enough, and keeps the work linear: only a value that is flagged is read past its first characters.
       return;
