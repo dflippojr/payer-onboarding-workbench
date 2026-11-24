@@ -77,13 +77,37 @@ const MAX_LEAKS = 64;
 /** The whitespace characters the JVM's regex \s reads, for use in a character class. */
 const WS = ' \\t\\n\\x0B\\f\\r';
 
+/** Whitespace that ends a value, as the JVM's Character.isWhitespace reads it. */
+const VALUE_SPACE = ' \\t\\n\\x0B\\f\\r\\x1C-\\x1F\\u1680\\u2000-\\u2006\\u2008-\\u200A\\u2028\\u2029\\u205F\\u3000';
+
 /**
- * Whether a value ends at `at`: at the end of the text, a comma, a closing bracket or whitespace, or where a mask
- * follows it (the mask the Redactor writes to the end of a text it stops reading).
+ * What may stand right behind a masked value, by the kind of rule that read it; the end of the text always may.
+ * `value`: a JSON value's end. `decoded`: the same, also behind the closing quote of the string that held the value.
+ * `credential`: where a scheme's credential ends, or the period that ends a sentence. `loose`: a delimiter or a
+ * quote, also an escaped one, for a key read loosely. `end`: nothing (a form value or a header line, already cut at
+ * its own end).
  */
-const endsValue = (text, at) => at >= text.length
-  || /[,}\] \t\n\x0B\f\r\x1C-\x1F\u1680\u2000-\u2006\u2008-\u200A\u2028\u2029\u205F\u3000]/.test(text[at])
-  || text.startsWith(MASK, at);
+const TERMINATORS = {
+  value: new RegExp(`[,}\\]${VALUE_SPACE}]`, 'y'),
+  decoded: new RegExp(`"?(?:$|[,}\\]${VALUE_SPACE}])`, 'y'),
+  credential: /[ \t\n\x0B\f\r"',;\\&)\]}<]|\.(?:$|[ \t\n\x0B\f\r"')\]}])/y,
+  loose: /["',}\]\s]|(?:\\\\)*\\(?:"|u0022)/y,
+  end: /(?!)/y,
+};
+
+/**
+ * The one rule for where a masked value ends (owner decision 3 on #425): at `at`, right behind the value's own mask
+ * or closing quote, any further masks (the mask the Redactor writes to the end of a text it stops reading may stand
+ * there) must themselves run to the end of the text or to a terminator of the rule's `kind`. Every rule asks here.
+ */
+function endsMasked(text, at, kind = 'value') {
+  let end = at;
+  while (text.startsWith(MASK, end)) end += MASK.length;
+  if (end >= text.length) return true;
+  const terminator = TERMINATORS[kind];
+  terminator.lastIndex = end;
+  return terminator.test(text);
+}
 
 /** Whether `value`, a string under the secret name `name`, is a form the Redactor writes. */
 function isMaskedString(name, value) {
@@ -391,7 +415,7 @@ const KTY_MEMBER = new RegExp(`[{,][${WS}]*"kty"[${WS}]*:`, 'g');
 /** Whether the value at `at` in a decoding is the mask or null, up to where a value ends or its string's own quote closes. */
 function isMaskedInDecoding(pass, at) {
   const end = pass.startsWith(`"${MASK}"`, at) ? at + MASK.length + 2 : pass.startsWith('null', at) ? at + 4 : -1;
-  return end >= 0 && (endsValue(pass, end) || (pass[end] === '"' && endsValue(pass, end + 1)));
+  return end >= 0 && endsMasked(pass, end, 'decoded');
 }
 
 /**
@@ -480,7 +504,7 @@ function isProse(scheme, token, rest) {
  * A scheme in front of the mask, and what follows the mask: anything but where a credential ends, another mask or the
  * period that ends a sentence is the rest of a credential.
  */
-const MASKED_SCHEME = new RegExp(String.raw`\b(?:Bearer|Basic|Token|DPoP)[${WS}]+\[REDACTED\](?!\[REDACTED\]|\.(?:$|[${WS}"')\]}]))([^${WS}"',;\\&)\]}<]?)`, 'gi');
+const MASKED_SCHEME = new RegExp(String.raw`\b(?:Bearer|Basic|Token|DPoP)[${WS}]+\[REDACTED\]`, 'gi');
 
 /** A run of token characters and dots, the unit a JWT is read from. */
 const TOKEN_RUN = /(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]+/g;
@@ -533,7 +557,7 @@ const PRIVATE_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*
 const TO_VALUE = new RegExp(`${GAP}[:=]${GAP}`, 'yu');
 
 /** The mask, a scheme in front of it or not, where a value ends: the end, a delimiter or a quote, also an escaped one. */
-const MASKED_VALUE = /(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* )?\[REDACTED\](?=$|["',}\]\s]|(?:\\\\)*\\(?:"|u0022))/y;
+const MASKED_VALUE = /(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* )?\[REDACTED\]/y;
 
 /**
  * Whether a name `names` finds in `text`, each read once from left to right, is used as a key whose value is not
@@ -546,7 +570,7 @@ function namesAKey(names, text, evenMasked) {
     if (!TO_VALUE.test(text)) continue;
     if (evenMasked) return true;
     MASKED_VALUE.lastIndex = TO_VALUE.lastIndex;
-    if (!MASKED_VALUE.test(text)) return true;
+    if (!MASKED_VALUE.test(text) || !endsMasked(text, MASKED_VALUE.lastIndex, 'loose')) return true;
   }
   return false;
 }
@@ -578,7 +602,7 @@ const EMBEDDED_STRING_LIST = /\[[ \t\n\r]*(?:\\"[^"\\]*\\"[ \t\n\r]*(?:,[ \t\n\r
  * value end: null, a masked string between the name's own `quote`s, or a list of scheme forms quoted the same way.
  */
 function readsAsMasked(text, at, name, quote, recorded) {
-  if (text.startsWith('null', at)) return endsValue(text, at + 4);
+  if (text.startsWith('null', at)) return endsMasked(text, at + 4);
   if (text[at] === '[') {
     const lists = quote === '"' ? STRING_LIST : EMBEDDED_STRING_LIST;
     lists.lastIndex = at;
@@ -590,11 +614,11 @@ function readsAsMasked(text, at, name, quote, recorded) {
     } catch {
       return false;
     }
-    return items.every(item => (recorded || item !== MASK) && isMaskedString(name, item)) && endsValue(text, at + list[0].length);
+    return items.every(item => (recorded || item !== MASK) && isMaskedString(name, item)) && endsMasked(text, at + list[0].length);
   }
   if (!text.startsWith(quote, at)) return false;
   const close = text.indexOf(quote, at + quote.length);
-  return close > 0 && isMaskedString(name, text.slice(at + quote.length, close)) && endsValue(text, close + quote.length);
+  return close > 0 && isMaskedString(name, text.slice(at + quote.length, close)) && endsMasked(text, close + quote.length);
 }
 
 /** The text rules (invariant 3) on text that holds no JSON value, as spelled or, `decoded`, at a decoding of its escapes. */
@@ -611,12 +635,11 @@ function judgeProse(text, scan, decoded) {
     }
   }
   for (const m of text.matchAll(MASKED_SCHEME)) {
-    if (m[1]) scan.flag('credential behind the mask', text.slice(m.index, m.index + 60));
+    if (!endsMasked(text, m.index + m[0].length, 'credential')) scan.flag('credential behind the mask', text.slice(m.index, m.index + 60));
   }
   if (text.includes('eyJ')) judgeTokens(text, scan);
   for (const m of text.matchAll(FORM_SECRET)) {
-    // One mask, or several where a mask to the end of the text follows the value's own.
-    if (!/^(?:\[REDACTED\])+$/.test(m[2])) scan.flag('form secret', m[0]);
+    if (!m[2].startsWith(MASK) || !endsMasked(m[2], MASK.length, 'end')) scan.flag('form secret', m[0]);
   }
   judgeHeaderLines(text, scan);
   judgeMembers(text, scan, decoded, KTY_NAME.test(text));
@@ -638,7 +661,9 @@ function judgeHeaderLines(text, scan) {
  * rule reads as prose ("Bearer access token required").
  */
 function keepsLine(name, value) {
-  if (value.trim() === '' || isMaskedString(name, value.replace(/(?:\[REDACTED\])+$/, MASK))) return true;
+  const mask = value.indexOf(MASK);
+  if (value.trim() === '' || (mask >= 0 && isMaskedString(name, value.slice(0, mask + MASK.length))
+    && endsMasked(value, mask + MASK.length, 'end'))) return true;
   if (!keepsScheme(name)) return false;
   SCHEME_CREDENTIAL.lastIndex = 0;
   const scheme = SCHEME_CREDENTIAL.exec(value);
