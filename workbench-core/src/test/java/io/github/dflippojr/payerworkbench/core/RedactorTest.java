@@ -4920,6 +4920,40 @@ class RedactorTest {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
+    /**
+     * The check that a decoded header line lies inside one JSON value the parser reads costs a number of comparisons
+     * that grows with the logarithm of the values in the text, not with their number, so a text with many values and
+     * many header lines stays linear-logarithmic. It counts comparisons rather than time, and answers as before.
+     */
+    @Test
+    void findsTheJsonValueAroundADecodedHeaderLineInLogarithmicComparisons() {
+        int count = 1 << 12;
+        StringBuilder text = new StringBuilder();
+        List<int[]> spans = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            int start = text.length();
+            text.append("{\"a\":\"bc\"} ");
+            spans.add(new int[] {start, text.length() - 1});
+        }
+        Redactor.Above above = new Redactor.Above(text.toString());
+        int bound = 2 * (32 - Integer.numberOfLeadingZeros(count)) + 4;
+        int asked = 0;
+        for (int i = 0; i < count; i += 7) {
+            int[] span = spans.get(i);
+            for (int[] probe : new int[][] {
+                    {span[0] + 1, span[1] - 1}, {span[0], span[1] - 1}, {span[0] + 1, span[1]},
+                    {span[0] + 2, span[1] + 3}, {span[1], span[1] + 1}}) {
+                boolean inside = span[0] < probe[0] && probe[1] < span[1];
+                int before = above.comparisons;
+                assertEquals(inside, above.inOneValue(probe[0], probe[1]), () -> Arrays.toString(probe));
+                assertTrue(above.comparisons - before <= bound,
+                        () -> (above.comparisons - before) + " comparisons for one check, bound " + bound);
+                asked++;
+            }
+        }
+        assertTrue(asked > count / 2);
+    }
+
     private static String b64url(String json) {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8));
     }

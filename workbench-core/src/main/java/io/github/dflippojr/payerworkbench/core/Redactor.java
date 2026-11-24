@@ -518,6 +518,8 @@ public final class Redactor {
         private final String text;
         private int[] sources;
         private List<int[]> values;
+        /** How many spans {@link #inOneValue} has compared against, for the bound the tests hold it to. */
+        int comparisons;
 
         Above(String text) {
             this.text = text;
@@ -529,7 +531,7 @@ public final class Redactor {
          * end, as {@link ProseRedaction#redact} tries them, with attempts that fail reading at most {@code 2n + 4096}
          * characters in all. Past {@link JsonRedaction#MAX_CHARS} no value reads.
          */
-        private boolean inOneValue(int from, int to) {
+        boolean inOneValue(int from, int to) {
             if (values == null) {
                 values = new ArrayList<>();
                 if (text.length() <= JsonRedaction.MAX_CHARS) {
@@ -548,6 +550,7 @@ public final class Redactor {
                 }
             }
             for (int[] value : values) {
+                comparisons++;
                 if (value[0] < from && to < value[1]) {
                     return true;
                 }
