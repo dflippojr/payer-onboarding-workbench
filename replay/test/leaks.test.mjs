@@ -622,6 +622,10 @@ test('one shared terminator: a masked value ends only at a terminator, whatever 
     { rule: 'scheme', head: `rejected Bearer ${MASK}`, terminators: [' ', '"', ',', ';', ')'] },
     { rule: 'form value', head: `sent client_secret=${MASK}`, terminators: ['&x=1', ' ', '"'] },
     { rule: 'header line', head: `Cookie: ${MASK}`, terminators: ['\nnext'] },
+    // Rules that read no value still write a mask (decision 3, implementation note): none is exempt.
+    { rule: 'JWT signature', head: `sent eyJhbGciOiJub25lIn0.eyJzdWIiOiJmYWtlIn0.${MASK}`, terminators: [' ', '"', ',', '.'] },
+    { rule: 'mask to the end of a text', head: `payer said: ${MASK}`, terminators: [' ', '"', ',', '.'] },
+    { rule: 'mask in a JSON string', json: (masks, follow) => JSON.stringify({ note: `payer said: ${MASK}${masks}${follow}` }), terminators: [' ', ','] },
     // A private member that only a decoding shows: what follows its value sits behind an escaped quote.
     { rule: 'private member in a decoding', json: (masks, follow) => `{"kty":"RSA","d${B}${B}":"${MASK}${follow === '' && masks === '' ? '' : `${B}"${masks}${follow}`}"}`, terminators: [] },
   ];
@@ -648,8 +652,30 @@ test('one shared terminator: a masked value ends only at a terminator, whatever 
       }
     }
   }
-  assert.ok(judged >= 7 * 2 * 3, `${judged} forms judged`);
+  assert.ok(judged >= 10 * 2 * 3, `${judged} forms judged`);
   assert.deepEqual(wrong, []);
+});
+
+test('decision 4: a JWK that only a decoding shows is bounded by a string-aware reading, and unclear bounds fail closed', () => {
+  const B = '\\';
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(text), findJsonLeaks(JSON.parse(text))].map(leaks => leaks.length > 0);
+  const wrong = [];
+  // A private member that two decodings show (its name ends in a backslash), with a value that keeps the decoding from
+  // being JSON, beside a string that holds a delimiter.
+  for (const inString of ['}', '{', ']', '[', '}}', '{"a":1}', `${B}"}`, `}${B}"`, '},{']) {
+    for (const member of ['d', 'p', 'k', 'oth']) {
+      for (const [value, expected] of [[`FAKE-jwk-0002${B}"rest`, true], [`${MASK}${B}"FAKE-jwk-0002`, true], [MASK, false]]) {
+        for (const order of [0, 1, 2]) {
+          const members = [`"kty":"RSA"`, `"note":${JSON.stringify(inString)}`, `"${member}${B}${B}":"${value}"`];
+          const text = `{${[...members.slice(order), ...members.slice(0, order)].join(',')}}`;
+          JSON.parse(text);
+          const verdicts = entryPoints(text);
+          if (verdicts.some(flag => flag !== expected)) wrong.push(`${JSON.stringify(inString)} ${member} order ${order} ${expected}: ${verdicts}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(wrong.slice(0, 8), [], `${wrong.length} wrong`);
 });
 
 test('shares no code with the Redactor: the check imports nothing', () => {
