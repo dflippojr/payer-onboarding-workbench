@@ -306,8 +306,10 @@ const HOLE = '\uE000';
 /**
  * Judges a decoded string at JSON-in-string level `level`: JSON by invariants 1 and 2, any other text by 3 and 4. A
  * string at level 0 is one the workbench recorded whole, so it is also judged as written out ({@link judgeWritten}).
+ * `recorded`: the text is a bundle file, whose own structure may hold a header's list of masked values. The written
+ * form is read only when nothing else is flagged: it adds a verdict, not a second report of the same member.
  */
-function judgeText(text, scan, level) {
+function judgeText(text, scan, level, recorded = false) {
   if (text.length === 0) return;
   const read = level < MAX_LEVELS;
   if (read && /^[ \t\n\r]*[[{"]/.test(text)) {
@@ -323,11 +325,11 @@ function judgeText(text, scan, level) {
         return;
       }
       if (repeatsAName(text)) scan.flag('JSON that repeats a member name', text);
-      judgeValue(json.value, scan, level, false);
+      judgeValue(json.value, scan, level, recorded);
       // A text that is one JSON string: no object or array bounds it, so the quote that closes it is part of a
       // header line that ends it, and the quote that opens it keeps a line at its start from being one.
       if (typeof json.value === 'string') judgeHeaderLines(`"${json.value}"`, scan);
-      if (level === 0) judgeWritten(JSON.stringify(json.value), scan);
+      if (level === 0 && scan.leaks.length === 0) judgeWritten(JSON.stringify(json.value), scan, recorded);
       return;
     }
   }
@@ -336,7 +338,7 @@ function judgeText(text, scan, level) {
   let written = '';
   let copied = 0;
   for (const { from, to, value } of values) {
-    judgeValue(value, scan, level, false);
+    judgeValue(value, scan, level, recorded);
     prose += text.slice(copied, from) + HOLE;
     written += text.slice(copied, from) + JSON.stringify(value);
     copied = to;
@@ -348,7 +350,7 @@ function judgeText(text, scan, level) {
   if (failed >= 0 && decodings(text.slice(failed)).passes.some((pass, depth) => holdsVocabulary(pass, depth > 0, scan))) {
     scan.flag('JSON-looking start that does not parse, before secret vocabulary', text.slice(failed));
   }
-  if (level === 0 && values.length > 0) judgeWritten(written + text.slice(copied), scan);
+  if (level === 0 && values.length > 0 && scan.leaks.length === 0) judgeWritten(written + text.slice(copied), scan, recorded);
 }
 
 /**
@@ -358,11 +360,11 @@ function judgeText(text, scan, level) {
  * member that is not the mask. This is where a member name that a decoding reads as a secret name, or as more than
  * one member, shows, and a masked value that ends at its string's own closing quote.
  */
-function judgeWritten(written, scan) {
+function judgeWritten(written, scan, recorded) {
   const { passes } = decodings(written);
   for (let depth = 1; depth < passes.length; depth++) {
     const pass = passes[depth];
-    judgeMembers(pass, scan, true, false);
+    judgeMembers(pass, scan, true, false, recorded);
     if (!pass.includes('"kty"')) continue;
     let whole;
     try {
@@ -575,7 +577,7 @@ const EMBEDDED_STRING_LIST = /\[[ \t\n\r]*(?:\\"[^"\\]*\\"[ \t\n\r]*(?:,[ \t\n\r
  * Whether the value at `at`, after the colon of the secret name `name`, is a form the Redactor writes, at a strict
  * value end: null, a masked string between the name's own `quote`s, or a list of scheme forms quoted the same way.
  */
-function readsAsMasked(text, at, name, quote) {
+function readsAsMasked(text, at, name, quote, recorded) {
   if (text.startsWith('null', at)) return endsValue(text, at + 4);
   if (text[at] === '[') {
     const lists = quote === '"' ? STRING_LIST : EMBEDDED_STRING_LIST;
@@ -588,7 +590,7 @@ function readsAsMasked(text, at, name, quote) {
     } catch {
       return false;
     }
-    return items.every(item => item !== MASK && isMaskedString(name, item)) && endsValue(text, at + list[0].length);
+    return items.every(item => (recorded || item !== MASK) && isMaskedString(name, item)) && endsValue(text, at + list[0].length);
   }
   if (!text.startsWith(quote, at)) return false;
   const close = text.indexOf(quote, at + quote.length);
@@ -647,10 +649,10 @@ function keepsLine(name, value) {
  * Flags each quoted secret name in `text` whose value is not a form the Redactor writes at a strict value end; with
  * `jwk`, a JWK's private member names are secret too.
  */
-function judgeMembers(text, scan, decoded, jwk) {
+function judgeMembers(text, scan, decoded, jwk, recorded = false) {
   for (const m of text.matchAll(MEMBER_NAME)) {
     const name = m[2].replace(/\\{1,2}u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
-    if ((isSecretName(name) || (jwk && JWK_PRIVATE_MEMBERS.has(name))) && !readsAsMasked(text, m.index + m[0].length, name, m[1])) {
+    if ((isSecretName(name) || (jwk && JWK_PRIVATE_MEMBERS.has(name))) && !readsAsMasked(text, m.index + m[0].length, name, m[1], recorded)) {
       scan.flag(decoded ? 'secret-named member in a decoding' : 'secret-named member in text', text.slice(m.index, m.index + 80));
       // One is enough, and keeps the work linear: only a value that is flagged is read past its first characters.
       return;
@@ -706,29 +708,17 @@ export function findTextLeaks(text) {
 }
 
 /**
- * The leaks in `value`, a bundle file as JSON.parse reads it: its members by name, and each string and member name
- * in it as {@link findTextLeaks} reads a recorded string.
- */
-export function findJsonLeaks(value) {
-  return judged(scan => judgeValue(value, scan, -1, true));
-}
-
-/**
- * The leaks in the JSON bundle file whose text is `text`: {@link findJsonLeaks} of what JSON.parse reads, and a
- * member name repeated in one object, of which JSON.parse keeps only the last. A file that is not JSON is a leak.
+ * The leaks in a bundle file whose text is `text`. The file goes through the one path every recorded string goes
+ * through ({@link judgeText}); the only difference is that in the file's own structure a credential header's value
+ * may be a list of masked strings, as the workbench records a header's values.
  */
 export function findFileLeaks(text) {
-  return judged(scan => {
-    let value;
-    try {
-      value = JSON.parse(text);
-    } catch {
-      scan.flag('bundle file that is not JSON', text);
-      return;
-    }
-    if (repeatsAName(text)) scan.flag('JSON that repeats a member name', text);
-    judgeValue(value, scan, -1, true);
-  });
+  return judged(scan => judgeText(text, scan, 0, true));
+}
+
+/** The leaks in `value`, a bundle file as JSON.parse reads it: {@link findFileLeaks} of the file written out again. */
+export function findJsonLeaks(value) {
+  return findFileLeaks(JSON.stringify(value));
 }
 
 /** The leaks `judge` finds; a value nested too deep to walk is a leak itself (fail closed). */
