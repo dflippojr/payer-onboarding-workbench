@@ -236,6 +236,72 @@ class ProseRedactionTest {
                 () -> failures.size() + " of 3000 fuzz texts kept a secret (seed " + seed + ")");
     }
 
+    /**
+     * The text rules read a secret field name exactly as the tree's rule does ({@link Redactor#isSecretField}): its
+     * separators, in any number, anywhere, plainly or as escapes, do not hide it. Each name is put where only the text
+     * rules can read it (a fragment, a cut object, an object the tree rejects, a form, a JSON string, a token claim
+     * holding such prose); no synthetic secret may survive at any decoding. Names that are not secret once their
+     * separators are dropped are kept, and so is the text around them. Everything is built at runtime.
+     */
+    @Test
+    void readsASecretFieldNameAsTheTreeRuleDoesWhateverItsSeparatorsInEveryTextRuleContext() {
+        String marker = "FAKE-NAMEV";
+        List<String> failures = new ArrayList<>();
+        int texts = 0;
+        for (String field : List.of("password", "client_secret", "access-token")) {
+            String letters = field.replaceAll("[_-]", "");
+            for (int run = 1; run <= 256; run *= 2) {
+                for (String separator : List.of("_", "-", "_-", "\\u005f", "\\u002D")) {
+                    boolean escaped = separator.startsWith("\\");
+                    String sep = separator.repeat(run);
+                    String inside = letters.substring(0, 4) + sep + letters.substring(4);
+                    for (String name : List.of(inside, sep + letters, letters + sep, sep + inside + sep)) {
+                        for (String text : nameContexts(name, marker, escaped)) {
+                            texts++;
+                            String out = Redactor.redact(text);
+                            if (leaksAtAnyDecoding(out, marker)) {
+                                failures.add(text.length() > 300 ? text.substring(0, 300) : text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int total = texts;
+        assertEquals(List.of(), failures.subList(0, Math.min(3, failures.size())),
+                () -> failures.size() + " of " + total + " texts kept a secret");
+        // Controls: a name that is not secret once its separators are dropped is read and kept, as is the text.
+        for (int run = 1; run <= 256; run *= 2) {
+            String name = "pass" + "_".repeat(run) + "words";
+            for (String text : List.of("note \"" + name + "\":\"kept\" end", "note {\"a\":1,\"" + name + "\":\"kept\"} end",
+                    "note " + name + "=kept&x=1")) {
+                assertEquals(text, Redactor.redact(text));
+            }
+        }
+    }
+
+    /**
+     * {@code "name":"marker"} where only the text rules read it: a fragment, an object cut short, an object the tree
+     * rejects for a repeated name (after prose, nested, alone), a JSON string holding such prose, and a token whose
+     * claim holds it, in prose and in a JSON value; a form when the name's separators are plain.
+     */
+    private static List<String> nameContexts(String name, String marker, boolean escaped) {
+        String member = "\"" + name + "\":\"" + marker + "\"";
+        String rejected = "note {\"a\":1,\"a\":2," + member + "} end";
+        List<String> texts = new ArrayList<>(List.of("note " + member + " end", "note {\"a\":1," + member,
+                rejected, "note {\"o\":{\"a\":1,\"a\":2," + member + "}} end", "{\"a\":1,\"a\":2," + member + "}",
+                JSON.writeValueAsString(Map.of("body", rejected))));
+        for (String claim : List.of(rejected, "note " + member + " end")) {
+            String jwt = base64Url("{\"alg\":\"none\"}") + "." + base64Url(JSON.writeValueAsString(Map.of("c", claim))) + ".c2ln";
+            texts.add("x " + jwt + " y");
+            texts.add("{\"t\":\"" + jwt + "\",\"n\":1}");
+        }
+        if (!escaped) {
+            texts.add("note " + name + "=" + marker + "&x=1");
+        }
+        return texts;
+    }
+
     /** {@code jwt} in prose, as a JSON value, in a JSON value in prose, inside a JSON string and after a scheme word. */
     private static List<String> jwtContexts(String jwt) {
         return List.of("x " + jwt + " y", "{\"jwt\":\"" + jwt + "\",\"n\":1}", "x {\"jwt\":\"" + jwt + "\",\"n\":1} y",
