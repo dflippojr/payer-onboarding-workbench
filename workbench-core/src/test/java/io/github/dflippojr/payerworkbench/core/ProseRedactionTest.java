@@ -615,6 +615,79 @@ class ProseRedactionTest {
         assertEquals(List.of(), failures.subList(0, Math.min(8, failures.size())), () -> failures.size() + " of " + 240 + " texts kept the field");
     }
 
+    @Test
+    void judgesTheWholeValueOfAHeaderLineOnlyADecodingShowsInStringsAndInTokenClaims() {
+        // #406 redesign (Codex security r1 on #412): a header line that only a decoding of the output shows as a line is
+        // judged over its whole value, unless a parser proves where its string ends. A value that is the written form
+        // up to a quote, with more bytes after it on the line, is no written form, in a string or in a token claim,
+        // whatever check reads it. Grid: header name x escape level x line spelling class x written-form prefix x
+        // suffix class x context. Every input is built at runtime from parts; the suffix bytes must be absent from the
+        // output at any decoding of its escapes and of its tokens.
+        String m = Redactor.MASK;
+        String marker = "FAKE-HDR-" + Long.toString(System.nanoTime() & Long.MAX_VALUE, 36);
+        List<String> failures = new ArrayList<>();
+        int cases = 0;
+        Map<String, String> lines = new java.util.LinkedHashMap<>();
+        for (String name : List.of("Authorization", "Proxy-Authorization", "Cookie", "X-Api-Key", "X-Auth-Token")) {
+            for (int levels = 1; levels <= 2; levels++) {
+                String below = "\\".repeat((1 << (levels - 1)) - 1);
+                String unicode = below + "\\u00";
+                String lineBreak = below + "\\n";
+                String escapedQuote = "\\".repeat((1 << levels) - 1) + "\"";
+                String spelled = name.charAt(0) + unicode + Integer.toHexString(name.charAt(1)) + name.substring(2);
+                List<String[]> spellings = List.of(new String[] {spelled, escapedQuote},
+                        new String[] {spelled, unicode + "22"}, new String[] {unicode + "20" + name, escapedQuote},
+                        new String[] {name, below + "\""});
+                List<String> suffixes = List.of(" " + marker, marker, "," + marker, " x=" + marker + "; y");
+                for (int form = 0; form < spellings.size(); form++) {
+                    String[] spelling = spellings.get(form);
+                    for (String prefix : List.of(m, "Bearer " + m)) {
+                        for (int suffix = 0; suffix < suffixes.size(); suffix++) {
+                            lines.put(name + " level " + levels + " spelling " + form + " prefix " + prefix.length()
+                                    + " suffix form " + suffix, "GET / HTTP/1.1" + lineBreak + spelling[0] + ": " + prefix
+                                    + spelling[1] + suffixes.get(suffix));
+                        }
+                    }
+                    // A quoted attribute, then another attribute holding the suffix.
+                    lines.put(name + " level " + levels + " spelling " + form + " quoted attribute", "GET / HTTP/1.1"
+                            + lineBreak + spelling[0] + ": a=" + spelling[1] + "v" + spelling[1] + "; s=" + marker);
+                }
+            }
+        }
+        String plainHeader = base64Url("{\"alg\":\"none\"}");
+        for (var line : lines.entrySet()) {
+            List<String> texts = new ArrayList<>(List.of("note " + line.getValue() + " end",
+                    "he said {\"a\":1,, " + line.getValue(), "x {\"raw\":\"" + line.getValue() + "\"} y"));
+            // The same line as the text of a token's claim: prose, and a claim holding it as a string.
+            for (String claim : List.of(line.getValue(), "{\"note\":\"" + line.getValue() + "\"}")) {
+                String jwt = plainHeader + "." + base64Url(claim) + ".";
+                texts.add("see " + jwt + " then");
+                texts.add(JSON.writeValueAsString(Map.of("jwt", jwt)));
+            }
+            for (int form = 0; form < texts.size(); form++) {
+                cases++;
+                if (leaksAtAnyDecoding(Redactor.redact(texts.get(form)), marker)) {
+                    failures.add(line.getKey() + " text form " + form);
+                }
+            }
+        }
+        assertEquals(2520, cases, "grid size");
+        assertEquals(List.of(), failures.subList(0, Math.min(8, failures.size())),
+                () -> failures.size() + " of 2520 texts kept the bytes after a header line's written form");
+        // A parser proves the end of a line in a JSON string: a header line there, its value the written form, keeps the
+        // members after its string, in a text and in a token claim.
+        for (String[] form : List.of(new String[] {"Authorization", m}, new String[] {"Authorization", "Bearer " + m},
+                new String[] {"Cookie", m})) {
+            String name = form[0];
+            String json = JSON.writeValueAsString(Map.of("raw", "GET /\n" + name + ": " + form[1]));
+            String text = "{\"note\":\"plain words\",\"echo\":" + JSON.writeValueAsString(json) + "}";
+            assertEquals(text, Redactor.redact(text), () -> name + " written form in a string");
+            String jwt = base64Url("{\"alg\":\"none\"}") + "." + base64Url(json) + ".";
+            String inToken = "see " + jwt + " then";
+            assertEquals(inToken, Redactor.redact(inToken), () -> name + " written form in a token claim");
+        }
+    }
+
     /** Whether {@code out} holds {@code part} at any decoding of its JSON escapes. */
     private static boolean holdsAtAnyDecoding(String out, String part) {
         String pass = out;
