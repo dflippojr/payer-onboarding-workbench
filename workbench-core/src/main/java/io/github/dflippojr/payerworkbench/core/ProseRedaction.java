@@ -51,12 +51,14 @@ final class ProseRedaction {
 
     /**
      * A secret name: a secret field name with any number of {@code _} or {@code -} around and between its letters, as
-     * {@link Redactor#isSecretField} reads it, or a credential header name, in any case.
+     * {@link Redactor#isSecretField} reads it, or a credential header name, in any case ({@link Redactor#lowerCasedTo}).
+     * A field name is matched from the first separator of a run, so a long run is read once, not once from each of its
+     * characters; only where a name ends matters to {@link #keyName}.
      */
-    static final Pattern SECRET_NAME = Pattern.compile("(?i)" + Redactor.SECRET_FIELDS.stream()
-            .map(name -> "[_-]*+" + String.join("[_-]*+", name.split("")) + "[_-]*+")
+    static final Pattern SECRET_NAME = Pattern.compile("(?i)(?<![_-])[_-]*+(?:" + Redactor.SECRET_FIELDS.stream()
+            .map(name -> Redactor.lowerCasedTo(String.join("[_-]*+", name.split(""))))
             .reduce((a, b) -> a + "|" + b).orElseThrow()
-            + "|" + String.join("|", Redactor.SENSITIVE_HEADERS).replace("-", "[_-]?"));
+            + ")[_-]*+|" + Redactor.lowerCasedTo(String.join("|", Redactor.SENSITIVE_HEADERS).replace("-", "[_-]?")));
 
     /** A JWK private member's name in quotes, which a JWK's {@code kty} makes secret. */
     private static final Pattern PRIVATE_NAME = Pattern.compile("\"(?:" + String.join("|", Redactor.JWK_PRIVATE_MEMBERS)

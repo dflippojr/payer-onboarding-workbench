@@ -159,19 +159,34 @@ public final class Redactor {
     private static final String BACKSLASH = "\\\\";
 
     /**
-     * A JSON member name: letters, {@code _} and {@code -}, and the {@code \\u} escape of any character, as JSON may
+     * KELVIN SIGN, the one code point other than an ASCII letter whose lower case ({@link Locale#ROOT}, as
+     * {@link #isSecretField} and {@link #isSensitiveHeader} take it) is a letter of a name: {@code k}. The text rules
+     * read it as that letter wherever they spell a secret name; {@code ProseRedactionTest} scans the code space for others.
+     */
+    static final char KELVIN = '\u212A';
+
+    /**
+     * {@code lower}, a secret name in lower-case ASCII, as a regex for every spelling whose lower case is {@code lower}
+     * under a case-insensitive ASCII match: each {@code k} also as {@link #KELVIN}.
+     */
+    static String lowerCasedTo(String lower) {
+        return lower.replace("k", "[k" + KELVIN + "]");
+    }
+
+    /**
+     * A JSON member name: letters (with {@link #KELVIN}), {@code _} and {@code -}, and the {@code \\u} escape of any character, as JSON may
      * spell one ({@code "kt\\u0079"} is {@code kty}). {@link #decodeName} gives the name the escapes spell, which is
      * the one compared. It has no length bound: the names {@link #isSecretField} accepts have separators in any number,
      * plain or escaped, so no bound may stop a name the tree would read. Each repetition is a run of letters and
      * separators or one escape, possessive, so a long name neither backtracks nor recurses per character.
      */
-    private static final String NAME = "(?:[A-Za-z_-]++|" + BACKSLASH + "u[0-9A-Fa-f]{4})++";
+    private static final String NAME = "(?:[A-Za-z\u212A_-]++|" + BACKSLASH + "u[0-9A-Fa-f]{4})++";
 
     /**
      * {@link #NAME} in JSON embedded in a JSON string: an inner escape's backslash is escaped ({@code \\\\u0064}),
      * or the outer string spells the character itself ({@code \\u0064}).
      */
-    private static final String EMBEDDED_NAME = "(?:[A-Za-z_-]++|" + BACKSLASH + "{1,2}u[0-9A-Fa-f]{4})++";
+    private static final String EMBEDDED_NAME = "(?:[A-Za-z\u212A_-]++|" + BACKSLASH + "{1,2}u[0-9A-Fa-f]{4})++";
 
     /** A {@code \\u} escape in a name matched with {@link #NAME} or {@link #EMBEDDED_NAME}. */
     private static final Pattern NAME_ESCAPE = Pattern.compile(BACKSLASH + "++u([0-9A-Fa-f]{4})");
@@ -271,7 +286,7 @@ public final class Redactor {
      * in a JSON string), and may be indented; a header name anywhere else ({@code see the Cookie:
      * header docs}) is prose. The names are letters and {@code -} only.
      */
-    private static final String HEADER_NAME = "((?i:" + String.join("|", SENSITIVE_HEADERS) + ")):";
+    private static final String HEADER_NAME = "((?i:" + lowerCasedTo(String.join("|", SENSITIVE_HEADERS)) + ")):";
 
     /**
      * A header line in plain text. The value (group 3) runs to the end of the line ({@code ;} and {@code =} are
@@ -310,21 +325,24 @@ public final class Redactor {
 
     /**
      * Every {@link #SECRET_FIELDS} name as a form key: any number of {@code _} or {@code -} may come
-     * before, after or between its letters, and the match is case-insensitive. That is the normalization
+     * before, after or between its letters, and the match is case-insensitive ({@link #lowerCasedTo}). That is the normalization
      * {@link #isSecretField(String)} applies, so {@code client_secret}, {@code clientSecret} and
      * {@code client-secret} all match {@code clientsecret}. The names are lower-case letters only.
      */
-    private static final String FORM_SECRET_KEYS = SECRET_FIELDS.stream()
-            .map(name -> "[_-]*+" + String.join("[_-]*+", name.split("")) + "[_-]*+")
-            .collect(Collectors.joining("|"));
+    private static final String FORM_SECRET_KEYS = "[_-]*+(?:" + SECRET_FIELDS.stream()
+            .map(name -> lowerCasedTo(String.join("[_-]*+", name.split(""))))
+            .collect(Collectors.joining("|")) + ")[_-]*+";
 
     /**
+     * A key starts at a word start ({@link #WORD_START}) anywhere in the separators before its letters, but is matched
+     * from the first of them, so a long run of separators is read once, not once from each of its characters; the key
+     * and its separators are kept as they are either way.
      * A form secret runs to the next {@code &}, whitespace or quote, or to a backslash that starts a
      * JSON escape ({@code \n}, {@code \"}) in a form body quoted inside JSON. Any other backslash,
      * an escaped one ({@code \\}) included, is part of the value.
      */
     private static final Pattern FORM_SECRET = Pattern.compile(
-            "(?i)" + WORD_START + "(" + FORM_SECRET_KEYS + ")=(?:[^&\\s\"\\\\]++|" + BACKSLASH.repeat(2) + "|"
+            "(?i)(?<![_-])(?=[_-]*?" + WORD_START + ")(" + FORM_SECRET_KEYS + ")=(?:[^&\\s\"\\\\]++|" + BACKSLASH.repeat(2) + "|"
                     + BACKSLASH + "(?![nrtbf\"]))*+");
 
     /**
