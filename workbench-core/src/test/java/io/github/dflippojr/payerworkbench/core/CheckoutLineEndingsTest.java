@@ -9,8 +9,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -25,27 +23,28 @@ import org.junit.jupiter.api.Test;
  */
 class CheckoutLineEndingsTest {
 
-    /** One row of {@code git ls-files --eol}: {@code i/<index eol> w/<working-tree eol> attr/<attributes>TAB<path>}. */
-    private static final Pattern ROW = Pattern.compile("i/(\\S+)\\s+w/\\S+\\s+attr/(.*)\\t(.+)");
-
     @Test
     void everyCommittedTextFileIsStoredWithLfLineEndings() throws Exception {
         Path repo = Path.of(git(Path.of("").toAbsolutePath(), "rev-parse", "--show-toplevel").strip());
         int textFiles = 0;
         List<String> crlf = new ArrayList<>();
         for (String line : git(repo, "ls-files", "--eol").split("\n")) {
-            Matcher row = ROW.matcher(line);
-            assertTrue(row.matches(), () -> "unexpected git ls-files --eol row: " + line);
-            List<String> attributes = Arrays.asList(row.group(2).strip().split("\\s+"));
+            // A row is "i/<index eol> w/<working-tree eol> attr/<attributes>", a tab, then the path. The working-tree
+            // field is empty for a tracked file that is missing from the working tree, so split the row, don't match it.
+            String[] columns = line.split("\t", 2);
+            int attr = columns.length == 2 ? columns[0].indexOf("attr/") : -1;
+            assertTrue(columns.length == 2 && columns[0].startsWith("i/") && attr > 0,
+                    () -> "unexpected git ls-files --eol row: " + line);
+            String indexEol = columns[0].substring(2).split("\\s+", 2)[0];
+            List<String> attributes = Arrays.asList(columns[0].substring(attr + "attr/".length()).strip().split("\\s+"));
             boolean text = !attributes.contains("-text") && !attributes.contains("binary")
                     && attributes.stream().anyMatch(a -> a.equals("text") || a.startsWith("text="));
             if (!text) {
                 continue;
             }
             textFiles++;
-            String indexEol = row.group(1);
             if (indexEol.equals("crlf") || indexEol.equals("mixed")) {
-                crlf.add(row.group(3) + " (i/" + indexEol + ")");
+                crlf.add(columns[1] + " (i/" + indexEol + ")");
             }
         }
         assertTrue(textFiles > 0, "no text files found: run this test in a git checkout");
