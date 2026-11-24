@@ -63,6 +63,11 @@ for (const [name, text] of Object.entries(leakedOutputs)) {
   test(`flags what Redactor used to leave: ${name}`, () => assertFlagged(text));
 }
 
+test('flags a secret object or array in parsed JSON', () => {
+  assert.equal(findJsonLeaks({ responseBody: '{"private_key":{"d":"PRIVATED"}}' }).length, 1);
+  assert.equal(findJsonLeaks({ details: { accessToken: ['ARRSECRET'] } }).length, 1);
+});
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Invariant 1: a secret-named member's value is exactly a form the Redactor writes.
 
