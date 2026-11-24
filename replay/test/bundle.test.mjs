@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { findJsonLeaks, findTextLeaks } from './invariants.mjs';
+import { findFileLeaks, findJsonLeaks, findTextLeaks } from './invariants.mjs';
 import { installFakeDom } from './fake-dom.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -148,8 +148,9 @@ test('no token, secret or PEM pattern appears anywhere in the bundle', () => {
   for (const file of bundleFiles()) {
     const text = readFileSync(file, 'utf8');
     const rel = relative(dist, file);
-    // A JSON file is parsed and judged by its members and each string in it; any other file is judged as text (#425).
-    const found = file.endsWith('.json') ? findJsonLeaks(JSON.parse(text)) : findTextLeaks(text);
+    // A JSON file is parsed and judged by its members and each string in it, and may repeat no member name; any other
+    // file is judged as text (#425).
+    const found = file.endsWith('.json') ? findFileLeaks(text) : findTextLeaks(text);
     if (file.endsWith('.json')) json++;
     leaks.push(...found.map(l => ({ file: rel, ...l })));
   }

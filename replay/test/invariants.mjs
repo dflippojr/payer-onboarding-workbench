@@ -367,6 +367,8 @@ function judgeWritten(written, scan) {
     let whole;
     try {
       whole = [{ value: JSON.parse(pass) }];
+      // JSON.parse keeps the last of a repeated name only: the braces rule reads every member.
+      if (repeatsAName(pass)) judgeJwksByBraces(pass, scan);
     } catch {
       whole = embeddedValues(pass).values;
       judgeJwksByBraces(pass, scan);
@@ -375,15 +377,24 @@ function judgeWritten(written, scan) {
   }
 }
 
-/** A JWK private member's quoted name and its colon, where a member starts: after a brace or a comma. */
-const PRIVATE_MEMBER = new RegExp(`(?<=[{,][${WS}]*)"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})"[${WS}]*:[${WS}]*`, 'g');
+/**
+ * A JWK private member's quoted name and its colon, where a member starts: after a brace or a comma, which the match
+ * starts at, so each stretch of whitespace is read once.
+ */
+const PRIVATE_MEMBER = new RegExp(`[{,][${WS}]*"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})"[${WS}]*:[${WS}]*`, 'g');
 
 /** A kty member's quoted name and its colon, where a member starts. */
-const KTY_MEMBER = new RegExp(`(?<=[{,][${WS}]*)"kty"[${WS}]*:`, 'g');
+const KTY_MEMBER = new RegExp(`[{,][${WS}]*"kty"[${WS}]*:`, 'g');
+
+/** Whether the value at `at` in a decoding is the mask or null, up to where a value ends or its string's own quote closes. */
+function isMaskedInDecoding(pass, at) {
+  const end = pass.startsWith(`"${MASK}"`, at) ? at + MASK.length + 2 : pass.startsWith('null', at) ? at + 4 : -1;
+  return end >= 0 && (endsValue(pass, end) || (pass[end] === '"' && endsValue(pass, end + 1)));
+}
 
 /**
- * For a decoding that is not JSON: flags a private member whose value is not the mask between the same braces as a
- * kty member. The braces are matched by count alone, with no reading of strings, so an object a stray quote breaks
+ * For a decoding that is not JSON, or that repeats a member name: flags a private member whose value is not the mask
+ * between the same braces as a kty member. The braces are matched by count alone, with no reading of strings, so an object a stray quote breaks
  * is still one.
  */
 function judgeJwksByBraces(pass, scan) {
@@ -396,12 +407,13 @@ function judgeJwksByBraces(pass, scan) {
     enclosing[i] = open.length > 0 ? open[open.length - 1] : -1;
     if (c === '{' || c === '[') open.push(i);
   }
+  // A match starts at the brace or comma before the name; what encloses the name is what is open just after it.
+  const around = m => (pass[m.index] === '{' ? m.index : enclosing[m.index]);
   const jwks = new Set();
-  for (const m of pass.matchAll(KTY_MEMBER)) if (pass[enclosing[m.index]] === '{') jwks.add(enclosing[m.index]);
+  for (const m of pass.matchAll(KTY_MEMBER)) if (pass[around(m)] === '{') jwks.add(around(m));
   if (jwks.size === 0) return;
   for (const m of pass.matchAll(PRIVATE_MEMBER)) {
-    const at = m.index + m[0].length;
-    if (jwks.has(enclosing[m.index]) && !pass.startsWith(`"${MASK}"`, at) && !pass.startsWith('null', at)) {
+    if (jwks.has(around(m)) && !isMaskedInDecoding(pass, m.index + m[0].length)) {
       scan.flag('JWK private member in a decoding', pass.slice(m.index, m.index + 60));
       return;
     }
@@ -699,6 +711,24 @@ export function findTextLeaks(text) {
  */
 export function findJsonLeaks(value) {
   return judged(scan => judgeValue(value, scan, -1, true));
+}
+
+/**
+ * The leaks in the JSON bundle file whose text is `text`: {@link findJsonLeaks} of what JSON.parse reads, and a
+ * member name repeated in one object, of which JSON.parse keeps only the last. A file that is not JSON is a leak.
+ */
+export function findFileLeaks(text) {
+  return judged(scan => {
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      scan.flag('bundle file that is not JSON', text);
+      return;
+    }
+    if (repeatsAName(text)) scan.flag('JSON that repeats a member name', text);
+    judgeValue(value, scan, -1, true);
+  });
 }
 
 /** The leaks `judge` finds; a value nested too deep to walk is a leak itself (fail closed). */
