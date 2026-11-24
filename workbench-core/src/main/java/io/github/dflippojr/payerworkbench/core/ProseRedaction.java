@@ -50,11 +50,11 @@ final class ProseRedaction {
     private static final int HOLE_LENGTH = 5;
 
     /**
-     * A secret name: a secret field name with any {@code _} or {@code -} between its letters, or a credential header
-     * name, in any case.
+     * A secret name: a secret field name with any number of {@code _} or {@code -} around and between its letters, as
+     * {@link Redactor#isSecretField} reads it, or a credential header name, in any case.
      */
     private static final Pattern SECRET_NAME = Pattern.compile("(?i)" + Redactor.SECRET_FIELDS.stream()
-            .map(name -> String.join("[_-]?", name.split("")))
+            .map(name -> "[_-]*+" + String.join("[_-]*+", name.split("")) + "[_-]*+")
             .reduce((a, b) -> a + "|" + b).orElseThrow()
             + "|" + String.join("|", Redactor.SENSITIVE_HEADERS).replace("-", "[_-]?"));
 

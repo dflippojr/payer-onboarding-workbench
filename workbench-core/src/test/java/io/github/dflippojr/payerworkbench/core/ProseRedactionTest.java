@@ -281,6 +281,40 @@ class ProseRedactionTest {
     }
 
     /**
+     * The text rules' member names have no length bound, so a name that runs on, as plain letters and separators or as
+     * escapes, plainly and inside a JSON string, is read without a stack overflow and in a time that does not grow
+     * faster than its length; a secret one is still masked. The bound on the time is generous: it catches a per-character
+     * recursion or backtracking, not a slow machine.
+     */
+    @Test
+    void readsAMemberNameThatRunsOnWithoutOverflowingAndInLinearTime() {
+        String marker = "FAKE-NAMEV";
+        int length = 1 << 19;
+        String plain = "pass" + "_".repeat(length) + "word";
+        String escapes = "pass" + "\\u005f".repeat(length / 6) + "word";
+        String mixed = "pass" + "a\\u005f-".repeat(length / 8) + "word";
+        for (String name : List.of(plain, escapes, mixed)) {
+            String member = "\"" + name + "\":\"" + marker + "\"";
+            List<String> texts = new ArrayList<>(List.of("note " + member + " end", "note {\"a\":1,\"a\":2," + member + "} end",
+                    "note {\"" + name + "\":{\"x\":\"" + marker + "\"}", JSON.writeValueAsString(Map.of("body", "note " + member)),
+                    "note \"" + name + "\" and \"" + name + "\" end"));
+            if (name == plain) {
+                texts.add("note " + name + "=" + marker + "&x=1");
+            }
+            // The mixed name holds letters between its separators, so it is not a secret one: only its cost is checked.
+            boolean secret = Redactor.isSecretField(Redactor.decodeName(name));
+            for (String text : texts) {
+                String out = assertTimeoutPreemptively(Duration.ofSeconds(60), () -> Redactor.redact(text));
+                if (secret) {
+                    assertFalse(leaksAtAnyDecoding(out, marker), () -> text.substring(0, 80));
+                }
+            }
+        }
+        assertTrue(Redactor.isSecretField(Redactor.decodeName(escapes)));
+        assertFalse(Redactor.isSecretField(Redactor.decodeName(mixed)));
+    }
+
+    /**
      * {@code "name":"marker"} where only the text rules read it: a fragment, an object cut short, an object the tree
      * rejects for a repeated name (after prose, nested, alone), a JSON string holding such prose, and a token whose
      * claim holds it, in prose and in a JSON value; a form when the name's separators are plain.

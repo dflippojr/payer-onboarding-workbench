@@ -159,19 +159,21 @@ public final class Redactor {
     private static final String BACKSLASH = "\\\\";
 
     /**
-     * A character of a JSON member name: a letter, {@code _} or {@code -}, or the {@code \\u} escape of
-     * any character, as JSON may spell one ({@code "kt\\u0079"} is {@code kty}). {@link #decodeName}
-     * gives the name the escapes spell, which is the one compared.
+     * A JSON member name: letters, {@code _} and {@code -}, and the {@code \\u} escape of any character, as JSON may
+     * spell one ({@code "kt\\u0079"} is {@code kty}). {@link #decodeName} gives the name the escapes spell, which is
+     * the one compared. It has no length bound: the names {@link #isSecretField} accepts have separators in any number,
+     * plain or escaped, so no bound may stop a name the tree would read. Each repetition is a run of letters and
+     * separators or one escape, possessive, so a long name neither backtracks nor recurses per character.
      */
-    private static final String NAME_CHAR = "(?:[A-Za-z_-]|" + BACKSLASH + "u[0-9A-Fa-f]{4})";
+    private static final String NAME = "(?:[A-Za-z_-]++|" + BACKSLASH + "u[0-9A-Fa-f]{4})++";
 
     /**
-     * {@link #NAME_CHAR} in JSON embedded in a JSON string: the inner escape's backslash is escaped
-     * ({@code \\\\u0064}), or the outer string spells the character itself ({@code \\u0064}).
+     * {@link #NAME} in JSON embedded in a JSON string: an inner escape's backslash is escaped ({@code \\\\u0064}),
+     * or the outer string spells the character itself ({@code \\u0064}).
      */
-    private static final String EMBEDDED_NAME_CHAR = "(?:[A-Za-z_-]|" + BACKSLASH + "{1,2}u[0-9A-Fa-f]{4})";
+    private static final String EMBEDDED_NAME = "(?:[A-Za-z_-]++|" + BACKSLASH + "{1,2}u[0-9A-Fa-f]{4})++";
 
-    /** A {@code \\u} escape in a name matched with {@link #NAME_CHAR} or {@link #EMBEDDED_NAME_CHAR}. */
+    /** A {@code \\u} escape in a name matched with {@link #NAME} or {@link #EMBEDDED_NAME}. */
     private static final Pattern NAME_ESCAPE = Pattern.compile(BACKSLASH + "++u([0-9A-Fa-f]{4})");
 
     /** A unicode escape, from its backslash: {@code u} and four hex digits, either case. */
@@ -195,7 +197,7 @@ public final class Redactor {
      * long values.
      */
     private static final Pattern JSON_FIELD = Pattern.compile(
-            "\"(" + NAME_CHAR + "{1,64})\"(\\s*:\\s*)(?:\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))|"
+            "\"(" + NAME + ")\"(\\s*:\\s*)(?:\"((?:[^\"\\\\]++|\\\\.)*+)(?:\"|\\\\?+(?=\\R|\\z))|"
                     + JSON_SCALAR + ")");
 
     /** Any character but a quote or backslash, as a regex. */
@@ -214,7 +216,7 @@ public final class Redactor {
      * string may spell the closing quote {@code \\u0022}.
      */
     private static final Pattern EMBEDDED_JSON_FIELD = Pattern.compile(
-            BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
+            BACKSLASH + "\"(" + EMBEDDED_NAME + ")" + BACKSLASH + "\"(" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE + ")(?:"
                     + BACKSLASH + "\"((?:" + PLAIN + "++"
                     + "|" + BACKSLASH.repeat(4) + "|" + BACKSLASH.repeat(3) + "\"|" + BACKSLASH.repeat(2) + PLAIN
                     + "|" + BACKSLASH + "(?!u0022)" + PLAIN + ")*+)(?:" + BACKSLASH + "(?:\"|u0022)|(?:" + BACKSLASH
@@ -222,22 +224,22 @@ public final class Redactor {
                     + JSON_SCALAR + ")");
 
     /** A JSON field whose value is an object or array; group 1 is the name. */
-    private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"(" + NAME_CHAR + "{1,64})\"\\s*:\\s*(?=[{\\[])");
+    private static final Pattern JSON_FIELD_STRUCTURE = Pattern.compile("\"(" + NAME + ")\"\\s*:\\s*(?=[{\\[])");
 
     /** The same inside JSON embedded in a JSON string. */
     private static final Pattern EMBEDDED_JSON_FIELD_STRUCTURE = Pattern.compile(
-            BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE
+            BACKSLASH + "\"(" + EMBEDDED_NAME + ")" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":" + EMBEDDED_SPACE
                     + "(?=[{\\[])");
 
     /**
      * A JSON member name and its colon; group 1 is the name. Its whitespace may be escaped, as in
      * {@link #EMBEDDED_SPACE}, so a name in text copied from inside a JSON string reads too.
      */
-    private static final Pattern FIELD_NAME = Pattern.compile("\"(" + NAME_CHAR + "{1,64})\"" + EMBEDDED_SPACE + ":");
+    private static final Pattern FIELD_NAME = Pattern.compile("\"(" + NAME + ")\"" + EMBEDDED_SPACE + ":");
 
     /** The same inside JSON embedded in a JSON string, as {@link #EMBEDDED_JSON_FIELD} starts; it starts at the backslash. */
     private static final Pattern EMBEDDED_FIELD_NAME = Pattern.compile(
-            BACKSLASH + "\"(" + EMBEDDED_NAME_CHAR + "{1,64})" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
+            BACKSLASH + "\"(" + EMBEDDED_NAME + ")" + BACKSLASH + "\"" + EMBEDDED_SPACE + ":");
 
     /** {@link #KTY_NAME} inside JSON embedded in a JSON string; it starts at the backslash. */
     private static final Pattern EMBEDDED_KTY_NAME = Pattern.compile(
@@ -307,13 +309,13 @@ public final class Redactor {
             "privatetoken", "scram-sha-1", "scram-sha-256", "vapid", "token", "ntlm", "aws4-hmac-sha256");
 
     /**
-     * Every {@link #SECRET_FIELDS} name as a form key: an optional {@code _} or {@code -} may separate
-     * any two letters, and the match is case-insensitive. That is the normalization
+     * Every {@link #SECRET_FIELDS} name as a form key: any number of {@code _} or {@code -} may come
+     * before, after or between its letters, and the match is case-insensitive. That is the normalization
      * {@link #isSecretField(String)} applies, so {@code client_secret}, {@code clientSecret} and
      * {@code client-secret} all match {@code clientsecret}. The names are lower-case letters only.
      */
     private static final String FORM_SECRET_KEYS = SECRET_FIELDS.stream()
-            .map(name -> String.join("[_-]?", name.split("")))
+            .map(name -> "[_-]*+" + String.join("[_-]*+", name.split("")) + "[_-]*+")
             .collect(Collectors.joining("|"));
 
     /**
@@ -330,8 +332,8 @@ public final class Redactor {
 
     /**
      * {@code name} (lower-case letters) as a regex for a JSON member name: each letter as it is, or as
-     * its {@code \\u} escape in either hex case, its backslash as in {@link #NAME_CHAR} or, if
-     * {@code embedded}, {@link #EMBEDDED_NAME_CHAR}.
+     * its {@code \\u} escape in either hex case, its backslash as in {@link #NAME} or, if
+     * {@code embedded}, {@link #EMBEDDED_NAME}.
      */
     private static String spelled(String name, boolean embedded) {
         String escape = embedded ? BACKSLASH + "{1,2}u00" : BACKSLASH + "u00";
@@ -346,7 +348,7 @@ public final class Redactor {
     }
 
     /**
-     * The member name a name matched with {@link #NAME_CHAR} or {@link #EMBEDDED_NAME_CHAR} spells, each
+     * The member name a name matched with {@link #NAME} or {@link #EMBEDDED_NAME} spells, each
      * {@code \\u} escape decoded: the name JSON reads, so {@code "\\u0064"} is {@code d}.
      */
     static String decodeName(String name) {
