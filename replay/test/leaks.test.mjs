@@ -2420,7 +2420,7 @@ test('flags no Redactor output for the corpus and the fuzz corpus (#377 criterio
   // one corpus entry). Each is pinned by row and is a flag main's Redactor output gets on the same row (criterion 2 as
   // amended: no new flags against main, row by row; zero flags is Stage 3's, which replaces this scanner).
   const pairs = redactorGrid('agreement-grid');
-  assert.equal(pairs.length, 135 + 5_000);
+  assert.equal(pairs.length, 135 + 5_000 + 2_000);
   const wrong = agreementWrong(pairs);
   assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} wrong of ${pairs.length}`);
 });

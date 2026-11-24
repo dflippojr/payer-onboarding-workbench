@@ -2050,8 +2050,8 @@ class RedactorTest {
     }
 
     /**
-     * The Redactor's outputs for every text and harmless entry of the shared corpus and for the seeded fuzz corpus
-     * ({@link FuzzCorpus}), committed as the agreement grid: replay/test/leaks.test.mjs runs the scanner over each output
+     * The Redactor's outputs for every text and harmless entry of the shared corpus, for the seeded fuzz corpus and for
+     * its seeded credential-claim family ({@link FuzzCorpus}), committed as the agreement grid: replay/test/leaks.test.mjs runs the scanner over each output
      * (#377 criterion 2).
      */
     @Test
@@ -2070,7 +2070,12 @@ class RedactorTest {
         for (String input : FuzzCorpus.texts(377, 5_000)) {
             pairs.add(new String[] {input, Redactor.redact(input)});
         }
-        assertEquals(135 + 5_000, pairs.size());
+        // The credential-claim family (#406 redesign, Codex security r1 on #412): the same families, every JWT carrying a
+        // claim drawn from a fixed seed, so each row is pinned against main's output for the same input.
+        for (String input : FuzzCorpus.textsWithClaims(406, 2_000)) {
+            pairs.add(new String[] {input, Redactor.redact(input)});
+        }
+        assertEquals(135 + 5_000 + 2_000, pairs.size());
         assertScannerGrid("agreement-grid", pairs);
     }
 
