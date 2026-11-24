@@ -13,6 +13,9 @@ updates:
       # Major Spring Boot bumps are deliberate issues, not Dependabot PRs.
       - dependency-name: org.springframework.boot:spring-boot-starter-parent
         update-types: ["version-update:semver-major"]
+      # jqwik stays on the 1.9 line by owner decision (issue #427); 1.10+ is not proposed.
+      - dependency-name: "net.jqwik:*"
+        versions: [">= 1.10"]
   - package-ecosystem: github-actions
     assignees:
       - dflippojr
