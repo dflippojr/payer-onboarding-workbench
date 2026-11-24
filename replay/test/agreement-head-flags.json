@@ -1,6 +1,0 @@
-{
- "_comment": "The pinned rows the current Redactor outputs of agreement-grid.json.gz are flagged on (#377 criterion 2, as amended). Every one must also be flagged on main at the same entry points. Each value is a digit: bit 0 for findTextLeaks(output), bit 1 for findTextLeaks of its report form {\"responseBody\": output}, bit 2 for findJsonLeaks({responseBody: output}); a row is the first 16 hex digits of the SHA-256 of its input (UTF-8), and a row with no flag is left out. Written by node scripts/agreement-baseline.mjs --head.",
- "head": {
-  "25aac3cf533c677e": 2
- }
-}
