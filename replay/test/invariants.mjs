@@ -85,7 +85,7 @@ const VALUE_SPACE = ' \\t\\n\\x0B\\f\\r\\x1C-\\x1F\\u1680\\u2000-\\u2006\\u2008-
  * `value`: a JSON value's end. `decoded`: the same, also behind the closing quote of the string that held the value.
  * `credential`: where a scheme's credential ends, or the period that ends a sentence. `loose`: a delimiter or a
  * quote, also an escaped one, for a key read loosely. `end`: nothing (a form value or a header line, already cut at
- * its own end).
+ * its own end). `mask`: behind any mask at all, whichever rule wrote it ({@link judgeMasks}).
  */
 const TERMINATORS = {
   value: new RegExp(`[,}\\]${VALUE_SPACE}]`, 'y'),
@@ -93,6 +93,8 @@ const TERMINATORS = {
   credential: /[ \t\n\x0B\f\r"',;\\&)\]}<]|\.(?:$|[ \t\n\x0B\f\r"')\]}])/y,
   loose: /["',}\]\s]|(?:\\\\)*\\(?:"|u0022)/y,
   end: /(?!)/y,
+  // Behind any mask: anything but a character a credential is spelled with (a dot may start the next piece of a token).
+  mask: /[^A-Za-z0-9_~+/=%-]/y,
 };
 
 /**
@@ -397,7 +399,15 @@ function judgeWritten(written, scan, recorded) {
       if (repeatsAName(pass)) judgeJwksByBraces(pass, scan);
     } catch {
       whole = embeddedValues(pass).values;
-      judgeJwksByBraces(pass, scan);
+      // The values that read are judged on the tree below; the bounds rule reads what is left around them.
+      let rest = '';
+      let copied = 0;
+      for (const { from, to } of whole) {
+        rest += `${pass.slice(copied, from)}0`;
+        copied = to;
+      }
+      // A kty member in a value that read still counts when the bounds of what is left are unclear.
+      judgeJwksByBraces(rest + pass.slice(copied), scan, pass.search(KTY_MEMBER) >= 0);
     }
     for (const { value } of whole) judgeJwks(value, scan);
   }
@@ -420,27 +430,47 @@ function isMaskedInDecoding(pass, at) {
 
 /**
  * For a decoding that is not JSON, or that repeats a member name: flags a private member whose value is not the mask
- * between the same braces as a kty member. The braces are matched by count alone, with no reading of strings, so an object a stray quote breaks
- * is still one.
+ * between the same braces as a kty member (decision 4 on #425). The bounds are read by a tokenizer that knows strings:
+ * a brace, a bracket or a comma inside a quoted string, and an escaped quote, do not count. When the reading does not
+ * balance (a string or a bracket left open, or one closed that was never opened), or puts a member inside a string,
+ * the bounds are unclear, and the rule fails closed: with a kty member anywhere, every private member in the decoding must be the mask.
  */
-function judgeJwksByBraces(pass, scan) {
-  // For each position, the innermost brace or bracket open there (-1 for none), found in one walk.
-  const enclosing = new Int32Array(pass.length).fill(-1);
+function judgeJwksByBraces(pass, scan, ktySeen = false) {
+  // For each position, the innermost brace or bracket open there (-1 for none; -2 inside a string), in one walk.
+  const enclosing = new Int32Array(pass.length);
   const open = [];
+  let balanced = true;
   for (let i = 0; i < pass.length; i++) {
     const c = pass[i];
-    if (c === '}' || c === ']') open.pop();
+    if ((c === '}' || c === ']') && open.pop() === undefined) balanced = false;
     enclosing[i] = open.length > 0 ? open[open.length - 1] : -1;
     if (c === '{' || c === '[') open.push(i);
+    else if (c === '"') {
+      let end = i + 1;
+      while (end < pass.length && pass[end] !== '"') end += pass[end] === '\\' ? 2 : 1;
+      if (end >= pass.length) balanced = false;
+      enclosing.fill(-2, i + 1, Math.min(end + 1, pass.length));
+      i = end;
+    }
   }
+  if (open.length > 0) balanced = false;
   // A match starts at the brace or comma before the name; what encloses the name is what is open just after it.
   const around = m => (pass[m.index] === '{' ? m.index : enclosing[m.index]);
+  const outside = m => enclosing[m.index] !== -2;
   const jwks = new Set();
-  for (const m of pass.matchAll(KTY_MEMBER)) if (pass[around(m)] === '{') jwks.add(around(m));
-  if (jwks.size === 0) return;
-  for (const m of pass.matchAll(PRIVATE_MEMBER)) {
-    if (jwks.has(around(m)) && !isMaskedInDecoding(pass, m.index + m[0].length)) {
-      scan.flag('JWK private member in a decoding', pass.slice(m.index, m.index + 60));
+  let kty = ktySeen;
+  for (const m of pass.matchAll(KTY_MEMBER)) {
+    kty = true;
+    if (outside(m) && pass[around(m)] === '{') jwks.add(around(m));
+    else if (!outside(m)) balanced = false;
+  }
+  if (!kty) return;
+  const privates = [...pass.matchAll(PRIVATE_MEMBER)];
+  // A member the reading puts inside a string is one the reading cannot place: the bounds are unclear.
+  if (privates.some(m => !outside(m))) balanced = false;
+  for (const m of privates) {
+    if ((!balanced || jwks.has(around(m))) && !isMaskedInDecoding(pass, m.index + m[0].length)) {
+      scan.flag(balanced ? 'JWK private member in a decoding' : 'private member in a decoding whose bounds are unclear', pass.slice(m.index, m.index + 60));
       return;
     }
   }
@@ -634,6 +664,7 @@ function judgeProse(text, scan, decoded) {
       scan.flag('scheme credential', m[0]);
     }
   }
+  judgeMasks(text, scan);
   for (const m of text.matchAll(MASKED_SCHEME)) {
     if (!endsMasked(text, m.index + m[0].length, 'credential')) scan.flag('credential behind the mask', text.slice(m.index, m.index + 60));
   }
@@ -647,6 +678,23 @@ function judgeProse(text, scan, decoded) {
 
 /** A quoted kty name, its quotes plain or escaped, each letter as itself or as a \\u escape. */
 const KTY_NAME = /\\?"(?:k|\\{1,2}u006[bB])(?:t|\\{1,2}u0074)(?:y|\\{1,2}u0079)\\?"/;
+
+/**
+ * The terminator check as one pass over every mask in `text`, whichever rule wrote it and also where no rule reads a
+ * value (decision 3 on #425, implementation note): behind a mask, and any masks right behind it, the text ends or a
+ * terminator stands. A letter, a digit or another character a credential is spelled with is the rest of one.
+ */
+function judgeMasks(text, scan) {
+  for (let at = text.indexOf(MASK); at >= 0; at = text.indexOf(MASK, at)) {
+    const from = at;
+    at += MASK.length;
+    while (text.startsWith(MASK, at)) at += MASK.length;
+    if (!endsMasked(text, at, 'mask')) {
+      scan.flag('text behind a mask', text.slice(from, from + 60));
+      return;
+    }
+  }
+}
 
 /** Flags each credential header line in `text` whose value is not one the Redactor leaves. */
 function judgeHeaderLines(text, scan) {
