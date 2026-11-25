@@ -648,7 +648,7 @@ test('one shared terminator: a masked value ends only at a terminator, whatever 
   let judged = 0;
   for (const { rule, head, json, terminators, noMasksBehind } of RULES) {
     for (const behind of noMasksBehind ? [0] : [0, 1, 2]) {
-      for (const [follow, expected] of [['', false], ...terminators.map(t => [t, false]), [REST, true], [`${REST} more`, true]]) {
+      for (const [follow, expected] of [['', false], ...terminators.map(t => [t, false]), [REST, true], [`${REST} more`, true], [`:${REST}`, true]]) {
         const masks = MASK.repeat(behind);
         const text = json ? json(masks, follow) : `${head}${masks}${follow}`;
         judged++;
@@ -792,6 +792,52 @@ test('decisions 3 and 7, one normal form: the per-string rule reads a name howev
     const value = spell(spell('{"jwk":{"kty":"RSA","n":"N1"},"data":{"d":"2026-11-04"}}', 'kty'), 'd');
     assert.deepEqual(entryPoints(`payer said: ${value}`), [false, false, false], value);
   }
+});
+
+test('decision 8a: a secret-named key in object-literal spelling is read as a key, at every entry point', () => {
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text })].map(leaks => leaks.length > 0);
+  const NAMES = ['client_secret', 'clientSecret', 'access_token', 'refresh_token', 'id_token', 'password', 'api_key', 'apiKey', 'private_key', 'Cookie', 'X-Api-Key'];
+  const wrong = [];
+  let judged = 0;
+  for (const name of NAMES) {
+    for (const [spelling, key] of [['unquoted', name], ['quoted', `"${name}"`]]) {
+      for (const [space, lead] of [['', ''], [' ', ''], ['', 'config = '], ['\n  ', 'payer said: ']]) {
+        for (const [value, expected] of [['FAKE-literal-0001', true], [MASK, false]]) {
+          const text = `${lead}{${space}${key}: "${value}"}`;
+          judged++;
+          const verdicts = entryPoints(text);
+          if (verdicts.some(flag => flag !== expected)) wrong.push(`${name} ${spelling}, ${JSON.stringify(lead + space)}, expected ${expected}: ${verdicts}`);
+        }
+      }
+    }
+  }
+  assert.ok(judged >= 11 * 2 * 4 * 2, `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} wrong`);
+  // A name that is no secret name is any key.
+  assert.deepEqual(entryPoints('{note: "FAKE-literal-0001"}'), [false, false, false]);
+});
+
+test('decision 8c: a recorded text that ends in a masked quoted secret member is accepted inside a bundle file too', () => {
+  const B = '\\';
+  const inFile = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text }),
+    invariants.findFileLeaks(JSON.stringify({ runs: [{ evidence: [text], status: 200 }] }))].map(leaks => leaks.length > 0);
+  const wrong = [];
+  let judged = 0;
+  for (const name of ['client_secret', 'password', 'access_token', 'Authorization']) {
+    const masked = name === 'Authorization' ? `Bearer ${MASK}` : MASK;
+    for (const lead of ['{', 'note {', '{"a":1,', 'x ', '[{"a":"b"},{']) {
+      for (const [value, behind, expected] of [[masked, '', false], ['null', null, false], [masked, 'FAKE-rest-0002', true], ['FAKE-rest-0002', '', true]]) {
+        const text = behind === null ? `${lead}"${name}":null` : `${lead}"${name}":"${value}"${behind}`;
+        judged++;
+        const verdicts = inFile(text);
+        if (verdicts.some(flag => flag !== expected)) wrong.push(`${name} after ${JSON.stringify(lead)}, ${value} ${behind}, expected ${expected}: ${verdicts}`);
+      }
+    }
+  }
+  assert.ok(judged >= 4 * 5 * 4, `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} wrong`);
+  // A level further down the closing quote is a string's inside a recorded text: the Redactor masks that text.
+  assert.deepEqual(inFile(`{"note":"x${B}"password${B}":${B}"${MASK}${B}""}`), [true, true, true, true]);
 });
 
 test('shares no code with the Redactor: the check imports nothing', () => {
@@ -990,9 +1036,12 @@ for (const [name, [rows, masked]] of Object.entries(GRIDS)) {
   });
 }
 
-/** Whether each entry point flags `text`: as a recorded string, as a bundle file's text and, if it is JSON, as that file parsed. */
+/**
+ * Whether each entry point flags `text`: as a recorded string, as a string a bundle file holds, as a bundle file's
+ * own text and, if it is JSON, as that file parsed.
+ */
 function verdicts(text) {
-  const all = [flagged(text), invariants.findFileLeaks(text).length > 0];
+  const all = [flagged(text), findJsonLeaks({ responseBody: text }).length > 0, invariants.findFileLeaks(text).length > 0];
   let parsed;
   try {
     parsed = { value: JSON.parse(text) };
