@@ -991,11 +991,14 @@ for (const [name, [rows, masked]] of Object.entries(GRIDS)) {
 /** Whether each entry point flags `text`: as a recorded string, as a bundle file's text and, if it is JSON, as that file parsed. */
 function verdicts(text) {
   const all = [flagged(text), invariants.findFileLeaks(text).length > 0];
+  let parsed;
   try {
-    all.push(findJsonLeaks(JSON.parse(text)).length > 0);
+    parsed = { value: JSON.parse(text) };
   } catch {
     // Not JSON: there is no parsed form to judge.
   }
+  // Outside the catch: a check that throws on a parsed value fails the test.
+  if (parsed) all.push(findJsonLeaks(parsed.value).length > 0);
   return all;
 }
 
