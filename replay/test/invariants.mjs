@@ -365,7 +365,7 @@ function judgeText(text, scan, level, recorded = false) {
     }
   }
   const { values, failed } = read ? embeddedValues(text) : { values: [], failed: text.search(/[[{]/) };
-  judgeJwksInString(text, values, scan);
+  judgeJwksInString(text, read, scan);
   let prose = '';
   let written = '';
   let copied = 0;
@@ -461,7 +461,7 @@ function judgeJwksAnywhere(pass, scan) {
   }
   judgeJwksIn(rest + pass.slice(copied), scan);
   for (const { from, to, value } of values) {
-    if (inValues < ktys.length) judgeJwksIn(pass.slice(from, to), scan);
+    if (inValues < ktys.length) judgeJwksIn(JSON.stringify(value), scan);
     else judgeJwks(value, scan);
   }
 }
@@ -470,12 +470,45 @@ function judgeJwksAnywhere(pass, scan) {
  * For one recorded string that is not JSON as a whole (decision 7 on #425): with a kty member anywhere in it, a
  * private member anywhere in it must be the mask, unless it stands in the same value as every kty member of the
  * string: a value that JSON.parse reads whole, which {@link judgeValue} judges by its tree.
+ *
+ * The rule reads one normal form (implementation note under decisions 3 and 7): each value that reads is written in
+ * JSON's own spelling, where every member name is plain, and the text around the values is read at each decoding of
+ * its escapes, the values that read staying as they are. So a name spelled with an escape, or a value a level down,
+ * is read like a plain one; no pattern reads an escape in place.
  */
-function judgeJwksInString(text, values, scan) {
-  const ktys = [...text.matchAll(KTY_MEMBER)].map(m => m.index);
-  if (ktys.length === 0) return;
-  const holder = values.find(({ from, to }) => from <= ktys[0] && ktys[ktys.length - 1] < to);
-  judgeJwksIn(holder ? `${text.slice(0, holder.from)}0${text.slice(holder.to)}` : text, scan);
+function judgeJwksInString(text, read, scan) {
+  let pass = text;
+  for (let depth = 0; depth <= MAX_DECODINGS; depth++) {
+    // Only a \u escape can spell a letter of a name.
+    if (!pass.includes('kty') && !pass.includes('\\u')) return;
+    let normal = '';
+    let next = '';
+    let copied = 0;
+    const spans = [];
+    const around = to => {
+      const rest = pass.slice(copied, to);
+      normal += rest;
+      next += unescaped(rest);
+    };
+    for (const { from, to, value } of read ? embeddedValues(pass).values : []) {
+      around(from);
+      const json = JSON.stringify(value);
+      spans.push({ from: normal.length, to: normal.length + json.length });
+      normal += json;
+      next += json;
+      copied = to;
+    }
+    around(pass.length);
+    const ktys = [...normal.matchAll(KTY_MEMBER)].map(m => m.index);
+    if (ktys.length > 0) {
+      const holder = spans.find(({ from, to }) => from <= ktys[0] && ktys[ktys.length - 1] < to);
+      const flagged = scan.leaks.length;
+      judgeJwksIn(holder ? `${normal.slice(0, holder.from)}0${normal.slice(holder.to)}` : normal, scan);
+      if (scan.leaks.length > flagged) return;
+    }
+    if (next === normal) return;
+    pass = next;
+  }
 }
 
 /** Flags each private member that is not the mask in each object with a kty member in `value`. */
