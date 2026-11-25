@@ -634,12 +634,14 @@ test('one shared terminator: a masked value ends only at a terminator, whatever 
   ];
   /** As a recorded string, as a bundle file's text, and inside a bundle file (parsed, or as a line of a report value). */
   const entryPoints = text => {
-    let third;
+    let parsed;
     try {
-      third = findJsonLeaks(JSON.parse(text));
+      parsed = { value: JSON.parse(text) };
     } catch {
-      third = findJsonLeaks({ evidence: [`lead\n${text}\ntail`] });
+      // Not JSON: judged as a line of a report value instead.
     }
+    // Outside the catch: a check that throws on a parsed value fails the test.
+    const third = findJsonLeaks(parsed ? parsed.value : { evidence: [`lead\n${text}\ntail`] });
     return [findTextLeaks(text), invariants.findFileLeaks(text), third].map(leaks => leaks.length > 0);
   };
   const wrong = [];
