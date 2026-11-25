@@ -749,6 +749,49 @@ test('decision 7: in a recorded string, a private member counts unless it sits i
   assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} wrong`);
 });
 
+test('decisions 3 and 7, one normal form: the per-string rule reads a name however it is spelled, at every decoding', () => {
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ body: text })), findJsonLeaks({ body: text })].map(leaks => leaks.length > 0);
+  // A value with one of its member names spelled plainly, with a JSON escape, or a level down (its quotes escaped).
+  const SPELLINGS = {
+    plain: (json, name) => json,
+    escaped: (json, name) => json.replace(`"${name}"`, `"\\u${name.charCodeAt(0).toString(16).padStart(4, '0')}${name.slice(1)}"`),
+    'a level down': (json, name) => JSON.stringify(json).slice(1, -1),
+    'escaped, a level down': (json, name) => JSON.stringify(SPELLINGS.escaped(json, name)).slice(1, -1),
+  };
+  const PLACEMENTS = {
+    'a value after the key': (key, other) => `payer said: ${key} and ${other}`,
+    'a value before the key': (key, other) => `payer said: ${other} and ${key}`,
+    'a list after the key': (key, other) => `payer said: ${key} and [${other}]`,
+    'a value after two keys': (key, other) => `${key} then ${key} and ${other}`,
+  };
+  const wrong = [];
+  let judged = 0;
+  for (const member of ['d', 'p', 'k', 'oth']) {
+    for (const [keySpelling, spellKey] of Object.entries(SPELLINGS)) {
+      for (const [otherSpelling, spellOther] of Object.entries(SPELLINGS)) {
+        for (const [placement, place] of Object.entries(PLACEMENTS)) {
+          // Masked: accepted where both values read at the string's own level. A value a level down does not read
+          // there, and invariant 4 flags a JSON-looking start that does not parse in front of these names.
+          const down = `${keySpelling}${otherSpelling}`.includes('level down');
+          for (const [value, expected] of [['FAKE-jwk-0006', true], ...(down ? [] : [[MASK, false]])]) {
+            const text = place(spellKey('{"kty":"RSA","n":"N1"}', 'kty'), spellOther(`{"${member}":"${value}"}`, member));
+            judged++;
+            const verdicts = entryPoints(text);
+            if (verdicts.some(flag => flag !== expected)) wrong.push(`${member}: key ${keySpelling}, member ${otherSpelling}, ${placement}, expected ${expected}: ${verdicts}`);
+          }
+        }
+      }
+    }
+  }
+  assert.ok(judged >= 4 * 4 * 4 * 4 + 4 * 2 * 2 * 4, `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} wrong`);
+  // In the one value that holds every key type, the tree decides, however the names are spelled.
+  for (const spell of [SPELLINGS.plain, SPELLINGS.escaped]) {
+    const value = spell(spell('{"jwk":{"kty":"RSA","n":"N1"},"data":{"d":"2026-11-04"}}', 'kty'), 'd');
+    assert.deepEqual(entryPoints(`payer said: ${value}`), [false, false, false], value);
+  }
+});
+
 test('shares no code with the Redactor: the check imports nothing', () => {
   const source = readFileSync(here('./invariants.mjs'), 'utf8');
   assert.doesNotMatch(source, /^\s*import\b|\bimport\s*\(|\brequire\s*\(/m);
