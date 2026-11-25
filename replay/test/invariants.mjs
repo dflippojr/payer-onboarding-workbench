@@ -24,11 +24,13 @@
 // The check is at least as strict as the Redactor on every text the tests hold (the corpus, the committed grids,
 // generated secrets), and stricter on purpose where the decisions on #425 say a miss blocks and an over-flag is
 // acceptable: text behind any mask is flagged (one terminator check over every mask, whichever rule wrote it), though
-// the Redactor leaves a broken mask as it finds it; and a JWK that only a decoding shows, whose bounds a string-aware
-// reading cannot settle, must have every private member masked. It is not a second Redactor. Three kinds of text the
-// Redactor masks whole, fail closed, hold no credential bytes and are accepted here: masks right behind a value that
-// already is the mask, up to a terminator; cut JSON that repeats a member name and names no secret; and a masked
-// header line that ends at its JSON string's own closing quote two or more decodings down.
+// the Redactor leaves a broken mask as it finds it; and in a decoding that is not JSON as a whole, a kty member
+// anywhere means every private member anywhere must be the mask, with no reading of which braces hold which member
+// (only values that read as JSON whole, when no kty member stands outside them, are still read as JSON).
+// It is not a second Redactor. Three kinds of text the Redactor masks whole, fail closed, hold no credential bytes and
+// are accepted here: masks right behind a value that already is the mask, up to a terminator; cut JSON that repeats a
+// member name and names no secret; and a masked header line that ends at its JSON string's own closing quote two or
+// more decodings down.
 //
 // Independent of workbench-core's Redactor on purpose (#360): nothing here is generated from it or shared with it,
 // and this file imports nothing. The name lists below are the contract, as
@@ -396,22 +398,14 @@ function judgeWritten(written, scan, recorded) {
     if (!pass.includes('"kty"')) continue;
     let whole;
     try {
-      whole = [{ value: JSON.parse(pass) }];
-      // JSON.parse keeps the last of a repeated name only: the braces rule reads every member.
-      if (repeatsAName(pass)) judgeJwksByBraces(pass, scan);
+      whole = JSON.parse(pass);
     } catch {
-      whole = embeddedValues(pass).values;
-      // The values that read are judged on the tree below; the bounds rule reads what is left around them.
-      let rest = '';
-      let copied = 0;
-      for (const { from, to } of whole) {
-        rest += `${pass.slice(copied, from)}0`;
-        copied = to;
-      }
-      // A kty member in a value that read still counts when the bounds of what is left are unclear.
-      judgeJwksByBraces(rest + pass.slice(copied), scan, pass.search(KTY_MEMBER) >= 0);
+      judgeJwksAnywhere(pass, scan);
+      continue;
     }
-    for (const { value } of whole) judgeJwks(value, scan);
+    // JSON.parse keeps the last of a repeated name only, so which member belongs to which object is not read there either.
+    if (repeatsAName(pass)) judgeJwksIn(pass, scan);
+    judgeJwks(whole, scan);
   }
 }
 
@@ -421,8 +415,8 @@ function judgeWritten(written, scan, recorded) {
  */
 const PRIVATE_MEMBER = new RegExp(`[{,][${WS}]*"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})"[${WS}]*:[${WS}]*`, 'g');
 
-/** A kty member's quoted name and its colon, where a member starts. */
-const KTY_MEMBER = new RegExp(`[{,][${WS}]*"kty"[${WS}]*:`, 'g');
+/** A kty member's quoted name and its colon, anywhere. */
+const KTY_MEMBER = new RegExp(`"kty"[${WS}]*:`, 'g');
 
 /** Whether the value at `at` in a decoding is the mask or null, up to where a value ends or its string's own quote closes. */
 function isMaskedInDecoding(pass, at) {
@@ -430,51 +424,43 @@ function isMaskedInDecoding(pass, at) {
   return end >= 0 && endsMasked(pass, end, 'decoded');
 }
 
-/**
- * For a decoding that is not JSON, or that repeats a member name: flags a private member whose value is not the mask
- * between the same braces as a kty member (decision 4 on #425). The bounds are read by a tokenizer that knows strings:
- * a brace, a bracket or a comma inside a quoted string, and an escaped quote, do not count. When the reading does not
- * balance (a string or a bracket left open, or one closed that was never opened), or puts a member inside a string,
- * the bounds are unclear, and the rule fails closed: with a kty member anywhere, every private member in the decoding must be the mask.
- */
-function judgeJwksByBraces(pass, scan, ktySeen = false) {
-  // For each position, the innermost brace or bracket open there (-1 for none; -2 inside a string), in one walk.
-  const enclosing = new Int32Array(pass.length);
-  const open = [];
-  let balanced = true;
-  for (let i = 0; i < pass.length; i++) {
-    const c = pass[i];
-    if ((c === '}' || c === ']') && open.pop() === undefined) balanced = false;
-    enclosing[i] = open.length > 0 ? open[open.length - 1] : -1;
-    if (c === '{' || c === '[') open.push(i);
-    else if (c === '"') {
-      let end = i + 1;
-      while (end < pass.length && pass[end] !== '"') end += pass[end] === '\\' ? 2 : 1;
-      if (end >= pass.length) balanced = false;
-      enclosing.fill(-2, i + 1, Math.min(end + 1, pass.length));
-      i = end;
-    }
-  }
-  if (open.length > 0) balanced = false;
-  // A match starts at the brace or comma before the name; what encloses the name is what is open just after it.
-  const around = m => (pass[m.index] === '{' ? m.index : enclosing[m.index]);
-  const outside = m => enclosing[m.index] !== -2;
-  const jwks = new Set();
-  let kty = ktySeen;
-  for (const m of pass.matchAll(KTY_MEMBER)) {
-    kty = true;
-    if (outside(m) && pass[around(m)] === '{') jwks.add(around(m));
-    else if (!outside(m)) balanced = false;
-  }
-  if (!kty) return;
-  const privates = [...pass.matchAll(PRIVATE_MEMBER)];
-  // A member the reading puts inside a string is one the reading cannot place: the bounds are unclear.
-  if (privates.some(m => !outside(m))) balanced = false;
-  for (const m of privates) {
-    if ((!balanced || jwks.has(around(m))) && !isMaskedInDecoding(pass, m.index + m[0].length)) {
-      scan.flag(balanced ? 'JWK private member in a decoding' : 'private member in a decoding whose bounds are unclear', pass.slice(m.index, m.index + 60));
+/** Flags the first private member anywhere in `text` that is not the mask. */
+function judgeJwksIn(text, scan) {
+  for (const m of text.matchAll(PRIVATE_MEMBER)) {
+    if (!isMaskedInDecoding(text, m.index + m[0].length)) {
+      scan.flag('private member in a decoding that holds a key type', text.slice(m.index, m.index + 60));
       return;
     }
+  }
+}
+
+/**
+ * For a decoding that is not JSON as a whole (decision 6 on #425): with a kty member anywhere in it, every private
+ * member anywhere in it must be the mask. No bounds are read: which braces hold which member is what such a decoding
+ * does not settle. One kind of value in it is still read as JSON, by its tree: a value that JSON.parse reads whole,
+ * while every kty member of the decoding stands inside such values. That is JSON a string holds, as the Redactor
+ * writes it and as a bundle file holds many of, where a private name outside the JWK's own object is any name. With
+ * a kty member outside every such value, the private members inside them count as well.
+ */
+function judgeJwksAnywhere(pass, scan) {
+  const ktys = [...pass.matchAll(KTY_MEMBER)].map(m => m.index);
+  if (ktys.length === 0) return;
+  const { values } = embeddedValues(pass);
+  let rest = '';
+  let copied = 0;
+  let next = 0;
+  let inValues = 0;
+  for (const { from, to } of values) {
+    while (next < ktys.length && ktys[next] < from) next++;
+    for (; next < ktys.length && ktys[next] < to; next++) inValues++;
+    // A private member whose value is such a value is not the mask.
+    rest += `${pass.slice(copied, from)}0`;
+    copied = to;
+  }
+  judgeJwksIn(rest + pass.slice(copied), scan);
+  for (const { from, to, value } of values) {
+    if (inValues < ktys.length) judgeJwksIn(pass.slice(from, to), scan);
+    else judgeJwks(value, scan);
   }
 }
 
