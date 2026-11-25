@@ -98,8 +98,9 @@ const TERMINATORS = {
   credential: /[ \t\n\x0B\f\r"',;\\&)\]}<]|\.(?:$|[ \t\n\x0B\f\r"')\]}])/y,
   loose: /["',}\]\s]|(?:\\\\)*\\(?:"|u0022)/y,
   end: /(?!)/y,
-  // Behind any mask: anything but a character a credential is spelled with (a dot may start the next piece of a token).
-  mask: /[^A-Za-z0-9_~+/=%-]/y,
+  // Behind any mask: anything but a character a credential is spelled with (a dot may start the next piece of a
+  // token), or a colon in front of one (the rest of a pair of credentials).
+  mask: /(?!:[A-Za-z0-9_~+/=%-])[^A-Za-z0-9_~+/=%-]/y,
 };
 
 /**
@@ -246,7 +247,8 @@ function isMaskedMember(name, member, recorded, inToken) {
  */
 function judgeValue(value, scan, level, recorded, known = new Map()) {
   if (typeof value === 'string') {
-    judgeText(value, scan, level + 1);
+    // A string of a bundle file's own structure is one the workbench recorded whole: judged as it is on its own.
+    judgeText(value, scan, recorded ? 0 : level + 1);
     return;
   }
   if (value === null || typeof value !== 'object') return;
@@ -279,7 +281,11 @@ function looksLikeJson(text, at) {
   if (i === text.length) return true;
   const c = text[i];
   if (c === '"' || c === "'" || c === '\\') return true;
-  return text[at] === '{' ? c === '}' : c === ']' || c === '[' || c === '{';
+  if (text[at] !== '{') return c === ']' || c === '[' || c === '{';
+  if (c === '}') return true;
+  // Object-literal spelling (decision 8 on #425): a secret name without quotes, used as a key with a quoted value.
+  LITERAL_KEY.lastIndex = i;
+  return LITERAL_KEY.test(text);
 }
 
 /**
@@ -360,7 +366,7 @@ function judgeText(text, scan, level, recorded = false) {
       // A text that is one JSON string: no object or array bounds it, so the quote that closes it is part of a
       // header line that ends it, and the quote that opens it keeps a line at its start from being one.
       if (typeof json.value === 'string') judgeHeaderLines(`"${json.value}"`, scan);
-      if (level === 0 && scan.leaks.length === 0) judgeWritten(JSON.stringify(json.value), scan, recorded);
+      if (level === 0 && scan.leaks.length === 0) judgeWritten(JSON.stringify(json.value), scan, recorded, recorded ? ownStructure(json.value) : undefined);
       return;
     }
   }
@@ -392,11 +398,20 @@ function judgeText(text, scan, level, recorded = false) {
  * member that is not the mask. This is where a member name that a decoding reads as a secret name, or as more than
  * one member, shows, and a masked value that ends at its string's own closing quote.
  */
-function judgeWritten(written, scan, recorded) {
+function judgeWritten(written, scan, recorded, structure = written) {
   const { passes } = decodings(written);
   for (let depth = 1; depth < passes.length; depth++) {
     const pass = passes[depth];
-    judgeMembers(pass, scan, true, false, recorded);
+    // In a bundle file the closing quote of one of the file's own strings stands behind the recorded text it holds: a
+    // text may end in a masked member there (decision 8 on #425), as it may where it is judged on its own. Each
+    // recorded text is judged on its own as well, where a closing quote inside it is no end.
+    judgeMembers(pass, scan, true, false, recorded, recorded ? 'decoded' : 'value');
+  }
+  // In a bundle file the JWK rules do not read again a string that is a JSON text as a whole: it is a recorded text,
+  // judged on its own (decision 7 on #425), and a text the Redactor leaves is left in a file as well (decision 8).
+  const keyed = structure === written ? passes : decodings(structure).passes;
+  for (let depth = 1; depth < keyed.length; depth++) {
+    const pass = keyed[depth];
     if (!pass.includes('"kty"')) continue;
     let whole;
     try {
@@ -409,6 +424,28 @@ function judgeWritten(written, scan, recorded) {
     if (repeatsAName(pass)) judgeJwksIn(pass, scan);
     judgeJwks(whole, scan);
   }
+}
+
+/**
+ * A bundle file written out for the JWK rules: as it is, but a string that is a JSON object or array as a whole is
+ * left empty. Such a string is a recorded JSON text, judged on its own; read again inside the file it would only be
+ * the same text one level further down, which the Redactor did not read there.
+ */
+function ownStructure(value) {
+  if (typeof value === 'string') {
+    if (/^[ \t\n\r]*[[{]/.test(value)) {
+      try {
+        JSON.parse(value);
+        return '""';
+      } catch {
+        // Not JSON as a whole: kept.
+      }
+    }
+    return JSON.stringify(value);
+  }
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(ownStructure).join(',')}]`;
+  return `{${Object.entries(value).map(([name, member]) => `${JSON.stringify(name)}:${ownStructure(member)}`).join(',')}}`;
 }
 
 /**
@@ -615,6 +652,9 @@ const GAP = String.raw`(?:[\s\p{Z}\u0085"']|\\+(?:u[0-9A-Fa-f]{4}|[A-Za-z"]))*`;
  */
 const SECRET_NAME = new RegExp(`(?<![_-])${FIELD_KEY}|${HEADER_NAME.replaceAll('-', '[_-]?')}`, 'gi');
 
+/** A secret name without quotes, its colon and the quote that opens its value: a key in object-literal spelling. */
+const LITERAL_KEY = new RegExp(`(?:${SECRET_NAME.source})[${WS}]*:[${WS}]*"`, 'yi');
+
 /** A JWK private member's quoted name. */
 const PRIVATE_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*"`, 'g');
 
@@ -666,8 +706,8 @@ const EMBEDDED_STRING_LIST = /\[[ \t\n\r]*(?:\\"[^"\\]*\\"[ \t\n\r]*(?:,[ \t\n\r
  * Whether the value at `at`, after the colon of the secret name `name`, is a form the Redactor writes, at a strict
  * value end: null, a masked string between the name's own `quote`s, or a list of scheme forms quoted the same way.
  */
-function readsAsMasked(text, at, name, quote, recorded) {
-  if (text.startsWith('null', at)) return endsMasked(text, at + 4);
+function readsAsMasked(text, at, name, quote, recorded, kind = 'value') {
+  if (text.startsWith('null', at)) return endsMasked(text, at + 4, kind);
   if (text[at] === '[') {
     const lists = quote === '"' ? STRING_LIST : EMBEDDED_STRING_LIST;
     lists.lastIndex = at;
@@ -679,11 +719,11 @@ function readsAsMasked(text, at, name, quote, recorded) {
     } catch {
       return false;
     }
-    return items.every(item => (recorded || item !== MASK) && isMaskedString(name, item)) && endsMasked(text, at + list[0].length);
+    return items.every(item => (recorded || item !== MASK) && isMaskedString(name, item)) && endsMasked(text, at + list[0].length, kind);
   }
   if (!text.startsWith(quote, at)) return false;
   const close = text.indexOf(quote, at + quote.length);
-  return close > 0 && isMaskedString(name, text.slice(at + quote.length, close)) && endsMasked(text, close + quote.length);
+  return close > 0 && isMaskedString(name, text.slice(at + quote.length, close)) && endsMasked(text, close + quote.length, kind);
 }
 
 /** The text rules (invariant 3) on text that holds no JSON value, as spelled or, `decoded`, at a decoding of its escapes. */
@@ -757,10 +797,10 @@ function keepsLine(name, value) {
  * Flags each quoted secret name in `text` whose value is not a form the Redactor writes at a strict value end; with
  * `jwk`, a JWK's private member names are secret too.
  */
-function judgeMembers(text, scan, decoded, jwk, recorded = false) {
+function judgeMembers(text, scan, decoded, jwk, recorded = false, kind = 'value') {
   for (const m of text.matchAll(MEMBER_NAME)) {
     const name = m[2].replace(/\\{1,2}u([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
-    if ((isSecretName(name) || (jwk && JWK_PRIVATE_MEMBERS.has(name))) && !readsAsMasked(text, m.index + m[0].length, name, m[1], recorded)) {
+    if ((isSecretName(name) || (jwk && JWK_PRIVATE_MEMBERS.has(name))) && !readsAsMasked(text, m.index + m[0].length, name, m[1], recorded, kind)) {
       scan.flag(decoded ? 'secret-named member in a decoding' : 'secret-named member in text', text.slice(m.index, m.index + 80));
       // One is enough, and keeps the work linear: only a value that is flagged is read past its first characters.
       return;

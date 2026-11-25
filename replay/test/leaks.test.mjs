@@ -412,8 +412,10 @@ test('invariant 4: a text the Redactor leaves on its own is flagged where a JSON
   // On its own the text is what the Redactor leaves; inside JSON its closing quote meets the string's.
   assertAccepted(field);
   assertFlagged(JSON.stringify({ body: field, y: 1 }));
-  // A bundle file is judged as one recorded text (one choke point), so the same holds for a report value in it.
-  assert.ok(findJsonLeaks({ responseBody: field }).length > 0);
+  // A bundle file holds each recorded text as the Redactor left it (decision 8 on #425): accepted there as on its own.
+  assert.deepEqual(findJsonLeaks({ responseBody: field }), []);
+  assert.deepEqual(invariants.findFileLeaks(JSON.stringify({ body: field, y: 1 })), []);
+  // A recorded text that holds it in a JSON string is one the Redactor masks, in a file as well.
   assert.ok(findJsonLeaks({ responseBody: JSON.stringify({ body: field }) }).length > 0);
 });
 
@@ -802,7 +804,8 @@ test('decision 8a: a secret-named key in object-literal spelling is read as a ke
   for (const name of NAMES) {
     for (const [spelling, key] of [['unquoted', name], ['quoted', `"${name}"`]]) {
       for (const [space, lead] of [['', ''], [' ', ''], ['', 'config = '], ['\n  ', 'payer said: ']]) {
-        for (const [value, expected] of [['FAKE-literal-0001', true], [MASK, false]]) {
+        // Masked: accepted on one line. At a line start a header name is a header line, whose value the Redactor masks.
+        for (const [value, expected] of [['FAKE-literal-0001', true], ...(space.includes('\n') ? [] : [[MASK, false]])]) {
           const text = `${lead}{${space}${key}: "${value}"}`;
           judged++;
           const verdicts = entryPoints(text);
@@ -811,7 +814,7 @@ test('decision 8a: a secret-named key in object-literal spelling is read as a ke
       }
     }
   }
-  assert.ok(judged >= 11 * 2 * 4 * 2, `${judged} forms judged`);
+  assert.ok(judged >= 11 * 2 * (4 + 3), `${judged} forms judged`);
   assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} wrong`);
   // A name that is no secret name is any key.
   assert.deepEqual(entryPoints('{note: "FAKE-literal-0001"}'), [false, false, false]);
@@ -826,8 +829,8 @@ test('decision 8c: a recorded text that ends in a masked quoted secret member is
   for (const name of ['client_secret', 'password', 'access_token', 'Authorization']) {
     const masked = name === 'Authorization' ? `Bearer ${MASK}` : MASK;
     for (const lead of ['{', 'note {', '{"a":1,', 'x ', '[{"a":"b"},{']) {
-      for (const [value, behind, expected] of [[masked, '', false], ['null', null, false], [masked, 'FAKE-rest-0002', true], ['FAKE-rest-0002', '', true]]) {
-        const text = behind === null ? `${lead}"${name}":null` : `${lead}"${name}":"${value}"${behind}`;
+      for (const [value, behind, expected] of [[masked, '', false], [masked, MASK, false], [masked, 'FAKE-rest-0002', true], ['FAKE-rest-0002', '', true]]) {
+        const text = `${lead}"${name}":"${value}"${behind}`;
         judged++;
         const verdicts = inFile(text);
         if (verdicts.some(flag => flag !== expected)) wrong.push(`${name} after ${JSON.stringify(lead)}, ${value} ${behind}, expected ${expected}: ${verdicts}`);
@@ -1058,11 +1061,22 @@ test('one choke point: every entry point gives the same verdict on every grid ro
   // string, and the only file-specific difference is a credential header's list of masked values.
   const differ = [];
   let judged = 0;
+  // A text is judged alike on its own and as a string a bundle file holds. As a bundle file itself it is judged
+  // alike from its text and parsed; there each of its strings is a recorded text of its own (decision 8), so it may be
+  // accepted where the text as one string is flagged, only when every string in it is accepted on its own.
+  let asFileOnly = 0;
+  const strings = value => (typeof value === 'string' ? [value] : value === null || typeof value !== 'object' ? []
+    : Object.entries(value).flatMap(([name, member]) => [...(Array.isArray(value) ? [] : [name]), ...strings(member)]));
   const judge = text => {
     judged++;
-    const all = verdicts(text);
-    if (all.some(verdict => verdict !== all[0])) differ.push(`${all}: ${text.slice(0, 120)}`);
-    return all[0];
+    const [alone, held, ...asFile] = verdicts(text);
+    if (alone !== held || asFile.some(verdict => verdict !== asFile[0])) differ.push(`${[alone, held, ...asFile]}: ${text.slice(0, 120)}`);
+    else if (asFile[0] && !alone) differ.push(`flagged as a file only: ${text.slice(0, 120)}`);
+    else if (asFile.length === 2 && alone && !asFile[0]) {
+      asFileOnly++;
+      if (strings(JSON.parse(text)).some(flagged)) differ.push(`accepted as a file with a flagged string: ${text.slice(0, 120)}`);
+    }
+    return alone;
   };
   for (const name of Object.keys(GRIDS)) {
     for (const [input, out] of grid(name)) {
@@ -1078,6 +1092,7 @@ test('one choke point: every entry point gives the same verdict on every grid ro
     if (text !== null && !judge(text)) differ.push(`generated secret accepted: ${describeCase(c)}`);
   }
   assert.ok(judged > 2 * 199_786, `${judged} texts judged`);
+  assert.ok(asFileOnly <= 60, `${asFileOnly} texts accepted as a file of accepted strings`);
   assert.deepEqual(differ.slice(0, 5), [], `${differ.length} texts on which the entry points differ or are wrong`);
 });
 
