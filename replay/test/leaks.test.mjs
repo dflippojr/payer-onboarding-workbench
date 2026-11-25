@@ -716,6 +716,39 @@ test('decision 6: in a decoding that is not JSON, a key-type member anywhere mea
   }
 });
 
+test('decision 7: in a recorded string, a private member counts unless it sits in the same value as every key-type member', () => {
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ body: text })), findJsonLeaks({ body: text })].map(leaks => leaks.length > 0);
+  const KEY = '{"kty":"RSA","n":"N1"}';
+  const wrong = [];
+  let judged = 0;
+  const expect = (text, expected, label) => {
+    for (const form of [text, JSON.stringify(text), JSON.stringify({ report: text })]) {
+      judged++;
+      const verdicts = entryPoints(form);
+      if (verdicts.some(flag => flag !== expected)) wrong.push(`${label}, expected ${expected}: ${verdicts}`);
+    }
+  };
+  for (const member of ['d', 'p', 'k', 'oth']) {
+    for (const lead of ['payer said: ', '', 'a [list] first: ']) {
+      const other = value => `{"${member}":"${value}"}`;
+      // The key type in one value that reads, the private member in another, in either order, or in a list of its own.
+      expect(`${lead}${KEY} and ${other('FAKE-jwk-0005')}`, true, `${member} in a value after the key's`);
+      expect(`${lead}${other('FAKE-jwk-0005')} and ${KEY}`, true, `${member} in a value before the key's`);
+      expect(`${lead}${KEY} and [${other('FAKE-jwk-0005')}]`, true, `${member} in a list after the key's`);
+      // Two key types in two values: no one value holds them all, so a private member in either counts.
+      expect(`${lead}${KEY} and {"jwk":${KEY},"data":${other('FAKE-jwk-0005')}}`, true, `${member} beside one of two key types`);
+      // Masked, or no key type in the string.
+      expect(`${lead}${KEY} and ${other(MASK)}`, false, `${member} masked`);
+      expect(`${lead}{"alg":"RS256"} and ${other('2026-11-04')}`, false, `${member} with no key type`);
+      // In the one value that holds every key type, the tree decides: outside the key's own object it is any name.
+      expect(`${lead}{"jwk":${KEY},"data":${other('2026-11-04')}}`, false, `${member} in the value that holds the key type`);
+      expect(`${lead}{"keys":[${KEY},${KEY}],"data":${other('2026-11-04')}} and {"x":1}`, false, `${member} in the value that holds both key types`);
+    }
+  }
+  assert.ok(judged >= 4 * 3 * 8 * 3, `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} wrong`);
+});
+
 test('shares no code with the Redactor: the check imports nothing', () => {
   const source = readFileSync(here('./invariants.mjs'), 'utf8');
   assert.doesNotMatch(source, /^\s*import\b|\bimport\s*\(|\brequire\s*\(/m);
