@@ -532,7 +532,9 @@ test('invariant 4: reads a JWK that only a decoding shows, also one that is not 
   assertFlagged(`evidence: ${broken}"} and more`);
   // Not a member there, or not between a JWK's braces.
   assertAccepted(`{"kty":"RSA","${B}"d":"plain"}`);
-  assertAccepted(`{"body":"kty${B}":${B}"oct${B}",${B}"d${B}":${B}"plain${B}"}"}`);
+  // Decision 6: a key-type name and colon anywhere in such a decoding counts, also where no member starts.
+  assertFlagged(`{"body":"kty${B}":${B}"oct${B}",${B}"d${B}":${B}"plain${B}"}"}`);
+  assertAccepted(`{"body":"kty${B}":${B}"oct${B}",${B}"d${B}":${B}"${MASK}${B}"}"}`);
   // A string that is JSON as a whole is read as JSON: a private name outside the JWK's object is any name.
   assertAccepted(`{"body":"{${B}"jwk${B}":{${B}"kty${B}":${B}"RSA${B}"},${B}"data${B}":{${B}"d${B}":${B}"2026-11-04${B}"}}"}`);
 });
@@ -696,6 +698,21 @@ test('decision 6: in a decoding that is not JSON, a key-type member anywhere mea
   // Without a key-type member, a private member's name is any name.
   for (const build of Object.values(PLACES)) {
     assert.deepEqual(entryPoints(build(`"alg":"RS256"`, `"note":"}"`, `"d${B}${B}":"2026-11-04${B}"rest"`)(0)), [false, false, false]);
+  }
+  // A value that reads as JSON whole, in a decoding that does not: read as JSON only when no key-type member stands
+  // outside such values.
+  const breaks = `"note${B}${B}":"x${B}"y"`;
+  for (const member of ['d', 'p', 'k', 'oth']) {
+    for (const sub of [`{"${member}":"FAKE-jwk-0003"}`, `[{"a":{"${member}":"FAKE-jwk-0003"}}]`, `{"jwk":{"kty":"oct"},"data":{"${member}":"FAKE-jwk-0003"}}`]) {
+      for (const order of [0, 1, 2]) {
+        const outside = `{${rotate([`"kty":"RSA"`, breaks, `"sub":${sub}`], order).join(',')}}`;
+        assert.deepEqual(entryPoints(outside), [true, true, true], `key type outside the value, order ${order}: ${sub}`);
+        const none = `{${rotate([`"alg":"RS256"`, breaks, `"sub":${sub}`], order).join(',')}}`;
+        assert.deepEqual(entryPoints(none), [false, false, false], `no key type outside the value, order ${order}: ${sub}`);
+      }
+    }
+    const masked = `{"kty":"RSA",${breaks},"sub":{"${member}":"${MASK}"}}`;
+    assert.deepEqual(entryPoints(masked), [false, false, false], `masked: ${member}`);
   }
 });
 
