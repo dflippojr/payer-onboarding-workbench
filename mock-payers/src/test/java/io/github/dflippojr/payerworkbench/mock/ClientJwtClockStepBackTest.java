@@ -61,7 +61,7 @@ class ClientJwtClockStepBackTest {
 
     @Test
     void tailspinCapsExpAgainstItsClockAfterTheClockStepsBack() throws Exception {
-        TestKeys.MutableClock clock = wholeSecondClock();
+        TestClocks.MutableClock clock = wholeSecondClock();
         try (TailspinPayer payer = TailspinPayer.builder().clock(clock).client(CLIENT, jwks.url()).build().start(0)) {
             String audience = payer.publicBaseUrl() + TailspinPayer.TOKEN_PATH;
             Instant before = clock.instant();
@@ -79,7 +79,7 @@ class ClientJwtClockStepBackTest {
 
     @Test
     void fabrikamBoundsIatAgainstItsClockAfterTheClockStepsBack() throws Exception {
-        TestKeys.MutableClock clock = wholeSecondClock();
+        TestClocks.MutableClock clock = wholeSecondClock();
         try (FabrikamPayer payer = FabrikamPayer.builder().clock(clock).client(CLIENT, jwks.url()).build().start(0)) {
             String audience = payer.publicBaseUrl() + HOOK_PATH;
             Instant before = clock.instant();
@@ -96,8 +96,8 @@ class ClientJwtClockStepBackTest {
     }
 
     /** A JWT carries whole seconds; starting on one keeps the expected offsets exact. */
-    private static TestKeys.MutableClock wholeSecondClock() {
-        TestKeys.MutableClock clock = new TestKeys.MutableClock();
+    private static TestClocks.MutableClock wholeSecondClock() {
+        TestClocks.MutableClock clock = new TestClocks.MutableClock();
         clock.advance(Duration.ofNanos(-clock.instant().getNano()));
         return clock;
     }
@@ -137,7 +137,7 @@ class ClientJwtClockStepBackTest {
     @MethodSource("futureLimitBoundaries")
     void futureLimitIsJudgedByTheClockAsItReadsNow(String payer, Movement movement, String where, Duration offset)
             throws Exception {
-        TestKeys.MutableClock clock = wholeSecondClock();
+        TestClocks.MutableClock clock = wholeSecondClock();
         boolean outside = offset.isPositive();
         if (payer.equals("tailspin")) {
             try (TailspinPayer tailspin = TailspinPayer.builder().clock(clock).client(CLIENT, jwks.url()).build()

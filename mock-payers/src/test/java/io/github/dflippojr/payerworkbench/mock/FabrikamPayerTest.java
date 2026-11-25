@@ -17,6 +17,7 @@ import io.github.dflippojr.fhircrdrouter.core.AuthType;
 import io.github.dflippojr.fhircrdrouter.core.ConnectionRecord;
 import io.github.dflippojr.fhircrdrouter.core.Environment;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
+import io.github.dflippojr.payerworkbench.mock.TestClocks.ManualClock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -25,11 +26,8 @@ import java.net.URI;
 import java.net.http.HttpResponse;
 import java.security.KeyPair;
 import java.security.SecureRandom;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
@@ -402,34 +400,6 @@ class FabrikamPayerTest {
                 .keyID(PayerFixture.KEY_ID).build(), claims);
         jwt.sign(new RSASSASigner(key.getPrivate()));
         return jwt.serialize();
-    }
-
-    /** A payer clock the test moves by hand. */
-    private static final class ManualClock extends Clock {
-        private volatile Instant now;
-
-        ManualClock(Instant now) {
-            this.now = now;
-        }
-
-        void set(Instant to) {
-            now = to;
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
-        }
-
-        @Override
-        public Instant instant() {
-            return now;
-        }
     }
 
     private static JWTClaimsSet claims(String issuer, String audience, Instant expiry, String jti) {

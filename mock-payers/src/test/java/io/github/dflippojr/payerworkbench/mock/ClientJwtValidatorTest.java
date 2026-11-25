@@ -5,15 +5,12 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import io.github.dflippojr.payerworkbench.mock.TestClocks.SteppingClock;
 import org.junit.jupiter.api.Test;
 
 import java.security.KeyPair;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Map;
 import java.util.Set;
@@ -35,7 +32,7 @@ class ClientJwtValidatorTest {
     @Test
     void replayCacheIsPerIssuerAndForgetsAJtiOnceItsAssertionExpires() throws Exception {
         KeyPair key = TestKeys.rsa();
-        TestKeys.MutableClock clock = new TestKeys.MutableClock();
+        TestClocks.MutableClock clock = new TestClocks.MutableClock();
         try (TestKeys.JwksServer jwks = new TestKeys.JwksServer().publish("kid", key)) {
             ClientJwtValidator validator = new ClientJwtValidator(Map.of("a", jwks.url(), "b", jwks.url()),
                     message -> new MockPayer.HttpError(401, "rejected", message), clock, POLICY);
@@ -81,38 +78,6 @@ class ClientJwtValidatorTest {
             MockPayer.HttpError replay = assertThrows(MockPayer.HttpError.class,
                     () -> validator.validate(token, AUDIENCE, false, false, (iss, set) -> { }));
             assertEquals("replay boundary", replay.getMessage());
-        }
-    }
-
-    /** Answers queued instants in turn and repeats the last one. */
-    private static final class SteppingClock extends Clock {
-        private final ArrayDeque<Instant> next = new ArrayDeque<>();
-        private Instant last;
-
-        SteppingClock(Instant start) {
-            last = start;
-        }
-
-        void then(Instant... instants) {
-            next.addAll(java.util.List.of(instants));
-        }
-
-        @Override
-        public synchronized Instant instant() {
-            if (!next.isEmpty()) {
-                last = next.poll();
-            }
-            return last;
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
         }
     }
 

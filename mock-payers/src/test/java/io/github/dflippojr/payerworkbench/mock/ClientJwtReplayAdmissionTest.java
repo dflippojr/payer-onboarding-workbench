@@ -5,24 +5,21 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import io.github.dflippojr.payerworkbench.mock.TestClocks.GatedClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.security.KeyPair;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Queue;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -251,75 +248,5 @@ class ClientJwtReplayAdmissionTest {
         SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS384).keyID("kid").build(), claims);
         jwt.sign(new RSASSASigner(key.getPrivate()));
         return jwt.serialize();
-    }
-
-    /**
-     * Answers {@link #now} to every thread except held ones. A held thread gets its own instant and, on its first
-     * read, signals {@code held}, waits for the rival to start, and then waits until the rival has finished or is
-     * blocked waiting for the validator: so the rival's eviction either completes inside the held thread's window or
-     * is shown to be excluded from it.
-     */
-    static final class GatedClock extends Clock {
-        volatile Instant now;
-        private final Map<Thread, Instant> instants = new ConcurrentHashMap<>();
-        private final Map<Thread, Runnable> holds = new ConcurrentHashMap<>();
-
-        GatedClock(Instant now) {
-            this.now = now;
-        }
-
-        void holdAfterRead(Thread thread, Instant instant, CountDownLatch held, CountDownLatch rivalStarted,
-                           java.util.function.Supplier<Thread> rival) {
-            instants.put(thread, instant);
-            holds.put(thread, () -> {
-                held.countDown();
-                awaitUninterruptibly(rivalStarted);
-                Thread other = rival.get();
-                while (true) {
-                    Thread.State state = other.getState();
-                    if (state == Thread.State.TERMINATED || state == Thread.State.BLOCKED
-                            || state == Thread.State.WAITING) {
-                        return;
-                    }
-                    Thread.onSpinWait();
-                }
-            });
-        }
-
-        @Override
-        public Instant instant() {
-            Thread current = Thread.currentThread();
-            Instant answer = instants.getOrDefault(current, now);
-            Runnable hold = holds.remove(current);
-            if (hold != null) {
-                hold.run();
-            }
-            return answer;
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
-        }
-
-        private static void awaitUninterruptibly(CountDownLatch latch) {
-            boolean interrupted = false;
-            while (true) {
-                try {
-                    latch.await();
-                    break;
-                } catch (InterruptedException e) {
-                    interrupted = true;
-                }
-            }
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
     }
 }

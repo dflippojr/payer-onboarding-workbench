@@ -4,15 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.github.dflippojr.payerworkbench.app.TestClocks.MutableClock;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -174,13 +172,5 @@ class AuditJournalInterruptTest {
             }
         }
         assertTrue(unsealed <= 1, "only the active segment may be unsealed");
-    }
-
-    private static final class MutableClock extends Clock {
-        Instant now;
-        MutableClock(Instant now) { this.now = now; }
-        @Override public ZoneId getZone() { return ZoneOffset.UTC; }
-        @Override public Clock withZone(ZoneId zone) { return this; }
-        @Override public Instant instant() { return now; }
     }
 }
