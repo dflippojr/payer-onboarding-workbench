@@ -26,7 +26,8 @@
 // acceptable: text behind any mask is flagged (one terminator check over every mask, whichever rule wrote it), though
 // the Redactor leaves a broken mask as it finds it; and in a decoding that is not JSON as a whole, a kty member
 // anywhere means every private member anywhere must be the mask, with no reading of which braces hold which member
-// (only values that read as JSON whole, when no kty member stands outside them, are still read as JSON).
+// (only values that read as JSON whole, when no kty member stands outside them, are still read as JSON; in one
+// recorded string, only the one value that holds every kty member of the string).
 // It is not a second Redactor. Three kinds of text the Redactor masks whole, fail closed, hold no credential bytes and
 // are accepted here: masks right behind a value that already is the mask, up to a terminator; cut JSON that repeats a
 // member name and names no secret; and a masked header line that ends at its JSON string's own closing quote two or
@@ -364,6 +365,7 @@ function judgeText(text, scan, level, recorded = false) {
     }
   }
   const { values, failed } = read ? embeddedValues(text) : { values: [], failed: text.search(/[[{]/) };
+  judgeJwksInString(text, values, scan);
   let prose = '';
   let written = '';
   let copied = 0;
@@ -462,6 +464,18 @@ function judgeJwksAnywhere(pass, scan) {
     if (inValues < ktys.length) judgeJwksIn(pass.slice(from, to), scan);
     else judgeJwks(value, scan);
   }
+}
+
+/**
+ * For one recorded string that is not JSON as a whole (decision 7 on #425): with a kty member anywhere in it, a
+ * private member anywhere in it must be the mask, unless it stands in the same value as every kty member of the
+ * string: a value that JSON.parse reads whole, which {@link judgeValue} judges by its tree.
+ */
+function judgeJwksInString(text, values, scan) {
+  const ktys = [...text.matchAll(KTY_MEMBER)].map(m => m.index);
+  if (ktys.length === 0) return;
+  const holder = values.find(({ from, to }) => from <= ktys[0] && ktys[ktys.length - 1] < to);
+  judgeJwksIn(holder ? `${text.slice(0, holder.from)}0${text.slice(holder.to)}` : text, scan);
 }
 
 /** Flags each private member that is not the mask in each object with a kty member in `value`. */
