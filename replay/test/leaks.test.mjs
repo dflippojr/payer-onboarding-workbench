@@ -825,6 +825,7 @@ test('decision 9: an object-literal key is read at every decoding, and through a
   const NAMES = ['client_secret', 'access_token', 'password', 'apiKey', 'private_key'];
   const u = c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
   const down = text => JSON.stringify(text).slice(1, -1);
+  const pct = c => `%${c.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase()}`;
   // The key as a decoding shows it: one of its characters, or all of the text, spelled with JSON escapes.
   const DECODINGS = {
     'the brace escaped': (name, value) => `${u('{')}${name}: "${value}"}`,
@@ -837,12 +838,22 @@ test('decision 9: an object-literal key is read at every decoding, and through a
     'two levels down': (name, value) => down(down(`{${name}: "${value}"}`)),
     'every character escaped': (name, value) => [...`{${name}: "`].map(u).join('') + value + u('"') + u('}'),
     'the brace escaped twice': (name, value) => `${down(u('{'))}${name}: "${value}"}`,
+    // Decision 10: the literal as a percent-decoding or a base64 decoding shows it.
+    'percent-encoded as a whole': (name, value) => encodeURIComponent(`{${name}: "${value}"}`),
+    'every character percent-encoded': (name, value) => [...`{${name}:"${value}"}`].map(pct).join(''),
+    'only the key percent-encoded': (name, value) => `{${[...name].map(pct).join('')}: "${value}"}`,
+    'one letter of the key percent-encoded': (name, value) => `{${name.slice(0, 2)}${pct(name[2])}${name.slice(3)}:"${value}"}`,
+    'base64 of the whole': (name, value) => Buffer.from(`{${name}: "${value}"}`).toString('base64'),
+    'base64 of the whole, unpadded': (name, value) => Buffer.from(`{${name}:"${value}"}`).toString('base64').replace(/=+$/, ''),
+    'base64url of the whole': (name, value) => Buffer.from(`{ ${name} : "${value}>?"}`).toString('base64url'),
   };
   const CONTEXTS = {
     'the whole text': text => text,
     'after prose': text => `payer said: ${text} and more`,
     'in a string of a JSON text': text => JSON.stringify({ note: text, n: 1 }),
     'after a value that reads': text => `{"a":1} then ${text}`,
+    'a header value': text => `X-Filter: ${text}`,
+    'a query value': text => `GET /search?filter=${text}&page=2`,
   };
   const wrong = [];
   let judged = 0;
@@ -855,7 +866,13 @@ test('decision 9: an object-literal key is read at every decoding, and through a
       }
     }
   }
-  assert.ok(judged >= 5 * 10 * 4, `${judged} decoded forms judged`);
+  assert.ok(judged >= 5 * 17 * 6, `${judged} decoded forms judged`);
+  // Masked, an encoded literal is accepted.
+  for (const spell of [DECODINGS['percent-encoded as a whole'], DECODINGS['only the key percent-encoded'], DECODINGS['base64 of the whole'], DECODINGS['base64url of the whole']]) {
+    for (const place of [CONTEXTS['the whole text'], CONTEXTS['a header value'], CONTEXTS['in a string of a JSON text']]) {
+      assert.deepEqual(entryPoints(place(spell('client_secret', MASK))), [false, false, false], place(spell('client_secret', MASK)));
+    }
+  }
   assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} decoded forms wrong`);
 
   // One whitespace policy for recognizing the key and for judging it: what the loose-key rule accepts around a
