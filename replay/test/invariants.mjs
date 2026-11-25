@@ -685,22 +685,60 @@ function holdsALiteralKey(text) {
   return false;
 }
 
+/** How many bytes follow a UTF-8 lead byte, or -1 for a byte that starts no sequence. */
+const followers = lead => (lead >= 0xC0 && lead <= 0xDF ? 1 : lead >= 0xE0 && lead <= 0xEF ? 2 : lead >= 0xF0 && lead <= 0xF7 ? 3 : -1);
+
+/** The lowest code point a UTF-8 sequence with this many following bytes may spell. */
+const LOWEST = [0, 0x80, 0x800, 0x10000];
+
+/**
+ * The text a run of percent escapes spells. Each UTF-8 sequence in it is decoded on its own, whatever stands next to
+ * it. Bytes that are not UTF-8 are read as `malformed` says: 'bytes', each is the character of its byte; 'dropped',
+ * they spell nothing; 'lenient', a sequence that is well formed but not allowed (an overlong spelling, a surrogate)
+ * is the character it spells and any other such byte spells nothing.
+ */
+function percentDecoded(run, malformed) {
+  const bytes = run.split('%').slice(1).map(hex => Number.parseInt(hex, 16));
+  let out = '';
+  for (let i = 0; i < bytes.length;) {
+    const lead = bytes[i];
+    if (lead < 0x80) {
+      out += String.fromCharCode(lead);
+      i++;
+      continue;
+    }
+    const more = followers(lead);
+    let point = more < 0 ? -1 : lead & (0x3F >> more);
+    for (let k = 1; k <= more && point >= 0; k++) {
+      point = i + k < bytes.length && (bytes[i + k] & 0xC0) === 0x80 ? (point << 6) | (bytes[i + k] & 0x3F) : -1;
+    }
+    const length = point < 0 ? 1 : more + 1;
+    const surrogate = point >= 0xD800 && point <= 0xDFFF;
+    if (point >= LOWEST[more] && point <= 0x10FFFF && !surrogate) out += String.fromCodePoint(point);
+    else if (malformed === 'bytes') out += String.fromCharCode(...bytes.slice(i, i + length));
+    else if (malformed === 'lenient' && point >= 0 && point <= 0x10FFFF) out += surrogate ? String.fromCharCode(point) : String.fromCodePoint(point);
+    i += length;
+  }
+  return out;
+}
+
 /**
  * Flags an object-literal secret key that only a percent-decoding of `text` shows, or a base64 or base64url decoding
- * of a run in it (owner decision 10 on #425). Each is decoded once and read by the same loose-key reading.
+ * of a run in it (owner decisions 10 and 11 on #425). Each is decoded once and read by the same loose-key reading.
+ * Where escapes are not UTF-8 the decoding cannot be judged, so every reading of them counts: a key that any of them
+ * shows is flagged.
  */
 function judgeEncodedLiterals(text, scan) {
   if (/%[0-9A-Fa-f]{2}/.test(text)) {
-    let decoded;
-    try {
-      decoded = decodeURIComponent(text);
-    } catch {
-      // Not UTF-8 throughout: each escape is the character of its byte.
-      decoded = text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
-    }
-    if (holdsALiteralKey(decoded)) {
-      scan.flag('object-literal secret key in a percent-decoding', text);
-      return;
+    const read = new Set();
+    for (const malformed of ['bytes', 'dropped', 'lenient']) {
+      const decoded = text.replace(/(?:%[0-9A-Fa-f]{2})+/g, run => percentDecoded(run, malformed));
+      if (read.has(decoded)) continue;
+      read.add(decoded);
+      if (holdsALiteralKey(decoded)) {
+        scan.flag('object-literal secret key in a percent-decoding', text);
+        return;
+      }
     }
   }
   for (const run of text.matchAll(BASE64_OF_A_BRACE)) {
@@ -717,8 +755,9 @@ const PRIVATE_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*
 /** A name's key separator, a colon or an equals sign, with a gap on both sides: the name is used as a key. */
 const TO_VALUE = new RegExp(`${GAP}[:=]${GAP}`, 'yu');
 
-/** The mask, a scheme in front of it or not, where a value ends: the end, a delimiter or a quote, also an escaped one. */
-const MASKED_VALUE = /(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* )?\[REDACTED\]/y;
+/** The mask alone, and with a scheme in front of it: the two forms a loosely read value is masked in. */
+const MASKED_VALUE = /\[REDACTED\]/y;
+const MASKED_WITH_SCHEME = /(?:[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]* )?\[REDACTED\]/y;
 
 /**
  * Whether a name `names` finds in `text`, each read once from left to right, is used as a key whose value is not
@@ -730,8 +769,10 @@ function namesAKey(names, text, evenMasked) {
     TO_VALUE.lastIndex = m.index + m[0].length;
     if (!TO_VALUE.test(text)) continue;
     if (evenMasked) return true;
-    MASKED_VALUE.lastIndex = TO_VALUE.lastIndex;
-    if (!MASKED_VALUE.test(text) || !endsMasked(text, MASKED_VALUE.lastIndex, 'loose')) return true;
+    // A word in front of the mask is a scheme, which only an Authorization-style name keeps (owner decision 11 on #425).
+    const masked = keepsScheme(m[0].replace(/[_-]+$/, '')) ? MASKED_WITH_SCHEME : MASKED_VALUE;
+    masked.lastIndex = TO_VALUE.lastIndex;
+    if (!masked.test(text) || !endsMasked(text, masked.lastIndex, 'loose')) return true;
   }
   return false;
 }
