@@ -2525,26 +2525,21 @@ class RedactorTest {
         // #352: the flattened view is read in the same walk of the levels as the other views, and spends its level's
         // nested budget, so each level's reads continue one budget and the work stays linear. About 1 MB each: JWKs with a
         // "-quoted member, names and values opening and closing on such quotes, and both nested once.
-        String u = "\\u0022";
-        String jwks = "[" + ("{\"kty\":\"oct\"," + u + "k" + u + ":\"PRIVK352\"},").repeat(30_000) + "{}]";
-        // Security round 1: values read past an escaped quote, or quoted a level down, with whitespace escaped a level down.
-        String b = String.valueOf((char) 92);
-        String escapedQuotes = "{\"kty\":\"oct\"," + ("" + u + "k" + u + ":" + u + "PRIVK352" + b + b + u + "x" + u + ",").repeat(25_000)
-                + "\"e\":1}";
-        List<String> texts = List.of(jwks, nested(jwks), ("{\"kty\":\"oct\"," + u + "d" + u + ":[" + u).repeat(40_000),
-                (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(60_000), escapedQuotes, nested(escapedQuotes),
-                ("{\"kty\":\"oct\"," + u + "d" + u + ":" + b + "\"").repeat(40_000),
-                nested(("{\"kty\":\"oct\"," + u + "d" + u + "\n:" + u).repeat(30_000)),
-                // Security round 2: kty after a value quoted a level down, names quoted through an escape chain, and
-                // values and structures that never close, read in the canonical form.
-                ("{" + u + "d" + u + ":" + b + "\"PRIVK352" + b + "\",\"kty\":\"oct\"},").repeat(30_000),
-                nested(("{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "k" + u + ":[\"PRIVK352\"]},").repeat(20_000)),
-                ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(40_000), ("\"kty\":\"d\":\"PRIVK352").repeat(50_000),
-                // Automated review on 697c3c9: a value opening on a long escape chain, then many quotes that might close it.
-                "{\"kty\":\"oct\",\"d\":" + b + "u005c".repeat(60_000) + "u0022PRIVK352" + (b + "\",").repeat(60_000) + "\"}",
-                // Automated review on 418139a: a JWK, then many strings each holding a delimiter that reads ambiguously.
-                "[{\"kty\":\"oct\",\"d\":\"PRIVK352\"}," + ("\"" + b + b + "u002c\",").repeat(250_000) + "1]");
-        assertTimeoutPreemptively(Duration.ofSeconds(20), () -> texts.forEach(text -> {
+        // #433: no fixed wall-clock budget, which measured the host's load. Each shape is timed with a thirty-second and a
+        // quarter of its repeat count (a ratio of 8), and its growth must stay near linear, as in findsJwksInLinearTime.
+        // The checks after the timing read the full length and count the reads of the nested budget, which do not depend
+        // on time.
+        List<String> small = unicodeQuotedJwksTexts(32);
+        List<String> large = unicodeQuotedJwksTexts(4);
+        List<String> tooSlow = growthBeyondLinear(small, large, String::length, text -> {
+            // #406: JSON no longer reaches the text rules through redact(text), so both overloads are timed.
+            Redactor.redact(text);
+            Redactor.redact(text, new ArrayList<>());
+        });
+        assertTrue(tooSlow.isEmpty(), "time grows more than " + MAX_GROWTH_PER_DOUBLING + " times per doubling of the text: "
+                + tooSlow);
+        List<String> full = unicodeQuotedJwksTexts(1);
+        for (String text : full) {
             // #406: JSON no longer reaches the text rules, so the leak check reads the whole Redactor; the budget checks
             // still read the text rules' JWK search on the text as it is.
             String out = Redactor.redact(text);
@@ -2557,10 +2552,44 @@ class RedactorTest {
                 assertTrue(before == null || before == read.before(), () -> "a fresh budget for " + read + " in " + reads);
                 assertTrue(read.before() <= 4 * text.length() + 1024, () -> read + " in " + reads);
             }
-        }));
+        }
         // #406 (gate change, toward masking): quoted with unicode escapes, the JWKS is no JSON value and kty follows its
         // first bracket, so it is masked whole (stage 1 masked each private value).
-        assertEquals(Redactor.MASK, Redactor.redact(jwks));
+        assertEquals(Redactor.MASK, Redactor.redact(full.get(0)));
+    }
+
+    /**
+     * The shapes of {@link #readsJwksWithUnicodeQuotedMembersInLinearTimeWithinTheNestedBudget}, each repeating its
+     * pattern {@code count / divisor} times: {@code 1} gives the full length, and element 0 is the JWKS.
+     */
+    private static List<String> unicodeQuotedJwksTexts(int divisor) {
+        String u = "\\u0022";
+        String b = String.valueOf((char) 92);
+        String jwks = "[" + ("{\"kty\":\"oct\"," + u + "k" + u + ":\"PRIVK352\"},").repeat(scaled(30_000, divisor)) + "{}]";
+        // Security round 1: values read past an escaped quote, or quoted a level down, with whitespace escaped a level down.
+        String escapedQuotes = "{\"kty\":\"oct\"," + ("" + u + "k" + u + ":" + u + "PRIVK352" + b + b + u + "x" + u + ",")
+                .repeat(scaled(25_000, divisor)) + "\"e\":1}";
+        return List.of(jwks, nested(jwks), ("{\"kty\":\"oct\"," + u + "d" + u + ":[" + u).repeat(scaled(40_000, divisor)),
+                (u + "kty" + u + ":\"oct\",\"d\":" + u).repeat(scaled(60_000, divisor)), escapedQuotes, nested(escapedQuotes),
+                ("{\"kty\":\"oct\"," + u + "d" + u + ":" + b + "\"").repeat(scaled(40_000, divisor)),
+                nested(("{\"kty\":\"oct\"," + u + "d" + u + "\n:" + u).repeat(scaled(30_000, divisor))),
+                // Security round 2: kty after a value quoted a level down, names quoted through an escape chain, and
+                // values and structures that never close, read in the canonical form.
+                ("{" + u + "d" + u + ":" + b + "\"PRIVK352" + b + "\",\"kty\":\"oct\"},").repeat(scaled(30_000, divisor)),
+                nested(("{\"kty\":\"oct\"," + b + "u005c" + u.substring(1) + "k" + u + ":[\"PRIVK352\"]},")
+                        .repeat(scaled(20_000, divisor))),
+                ("{\"kty\":\"oct\",\"d\":[\"PRIVK352").repeat(scaled(40_000, divisor)),
+                ("\"kty\":\"d\":\"PRIVK352").repeat(scaled(50_000, divisor)),
+                // Automated review on 697c3c9: a value opening on a long escape chain, then many quotes that might close it.
+                "{\"kty\":\"oct\",\"d\":" + b + "u005c".repeat(scaled(60_000, divisor)) + "u0022PRIVK352"
+                        + (b + "\",").repeat(scaled(60_000, divisor)) + "\"}",
+                // Automated review on 418139a: a JWK, then many strings each holding a delimiter that reads ambiguously.
+                "[{\"kty\":\"oct\",\"d\":\"PRIVK352\"}," + ("\"" + b + b + "u002c\",").repeat(scaled(250_000, divisor)) + "1]");
+    }
+
+    /** {@code count} divided by {@code divisor}: the repeat count of a shape at a given size. */
+    private static int scaled(int count, int divisor) {
+        return count / divisor;
     }
 
     @Test
