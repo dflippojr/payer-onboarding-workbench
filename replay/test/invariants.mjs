@@ -387,6 +387,7 @@ function judgeText(text, scan, level, recorded = false) {
   const { passes, more } = decodings(prose);
   if (more) scan.flag('escapes deeper than the check decodes', text);
   passes.forEach((pass, depth) => judgeProse(pass, scan, depth > 0));
+  passes.forEach(pass => judgeEncodedLiterals(pass, scan));
   if (failed >= 0 && decodings(text.slice(failed)).passes.some((pass, depth) => holdsVocabulary(pass, depth > 0, scan))) {
     scan.flag('JSON-looking start that does not parse, before secret vocabulary', text.slice(failed));
   } else if (read && passes.length > 1) {
@@ -670,6 +671,45 @@ const SECRET_NAME = new RegExp(`(?<![_-])${FIELD_KEY}|${HEADER_NAME.replaceAll('
 
 /** A secret name without quotes, its colon and the quote that opens its value: a key in object-literal spelling. */
 const LITERAL_KEY = new RegExp(`${LOOSE_SPACE}*(?:${SECRET_NAME.source})${LOOSE_SPACE}*:${LOOSE_SPACE}*"`, 'yiu');
+
+/** A run of base64 or base64url characters that may spell an opening brace first: its first six bits are those of {. */
+const BASE64_OF_A_BRACE = /(?<![A-Za-z0-9+/_-])e[A-Za-z0-9+/_-]{11,}/g;
+
+/** Whether `text` holds an object-literal secret key (decision 8 on #425) whose value, or a later key's, is not the mask. */
+function holdsALiteralKey(text) {
+  for (let at = text.indexOf('{'); at >= 0; at = text.indexOf('{', at + 1)) {
+    LITERAL_KEY.lastIndex = at + 1;
+    // One reading from the first such start on, as for a JSON-looking start that does not parse.
+    if (LITERAL_KEY.test(text)) return namesAKey(SECRET_NAME, text.slice(at), false);
+  }
+  return false;
+}
+
+/**
+ * Flags an object-literal secret key that only a percent-decoding of `text` shows, or a base64 or base64url decoding
+ * of a run in it (owner decision 10 on #425). Each is decoded once and read by the same loose-key reading.
+ */
+function judgeEncodedLiterals(text, scan) {
+  if (/%[0-9A-Fa-f]{2}/.test(text)) {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(text);
+    } catch {
+      // Not UTF-8 throughout: each escape is the character of its byte.
+      decoded = text.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+    }
+    if (holdsALiteralKey(decoded)) {
+      scan.flag('object-literal secret key in a percent-decoding', text);
+      return;
+    }
+  }
+  for (const run of text.matchAll(BASE64_OF_A_BRACE)) {
+    if (holdsALiteralKey(Buffer.from(run[0], 'base64').toString('utf8'))) {
+      scan.flag('object-literal secret key in a base64 decoding', run[0]);
+      return;
+    }
+  }
+}
 
 /** A JWK private member's quoted name. */
 const PRIVATE_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*"`, 'g');

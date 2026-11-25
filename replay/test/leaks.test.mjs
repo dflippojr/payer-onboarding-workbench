@@ -868,7 +868,8 @@ test('decision 9: an object-literal key is read at every decoding, and through a
   }
   assert.ok(judged >= 5 * 17 * 6, `${judged} decoded forms judged`);
   // Masked, an encoded literal is accepted.
-  for (const spell of [DECODINGS['percent-encoded as a whole'], DECODINGS['only the key percent-encoded'], DECODINGS['base64 of the whole'], DECODINGS['base64url of the whole']]) {
+  for (const spell of [DECODINGS['percent-encoded as a whole'], DECODINGS['only the key percent-encoded'], DECODINGS['base64 of the whole'],
+    (name, value) => Buffer.from(`{ ${name} : "${value}"}`).toString('base64url')]) {
     for (const place of [CONTEXTS['the whole text'], CONTEXTS['a header value'], CONTEXTS['in a string of a JSON text']]) {
       assert.deepEqual(entryPoints(place(spell('client_secret', MASK))), [false, false, false], place(spell('client_secret', MASK)));
     }
