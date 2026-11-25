@@ -533,6 +533,7 @@ test('invariant 4: reads a JWK that only a decoding shows, also one that is not 
   // Not a member there, or not between a JWK's braces.
   assertAccepted(`{"kty":"RSA","${B}"d":"plain"}`);
   assertAccepted(`{"body":"kty${B}":${B}"oct${B}",${B}"d${B}":${B}"plain${B}"}"}`);
+  // A string that is JSON as a whole is read as JSON: a private name outside the JWK's object is any name.
   assertAccepted(`{"body":"{${B}"jwk${B}":{${B}"kty${B}":${B}"RSA${B}"},${B}"data${B}":{${B}"d${B}":${B}"2026-11-04${B}"}}"}`);
 });
 
@@ -656,26 +657,46 @@ test('one shared terminator: a masked value ends only at a terminator, whatever 
   assert.deepEqual(wrong, []);
 });
 
-test('decision 4: a JWK that only a decoding shows is bounded by a string-aware reading, and unclear bounds fail closed', () => {
+test('decision 6: in a decoding that is not JSON, a key-type member anywhere means every private member anywhere is the mask', () => {
   const B = '\\';
   const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(text), findJsonLeaks(JSON.parse(text))].map(leaks => leaks.length > 0);
   const wrong = [];
+  let judged = 0;
   // A private member that two decodings show (its name ends in a backslash), with a value that keeps the decoding from
-  // being JSON, beside a string that holds a delimiter.
-  for (const inString of ['}', '{', ']', '[', '}}', '{"a":1}', `${B}"}`, `}${B}"`, '},{']) {
-    for (const member of ['d', 'p', 'k', 'oth']) {
-      for (const [value, expected] of [[`FAKE-jwk-0002${B}"rest`, true], [`${MASK}${B}"FAKE-jwk-0002`, true], [MASK, false]]) {
-        for (const order of [0, 1, 2]) {
-          const members = [`"kty":"RSA"`, `"note":${JSON.stringify(inString)}`, `"${member}${B}${B}":"${value}"`];
-          const text = `{${[...members.slice(order), ...members.slice(0, order)].join(',')}}`;
-          JSON.parse(text);
-          const verdicts = entryPoints(text);
-          if (verdicts.some(flag => flag !== expected)) wrong.push(`${JSON.stringify(inString)} ${member} order ${order} ${expected}: ${verdicts}`);
+  // being JSON. Beside it: a string that holds delimiters, also ones that do not pair, and ones a decoding bares.
+  const STRINGS = ['}', '{', ']', '[', '}}', '{"a":1}', `${B}"}`, `}${B}"`, '},{', '{]', '[}', ']{', '}[', '{]}[',
+    `${B}"{]${B}"`, `${B}"[}${B}"`, `${B}"]{${B}"`];
+  // Where the private member stands relative to the key-type member: no bounds are read, so every place counts.
+  const PLACES = {
+    'the same object': (kty, note, priv) => order => `{${rotate([kty, note, priv], order).join(',')}}`,
+    'an object beside a value that reads': (kty, note, priv) => order => `{${rotate([kty, note, '"sub":{"a":[1,{"b":2}]}', priv], order).join(',')}}`,
+    'a nested object': (kty, note, priv) => order => `{${rotate([kty, note, `"sub":{"a":1,${priv}}`], order).join(',')}}`,
+    'a nested list': (kty, note, priv) => order => `{${rotate([kty, note, `"sub":[{${priv}}]`], order).join(',')}}`,
+    'a sibling object': (kty, note, priv) => order => `[${rotate([`{${kty}}`, `{${note}}`, `{${priv}}`], order).join(',')}]`,
+    'the key type nested': (kty, note, priv) => order => `{${rotate([`"jwk":{${kty}}`, note, priv], order).join(',')}}`,
+  };
+  const rotate = (items, by) => [...items.slice(by % items.length), ...items.slice(0, by % items.length)];
+  for (const [place, build] of Object.entries(PLACES)) {
+    for (const inString of STRINGS) {
+      for (const member of ['d', 'p', 'k', 'oth']) {
+        for (const [value, expected] of [[`FAKE-jwk-0002${B}"rest`, true], [`${MASK}${B}"FAKE-jwk-0002`, true], [MASK, false]]) {
+          for (const order of [0, 1, 2]) {
+            const text = build(`"kty":"RSA"`, `"note":${JSON.stringify(inString)}`, `"${member}${B}${B}":"${value}"`)(order);
+            JSON.parse(text);
+            judged++;
+            const verdicts = entryPoints(text);
+            if (verdicts.some(flag => flag !== expected)) wrong.push(`${place}, ${JSON.stringify(inString)} ${member} order ${order} ${expected}: ${verdicts}`);
+          }
         }
       }
     }
   }
-  assert.deepEqual(wrong.slice(0, 8), [], `${wrong.length} wrong`);
+  assert.ok(judged >= 6 * 17 * 4 * 3 * 3, `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 40), [], `${wrong.length} of ${judged} wrong`);
+  // Without a key-type member, a private member's name is any name.
+  for (const build of Object.values(PLACES)) {
+    assert.deepEqual(entryPoints(build(`"alg":"RS256"`, `"note":"}"`, `"d${B}${B}":"2026-11-04${B}"rest"`)(0)), [false, false, false]);
+  }
 });
 
 test('shares no code with the Redactor: the check imports nothing', () => {
