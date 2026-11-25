@@ -820,6 +820,73 @@ test('decision 8a: a secret-named key in object-literal spelling is read as a ke
   assert.deepEqual(entryPoints('{note: "FAKE-literal-0001"}'), [false, false, false]);
 });
 
+test('decision 9: an object-literal key is read at every decoding, and through any whitespace the loose-key rule accepts', () => {
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text })].map(leaks => leaks.length > 0);
+  const NAMES = ['client_secret', 'access_token', 'password', 'apiKey', 'private_key'];
+  const u = c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
+  const down = text => JSON.stringify(text).slice(1, -1);
+  // The key as a decoding shows it: one of its characters, or all of the text, spelled with JSON escapes.
+  const DECODINGS = {
+    'the brace escaped': (name, value) => `${u('{')}${name}: "${value}"}`,
+    'a letter of the name escaped': (name, value) => `{${u(name[0])}${name.slice(1)}: "${value}"}`,
+    'the last letter of the name escaped': (name, value) => `{${name.slice(0, -1)}${u(name.at(-1))}: "${value}"}`,
+    'the colon escaped': (name, value) => `{${name}${u(':')} "${value}"}`,
+    'the value\'s quotes escaped': (name, value) => `{${name}: ${u('"')}${value}${u('"')}}`,
+    'the value\'s quotes backslashed': (name, value) => `{${name}: \\"${value}\\"}`,
+    'a level down': (name, value) => down(`{${name}: "${value}"}`),
+    'two levels down': (name, value) => down(down(`{${name}: "${value}"}`)),
+    'every character escaped': (name, value) => [...`{${name}: "`].map(u).join('') + value + u('"') + u('}'),
+    'the brace escaped twice': (name, value) => `${down(u('{'))}${name}: "${value}"}`,
+  };
+  const CONTEXTS = {
+    'the whole text': text => text,
+    'after prose': text => `payer said: ${text} and more`,
+    'in a string of a JSON text': text => JSON.stringify({ note: text, n: 1 }),
+    'after a value that reads': text => `{"a":1} then ${text}`,
+  };
+  const wrong = [];
+  let judged = 0;
+  for (const name of NAMES) {
+    for (const [decoding, spell] of Object.entries(DECODINGS)) {
+      for (const [context, place] of Object.entries(CONTEXTS)) {
+        judged++;
+        const verdicts = entryPoints(place(spell(name, 'FAKE-literal-0002')));
+        if (verdicts.some(flag => !flag)) wrong.push(`${name}, ${decoding}, ${context}: ${verdicts}`);
+      }
+    }
+  }
+  assert.ok(judged >= 5 * 10 * 4, `${judged} decoded forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} decoded forms wrong`);
+
+  // One whitespace policy for recognizing the key and for judging it: what the loose-key rule accepts around a
+  // separator, between the brace, the key, the colon and the value.
+  const SPACES = [' ', '\t', '\n', '\r', '\u000b', '\f', '\u0085', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', '　', '﻿', ' \t ', '  '];
+  const PLACES = {
+    'after the brace': (name, ws, value) => `{${ws}${name}: "${value}"}`,
+    'before the colon': (name, ws, value) => `{${name}${ws}: "${value}"}`,
+    'after the colon': (name, ws, value) => `{${name}:${ws}"${value}"}`,
+    'everywhere': (name, ws, value) => `{${ws}${name}${ws}:${ws}"${value}"${ws}}`,
+  };
+  const spaced = [];
+  let spacedJudged = 0;
+  for (const name of NAMES) {
+    for (const ws of SPACES) {
+      for (const [place, build] of Object.entries(PLACES)) {
+        spacedJudged++;
+        const verdicts = entryPoints(build(name, ws, 'FAKE-literal-0003'));
+        if (verdicts.some(flag => !flag)) spaced.push(`${name}, ${JSON.stringify(ws)} ${place}: ${verdicts}`);
+        // Masked, the same form is one the check accepts.
+        const masked = entryPoints(build(name, ws, MASK));
+        if (masked.some(flag => flag)) spaced.push(`${name}, ${JSON.stringify(ws)} ${place}, masked: ${masked}`);
+      }
+    }
+  }
+  assert.ok(spacedJudged >= 5 * 19 * 4, `${spacedJudged} spaced forms judged`);
+  assert.deepEqual(spaced.slice(0, 12), [], `${spaced.length} of ${2 * spacedJudged} spaced forms wrong`);
+  // Scope as decided: the key first after the brace, its value in double quotes.
+  assert.deepEqual(entryPoints('{note: 1, password: "FAKE-literal-0003"}'), [false, false, false]);
+});
+
 test('decision 8c: a recorded text that ends in a masked quoted secret member is accepted inside a bundle file too', () => {
   const B = '\\';
   const inFile = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text }),
