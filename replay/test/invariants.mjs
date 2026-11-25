@@ -283,8 +283,9 @@ function looksLikeJson(text, at) {
   if (c === '"' || c === "'" || c === '\\') return true;
   if (text[at] !== '{') return c === ']' || c === '[' || c === '{';
   if (c === '}') return true;
-  // Object-literal spelling (decision 8 on #425): a secret name without quotes, used as a key with a quoted value.
-  LITERAL_KEY.lastIndex = i;
+  // Object-literal spelling (decisions 8 and 9 on #425): a secret name without quotes, first after the brace, used as
+  // a key with a quoted value. The whitespace around it is what the loose-key rule accepts around a separator.
+  LITERAL_KEY.lastIndex = at + 1;
   return LITERAL_KEY.test(text);
 }
 
@@ -295,10 +296,10 @@ function looksLikeJson(text, at) {
  * where the first JSON-looking start that does not read is (-1 if none). The walks for candidates that do not read
  * stop after about four times the text's length; past that every start counts as one that does not read.
  */
-function embeddedValues(text) {
+function embeddedValues(text, shared) {
   const values = [];
   let failed = -1;
-  let budget = 4 * text.length + 4096;
+  let budget = shared ? shared.left : 4 * text.length + 4096;
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== '{' && text[i] !== '[') continue;
     let end = -1;
@@ -334,6 +335,7 @@ function embeddedValues(text) {
       failed = i;
     }
   }
+  if (shared) shared.left = budget;
   return { values, failed };
 }
 
@@ -387,6 +389,17 @@ function judgeText(text, scan, level, recorded = false) {
   passes.forEach((pass, depth) => judgeProse(pass, scan, depth > 0));
   if (failed >= 0 && decodings(text.slice(failed)).passes.some((pass, depth) => holdsVocabulary(pass, depth > 0, scan))) {
     scan.flag('JSON-looking start that does not parse, before secret vocabulary', text.slice(failed));
+  } else if (read && passes.length > 1) {
+    // A start that only a decoding shows (decision 9 on #425): each decoding is read for one the same way, all of them
+    // within one budget of walks.
+    const budget = { left: 4 * prose.length + 4096 };
+    for (let depth = 1; depth < passes.length; depth++) {
+      const start = embeddedValues(passes[depth], budget).failed;
+      if (start >= 0 && holdsVocabulary(passes[depth].slice(start), true, scan)) {
+        scan.flag('JSON-looking start that does not parse, before secret vocabulary', passes[depth].slice(start));
+        break;
+      }
+    }
   }
   if (level === 0 && values.length > 0 && scan.leaks.length === 0) judgeWritten(written + text.slice(copied), scan, recorded);
 }
@@ -643,8 +656,11 @@ const HEADER_LINE = new RegExp(String.raw`(?:^|(?<=[\n\r\u0085\u2028\u2029]))[ \
 const MEMBER_SPACE = String.raw`(?:[${WS}]|\\[nrt])*`;
 const MEMBER_NAME = new RegExp(String.raw`(\\?")((?:[A-Za-z\u212A_-]|\\{1,2}u[0-9A-Fa-f]{4})+)\1${MEMBER_SPACE}:${MEMBER_SPACE}`, 'g');
 
+/** Whitespace as the loose-key rule reads it: the one policy for recognizing a loosely spelled key and for judging it. */
+const LOOSE_SPACE = String.raw`[\s\p{Z}\u0085]`;
+
 /** What may lie between a name and its key separator, and between that and its value: quotes, whitespace and escapes. */
-const GAP = String.raw`(?:[\s\p{Z}\u0085"']|\\+(?:u[0-9A-Fa-f]{4}|[A-Za-z"]))*`;
+const GAP = String.raw`(?:${LOOSE_SPACE}|["']|\\+(?:u[0-9A-Fa-f]{4}|[A-Za-z"]))*`;
 
 /**
  * A secret name, loosely: a field name with any number of _ or - around and between its letters, from the first of
@@ -653,7 +669,7 @@ const GAP = String.raw`(?:[\s\p{Z}\u0085"']|\\+(?:u[0-9A-Fa-f]{4}|[A-Za-z"]))*`;
 const SECRET_NAME = new RegExp(`(?<![_-])${FIELD_KEY}|${HEADER_NAME.replaceAll('-', '[_-]?')}`, 'gi');
 
 /** A secret name without quotes, its colon and the quote that opens its value: a key in object-literal spelling. */
-const LITERAL_KEY = new RegExp(`(?:${SECRET_NAME.source})[${WS}]*:[${WS}]*"`, 'yi');
+const LITERAL_KEY = new RegExp(`${LOOSE_SPACE}*(?:${SECRET_NAME.source})${LOOSE_SPACE}*:${LOOSE_SPACE}*"`, 'yiu');
 
 /** A JWK private member's quoted name. */
 const PRIVATE_NAME = new RegExp(`"(?:${[...JWK_PRIVATE_MEMBERS].join('|')})\\\\*"`, 'g');

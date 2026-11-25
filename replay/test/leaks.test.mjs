@@ -875,7 +875,9 @@ test('decision 9: an object-literal key is read at every decoding, and through a
         spacedJudged++;
         const verdicts = entryPoints(build(name, ws, 'FAKE-literal-0003'));
         if (verdicts.some(flag => !flag)) spaced.push(`${name}, ${JSON.stringify(ws)} ${place}: ${verdicts}`);
-        // Masked, the same form is one the check accepts.
+        // Masked, the same form is one the check accepts; but a name at a line start may be a header line, which
+        // the Redactor writes another way.
+        if (/[\n\r\u0085\u2028\u2029]/.test(ws) && place !== 'before the colon' && place !== 'after the colon') continue;
         const masked = entryPoints(build(name, ws, MASK));
         if (masked.some(flag => flag)) spaced.push(`${name}, ${JSON.stringify(ws)} ${place}, masked: ${masked}`);
       }
