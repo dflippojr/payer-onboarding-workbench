@@ -22,11 +22,13 @@
 // separator and credential may be JSON escapes.
 //
 // The check is at least as strict as the Redactor on every text the tests hold (the corpus, the committed grids,
-// generated secrets), and stricter in one place on purpose: the rest of a credential behind a mask is flagged, though
-// the Redactor leaves such text as it finds it. It is not a second Redactor. Three kinds of text the Redactor masks
-// whole, fail closed, hold no credential bytes and are accepted here: a mask right behind a value that already is the
-// mask, cut JSON that repeats a member name and names no secret, and a masked header line that ends at its JSON
-// string's own closing quote two or more decodings down.
+// generated secrets), and stricter on purpose where the decisions on #425 say a miss blocks and an over-flag is
+// acceptable: text behind any mask is flagged (one terminator check over every mask, whichever rule wrote it), though
+// the Redactor leaves a broken mask as it finds it; and a JWK that only a decoding shows, whose bounds a string-aware
+// reading cannot settle, must have every private member masked. It is not a second Redactor. Three kinds of text the
+// Redactor masks whole, fail closed, hold no credential bytes and are accepted here: masks right behind a value that
+// already is the mask, up to a terminator; cut JSON that repeats a member name and names no secret; and a masked
+// header line that ends at its JSON string's own closing quote two or more decodings down.
 //
 // Independent of workbench-core's Redactor on purpose (#360): nothing here is generated from it or shared with it,
 // and this file imports nothing. The name lists below are the contract, as
