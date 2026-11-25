@@ -907,6 +907,81 @@ test('decision 9: an object-literal key is read at every decoding, and through a
   assert.deepEqual(entryPoints('{note: 1, password: "FAKE-literal-0003"}'), [false, false, false]);
 });
 
+test('decision 11: a loosely read key keeps a word in front of its mask only under an Authorization-style name', () => {
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text })].map(leaks => leaks.length > 0);
+  const SHAPES = {
+    'an object-literal key': (name, value) => `{${name}: "${value}"}`,
+    'an object-literal key after prose': (name, value) => `payer said: {${name}: "${value}"} and more`,
+    'a quoted key with a bare value': (name, value) => `{"${name}": ${value}}`,
+    'a quoted key in a start that does not read': (name, value) => `{"${name}": "${value}", oops}`,
+  };
+  const wrong = [];
+  let judged = 0;
+  for (const name of ['client_secret', 'access_token', 'refresh_token', 'password', 'apiKey', 'private_key', 'secret', 'x-api-key', 'cookie']) {
+    for (const word of ['Bearer', 'Basic', 'FAKEword']) {
+      for (const [shape, build] of Object.entries(SHAPES)) {
+        judged++;
+        const verdicts = entryPoints(build(name, `${word} ${MASK}`));
+        if (verdicts.some(flag => !flag)) wrong.push(`${name}, ${word}, ${shape}: ${verdicts}`);
+      }
+    }
+  }
+  assert.ok(judged >= 9 * 3 * 4, `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} of ${judged} forms accepted`);
+  // Under a name whose value carries a scheme, and with the mask alone under any name, the form is still accepted.
+  for (const build of [SHAPES['an object-literal key'], SHAPES['an object-literal key after prose']]) {
+    for (const name of ['Authorization', 'authorization', 'Proxy-Authorization']) {
+      assert.deepEqual(entryPoints(build(name, `Bearer ${MASK}`)), [false, false, false], build(name, `Bearer ${MASK}`));
+    }
+    for (const name of ['client_secret', 'password', 'Authorization']) {
+      assert.deepEqual(entryPoints(build(name, MASK)), [false, false, false], build(name, MASK));
+    }
+  }
+});
+
+test('decision 11: a percent-decoding is read around escapes that are not UTF-8, at every whitespace and entry point', () => {
+  const entryPoints = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text })].map(leaks => leaks.length > 0);
+  const NAMES = ['client_secret', 'access_token', 'password'];
+  const SPACES = [' ', '\t', '\n', '\u0085', '\u00a0', '\u1680', '\u2003', '\u2028', '\u205f', '\u3000', '\ufeff', ' \u2003 '];
+  // Escapes no UTF-8 text holds: a byte that never occurs, a lone continuation byte, a sequence cut short, an
+  // overlong spelling, and an escape that is not one.
+  const MALFORMED = { 'a byte UTF-8 never holds': '%FF', 'a lone continuation byte': '%80', 'a lead byte alone': '%C3',
+    'a sequence cut short': '%E2%80', 'an overlong spelling': '%C0%AF', 'an encoded surrogate': '%ED%A0%80',
+    'no escape at all': '%zz', 'a percent sign alone': '%' };
+  const literal = (name, ws, value) => `{${encodeURIComponent(ws)}${name}${encodeURIComponent(ws)}:${encodeURIComponent(ws)}"${value}"}`;
+  const PLACES = {
+    'before the literal': (bad, text) => `${bad} ${text}`,
+    'after the literal': (bad, text) => `${text} ${bad}`,
+    'on both sides': (bad, text) => `${bad}${text}${bad}`,
+    'in a query value': (bad, text) => `GET /search?a=${bad}&filter=${text}&page=2`,
+  };
+  const wrong = [];
+  let judged = 0;
+  for (const name of NAMES) {
+    for (const ws of SPACES) {
+      for (const [kind, bad] of Object.entries(MALFORMED)) {
+        for (const [place, build] of Object.entries(PLACES)) {
+          judged++;
+          const verdicts = entryPoints(build(bad, literal(name, ws, 'FAKE-literal-0004')));
+          if (verdicts.some(flag => !flag)) wrong.push(`${name}, ${JSON.stringify(ws)}, ${kind}, ${place}: ${verdicts}`);
+          // Masked, the same text is one the check accepts (a name at a line start may be a header line).
+          if (/[\n\r\u0085\u2028\u2029]/.test(ws)) continue;
+          const masked = entryPoints(build(bad, literal(name, ws, MASK)));
+          if (masked.some(flag => flag)) wrong.push(`${name}, ${JSON.stringify(ws)}, ${kind}, ${place}, masked: ${masked}`);
+        }
+        // Where the decoding cannot be judged, the check fails closed: bytes that are not UTF-8 between the brace
+        // and the key do not hide the key.
+        if (!/^(?:%[0-9A-F]{2})+$/.test(bad)) continue;
+        judged++;
+        const between = entryPoints(`{${bad}${encodeURIComponent(ws)}${name}:${encodeURIComponent(ws)}"FAKE-literal-0004"}`);
+        if (between.some(flag => !flag)) wrong.push(`${name}, ${JSON.stringify(ws)}, ${kind}, between the brace and the key: ${between}`);
+      }
+    }
+  }
+  assert.ok(judged >= 3 * 12 * (8 * 4 + 6), `${judged} forms judged`);
+  assert.deepEqual(wrong.slice(0, 12), [], `${wrong.length} forms wrong`);
+});
+
 test('decision 8c: a recorded text that ends in a masked quoted secret member is accepted inside a bundle file too', () => {
   const B = '\\';
   const inFile = text => [findTextLeaks(text), invariants.findFileLeaks(JSON.stringify({ responseBody: text })), findJsonLeaks({ responseBody: text }),
