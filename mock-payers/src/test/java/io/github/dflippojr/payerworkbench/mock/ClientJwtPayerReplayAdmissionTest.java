@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The replay-admission and eviction scenarios of {@link ClientJwtReplayAdmissionTest}, run through each payer's own
  * integration and policy rather than a stand-in one: Fabrikam's hook authentication (its issued-at rules and its timer
  * sweep) and Tailspin's token endpoint (its exp cap, its sub and client_id check). Races are forced with the same
- * {@link ClientJwtReplayAdmissionTest.GatedClock}: latches and thread states, never sleeps. The payers are not
+ * {@link TestClocks.GatedClock}: latches and thread states, never sleeps. The payers are not
  * started, so Fabrikam's timer runs only when a test calls {@link FabrikamPayer#sweepExpiredJtis()}.
  */
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
@@ -69,7 +69,7 @@ class ClientJwtPayerReplayAdmissionTest {
     private static final class Fabrikam extends PayerUnderTest {
         private final FabrikamPayer payer;
 
-        Fabrikam(ClientJwtReplayAdmissionTest.GatedClock clock, TestKeys.JwksServer jwks) {
+        Fabrikam(TestClocks.GatedClock clock, TestKeys.JwksServer jwks) {
             payer = FabrikamPayer.builder().clock(clock).publicBaseUrl("https://fabrikam.example")
                     .client(CLIENT, jwks.url()).build();
         }
@@ -108,7 +108,7 @@ class ClientJwtPayerReplayAdmissionTest {
     private static final class Tailspin extends PayerUnderTest {
         private final TailspinPayer payer;
 
-        Tailspin(ClientJwtReplayAdmissionTest.GatedClock clock, TestKeys.JwksServer jwks) {
+        Tailspin(TestClocks.GatedClock clock, TestKeys.JwksServer jwks) {
             payer = TailspinPayer.builder().clock(clock).publicBaseUrl("https://tailspin.example")
                     .client(CLIENT, jwks.url()).build();
         }
@@ -143,13 +143,13 @@ class ClientJwtPayerReplayAdmissionTest {
     private final Queue<Throwable> failures = new ConcurrentLinkedQueue<>();
     private KeyPair key;
     private TestKeys.JwksServer jwks;
-    private ClientJwtReplayAdmissionTest.GatedClock clock;
+    private TestClocks.GatedClock clock;
 
     @BeforeEach
     void setUp() throws Exception {
         key = TestKeys.rsa();
         jwks = new TestKeys.JwksServer().publish("kid", key);
-        clock = new ClientJwtReplayAdmissionTest.GatedClock(ISSUED);
+        clock = new TestClocks.GatedClock(ISSUED);
     }
 
     @AfterEach

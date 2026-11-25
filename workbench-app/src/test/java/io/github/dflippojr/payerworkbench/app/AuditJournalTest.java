@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.github.dflippojr.payerworkbench.app.TestClocks.MutableClock;
 import io.github.dflippojr.payerworkbench.core.AuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -537,14 +538,6 @@ class AuditJournalTest {
         assertFalse(output.getAll().contains("manifest.json.tmp"));
         assertTrue(segments(dir).isEmpty());
         assertFalse(Files.exists(dir.resolve(AuditJournal.MANIFEST)));
-    }
-
-    private static final class MutableClock extends Clock {
-        Instant now;
-        MutableClock(Instant now) { this.now = now; }
-        @Override public java.time.ZoneId getZone() { return ZoneOffset.UTC; }
-        @Override public Clock withZone(java.time.ZoneId zone) { return this; }
-        @Override public Instant instant() { return now; }
     }
 
     /** Serializes normally except for its second event. */

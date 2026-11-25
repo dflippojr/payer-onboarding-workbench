@@ -7,16 +7,13 @@ import io.github.dflippojr.fhircrdrouter.client.CdsHookResponse;
 import io.github.dflippojr.fhircrdrouter.client.SystemAction;
 import io.github.dflippojr.fhircrdrouter.client.crd.CoverageInformation;
 import io.github.dflippojr.fhircrdrouter.core.RouterException;
+import io.github.dflippojr.payerworkbench.mock.TestClocks.BrokenClock;
 import org.junit.jupiter.api.Test;
 
 import java.net.URLEncoder;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -164,7 +161,7 @@ class NorthwindPayerTest {
 
     @Test
     void tokensExpireAndTheClientRecoversByFetchingANewOne() throws Exception {
-        TestKeys.MutableClock clock = new TestKeys.MutableClock();
+        TestClocks.MutableClock clock = new TestClocks.MutableClock();
         try (PayerFixture fixture = PayerFixture.northwind(NorthwindPayer.builder().clock(clock))) {
             HttpResponse<String> tokenResponse = fixture.raw("POST", NorthwindPayer.TOKEN_PATH,
                     "grant_type=client_credentials",
@@ -203,25 +200,6 @@ class NorthwindPayerTest {
     private static String hookBody() throws Exception {
         return MAPPER.writeValueAsString(CdsHookRequest.of(SyntheticData.orderSign(SyntheticData.standardOrders()),
                 PayerFixture.northwindPrefetch()));
-    }
-
-    /** A clock whose reads throw, so the next token request fails with an exception the mock does not expect. */
-    private static final class BrokenClock extends Clock {
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
-        }
-
-        @Override
-        public Instant instant() {
-            throw new IllegalStateException("clock is broken");
-        }
     }
 
     private static String basic(PayerFixture fixture) {
