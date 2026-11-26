@@ -27,13 +27,15 @@ import org.junit.jupiter.api.Test;
  * commit when the clone does not have it (CI's checkout is shallow), compiles its {@code Redactor} with the JDK's
  * compiler, loads it in a class loader of its own (parent: the platform loader, so none of this module's classes are
  * visible to it), runs every agreement-grid input through it and requires the committed file to hold exactly those
- * outputs, row for row. replay/test/leaks.test.mjs then applies the current scanner to those outputs and requires the
- * committed main verdicts to match; the head pin is a separate file that neither step writes.
+ * outputs, row for row.
+ *
+ * <p>Until #425 replay/test/leaks.test.mjs applied the scanner to those outputs and pinned its verdicts on them, row by
+ * row. The bundle check that replaced the scanner (replay/test/invariants.mjs) flags no current Redactor output, so it
+ * compares nothing against main's and does not read this grid; whether the grid stays is #377 stage 4's question.
  *
  * <p>Regenerate, then review the diff:
  * <pre>
  * ./mvnw -pl workbench-core test -Dtest=AgreementBaselineTest -Dredactor.grids.update=true
- * node scripts/agreement-baseline.mjs          # main's verdicts, from the outputs above, with the current scanner
  * git diff --stat
  * </pre>
  */

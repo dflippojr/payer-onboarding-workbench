@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { findJsonLeaks, findTextLeaks } from './leaks.mjs';
+import { findFileLeaks, findJsonLeaks, findTextLeaks } from './invariants.mjs';
 import { installFakeDom } from './fake-dom.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -38,17 +38,17 @@ function requireBundle() {
 
 const b64url = obj => Buffer.from(JSON.stringify(obj)).toString('base64url');
 
-// ---- the leak scanner itself, against synthetic material generated here ----
+// ---- the bundle check itself (invariants.mjs), against synthetic material generated here ----
 
 test('leak scanner flags unredacted credentials', () => {
   const secret = randomBytes(18).toString('base64url');
   const jwt = `${b64url({ alg: 'RS256', typ: 'JWT' })}.${b64url({ iss: 'synthetic', aud: 'x' })}.${secret}`;
   const pem = ['-----BEGIN ', 'PRIVATE KEY-----\n', secret, '\n-----END ', 'PRIVATE KEY-----'].join('');
   const samples = {
-    'PEM block': pem,
-    'Bearer/Basic credential': `Authorization: Bearer ${secret}`,
-    'signed JWT': `client_assertion is ${jwt}`,
-    'JSON secret field': JSON.stringify({ body: JSON.stringify({ access_token: secret }) }),
+    'key armor': pem,
+    'scheme credential': `Authorization: Bearer ${secret}`,
+    'JWT signature': `client_assertion is ${jwt}`,
+    'secret-named member': JSON.stringify({ body: JSON.stringify({ access_token: secret }) }),
     'form secret': `grant_type=client_credentials&client_secret=${secret}`,
   };
   for (const [check, text] of Object.entries(samples)) {
@@ -83,7 +83,7 @@ test('leak scanner distinguishes auth challenges from credentials', () => {
     assert.deepEqual(findTextLeaks(JSON.stringify({ header: challenge })), []);
   }
   for (const credential of ['Bearer error=', 'Bearer realm=', 'Basic c3ludGhldGljOnNlY3JldA==']) {
-    assert.ok(findTextLeaks(credential).some(l => l.check === 'Bearer/Basic credential'));
+    assert.ok(findTextLeaks(credential).some(l => l.check === 'scheme credential'));
     assert.ok(findJsonLeaks({ requestHeaders: { Authorization: [credential] } }).length > 0);
   }
 });
@@ -144,13 +144,18 @@ test('the bundle holds only the replay files and recorded runs', () => {
 test('no token, secret or PEM pattern appears anywhere in the bundle', () => {
   requireBundle();
   const leaks = [];
+  let json = 0;
   for (const file of bundleFiles()) {
     const text = readFileSync(file, 'utf8');
     const rel = relative(dist, file);
-    leaks.push(...findTextLeaks(text).map(l => ({ file: rel, ...l })));
-    if (file.endsWith('.json')) leaks.push(...findJsonLeaks(JSON.parse(text)).map(l => ({ file: rel, ...l })));
+    // A JSON file is parsed and judged by its members and each string in it, and may repeat no member name; any other
+    // file is judged as text (#425).
+    const found = file.endsWith('.json') ? findFileLeaks(text) : findTextLeaks(text);
+    if (file.endsWith('.json')) json++;
+    leaks.push(...found.map(l => ({ file: rel, ...l })));
   }
   assert.deepEqual(leaks, []);
+  assert.ok(json >= 1 + REQUIRED.length, `${json} JSON files judged`);
 });
 
 /** Mounts the bundle's replay.js on a fake DOM; `editManifest` rewrites manifest.json on the way in. */
